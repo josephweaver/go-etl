@@ -1,0 +1,5 @@
+{
+  "id": "local-demo-001",
+  "type": "write_demo_output",
+  "output_filename": "local-demo-001.txt"
+}
