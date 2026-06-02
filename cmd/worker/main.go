@@ -18,14 +18,24 @@ func main() {
 		return
 	}
 
-	item, err := loadWorkItem("demo-item.json")
+	item, hasWork, err := fetchWorkItem(cfg.ControllerURL)
 	if err != nil {
 		fmt.Println("invalid work item:", err)
 		return
 	}
 
+	if !hasWork {
+		fmt.Println("no work available")
+		return
+	}
+
 	if err := worker.Run(item); err != nil {
 		fmt.Println("worker failed:", err)
+		return
+	}
+
+	if err := reportWorkComplete(cfg.ControllerURL, item.ID); err != nil {
+		fmt.Println("report completion failed:", err)
 		return
 	}
 

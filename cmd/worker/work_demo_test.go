@@ -5,14 +5,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"goetl/internal/model"
 )
 
 func TestWorkerWriteDemoOutput(t *testing.T) {
 	worker := newTestWorker(t)
 
-	item := WorkItem{
+	item := model.WorkItem{
 		ID:             "test-001",
-		Type:           WorkItemTypeWriteDemoOutput,
+		Type:           model.WorkItemTypeWriteDemoOutput,
 		OutputFilename: "result.txt",
 	}
 

@@ -1,35 +1,82 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"goetl/internal/model"
 )
 
-func TestLoadWorkItem(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "item.json")
+func TestReportWorkComplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/work/complete" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
 
-	content := []byte(`{
-		"id": "test-001",
-		"type": "write_demo_output",
-		"output_filename": "result.txt"
-	}`)
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
 
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		t.Fatal(err)
+		var completion model.WorkCompletion
+		if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
+			t.Fatalf("decode completion: %v", err)
+		}
+
+		if completion.ID != "test-001" {
+			t.Fatalf("unexpected id: %q", completion.ID)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := reportWorkComplete(server.URL, "test-001"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+}
 
-	item, err := loadWorkItem(path)
+func TestReportWorkCompleteRejectsServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	if err := reportWorkComplete(server.URL, "test-001"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestFetchWorkItem(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/work/next" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"id": "test-001",
+			"type": "write_demo_output",
+			"output_filename": "result.txt"
+		}`))
+	}))
+	defer server.Close()
+
+	item, hasWork, err := fetchWorkItem(server.URL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !hasWork {
+		t.Fatal("expected work item")
 	}
 
 	if item.ID != "test-001" {
 		t.Fatalf("unexpected id: %q", item.ID)
 	}
 
-	if item.Type != WorkItemTypeWriteDemoOutput {
+	if item.Type != model.WorkItemTypeWriteDemoOutput {
 		t.Fatalf("unexpected type: %q", item.Type)
 	}
 
@@ -38,114 +85,55 @@ func TestLoadWorkItem(t *testing.T) {
 	}
 }
 
-func TestLoadWorkItemRejectsMissingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.json")
+func TestFetchWorkItemRejectsServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
 
-	if _, err := loadWorkItem(path); err == nil {
+	if _, _, err := fetchWorkItem(server.URL); err == nil {
 		t.Fatal("expected an error")
 	}
 }
 
-func TestLoadWorkItemRejectsMalformedJSON(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "item.json")
+func TestFetchWorkItemRejectsMalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":`))
+	}))
+	defer server.Close()
 
-	if err := os.WriteFile(path, []byte(`{"id":`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := loadWorkItem(path); err == nil {
+	if _, _, err := fetchWorkItem(server.URL); err == nil {
 		t.Fatal("expected an error")
 	}
 }
 
-func TestLoadWorkItemRejectsInvalidItem(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "item.json")
+func TestFetchWorkItemRejectsInvalidItem(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{
+			"id": "test-001",
+			"type": "write_demo_output",
+			"output_filename": "../outside.txt"
+		}`))
+	}))
+	defer server.Close()
 
-	content := []byte(`{
-		"id": "test-001",
-		"type": "write_demo_output",
-		"output_filename": "../outside.txt"
-	}`)
-
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := loadWorkItem(path); err == nil {
+	if _, _, err := fetchWorkItem(server.URL); err == nil {
 		t.Fatal("expected an error")
 	}
 }
 
-func TestWorkItemValidate(t *testing.T) {
-	tests := []struct {
-		name    string
-		item    WorkItem
-		wantErr bool
-	}{
-		{
-			name: "valid item",
-			item: WorkItem{
-				ID:             "local-demo-001",
-				Type:           WorkItemTypeWriteDemoOutput,
-				OutputFilename: "output.txt",
-			},
-		},
-		{
-			name: "missing id",
-			item: WorkItem{
-				Type:           WorkItemTypeWriteDemoOutput,
-				OutputFilename: "output.txt",
-			},
-			wantErr: true,
-		},
-		{
-			name: "missing type",
-			item: WorkItem{
-				ID:             "local-demo-001",
-				OutputFilename: "output.txt",
-			},
-			wantErr: true,
-		},
-		{
-			name: "unknown type is structurally valid",
-			item: WorkItem{
-				ID:             "local-demo-001",
-				Type:           "unknown",
-				OutputFilename: "output.txt",
-			},
-		},
-		{
-			name: "missing output filename",
-			item: WorkItem{
-				ID:   "local-demo-001",
-				Type: WorkItemTypeWriteDemoOutput,
-			},
-			wantErr: true,
-		},
-		{
-			name: "output filename contains directory",
-			item: WorkItem{
-				ID:             "local-demo-001",
-				Type:           WorkItemTypeWriteDemoOutput,
-				OutputFilename: "../outside.txt",
-			},
-			wantErr: true,
-		},
+func TestFetchWorkItemReturnsNoWork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	item, hasWork, err := fetchWorkItem(server.URL)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := test.item.Validate()
-
-			if test.wantErr && err == nil {
-				t.Fatal("expected an error")
-			}
-
-			if !test.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
+	if hasWork {
+		t.Fatalf("unexpected work item: %+v", item)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"goetl/internal/model"
 )
 
-func (w Worker) writeDemoOutput(item WorkItem) error {
+func (w Worker) writeDemoOutput(item model.WorkItem) error {
 	tmpPath := filepath.Join(w.Config.TmpDir, item.OutputFilename)
 	dataPath := filepath.Join(w.Config.DataDir, item.OutputFilename)
 

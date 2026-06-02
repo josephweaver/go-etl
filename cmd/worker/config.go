@@ -51,11 +51,4 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func defaultConfig() Config {
-	return Config{
-		LogDir:        ".run/logs",
-		TmpDir:        ".run/tmp",
-		DataDir:       ".run/data",
-		ControllerURL: "https://controller.local",
-	}
-}
+

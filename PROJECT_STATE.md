@@ -4,7 +4,7 @@ Last updated: 2026-06-02
 
 ## Current Focus
 
-We are building the Go ETL worker from the main entry point inward. The current worker can load one local JSON work item, validate it, execute it against local mounted-style directories, and log its progress.
+We are building the Go ETL worker from the main entry point inward. The current worker loads local JSON runtime config and one local JSON work item, validates them, dispatches the work item by type, writes output through mounted-style local directories, and logs progress.
 
 The target product has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The Python layer may also start a Go controller instance. The current Go worker is an early runtime component, not the intended user-facing API.
 
@@ -18,10 +18,13 @@ cmd/worker/
   main.go
   config.go
   config_test.go
-  worker.go
-  worker_test.go
   state.go
   state_test.go
+  worker.go
+  worker_test.go
+  work_demo.go
+  work_demo_test.go
+  demo-config.json
   demo-item.json
   .run/
     logs/
@@ -33,42 +36,47 @@ cmd/worker/
 
 The worker startup flow is:
 
-1. Build a default `Config`.
-2. Validate required config fields.
+1. Load `demo-config.json`.
+2. Decode and validate its `Config`.
 3. Construct a `Worker` with that config.
 4. Validate that required local directories exist.
 5. Load `demo-item.json`.
 6. Decode and validate its `WorkItem`.
 7. Run the worker with that item.
-8. Write temporary output under `TmpDir`.
-9. Rename the completed output into `DataDir`.
-10. Append progress messages to `worker.log` under `LogDir`.
+8. Dispatch the item by `Type`.
+9. Write temporary output under `TmpDir`.
+10. Rename the completed output into `DataDir`.
+11. Append progress messages to `worker.log` under `LogDir`.
 
-`main.go` is intentionally startup wiring. Worker-specific behavior lives in `worker.go`. Work-item data and validation live in `state.go`.
+`main.go` is intentionally startup wiring. Runtime config lives in `config.go`. Work-item data lives in `state.go`. Worker lifecycle and dispatch live in `worker.go`. The concrete demo operation lives in `work_demo.go`.
 
 ## Config
 
-`Config` currently contains:
+Runtime config is loaded from `demo-config.json`:
 
-```go
-type Config struct {
-	LogDir        string
-	TmpDir        string
-	DataDir       string
-	ControllerURL string
+```json
+{
+  "log_dir": ".run/logs",
+  "tmp_dir": ".run/tmp",
+  "data_dir": ".run/data",
+  "controller_url": "https://controller.local"
 }
 ```
 
-The default config is local-development oriented:
+The matching Go model is:
 
 ```go
-LogDir:        ".run/logs"
-TmpDir:        ".run/tmp"
-DataDir:       ".run/data"
-ControllerURL: "https://controller.local"
+type Config struct {
+	LogDir        string `json:"log_dir"`
+	TmpDir        string `json:"tmp_dir"`
+	DataDir       string `json:"data_dir"`
+	ControllerURL string `json:"controller_url"`
+}
 ```
 
-These paths are relative to the directory where `go run .` is executed. From `cmd/worker`, the expected directories are:
+`loadConfig(path)` reads JSON, decodes it, and calls `Config.Validate()`.
+
+The local paths are relative to the directory where `go run .` is executed. From `cmd/worker`, the expected directories are:
 
 ```text
 cmd/worker/.run/logs
@@ -98,10 +106,12 @@ type WorkItem struct {
 }
 ```
 
-`WorkItem.Validate()` requires:
+`loadWorkItem(path)` reads JSON, decodes it, and calls `WorkItem.Validate()`.
+
+`WorkItem.Validate()` checks structural validity:
 
 - A non-empty ID.
-- A supported type.
+- A non-empty type.
 - A non-empty output filename.
 - An output filename without directory components.
 
@@ -111,11 +121,11 @@ Rejecting directory components prevents a work item such as `../outside.txt` fro
 
 There are three validation layers:
 
-- `Config.Validate()` checks whether config values are present.
+- `Config.Validate()` checks whether runtime settings are present.
 - `Worker.Validate()` checks whether required runtime directories exist and are directories.
-- `WorkItem.Validate()` checks whether an assigned item is structurally valid and supported.
+- `WorkItem.Validate()` checks whether an assigned item is structurally valid.
 
-This pattern separates invalid settings, invalid runtime environments, and invalid assigned work.
+Operation support is separate from structural validity. `Worker.runWorkItem(item)` uses a `switch` on `item.Type` and rejects unsupported operation types.
 
 ## Current Worker Behavior
 
@@ -123,11 +133,16 @@ This pattern separates invalid settings, invalid runtime environments, and inval
 
 - Prints startup messages to stdout.
 - Appends `worker starting` to the persistent log.
-- Executes the supplied item.
+- Passes the item to the dispatcher.
 
 `Worker.runWorkItem(item)`:
 
 - Validates the work item.
+- Dispatches supported types.
+- Rejects unsupported types.
+
+`Worker.writeDemoOutput(item)` in `work_demo.go`:
+
 - Logs that the item is starting.
 - Writes a small demo output file under `TmpDir`.
 - Logs the temporary output path.
@@ -142,15 +157,19 @@ The worker uses Go's standard `testing` package. Test files are colocated with t
 
 Current tests cover:
 
+- Loading valid JSON config.
+- Missing, malformed, and invalid JSON config files.
 - Required config fields.
-- Required and supported work-item fields.
-- Rejection of unsafe output filenames.
 - Loading valid JSON work items.
 - Missing, malformed, and invalid JSON work-item files.
+- Required work-item fields.
+- Rejection of unsafe output filenames.
+- Acceptance of structurally valid unknown work-item types.
 - Runtime directory validation.
-- Temporary-output promotion into `DataDir`.
-- Worker logging.
-- Rejection of invalid items before execution.
+- Dispatch rejection of unsupported operation types.
+- Rejection of structurally invalid items before dispatch.
+- Demo temporary-output promotion into `DataDir`.
+- Demo operation logging.
 - The top-level `Worker.Run(item)` flow.
 
 Run tests from `cmd/worker`:
@@ -169,11 +188,12 @@ Norton antivirus may briefly lock Go's temporary `worker.test.exe` after tests f
 - Methods with receivers, such as `func (item WorkItem) Validate() error`.
 - Idiomatic `(value, error)` handling.
 - Wrapping errors with `fmt.Errorf("context: %w", err)`.
+- `switch` dispatch by work-item type.
 - `os.Stat`, `os.ReadFile`, `os.WriteFile`, and `os.OpenFile`.
 - `os.Rename` for promoting completed output.
 - `defer` for cleanup.
 - Table-driven tests, subtests, and `t.TempDir()`.
-- Passing a `WorkItem` into `Worker.Run(item)` instead of constructing it inside the worker.
+- Colocated files in one Go package, including `work_demo.go`.
 
 ## How To Run
 
@@ -207,10 +227,15 @@ cmd/worker/.run/logs/worker.log
 
 For now, `LogDir`, `TmpDir`, and `DataDir` are explicitly local directories. That matches the target container-mounted filesystem model described in `TARGET_STATE.md`.
 
-The local JSON work-item file is a temporary stand-in for controller-supplied data. Keep the worker concrete and local until the execution path is clear enough to wrap with a controller API.
+The local JSON files are temporary stand-ins for externally supplied runtime values:
+
+- `demo-config.json` supplies worker runtime config.
+- `demo-item.json` supplies assigned work.
+
+Keep the worker concrete and local until the execution path is clear enough to wrap with a controller API.
 
 ## Likely Next Step
 
-Make `runWorkItem` dispatch on `item.Type` before executing the demo operation.
+Add command-line flags for the config and work-item file paths.
 
-There is currently only one supported operation, but an explicit `switch` will establish the boundary where future CDL-oriented operations are selected. Keep the existing demo write behavior as the first concrete handler. Do not add controller API polling yet.
+The executable currently hard-codes `demo-config.json` and `demo-item.json`. Flags such as `-config` and `-item` will keep those files as useful local defaults while allowing the worker executable to run other inputs without code changes.

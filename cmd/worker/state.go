@@ -1,58 +1,61 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"net/http"
+	"strings"
+
+	"goetl/internal/model"
 )
 
-type WorkItemType string
+func reportWorkComplete(controllerURL string, itemID string) error {
+	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-const (
-	WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
-)
-
-type WorkItem struct {
-	ID             string       `json:"id"`
-	Type           WorkItemType `json:"type"`
-	OutputFilename string       `json:"output_filename"`
-}
-
-func loadWorkItem(path string) (WorkItem, error) {
-	data, err := os.ReadFile(path)
+	body, err := json.Marshal(model.WorkCompletion{ID: itemID})
 	if err != nil {
-		return WorkItem{}, fmt.Errorf("read work item file %s: %w", path, err)
+		return fmt.Errorf("encode work completion: %w", err)
 	}
 
-	var item WorkItem
-	if err := json.Unmarshal(data, &item); err != nil {
-		return WorkItem{}, fmt.Errorf("decode work item file %s: %w", path, err)
+	response, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("post work completion to %s: %w", url, err)
 	}
+	defer response.Body.Close()
 
-	if err := item.Validate(); err != nil {
-		return WorkItem{}, fmt.Errorf("validate work item file %s: %w", path, err)
-	}
-
-	return item, nil
-}
-
-func (item WorkItem) Validate() error {
-	if item.ID == "" {
-		return fmt.Errorf("work item id is required")
-	}
-
-	if item.Type == "" {
-		return fmt.Errorf("work item type is required")
-	}
-
-	if item.OutputFilename == "" {
-		return fmt.Errorf("output filename is required")
-	}
-
-	if filepath.Base(item.OutputFilename) != item.OutputFilename {
-		return fmt.Errorf("output filename must not contain a directory: %s", item.OutputFilename)
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("post work completion to %s: unexpected status %s", url, response.Status)
 	}
 
 	return nil
+}
+
+func fetchWorkItem(controllerURL string) (model.WorkItem, bool, error) {
+	url := strings.TrimRight(controllerURL, "/") + "/work/next"
+
+	response, err := http.Get(url)
+	if err != nil {
+		return model.WorkItem{}, false, fmt.Errorf("get work item from %s: %w", url, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNoContent {
+		return model.WorkItem{}, false, nil
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return model.WorkItem{}, false, fmt.Errorf("get work item from %s: unexpected status %s", url, response.Status)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		return model.WorkItem{}, false, fmt.Errorf("decode work item from %s: %w", url, err)
+	}
+
+	if err := item.Validate(); err != nil {
+		return model.WorkItem{}, false, fmt.Errorf("validate work item from %s: %w", url, err)
+	}
+
+	return item, true, nil
 }

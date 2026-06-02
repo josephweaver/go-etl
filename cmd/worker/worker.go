@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 )
 
+import "goetl/internal/model"
+
 type Worker struct {
 	Config Config
 }
 
-func (w Worker) Run(item WorkItem) error {
+func (w Worker) Run(item model.WorkItem) error {
 	fmt.Println("worker starting")
 	fmt.Println("log dir:", w.Config.LogDir)
 
@@ -63,13 +65,13 @@ func requireDir(path string) error {
 	return nil
 }
 
-func (w Worker) runWorkItem(item WorkItem) error {
+func (w Worker) runWorkItem(item model.WorkItem) error {
 	if err := item.Validate(); err != nil {
 		return fmt.Errorf("invalid work item: %w", err)
 	}
 
 	switch item.Type {
-	case WorkItemTypeWriteDemoOutput:
+	case model.WorkItemTypeWriteDemoOutput:
 		return w.writeDemoOutput(item)
 	default:
 		return fmt.Errorf("unsupported work item type: %s", item.Type)

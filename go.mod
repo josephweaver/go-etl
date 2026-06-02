@@ -1,3 +1,3 @@
-module cmd/worker
+module goetl
 
 go 1.26.2

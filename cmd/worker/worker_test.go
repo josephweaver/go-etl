@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"goetl/internal/model"
 )
 
 func TestRequireDir(t *testing.T) {
@@ -42,9 +44,9 @@ func TestRequireDir(t *testing.T) {
 func TestWorkerRunWorkItemRejectsInvalidItem(t *testing.T) {
 	worker := newTestWorker(t)
 
-	item := WorkItem{
+	item := model.WorkItem{
 		ID:             "test-001",
-		Type:           WorkItemTypeWriteDemoOutput,
+		Type:           model.WorkItemTypeWriteDemoOutput,
 		OutputFilename: "../outside.txt",
 	}
 
@@ -77,9 +79,9 @@ func newTestWorker(t *testing.T) Worker {
 func TestWorkerRun(t *testing.T) {
 	worker := newTestWorker(t)
 
-	item := WorkItem{
+	item := model.WorkItem{
 		ID:             "test-001",
-		Type:           WorkItemTypeWriteDemoOutput,
+		Type:           model.WorkItemTypeWriteDemoOutput,
 		OutputFilename: "result.txt",
 	}
 
@@ -96,7 +98,7 @@ func TestWorkerRun(t *testing.T) {
 func TestWorkerRunWorkItemRejectsUnsupportedType(t *testing.T) {
 	worker := newTestWorker(t)
 
-	item := WorkItem{
+	item := model.WorkItem{
 		ID:             "test-001",
 		Type:           "unknown",
 		OutputFilename: "result.txt",
