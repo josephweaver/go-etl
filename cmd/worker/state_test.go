@@ -2,12 +2,37 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"goetl/internal/model"
 )
+
+func TestReportWorkFailed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/work/fail" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		var failure model.WorkFailure
+		if err := json.NewDecoder(r.Body).Decode(&failure); err != nil {
+			t.Fatalf("decode failure: %v", err)
+		}
+
+		if failure.ID != "test-001" || failure.Error != "failed" {
+			t.Fatalf("unexpected failure: %+v", failure)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := reportWorkFailed(server.URL, "test-001", errors.New("failed")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestReportWorkComplete(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

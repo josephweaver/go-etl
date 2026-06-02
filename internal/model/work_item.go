@@ -21,6 +21,17 @@ type WorkCompletion struct {
 	ID string `json:"id"`
 }
 
+type WorkFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+type ControllerStatus struct {
+	Pending  int `json:"pending"`
+	Assigned int `json:"assigned"`
+	Failed   int `json:"failed"`
+}
+
 func (item WorkItem) Validate() error {
 	if item.ID == "" {
 		return fmt.Errorf("work item id is required")

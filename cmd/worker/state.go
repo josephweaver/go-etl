@@ -31,6 +31,27 @@ func reportWorkComplete(controllerURL string, itemID string) error {
 	return nil
 }
 
+func reportWorkFailed(controllerURL string, itemID string, workErr error) error {
+	url := strings.TrimRight(controllerURL, "/") + "/work/fail"
+
+	body, err := json.Marshal(model.WorkFailure{ID: itemID, Error: workErr.Error()})
+	if err != nil {
+		return fmt.Errorf("encode work failure: %w", err)
+	}
+
+	response, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("post work failure to %s: %w", url, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("post work failure to %s: unexpected status %s", url, response.Status)
+	}
+
+	return nil
+}
+
 func fetchWorkItem(controllerURL string) (model.WorkItem, bool, error) {
 	url := strings.TrimRight(controllerURL, "/") + "/work/next"
 

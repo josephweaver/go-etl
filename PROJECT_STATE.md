@@ -4,62 +4,123 @@ Last updated: 2026-06-02
 
 ## Current Focus
 
-We are building the Go ETL worker from the main entry point inward. The current worker loads local JSON runtime config and one local JSON work item, validates them, dispatches the work item by type, writes output through mounted-style local directories, and logs progress.
+We now have a minimal local Go controller and worker runtime. The controller owns an in-memory work queue. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
-The target product has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The Python layer may also start a Go controller instance. The current Go worker is an early runtime component, not the intended user-facing API.
+The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
 Project guidance is in `AGENT.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
 ## Current Layout
 
 ```text
-cmd/worker/
-  go.mod
-  main.go
-  config.go
-  config_test.go
-  state.go
-  state_test.go
-  worker.go
-  worker_test.go
-  work_demo.go
-  work_demo_test.go
-  demo-config.json
-  demo-item.json
-  .run/
-    logs/
-    tmp/
-    data/
+go.mod
+internal/
+  model/
+    work_item.go
+    work_item_test.go
+  variable/
+    literal.go
+    literal_test.go
+    name.go
+    name_test.go
+    namespace.go
+    namespace_test.go
+    reference.go
+    reference_test.go
+    resolver.go
+    resolver_test.go
+    scope.go
+    scope_test.go
+    type.go
+    type_test.go
+    variable.go
+    variable_test.go
+cmd/
+  controller/
+    main.go
+    main_test.go
+  worker/
+    main.go
+    main_test.go
+    config.go
+    config_test.go
+    state.go
+    state_test.go
+    worker.go
+    worker_test.go
+    work_demo.go
+    work_demo_test.go
+    demo-config.json
+    .run/
+      logs/
+      tmp/
+      data/
 ```
 
-## Current Startup Flow
+The repository uses one root Go module:
 
-The worker startup flow is:
+```go
+module goetl
+```
 
-1. Load `demo-config.json`.
-2. Decode and validate its `Config`.
-3. Construct a `Worker` with that config.
-4. Validate that required local directories exist.
-5. Load `demo-item.json`.
-6. Decode and validate its `WorkItem`.
-7. Run the worker with that item.
-8. Dispatch the item by `Type`.
-9. Write temporary output under `TmpDir`.
-10. Rename the completed output into `DataDir`.
-11. Append progress messages to `worker.log` under `LogDir`.
+Shared controller-worker JSON contracts live in `internal/model`.
 
-`main.go` is intentionally startup wiring. Runtime config lives in `config.go`. Work-item data lives in `state.go`. Worker lifecycle and dispatch live in `worker.go`. The concrete demo operation lives in `work_demo.go`.
+## Runtime Flow
 
-## Config
+The local runtime flow is:
 
-Runtime config is loaded from `demo-config.json`:
+1. Start the controller on `:8080`.
+2. The controller creates an in-memory queue with one demo work item.
+3. Start the worker from `cmd/worker`.
+4. The worker loads `demo-config.json`.
+5. The worker validates required runtime directories.
+6. The worker requests `GET /work/next`.
+7. The controller moves one item from `pending` to `assigned`.
+8. The worker validates and dispatches the item by `Type`.
+9. The demo handler writes temporary output under `TmpDir`.
+10. The demo handler renames completed output into `DataDir`.
+11. The worker reports success with `POST /work/complete`, or failure with `POST /work/fail`.
+12. The worker asks for more work.
+13. The worker exits cleanly when `GET /work/next` returns `204 No Content`.
+
+## Controller
+
+The controller stores three in-memory collections:
+
+```text
+pending    work that can be assigned
+assigned   work currently owned by a worker
+failed     failed work and its error text
+```
+
+Access is protected by `sync.Mutex` so later concurrent workers can safely use the queue.
+
+Current endpoints:
+
+```text
+GET  /work/next      assign the next pending item, or return 204
+POST /work/complete  mark an assigned item complete
+POST /work/fail      record failure for an assigned item
+POST /work           submit one raw work item
+GET  /status         return queue counts
+```
+
+Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
+
+`POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
+
+`GET /status` currently reports pending, assigned, and failed counts.
+
+## Worker Config
+
+The worker loads `cmd/worker/demo-config.json`:
 
 ```json
 {
   "log_dir": ".run/logs",
   "tmp_dir": ".run/tmp",
   "data_dir": ".run/data",
-  "controller_url": "https://controller.local"
+  "controller_url": "http://localhost:8080"
 }
 ```
 
@@ -74,29 +135,11 @@ type Config struct {
 }
 ```
 
-`loadConfig(path)` reads JSON, decodes it, and calls `Config.Validate()`.
+The local paths are relative to the directory where the worker is run.
 
-The local paths are relative to the directory where `go run .` is executed. From `cmd/worker`, the expected directories are:
+## Shared Models
 
-```text
-cmd/worker/.run/logs
-cmd/worker/.run/tmp
-cmd/worker/.run/data
-```
-
-## Work Items
-
-The worker currently supports one concrete work-item type:
-
-```go
-type WorkItemType string
-
-const (
-	WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
-)
-```
-
-A work item loaded from JSON has:
+`internal/model/work_item.go` defines:
 
 ```go
 type WorkItem struct {
@@ -104,9 +147,16 @@ type WorkItem struct {
 	Type           WorkItemType `json:"type"`
 	OutputFilename string       `json:"output_filename"`
 }
-```
 
-`loadWorkItem(path)` reads JSON, decodes it, and calls `WorkItem.Validate()`.
+type WorkCompletion struct {
+	ID string `json:"id"`
+}
+
+type WorkFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+```
 
 `WorkItem.Validate()` checks structural validity:
 
@@ -115,100 +165,120 @@ type WorkItem struct {
 - A non-empty output filename.
 - An output filename without directory components.
 
-Rejecting directory components prevents a work item such as `../outside.txt` from writing outside configured directories.
+Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
 
-## Validation Pattern
+## Variable Model
 
-There are three validation layers:
+`internal/variable` contains the early typed-variable model and resolver foundation.
 
-- `Config.Validate()` checks whether runtime settings are present.
-- `Worker.Validate()` checks whether required runtime directories exist and are directories.
-- `WorkItem.Validate()` checks whether an assigned item is structurally valid.
+Current variable namespaces are:
 
-Operation support is separate from structural validity. `Worker.runWorkItem(item)` uses a `switch` on `item.Type` and rejects unsupported operation types.
+```text
+client_env
+controller_env
+worker_env
+global
+backend
+project
+workflow
+override
+```
 
-## Current Worker Behavior
+Unqualified references use precedence lookup. Qualified references such as `worker_env.GDAL_DATA` explicitly select a namespace.
 
-`Worker.Run(item)`:
+Current variable types include:
 
-- Prints startup messages to stdout.
-- Appends `worker starting` to the persistent log.
-- Passes the item to the dispatcher.
+```text
+string
+int
+bool
+datetime
+path
+object
+list[T]
+```
 
-`Worker.runWorkItem(item)`:
+`list[T]` currently supports lists of scalar types and lists of `object`. `list[list[T]]` is intentionally rejected for now.
 
-- Validates the work item.
-- Dispatches supported types.
-- Rejects unsupported types.
+Current resolver behavior supports:
 
-`Worker.writeDemoOutput(item)` in `work_demo.go`:
+- Typed scalar literal parsing.
+- Variable precedence merging.
+- Qualified and unqualified references.
+- Recursive resolution with a configurable maximum depth.
+- Escaped variable references such as `\${year}`.
+
+Structured types are recognized by the type model, but list/object literal parsing, object field access, list indexing, and fan-out accessors are not implemented yet.
+
+## Demo Work
+
+The worker currently supports one operation:
+
+```go
+WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
+```
+
+`cmd/worker/work_demo.go`:
 
 - Logs that the item is starting.
-- Writes a small demo output file under `TmpDir`.
+- Writes a small file under `TmpDir`.
 - Logs the temporary output path.
 - Uses `os.Rename` to promote the completed file into `DataDir`.
 - Logs that the item completed.
 
-This models the intended container-mounted storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage.
+This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage.
 
 ## Tests
 
-The worker uses Go's standard `testing` package. Test files are colocated with their implementation files and end in `_test.go`.
-
-Current tests cover:
-
-- Loading valid JSON config.
-- Missing, malformed, and invalid JSON config files.
-- Required config fields.
-- Loading valid JSON work items.
-- Missing, malformed, and invalid JSON work-item files.
-- Required work-item fields.
-- Rejection of unsafe output filenames.
-- Acceptance of structurally valid unknown work-item types.
-- Runtime directory validation.
-- Dispatch rejection of unsupported operation types.
-- Rejection of structurally invalid items before dispatch.
-- Demo temporary-output promotion into `DataDir`.
-- Demo operation logging.
-- The top-level `Worker.Run(item)` flow.
-
-Run tests from `cmd/worker`:
+The project uses Go's standard `testing` package. Run all tests from the repository root:
 
 ```powershell
-go test -v ./...
+go test ./...
 ```
 
-Norton antivirus may briefly lock Go's temporary `worker.test.exe` after tests finish. If that happens, test assertions still report `PASS`, but Go may print a cleanup error. Re-running the command usually succeeds.
+Current coverage includes:
 
-## Go Concepts Introduced
+- Shared work-item validation.
+- Variable type validation, including scalar, object, and list types.
+- Variable literal parsing for current scalar types.
+- Variable precedence merging and reference lookup.
+- Recursive variable resolution and max-depth failure behavior.
+- JSON config loading and validation.
+- Runtime directory validation.
+- Demo temporary-output promotion and logging.
+- Worker dispatch validation.
+- Worker HTTP fetch, completion, and failure clients.
+- Empty-queue handling.
+- Worker looping across multiple items.
+- Worker failure reporting.
+- Controller assignment, completion, and failure endpoints.
+- Controller raw work submission and status endpoint behavior.
+- Controller rejection of invalid methods and payloads.
 
-- `struct` types for `Config`, `Worker`, and `WorkItem`.
-- Named string types and constants for supported work-item types.
-- JSON struct tags and `encoding/json`.
-- Methods with receivers, such as `func (item WorkItem) Validate() error`.
-- Idiomatic `(value, error)` handling.
-- Wrapping errors with `fmt.Errorf("context: %w", err)`.
-- `switch` dispatch by work-item type.
-- `os.Stat`, `os.ReadFile`, `os.WriteFile`, and `os.OpenFile`.
-- `os.Rename` for promoting completed output.
-- `defer` for cleanup.
-- Table-driven tests, subtests, and `t.TempDir()`.
-- Colocated files in one Go package, including `work_demo.go`.
+Norton antivirus may briefly lock Go's temporary test executables after tests finish. If that happens, assertions still report `PASS`, but Go may print a cleanup error. Re-running the command usually succeeds.
 
 ## How To Run
 
-From the worker directory:
+In one terminal:
+
+```powershell
+cd "c:\Joe Local Only\College\Research\go-etl"
+go run ./cmd/controller
+```
+
+In a second terminal:
 
 ```powershell
 cd "c:\Joe Local Only\College\Research\go-etl\cmd\worker"
 go run .
 ```
 
-Expected stdout:
+Expected worker output after exhausting the queue:
 
 ```text
 worker starting
 log dir: .run/logs
+no work available
 ```
 
 Expected completed output:
@@ -217,25 +287,18 @@ Expected completed output:
 cmd/worker/.run/data/local-demo-001.txt
 ```
 
-Expected persistent log:
-
-```text
-cmd/worker/.run/logs/worker.log
-```
-
 ## Design Direction
 
-For now, `LogDir`, `TmpDir`, and `DataDir` are explicitly local directories. That matches the target container-mounted filesystem model described in `TARGET_STATE.md`.
+The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
 
-The local JSON files are temporary stand-ins for externally supplied runtime values:
-
-- `demo-config.json` supplies worker runtime config.
-- `demo-item.json` supplies assigned work.
-
-Keep the worker concrete and local until the execution path is clear enough to wrap with a controller API.
+The current in-memory queue is intentionally small. Do not add database persistence, retry rules, workflow parsing, HPCC integration, or Docker orchestration until the local controller state is observable and its basic transitions are clear.
 
 ## Likely Next Step
 
-Add command-line flags for the config and work-item file paths.
+Add the next small structured-value slice in `internal/variable`:
 
-The executable currently hard-codes `demo-config.json` and `demo-item.json`. Flags such as `-config` and `-item` will keep those files as useful local defaults while allowing the worker executable to run other inputs without code changes.
+```text
+ResolvedValue should be able to carry object and list values explicitly.
+```
+
+After that, add a deliberately small accessor parser/evaluator for `.field`, `[index]`, and fan-out-only `[*]`. Do not start broad workflow compilation until structured values and accessors are tested.
