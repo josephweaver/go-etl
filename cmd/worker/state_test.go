@@ -109,13 +109,12 @@ func TestWorkItemValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "unsupported type",
+			name: "unknown type is structurally valid",
 			item: WorkItem{
 				ID:             "local-demo-001",
 				Type:           "unknown",
 				OutputFilename: "output.txt",
 			},
-			wantErr: true,
 		},
 		{
 			name: "missing output filename",

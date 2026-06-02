@@ -46,10 +46,6 @@ func (item WorkItem) Validate() error {
 		return fmt.Errorf("work item type is required")
 	}
 
-	if item.Type != WorkItemTypeWriteDemoOutput {
-		return fmt.Errorf("unsupported work item type: %s", item.Type)
-	}
-
 	if item.OutputFilename == "" {
 		return fmt.Errorf("output filename is required")
 	}

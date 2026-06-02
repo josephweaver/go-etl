@@ -68,24 +68,10 @@ func (w Worker) runWorkItem(item WorkItem) error {
 		return fmt.Errorf("invalid work item: %w", err)
 	}
 
-	tmpPath := filepath.Join(w.Config.TmpDir, item.OutputFilename)
-	dataPath := filepath.Join(w.Config.DataDir, item.OutputFilename)
-
-	if err := w.log("starting work item: " + item.ID); err != nil {
-		return err
+	switch item.Type {
+	case WorkItemTypeWriteDemoOutput:
+		return w.writeDemoOutput(item)
+	default:
+		return fmt.Errorf("unsupported work item type: %s", item.Type)
 	}
-
-	if err := os.WriteFile(tmpPath, []byte("completed "+item.ID+"\n"), 0644); err != nil {
-		return fmt.Errorf("write temporary output %s: %w", tmpPath, err)
-	}
-
-	if err := w.log("wrote temporary output: " + tmpPath); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmpPath, dataPath); err != nil {
-		return fmt.Errorf("move output from %s to %s: %w", tmpPath, dataPath, err)
-	}
-
-	return w.log("completed work item: " + item.ID)
 }

@@ -1,0 +1,6 @@
+{
+  "log_dir": ".run/logs",
+  "tmp_dir": ".run/tmp",
+  "data_dir": ".run/data",
+  "controller_url": "https://controller.local"
+}

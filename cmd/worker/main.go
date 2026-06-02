@@ -5,9 +5,8 @@ import (
 )
 
 func main() {
-	cfg := defaultConfig()
-
-	if err := cfg.Validate(); err != nil {
+	cfg, err := loadConfig("demo-config.json")
+	if err != nil {
 		fmt.Println("invalid config:", err)
 		return
 	}
