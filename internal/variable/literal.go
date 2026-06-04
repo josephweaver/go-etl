@@ -1,7 +1,9 @@
 package variable
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 )
@@ -30,7 +32,106 @@ func ParseLiteral(variable Variable) (ResolvedValue, error) {
 		return ResolvedValue{Type: TypeDatetime, Value: value}, nil
 	case KindPath:
 		return ResolvedValue{Type: TypePath, Value: variable.Expression}, nil
+	case KindObject:
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(variable.Expression), &decoded); err != nil {
+			return ResolvedValue{}, fmt.Errorf("parse object variable %s: %w", variable.Name.String(), err)
+		}
+
+		fields := make(map[string]ResolvedValue, len(decoded))
+		for key, value := range decoded {
+			resolved, err := resolvedJSONValue(value)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("parse object field %s.%s: %w", variable.Name.String(), key, err)
+			}
+			fields[key] = resolved
+		}
+
+		return ResolvedObject(fields), nil
+	case KindList:
+		if variable.Type.Element == nil {
+			return ResolvedValue{}, fmt.Errorf("unsupported variable type: %s", variable.Type)
+		}
+
+		var decoded []any
+		if err := json.Unmarshal([]byte(variable.Expression), &decoded); err != nil {
+			return ResolvedValue{}, fmt.Errorf("parse list variable %s: %w", variable.Name.String(), err)
+		}
+
+		values := make([]ResolvedValue, 0, len(decoded))
+		for index, value := range decoded {
+			resolved, err := resolvedJSONValueAs(*variable.Type.Element, value)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("parse list element %s[%d]: %w", variable.Name.String(), index, err)
+			}
+			values = append(values, resolved)
+		}
+
+		return ResolvedList(*variable.Type.Element, values)
 	default:
 		return ResolvedValue{}, fmt.Errorf("unsupported variable type: %s", variable.Type)
 	}
+}
+
+func resolvedJSONValue(value any) (ResolvedValue, error) {
+	switch typed := value.(type) {
+	case string:
+		return ResolvedValue{Type: TypeString, Value: typed}, nil
+	case float64:
+		if math.Trunc(typed) != typed {
+			return ResolvedValue{}, fmt.Errorf("number is not an int: %v", typed)
+		}
+		return ResolvedValue{Type: TypeInt, Value: int(typed)}, nil
+	case bool:
+		return ResolvedValue{Type: TypeBool, Value: typed}, nil
+	case map[string]any:
+		fields := make(map[string]ResolvedValue, len(typed))
+		for key, field := range typed {
+			resolved, err := resolvedJSONValue(field)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("parse object field %s: %w", key, err)
+			}
+			fields[key] = resolved
+		}
+		return ResolvedObject(fields), nil
+	case []any:
+		return resolvedInferredJSONList(typed)
+	default:
+		return ResolvedValue{}, fmt.Errorf("unsupported JSON value")
+	}
+}
+
+func resolvedInferredJSONList(values []any) (ResolvedValue, error) {
+	if len(values) == 0 {
+		return ResolvedValue{}, fmt.Errorf("cannot infer empty list type")
+	}
+
+	first, err := resolvedJSONValue(values[0])
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+
+	resolved := []ResolvedValue{first}
+	for _, value := range values[1:] {
+		next, err := resolvedJSONValueAs(first.Type, value)
+		if err != nil {
+			return ResolvedValue{}, err
+		}
+		resolved = append(resolved, next)
+	}
+
+	return ResolvedList(first.Type, resolved)
+}
+
+func resolvedJSONValueAs(valueType Type, value any) (ResolvedValue, error) {
+	resolved, err := resolvedJSONValue(value)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+
+	if resolved.Type.String() != valueType.String() {
+		return ResolvedValue{}, fmt.Errorf("has type %s, want %s", resolved.Type, valueType)
+	}
+
+	return resolved, nil
 }

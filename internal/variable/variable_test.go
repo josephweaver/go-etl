@@ -59,3 +59,46 @@ func TestVariableValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedObjectCarriesFields(t *testing.T) {
+	value := ResolvedObject(map[string]ResolvedValue{
+		"year": {Type: TypeInt, Value: 2025},
+		"path": {Type: TypePath, Value: "/data/cdl/2025.tif"},
+	})
+
+	if value.Type != TypeObject {
+		t.Fatalf("unexpected type: %s", value.Type)
+	}
+
+	if value.Object["year"].Value != 2025 {
+		t.Fatalf("unexpected year field: %#v", value.Object["year"].Value)
+	}
+}
+
+func TestResolvedListCarriesElements(t *testing.T) {
+	value, err := ResolvedList(TypeInt, []ResolvedValue{
+		{Type: TypeInt, Value: 2024},
+		{Type: TypeInt, Value: 2025},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if value.Type.String() != TypeList(TypeInt).String() {
+		t.Fatalf("unexpected type: %s", value.Type)
+	}
+
+	if len(value.List) != 2 {
+		t.Fatalf("unexpected list length: %d", len(value.List))
+	}
+}
+
+func TestResolvedListRejectsWrongElementType(t *testing.T) {
+	_, err := ResolvedList(TypeInt, []ResolvedValue{
+		{Type: TypeInt, Value: 2024},
+		{Type: TypeString, Value: "2025"},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
