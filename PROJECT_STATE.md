@@ -18,6 +18,13 @@ internal/
   model/
     work_item.go
     work_item_test.go
+  workflow/
+    fanout.go
+    fanout_test.go
+    step.go
+    step_test.go
+    workflow.go
+    workflow_test.go
   variable/
     literal.go
     literal_test.go
@@ -215,6 +222,36 @@ Current resolver behavior supports:
 
 Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. List literals use their declared `list[T]` element type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
 
+## Workflow Compilation
+
+`internal/workflow` contains the first local workflow-compilation helper. It does not expose HTTP workflow submission yet.
+
+Current workflow model:
+
+- A `Workflow` has an ID and an ordered list of steps.
+- A `Step` has an ID and currently supports one compiler path: `FanOut`.
+- A `FanOutStep` wraps the fan-out work-item template.
+- A step ID becomes the default generated work-item ID prefix when the fan-out template does not provide one.
+- `CompiledWorkItem` carries workflow ID and step ID metadata next to the generated `model.WorkItem`.
+- `CompileResult` carries the workflow ID, step count, and compiled work items.
+- Workflow compilation rejects duplicate step IDs.
+- Workflow compilation rejects duplicate generated work-item IDs.
+
+Current fan-out compilation behavior:
+
+- Wraps fan-out work-item templates in a minimal `FanOutStep` with a required step ID.
+- Resolves one fan-out expression with `Resolver.ResolveFanOutExpression`.
+- Expands each fan-out value into one `model.WorkItem`.
+- Builds stable item IDs and output filenames from a template plus the fan-out value.
+- Reuses `WorkItem.Validate()` so generated work items obey the shared controller-worker contract.
+- Supports scalar fan-out tokens for `string`, `path`, and `int`.
+- Supports explicit token accessors for object fan-out values, such as `.year`.
+- Supports separate token accessors for work-item IDs and output filenames.
+
+Object fan-out values must use an explicit token accessor. The compiler does not guess which object field should become the work-item ID or output filename.
+
+`CompileWorkflow` still returns plain `[]model.WorkItem` for compatibility. `CompileWorkflowItems` returns `[]CompiledWorkItem` when the caller needs workflow and step traceability. `CompileWorkflowResult` returns the richer compile result.
+
 ## Demo Work
 
 The worker currently supports one operation:
@@ -249,6 +286,7 @@ Current coverage includes:
 - Variable object field, list index, and fan-out accessors.
 - Variable precedence merging and reference lookup.
 - Recursive variable resolution, scalar structured access, fan-out expression resolution, and max-depth failure behavior.
+- Local workflow fan-out compilation into validated draft work items.
 - JSON config loading and validation.
 - Runtime directory validation.
 - Demo temporary-output promotion and logging.
@@ -301,4 +339,4 @@ The current in-memory queue is intentionally small. Do not add database persiste
 
 ## Likely Next Step
 
-Add the smallest workflow-compilation model that uses `Resolver.ResolveFanOutExpression` to expand one declared fan-out list into multiple concrete work item IDs or draft work items. Keep it local and test-only until the shape is clear; do not add controller HTTP workflow submission yet.
+Add the first compile diagnostic field only when there is a concrete warning or non-fatal condition to report. Otherwise, keep the next slice inside `internal/workflow` and continue shaping the local workflow model before controller HTTP submission.

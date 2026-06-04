@@ -136,8 +136,70 @@ loc(500)
 
 `+cleanup`
 
-* Bounded follow-up edits outside the primary target file are allowed only when required to restore consistency after an interface or signature change.
-* Cleanup must be explainable as a direct consequence of the approved change.
+* AI may make bounded follow-up edits outside the primary production-code budget when those edits are required to preserve consistency after an approved change.
+* Cleanup edits are allowed only when they are a direct consequence of the approved objective.
+
+Allowed cleanup includes:
+
+* Updating call sites after a function signature change.
+* Updating interface implementations after an interface change.
+* Updating imports after code is moved or extracted.
+* Updating mocks, stubs, or fixtures affected by the change.
+* Updating dependency injection or wiring required by the change.
+* Fixing compile errors caused by the approved change.
+* Updating tests affected by the change.
+
+Cleanup does not include:
+
+* Opportunistic refactoring.
+* Unrelated bug fixes.
+* Style-only rewrites.
+* Adding new features.
+* Redesigning adjacent modules.
+* Expanding the original objective.
+
+Cleanup test:
+
+```text
+If the approved change were reverted, would this cleanup edit still be necessary?
+```
+
+If the answer is no, the edit may qualify as cleanup.
+
+If the answer is yes, the edit is outside cleanup scope and requires review or a new HCI specification.
+
+Cleanup files do not count against file(N), but AI must report all cleanup files modified and explain why each was necessary.
+
+`+newfile`
+
+* AI may create new files required to support the approved objective.
+* New files do not count against file(N) when they primarily contain newly introduced types, interfaces, structs, classes, adapters, tests, or documentation created as part of the approved design.
+
+Allowed new files include:
+
+* New class, struct, or interface files.
+* New adapter or implementation files.
+* New test files.
+* New documentation files.
+* New configuration templates directly required by the approved change.
+
+For example:
+
+```text
+EC-3 / feature / file(1)+test+doc+cleanup+newfile
+```
+
+may allow AI to modify one existing production file while also creating files such as:
+
+```text
+target_environment.go
+local_environment.go
+target_environment_test.go
+```
+
+New files are exempt only when they support the approved objective. They may not be used to smuggle in unrelated functionality.
+
+AI must report all new files created and explain their purpose.
 
 ### EC-3 Execution Rules
 
