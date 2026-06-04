@@ -110,17 +110,59 @@ func TestParseLiteralRejectsInvalidValue(t *testing.T) {
 	}
 }
 
-func TestParseLiteralRejectsStructuredTypes(t *testing.T) {
+func TestParseLiteralParsesObject(t *testing.T) {
+	value, err := ParseLiteral(Variable{
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
+		Type:       TypeObject,
+		Expression: `{"year": 2025, "path": "/data/cdl/2025.tif", "enabled": true}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if value.Type != TypeObject {
+		t.Fatalf("unexpected type: %s", value.Type)
+	}
+
+	if value.Object["year"].Value != 2025 {
+		t.Fatalf("unexpected year: %#v", value.Object["year"].Value)
+	}
+
+	if value.Object["path"].Value != "/data/cdl/2025.tif" {
+		t.Fatalf("unexpected path: %#v", value.Object["path"].Value)
+	}
+}
+
+func TestParseLiteralParsesList(t *testing.T) {
+	value, err := ParseLiteral(Variable{
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
+		Type:       TypeList(TypeInt),
+		Expression: `[2024, 2025]`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if value.Type.String() != TypeList(TypeInt).String() {
+		t.Fatalf("unexpected type: %s", value.Type)
+	}
+
+	if value.List[1].Value != 2025 {
+		t.Fatalf("unexpected second value: %#v", value.List[1].Value)
+	}
+}
+
+func TestParseLiteralRejectsInvalidStructuredValue(t *testing.T) {
 	tests := []Variable{
 		{
 			Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
 			Type:       TypeList(TypeInt),
-			Expression: "[2024, 2025]",
+			Expression: `[2024, "2025"]`,
 		},
 		{
 			Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
 			Type:       TypeObject,
-			Expression: `{"year": 2025}`,
+			Expression: `{"year": 2025`,
 		},
 	}
 

@@ -8,7 +8,7 @@ We now have a minimal local Go controller and worker runtime. The controller own
 
 The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
-Project guidance is in `AGENT.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
+Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
 ## Current Layout
 
@@ -21,6 +21,8 @@ internal/
   variable/
     literal.go
     literal_test.go
+    accessor.go
+    accessor_test.go
     name.go
     name_test.go
     namespace.go
@@ -203,12 +205,15 @@ list[T]
 Current resolver behavior supports:
 
 - Typed scalar literal parsing.
+- JSON object and list literal parsing into explicit resolved values.
 - Variable precedence merging.
 - Qualified and unqualified references.
 - Recursive resolution with a configurable maximum depth.
 - Escaped variable references such as `\${year}`.
+- Scalar structured access in reference expressions, such as `${record.year}` and `${years[0]}`.
+- Fan-out list access through `Resolver.ResolveFanOutExpression("${years[*]}")`.
 
-Structured types are recognized by the type model, but list/object literal parsing, object field access, list indexing, and fan-out accessors are not implemented yet.
+Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. List literals use their declared `list[T]` element type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
 
 ## Demo Work
 
@@ -240,9 +245,10 @@ Current coverage includes:
 
 - Shared work-item validation.
 - Variable type validation, including scalar, object, and list types.
-- Variable literal parsing for current scalar types.
+- Variable literal parsing for scalar, object, and list types.
+- Variable object field, list index, and fan-out accessors.
 - Variable precedence merging and reference lookup.
-- Recursive variable resolution and max-depth failure behavior.
+- Recursive variable resolution, scalar structured access, fan-out expression resolution, and max-depth failure behavior.
 - JSON config loading and validation.
 - Runtime directory validation.
 - Demo temporary-output promotion and logging.
@@ -295,10 +301,4 @@ The current in-memory queue is intentionally small. Do not add database persiste
 
 ## Likely Next Step
 
-Add the next small structured-value slice in `internal/variable`:
-
-```text
-ResolvedValue should be able to carry object and list values explicitly.
-```
-
-After that, add a deliberately small accessor parser/evaluator for `.field`, `[index]`, and fan-out-only `[*]`. Do not start broad workflow compilation until structured values and accessors are tested.
+Add the smallest workflow-compilation model that uses `Resolver.ResolveFanOutExpression` to expand one declared fan-out list into multiple concrete work item IDs or draft work items. Keep it local and test-only until the shape is clear; do not add controller HTTP workflow submission yet.

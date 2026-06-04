@@ -28,6 +28,29 @@ func (r Resolver) Resolve(reference Reference) (ResolvedValue, error) {
 	return r.resolve(reference, 0)
 }
 
+func (r Resolver) ResolveFanOutExpression(expression string) ([]ResolvedValue, error) {
+	refText, ok := referenceExpression(expression)
+	if !ok {
+		return nil, fmt.Errorf("fan-out expression must be a reference expression")
+	}
+
+	reference, accessor, err := parseReferenceExpression(refText)
+	if err != nil {
+		return nil, fmt.Errorf("parse fan-out expression: %w", err)
+	}
+
+	if accessor != "[*]" {
+		return nil, fmt.Errorf("fan-out expression must end with [*]")
+	}
+
+	resolved, err := r.resolve(reference, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return ApplyFanOutAccessor(resolved, accessor)
+}
+
 func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error) {
 	if depth >= r.config.MaxDepth {
 		return ResolvedValue{}, fmt.Errorf("maximum variable resolution depth exceeded at %s", reference.String())
@@ -39,12 +62,21 @@ func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error)
 	}
 
 	if refText, ok := referenceExpression(variable.Expression); ok {
-		next, err := ParseReference(refText)
+		next, accessor, err := parseReferenceExpression(refText)
 		if err != nil {
 			return ResolvedValue{}, fmt.Errorf("parse reference expression for %s: %w", variable.Name.String(), err)
 		}
 
-		return r.resolve(next, depth+1)
+		resolved, err := r.resolve(next, depth+1)
+		if err != nil {
+			return ResolvedValue{}, err
+		}
+
+		if accessor == "" {
+			return resolved, nil
+		}
+
+		return ApplyAccessor(resolved, accessor)
 	}
 
 	variable.Expression = unescapeExpression(variable.Expression)
@@ -61,6 +93,38 @@ func referenceExpression(expression string) (string, bool) {
 	}
 
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expression, "${"), "}")), true
+}
+
+func parseReferenceExpression(text string) (Reference, string, error) {
+	referenceText, accessor := splitReferenceAccessor(text)
+
+	reference, err := ParseReference(referenceText)
+	if err != nil {
+		return Reference{}, "", err
+	}
+
+	return reference, accessor, nil
+}
+
+func splitReferenceAccessor(text string) (string, string) {
+	parts := strings.Split(text, ".")
+	if len(parts) >= 2 && Namespace(parts[0]).Valid() {
+		key := parts[1]
+		if index := strings.Index(key, "["); index != -1 {
+			key = key[:index]
+		}
+
+		referenceText := strings.Join([]string{parts[0], key}, ".")
+		accessor := strings.TrimPrefix(text, referenceText)
+		return referenceText, accessor
+	}
+
+	index := strings.IndexAny(text, ".[")
+	if index == -1 {
+		return text, ""
+	}
+
+	return text[:index], text[index:]
 }
 
 func unescapeExpression(expression string) string {
