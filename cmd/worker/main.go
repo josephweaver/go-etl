@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 )
 
 func main() {
-	cfg, err := loadConfig("demo-config.json")
+	cfg, err := loadConfig(workerConfigPath(os.Args))
 	if err != nil {
 		fmt.Println("invalid config:", err)
 		return
@@ -23,6 +24,14 @@ func main() {
 		return
 	}
 
+}
+
+func workerConfigPath(args []string) string {
+	if len(args) > 1 {
+		return args[1]
+	}
+
+	return "demo-config.json"
 }
 
 func runWorkerLoop(worker Worker) error {

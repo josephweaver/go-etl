@@ -29,5 +29,80 @@
         }
       }
     ]
-  }
+  },
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_target_environment"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "local"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_start_executable"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "go"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_start_args"
+      },
+      "Type": {
+        "Kind": "list",
+        "Element": {
+          "Kind": "string"
+        }
+      },
+      "Expression": "[\"run\", \"./cmd/worker\", \"./cmd/worker/demo-config.json\"]"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_min_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "2"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_max_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "2"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_count_per_start"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "2"
+    },
+    {
+      "Name": {
+        "Namespace": "backend",
+        "Key": "worker_min_elapsed_time_between_starts"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "0s"
+    }
+  ]
 }

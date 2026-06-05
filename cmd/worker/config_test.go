@@ -26,15 +26,15 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if config.LogDir != "logs" {
+	if config.LogDir != filepath.Join(root, "logs") {
 		t.Fatalf("unexpected log dir: %q", config.LogDir)
 	}
 
-	if config.TmpDir != "tmp" {
+	if config.TmpDir != filepath.Join(root, "tmp") {
 		t.Fatalf("unexpected tmp dir: %q", config.TmpDir)
 	}
 
-	if config.DataDir != "data" {
+	if config.DataDir != filepath.Join(root, "data") {
 		t.Fatalf("unexpected data dir: %q", config.DataDir)
 	}
 

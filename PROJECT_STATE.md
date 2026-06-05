@@ -392,18 +392,26 @@ Norton antivirus may briefly lock Go's temporary test executables after tests fi
 
 ## How To Run
 
-In one terminal:
+Run the local workflow demo from the repository root:
 
 ```powershell
 cd "c:\Joe Local Only\College\Research\go-etl"
-go run ./cmd/controller
+go run ./cmd/demo-client
 ```
 
-In a second terminal:
+The demo client:
+
+- Starts a local controller if `http://localhost:8080` is not reachable.
+- Submits `demo-workflow.json`.
+- Lets the controller start local workers using variables from the submitted workflow file.
+- Polls controller status.
+- Calls `POST /shutdown` when pending and assigned work reach zero.
+
+The worker can still be run manually:
 
 ```powershell
-cd "c:\Joe Local Only\College\Research\go-etl\cmd\worker"
-go run .
+cd "c:\Joe Local Only\College\Research\go-etl"
+go run ./cmd/worker ./cmd/worker/demo-config.json
 ```
 
 Expected worker output after exhausting the queue:
@@ -414,9 +422,11 @@ log dir: .run/logs
 no work available
 ```
 
-Expected completed output:
+Expected completed demo output:
 
 ```text
+cmd/worker/.run/data/cdl-demo-2024.txt
+cmd/worker/.run/data/cdl-demo-2025.txt
 cmd/worker/.run/data/local-demo-001.txt
 ```
 
@@ -428,4 +438,4 @@ The current in-memory queue is intentionally small. Do not add database persiste
 
 ## Likely Next Step
 
-Add an end-to-end local demo path that loads `demo-workflow.json`, submits it to a local controller, and lets the controller start local workers from submitted variables.
+Run the local demo path and tighten any gaps found in actual process execution.
