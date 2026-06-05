@@ -269,6 +269,28 @@ override.client_status_poll_interval
 
 The local Go client may submit override variables such as `override.worker_target_environment = "local"` and `override.client_status_poll_interval = "5s"`. The controller should resolve these variables before choosing local worker bootstrap behavior.
 
+Workflow identity, step identity, work-item identity, attempt identity, code version, and fingerprints must flow through the variable subsystem. Future durable storage, likely SQLite for local execution, should persist typed variable snapshots rather than create a separate identity/configuration model.
+
+Important generated runtime variables for idempotency and traceability should include:
+
+```text
+runtime.workflow_definition_id
+runtime.workflow_instance_id
+runtime.workflow_fingerprint
+runtime.step_definition_id
+runtime.step_instance_id
+runtime.step_fingerprint
+runtime.work_item_id
+runtime.work_item_fingerprint
+runtime.attempt_id
+runtime.code_version
+runtime.input_fingerprint
+runtime.output_fingerprint
+runtime.completed_at
+```
+
+SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
+
 The next controller scheduler should use a conservative organic worker-scaling model:
 
 - Start at most `worker_count_per_start` workers in one decision.
@@ -348,10 +370,11 @@ WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
 - Logs that the item is starting.
 - Writes a small file under `TmpDir`.
 - Logs the temporary output path.
+- Removes an existing completed output with the same filename.
 - Uses `os.Rename` to promote the completed file into `DataDir`.
 - Logs that the item completed.
 
-This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage.
+This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage. The demo operation is idempotent by overwrite: rerunning the same work item writes the same deterministic content and replaces any existing completed output. Future skip behavior must be based on verifiable correctness, not just the presence of an output filename.
 
 ## Tests
 
@@ -373,7 +396,7 @@ Current coverage includes:
 - Local client workflow submission HTTP behavior.
 - JSON config loading and validation.
 - Runtime directory validation.
-- Demo temporary-output promotion and logging.
+- Demo temporary-output promotion, deterministic overwrite, and logging.
 - Worker dispatch validation.
 - Worker HTTP fetch, completion, and failure clients.
 - Empty-queue handling.
@@ -437,4 +460,4 @@ The current in-memory queue is intentionally small. Do not add database persiste
 
 ## Likely Next Step
 
-Add cleanup for generated demo outputs or a repeatable demo reset command.
+Design the first SQLite-backed variable snapshot ledger for completed attempts, keeping IDs and fingerprints inside the variable model.

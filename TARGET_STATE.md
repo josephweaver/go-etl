@@ -105,6 +105,8 @@ Each work item should have:
 - Status.
 - Enough parameters to run independently.
 
+Workflows should be idempotent by default. Running the same workflow with the same inputs, variables, code version, and backend configuration should produce the same final outputs. Early workers may overwrite an existing output with the same deterministic result. Later workers may skip execution only when correctness is verifiable, such as matching workflow identity, work-item identity, input fingerprints, parameters, code version, and a recorded prior success. An existing output filename alone is not sufficient proof that work can be skipped.
+
 ## Storage Direction
 
 The current local directory model is the right first step:
@@ -114,6 +116,8 @@ The current local directory model is the right first step:
 - `DataDir` for completed output.
 
 For now, these are local filesystem paths, which maps well to container-mounted HPCC storage. Future versions may support non-local locations, such as FTP, HTTP, S3, or logging APIs, but the project should not introduce a generic storage abstraction until there is a real second implementation.
+
+Completed output promotion should preserve idempotent reruns. A worker should write incomplete output under `TmpDir`, then replace or verify the completed output under `DataDir`. Verification-based skipping is a later feature; the initial local behavior can safely replace deterministic outputs.
 
 ## Configuration Direction
 
@@ -281,6 +285,8 @@ Generated runtime variables should include stable identifiers and timestamps suc
 - Step definition ID.
 - Step instance ID.
 - Work-item ID.
+- Attempt ID.
+- Workflow, step, work-item, input, output, and code fingerprints.
 - Workflow start, end, and run duration values.
 - Step start, end, and run duration values.
 - Work-item start, end, and run duration values.
@@ -298,6 +304,8 @@ Example references:
 runtime.workflow_instance_id
 runtime.step_instance_id
 runtime.work_item_id
+runtime.work_item_fingerprint
+runtime.output_fingerprint
 runtime.workflow_start
 runtime.current_datetime
 ```
@@ -305,6 +313,43 @@ runtime.current_datetime
 Generated runtime variables should be read-only from the workflow author's perspective. Their lifecycle matters: workflow-level runtime variables are available while compiling or running the workflow instance, step-level runtime variables are available while compiling or running a step instance, and work-item runtime variables are available when a concrete work item is created or executed.
 
 The meaning of `runtime.current_datetime` must be explicit. It should represent the controller's current evaluation time unless a worker-local runtime expression is deliberately introduced later. Prefer stable captured timestamps such as `runtime.workflow_start` for reproducible paths and IDs; use current datetime only when the workflow intentionally needs evaluation time.
+
+### Identity And Fingerprints
+
+Workflow identity, step identity, work-item identity, attempt identity, code version, and fingerprints are variables. They must not become a separate metadata/configuration system beside the variable subsystem.
+
+Use generated read-only runtime variables for identities and fingerprints created by the controller or worker:
+
+```text
+runtime.workflow_definition_id
+runtime.workflow_instance_id
+runtime.workflow_fingerprint
+runtime.step_definition_id
+runtime.step_instance_id
+runtime.step_fingerprint
+runtime.work_item_id
+runtime.work_item_fingerprint
+runtime.attempt_id
+runtime.code_version
+runtime.input_fingerprint
+runtime.output_fingerprint
+runtime.completed_at
+```
+
+Workflow-authored stable IDs, such as workflow IDs and step IDs declared in a workflow file, may originate as workflow-scope values or struct fields during parsing, but after ingestion they should be represented in the resolver as typed variables. Generated instance IDs and fingerprints should be added by the controller as runtime-scope variables at the correct lifecycle boundary.
+
+Fingerprints should be deterministic typed values, initially strings. A fingerprint should describe the thing named by the variable:
+
+- `runtime.workflow_fingerprint` identifies the workflow definition content relevant to execution.
+- `runtime.step_fingerprint` identifies a step definition plus its resolved execution-relevant parameters.
+- `runtime.work_item_fingerprint` identifies one concrete executable work item.
+- `runtime.input_fingerprint` identifies resolved inputs used by the work item.
+- `runtime.output_fingerprint` identifies produced output content or a verifiable output manifest.
+- `runtime.code_version` identifies the worker/controller code version that produced or would produce the output.
+
+SQLite is an appropriate local persistence backend for these values, but SQLite should store and index variable snapshots rather than define identity outside the variable model. Tables may have convenience columns for common variables such as `workflow_instance_id` or `work_item_id`, but those columns should mirror typed variables and preserve their namespace, type, value, source, and lifecycle.
+
+Verified idempotent skip decisions should be expressed in terms of variables. A skip is valid only when the stored successful attempt variables match the current resolved variables required for correctness, including identity variables, fingerprints, code version, inputs, parameters, output fingerprint or manifest, and prior success status.
 
 ### Typed Variables
 
