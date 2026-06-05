@@ -39,6 +39,48 @@ func TestCompileWorkflow(t *testing.T) {
 	}
 }
 
+func TestCompileWorkflowWithWorkflowVariables(t *testing.T) {
+	workflow := Workflow{
+		ID: "cdl",
+		Variables: []variable.Variable{
+			{
+				Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
+				Type:       variable.TypeList(variable.TypeInt),
+				Expression: `[2024, 2025]`,
+			},
+		},
+		Steps: []Step{
+			{
+				ID: "download",
+				FanOut: &FanOutStep{
+					WorkItem: FanOutWorkItemTemplate{
+						FanOutExpression: "${years[*]}",
+						Type:             model.WorkItemTypeWriteDemoOutput,
+						OutputPrefix:     "cdl",
+						OutputExtension:  ".txt",
+					},
+				},
+			},
+		},
+	}
+
+	scope, err := variable.NewScope(workflow.Variables...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	items, err := CompileWorkflow(resolver, workflow)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if items[1].ID != "download-2025" {
+		t.Fatalf("unexpected second id: %s", items[1].ID)
+	}
+}
+
 func TestCompileWorkflowItemsIncludesTraceMetadata(t *testing.T) {
 	resolver := testWorkflowResolver(t, `[2024]`)
 

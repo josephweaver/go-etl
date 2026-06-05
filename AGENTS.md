@@ -217,6 +217,8 @@ The user may continue by replying:
 next
 ```
 
+When the user replies `next`, first commit the current completed slice to the active local branch with a clear commit message, then start the next slice. This keeps each continuation anchored in local git history before new changes are introduced.
+
 ### Slice Boundary Git Flow
 
 Before starting a new implementation slice after a completed feature slice:

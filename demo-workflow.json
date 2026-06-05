@@ -1,0 +1,33 @@
+{
+  "workflow": {
+    "ID": "cdl-demo",
+    "Variables": [
+      {
+        "Name": {
+          "Namespace": "workflow",
+          "Key": "years"
+        },
+        "Type": {
+          "Kind": "list",
+          "Element": {
+            "Kind": "int"
+          }
+        },
+        "Expression": "[2024, 2025]"
+      }
+    ],
+    "Steps": [
+      {
+        "ID": "write-demo",
+        "FanOut": {
+          "WorkItem": {
+            "FanOutExpression": "${years[*]}",
+            "Type": "write_demo_output",
+            "OutputPrefix": "cdl-demo",
+            "OutputExtension": ".txt"
+          }
+        }
+      }
+    ]
+  }
+}
