@@ -453,6 +453,15 @@ The controller should own variable resolution needed to compile workflow definit
 
 Worker-runtime variables such as mounted directories or container-specific paths should come from the configured `worker_env` namespace. The controller resolves them using the same immutable values that it later injects into worker containers.
 
+Near-term fix: workers should not resolve workflow variables. The controller knows the selected worker target, configured worker environment, mounts, paths, and backend variables before it starts workers, so it should resolve work-item values into concrete worker-local parameters before assignment. A worker may still read its own runtime config to know where it is running, but it should not evaluate workflow expressions or make independent variable-precedence decisions.
+
+For uneven worker environments, work-item resolution has two phases:
+
+1. Compile-time: the controller resolves workflow intent as far as possible and records pending logical work.
+2. Assignment-time: when a specific worker requests work, the controller finalizes worker-local values using that worker's configured environment, mounts, target, and runtime variables.
+
+The worker receives a finalized work assignment with concrete parameters. For the local demo path, this means the controller should eventually compile enough resolved output information that the worker does not infer workflow-level output paths from unresolved variables. Until the work-item model carries richer resolved parameters, the worker may join its configured `DataDir` with an already-resolved output filename, but this is a transitional boundary.
+
 A dedicated `Variable` model and resolver package should be introduced before building a broad workflow compiler. Start with typed literals, precedence merging, and a small path expression capability; add expression features incrementally with tests.
 
 Resolver configuration should include the recursive-resolution maximum depth. Choose a conservative default and allow deployments or controller configuration to override it.
@@ -472,6 +481,8 @@ Expected step behavior includes:
 - Sub-workflow fan-out where one step starts many child workflow instances with different typed variable bindings.
 
 Step outputs should be represented as JSON-like typed values, not unstructured strings. Later steps may reference prior step outputs through the same expression/accessor system used for variables. This allows a step to produce a list of records, and a later step to fan out over that list.
+
+Downstream step work items should not be enqueued until their dependency steps are complete. For example, if a workflow has step 1 and step 2, step 2 work items remain uncompiled or unqueued until step 1 is marked complete, because step 2 may depend on step 1 outputs. This keeps queue state aligned with workflow readiness instead of flattening the whole workflow into pending work at submission time.
 
 Fan-out compilation should be explicit. A workflow step should identify the expression that produces the list to iterate. The controller evaluates that expression, then creates one work item or sub-workflow invocation per list element, binding the current element into the step's variable context.
 
@@ -512,4 +523,5 @@ The near-term implementation can still build from the worker inward, but each st
 10. Add local client-to-controller workflow submission.
 11. Add controller-side local worker startup when pending work exists.
 12. Add client polling and controller shutdown API use.
-13. Add sequential dependency tracking and sub-workflow invocation incrementally.
+13. Move remaining workflow-variable resolution out of workers by expanding work items to carry resolved worker-local parameters.
+14. Add sequential dependency tracking and sub-workflow invocation incrementally.
