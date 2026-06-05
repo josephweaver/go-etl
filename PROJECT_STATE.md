@@ -427,7 +427,6 @@ Expected completed demo output:
 ```text
 cmd/worker/.run/data/cdl-demo-2024.txt
 cmd/worker/.run/data/cdl-demo-2025.txt
-cmd/worker/.run/data/local-demo-001.txt
 ```
 
 ## Design Direction
@@ -438,4 +437,4 @@ The current in-memory queue is intentionally small. Do not add database persiste
 
 ## Likely Next Step
 
-Run the local demo path and tighten any gaps found in actual process execution.
+Add cleanup for generated demo outputs or a repeatable demo reset command.

@@ -47,13 +47,7 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
-	controller := newController([]model.WorkItem{
-		{
-			ID:             "local-demo-001",
-			Type:           model.WorkItemTypeWriteDemoOutput,
-			OutputFilename: "local-demo-001.txt",
-		},
-	})
+	controller := newController(nil)
 	controller.worker = LocalWorkerStarter{}
 
 	mux := http.NewServeMux()
