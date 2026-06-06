@@ -330,7 +330,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}
@@ -384,7 +384,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}
@@ -433,27 +433,27 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_min_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_min_count"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_max_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_count_per_start"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_count_per_start"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_min_elapsed_time_between_starts"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_min_elapsed_time_between_starts"},
 				"Type": {"Kind": "string"},
 				"Expression": "0s"
 			}
@@ -500,12 +500,12 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_max_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
 				"Type": {"Kind": "string"},
 				"Expression": "two"
 			}
@@ -569,7 +569,7 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerTargetType(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "int"},
 				"Expression": "1"
 			}
@@ -650,7 +650,7 @@ func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}

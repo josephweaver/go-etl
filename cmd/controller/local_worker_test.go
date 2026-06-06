@@ -10,12 +10,12 @@ func TestLocalWorkerStarterResolvesCommand(t *testing.T) {
 	starter := LocalWorkerStarter{}
 	executable, args, err := starter.command(testControllerResolver(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "worker_start_executable"},
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
 			Type:       variable.TypeString,
 			Expression: "go",
 		},
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "worker_start_args"},
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_args"},
 			Type:       variable.TypeList(variable.TypeString),
 			Expression: `["run", "./cmd/worker"]`,
 		},
