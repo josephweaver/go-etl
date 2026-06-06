@@ -24,6 +24,10 @@ func (w Worker) writeDemoOutput(item model.WorkItem) error {
 		return err
 	}
 
+	if err := os.Remove(dataPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove existing output %s: %w", dataPath, err)
+	}
+
 	if err := os.Rename(tmpPath, dataPath); err != nil {
 		return fmt.Errorf("move output from %s to %s: %w", tmpPath, dataPath, err)
 	}

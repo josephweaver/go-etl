@@ -8,8 +8,9 @@ import (
 )
 
 type Workflow struct {
-	ID    string
-	Steps []Step
+	ID        string
+	Variables []variable.Variable
+	Steps     []Step
 }
 
 type CompiledWorkItem struct {

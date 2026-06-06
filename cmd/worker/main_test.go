@@ -62,6 +62,16 @@ func TestRunWorkerLoop(t *testing.T) {
 	}
 }
 
+func TestWorkerConfigPath(t *testing.T) {
+	if got := workerConfigPath([]string{"worker"}); got != "demo-config.json" {
+		t.Fatalf("unexpected default config path: %s", got)
+	}
+
+	if got := workerConfigPath([]string{"worker", "custom.json"}); got != "custom.json" {
+		t.Fatalf("unexpected custom config path: %s", got)
+	}
+}
+
 func TestRunWorkerLoopReportsFailure(t *testing.T) {
 	var failure model.WorkFailure
 	nextCalls := 0

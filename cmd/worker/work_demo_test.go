@@ -51,3 +51,30 @@ func TestWorkerWriteDemoOutput(t *testing.T) {
 		t.Fatalf("log does not contain completion message: %q", logOutput)
 	}
 }
+
+func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
+	worker := newTestWorker(t)
+
+	item := model.WorkItem{
+		ID:             "test-001",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result.txt",
+	}
+	dataPath := filepath.Join(worker.Config.DataDir, item.OutputFilename)
+	if err := os.WriteFile(dataPath, []byte("stale output\n"), 0644); err != nil {
+		t.Fatalf("write stale output: %v", err)
+	}
+
+	if err := worker.writeDemoOutput(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatalf("read completed output: %v", err)
+	}
+
+	if string(output) != "completed test-001\n" {
+		t.Fatalf("unexpected output: %q", output)
+	}
+}

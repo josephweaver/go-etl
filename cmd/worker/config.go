@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 type Config struct {
@@ -28,7 +29,22 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("validate config file %s: %w", path, err)
 	}
 
+	cfg.resolveRelativePaths(filepath.Dir(path))
 	return cfg, nil
+}
+
+func (c *Config) resolveRelativePaths(root string) {
+	c.LogDir = resolveRelativePath(root, c.LogDir)
+	c.TmpDir = resolveRelativePath(root, c.TmpDir)
+	c.DataDir = resolveRelativePath(root, c.DataDir)
+}
+
+func resolveRelativePath(root string, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+
+	return filepath.Join(root, path)
 }
 
 func (c Config) Validate() error {
@@ -50,5 +66,3 @@ func (c Config) Validate() error {
 
 	return nil
 }
-
-

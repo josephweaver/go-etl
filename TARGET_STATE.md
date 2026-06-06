@@ -57,7 +57,25 @@ The Go worker should be packaged as a Docker container.
 
 The Python package should expose a backend abstraction at the API level, with `hpcc` as the first concrete target. Calling `goetl.run("cdl.pipe", "hpcc")` should contact, configure, or start a Go controller, then submit the workflow to it.
 
+The client must know where the controller is expected to be available. For local execution this may be a configured URL such as:
+
+```text
+http://localhost:8080
+```
+
+Before submitting a workflow, the client should check whether the controller is reachable at the configured location. If the controller is not running where expected, the client may start a local controller process using backend configuration. A client-started local controller should expose a shutdown API so the client can terminate it when the submitted workflow is done.
+
 The Go controller should be able to bootstrap worker jobs on the HPCC. After startup, those workers should pull work from the controller rather than receiving all work details through the HPCC job submission itself.
+
+For local execution, the same ownership boundary applies. The controller owns the compiled queue and decides when worker capacity is needed. When the controller detects pending work, it should attempt to start a worker using the configured worker target location, such as `localhost`. Workers still pull work from the controller after startup.
+
+Over time, the controller should scale worker startup one worker at a time based on queue pressure and configured limits. The controller should not blindly start unlimited workers. It should consider at least:
+
+- Pending work count.
+- Assigned work count.
+- Number of workers already started or known to be active.
+- Backend-specific worker limits.
+- Recent worker startup failures.
 
 This creates the desired split:
 
@@ -87,6 +105,8 @@ Each work item should have:
 - Status.
 - Enough parameters to run independently.
 
+Workflows should be idempotent by default. Running the same workflow with the same inputs, variables, code version, and backend configuration should produce the same final outputs. Early workers may overwrite an existing output with the same deterministic result. Later workers may skip execution only when correctness is verifiable, such as matching workflow identity, work-item identity, input fingerprints, parameters, code version, and a recorded prior success. An existing output filename alone is not sufficient proof that work can be skipped.
+
 ## Storage Direction
 
 The current local directory model is the right first step:
@@ -96,6 +116,8 @@ The current local directory model is the right first step:
 - `DataDir` for completed output.
 
 For now, these are local filesystem paths, which maps well to container-mounted HPCC storage. Future versions may support non-local locations, such as FTP, HTTP, S3, or logging APIs, but the project should not introduce a generic storage abstraction until there is a real second implementation.
+
+Completed output promotion should preserve idempotent reruns. A worker should write incomplete output under `TmpDir`, then replace or verify the completed output under `DataDir`. Verification-based skipping is a later feature; the initial local behavior can safely replace deterministic outputs.
 
 ## Configuration Direction
 
@@ -109,10 +131,31 @@ The pipeline/config file should define customer-facing workflow behavior: datase
 
 The backend should define reusable deployment behavior: local execution, HPCC execution, Docker image details, mount conventions, Go controller settings, and worker launch strategy.
 
+Runtime configuration must not become a parallel system beside variables. Controller settings, worker settings, backend choices, CLI flags, API arguments, and client overrides should enter the system as typed variables in the variable subsystem. Config structs, JSON fields, and command-line flags are transport or parsing surfaces; after ingestion they should be represented as variables with a clear namespace and source.
+
+A serialized workflow submission should keep workflow-local variables inside the workflow object. Top-level submission variables are for runtime, backend, API, and override values supplied by the caller. This keeps customer workflow scope distinct from launch-time configuration while still using the same typed variable subsystem after ingestion.
+
+Backend configuration should include the controller contact point and worker launch target. For local execution this should include:
+
+- Controller URL or host/port.
+- Whether the client may auto-start the controller if it is not reachable.
+- Controller start executable and argument list for local startup.
+- Controller start lock path for coordinating concurrent local clients.
+- Client status polling interval.
+- Worker target location, initially `localhost`.
+- Whether the controller may auto-start local workers.
+- Minimum local worker count while work is pending.
+- Maximum local worker count.
+- Worker count per start decision.
+- Minimum elapsed time between worker start decisions.
+- Worker runtime config path or values to pass when starting each worker.
+
 The worker runtime configuration must still define:
 
 - Local paths for logs, temp files, and data mounts.
 - The controller API URL.
+
+These worker runtime settings should also be available as typed variables, usually through `worker_env` for values injected into workers and `backend` or `override` for deployment choices made before worker startup.
 
 Early startup priority for the worker is to load local configuration before doing any work. Be cautious about global state; prefer passing a clear config object until a manager or runtime context solves an actual problem.
 
@@ -173,6 +216,64 @@ override
 
 The `override` namespace covers command-line arguments, Python API arguments, and HTTP-submission overrides consistently.
 
+Workflow-level variables belong to the workflow definition itself. In a serialized submission, they should appear under the workflow object, not beside it. A top-level submission variable may still override a workflow value through the normal precedence rules, but that top-level position means "caller-supplied override/runtime input," not "ordinary workflow-local default."
+
+Runtime control variables should use the same precedence system. Examples include:
+
+```text
+backend.controller_url
+backend.controller_start_executable
+backend.controller_start_args
+backend.controller_start_lock_path
+backend.worker_target_environment
+backend.worker_start_executable
+backend.worker_start_args
+backend.worker_min_count
+backend.worker_max_count
+backend.worker_count_per_start
+backend.worker_min_elapsed_time_between_starts
+backend.max_worker_count
+backend.client_status_poll_interval
+override.controller_url
+override.controller_start_executable
+override.controller_start_args
+override.controller_start_lock_path
+override.worker_target_environment
+override.worker_start_executable
+override.worker_start_args
+override.worker_min_count
+override.worker_max_count
+override.worker_count_per_start
+override.worker_min_elapsed_time_between_starts
+override.client_status_poll_interval
+```
+
+For example, a local Go client may submit `override.worker_target_environment = "local"` and `override.client_status_poll_interval = "5s"`. The controller should resolve worker-related variables through the variable subsystem before deciding how to launch workers. Avoid adding separate controller-specific or worker-specific flag/config paths that bypass variable resolution.
+
+Worker scaling should begin with an organic scheduler rather than immediate full fan-out. The controller should start workers gradually, observe whether started workers actually claim work, and then start more workers only when queue pressure remains. Early local defaults should be:
+
+```text
+worker_min_count = 0
+worker_max_count = 2
+worker_count_per_start = 1
+worker_min_elapsed_time_between_starts = "30s"
+```
+
+The controller should start no more than `worker_count_per_start` workers in one scaling decision and should never exceed `worker_max_count`. It should also avoid starting more workers than useful pending work unless a later warm-worker feature explicitly requires idle capacity.
+
+`worker_min_count` is a floor while pending work exists. If pending work exists and the known started/active worker count is below this floor, the controller may start workers immediately up to the floor, still bounded by `worker_max_count` and pending work. This lets a known highly parallel workflow request fast startup explicitly.
+
+`worker_count_per_start` is the batch size for one scale-up decision. For example, `worker_min_count = 10`, `worker_max_count = 10`, and `worker_count_per_start = 10` means a workflow can request ten local workers immediately, short-circuiting the normal one-at-a-time organic ramp while still using explicit variables and the hard max.
+
+For organic scaling beyond the minimum floor, the controller should require both:
+
+- At least `worker_min_elapsed_time_between_starts` since the previous worker start decision.
+- Confirmation that the previous started worker has claimed work.
+
+Before explicit worker registration or heartbeats exist, "claimed work" can be inferred from controller state: a worker is considered confirmed when assigned work increases after the start. Later, worker registration and heartbeat state should replace this inference.
+
+Local controller auto-start should be coordinated with a lock variable such as `controller_start_lock_path`. On Unix-like systems this could eventually map to `flock`; the portable local implementation may use an atomic lock file. The key requirement is that concurrent clients do not each start their own controller when they all observe the configured URL as temporarily unavailable.
+
 ### Generated Runtime Variables
 
 Some variables are generated by the controller during a workflow run rather than supplied by the user, environment, backend, or project configuration. These values should be typed, namespaced, and resolvable through the same variable system as submitted values.
@@ -184,6 +285,8 @@ Generated runtime variables should include stable identifiers and timestamps suc
 - Step definition ID.
 - Step instance ID.
 - Work-item ID.
+- Attempt ID.
+- Workflow, step, work-item, input, output, and code fingerprints.
 - Workflow start, end, and run duration values.
 - Step start, end, and run duration values.
 - Work-item start, end, and run duration values.
@@ -201,6 +304,8 @@ Example references:
 runtime.workflow_instance_id
 runtime.step_instance_id
 runtime.work_item_id
+runtime.work_item_fingerprint
+runtime.output_fingerprint
 runtime.workflow_start
 runtime.current_datetime
 ```
@@ -208,6 +313,43 @@ runtime.current_datetime
 Generated runtime variables should be read-only from the workflow author's perspective. Their lifecycle matters: workflow-level runtime variables are available while compiling or running the workflow instance, step-level runtime variables are available while compiling or running a step instance, and work-item runtime variables are available when a concrete work item is created or executed.
 
 The meaning of `runtime.current_datetime` must be explicit. It should represent the controller's current evaluation time unless a worker-local runtime expression is deliberately introduced later. Prefer stable captured timestamps such as `runtime.workflow_start` for reproducible paths and IDs; use current datetime only when the workflow intentionally needs evaluation time.
+
+### Identity And Fingerprints
+
+Workflow identity, step identity, work-item identity, attempt identity, code version, and fingerprints are variables. They must not become a separate metadata/configuration system beside the variable subsystem.
+
+Use generated read-only runtime variables for identities and fingerprints created by the controller or worker:
+
+```text
+runtime.workflow_definition_id
+runtime.workflow_instance_id
+runtime.workflow_fingerprint
+runtime.step_definition_id
+runtime.step_instance_id
+runtime.step_fingerprint
+runtime.work_item_id
+runtime.work_item_fingerprint
+runtime.attempt_id
+runtime.code_version
+runtime.input_fingerprint
+runtime.output_fingerprint
+runtime.completed_at
+```
+
+Workflow-authored stable IDs, such as workflow IDs and step IDs declared in a workflow file, may originate as workflow-scope values or struct fields during parsing, but after ingestion they should be represented in the resolver as typed variables. Generated instance IDs and fingerprints should be added by the controller as runtime-scope variables at the correct lifecycle boundary.
+
+Fingerprints should be deterministic typed values, initially strings. A fingerprint should describe the thing named by the variable:
+
+- `runtime.workflow_fingerprint` identifies the workflow definition content relevant to execution.
+- `runtime.step_fingerprint` identifies a step definition plus its resolved execution-relevant parameters.
+- `runtime.work_item_fingerprint` identifies one concrete executable work item.
+- `runtime.input_fingerprint` identifies resolved inputs used by the work item.
+- `runtime.output_fingerprint` identifies produced output content or a verifiable output manifest.
+- `runtime.code_version` identifies the worker/controller code version that produced or would produce the output.
+
+SQLite is an appropriate local persistence backend for these values, but SQLite should store and index variable snapshots rather than define identity outside the variable model. Tables may have convenience columns for common variables such as `workflow_instance_id` or `work_item_id`, but those columns should mirror typed variables and preserve their namespace, type, value, source, and lifecycle.
+
+Verified idempotent skip decisions should be expressed in terms of variables. A skip is valid only when the stored successful attempt variables match the current resolved variables required for correctness, including identity variables, fingerprints, code version, inputs, parameters, output fingerprint or manifest, and prior success status.
 
 ### Typed Variables
 
@@ -319,6 +461,8 @@ Resolver configuration should include the recursive-resolution maximum depth. Ch
 
 The controller-facing submission boundary should accept workflows, not raw work items. A workflow contains ordered steps, and each step compiles into one or more concrete work items when its dependencies and variables are resolved.
 
+The early JSON submission envelope should have two distinct variable positions: `workflow.Variables` for variables owned by the workflow definition, and top-level `variables` for caller-supplied runtime or override variables. The controller should merge both into resolver scopes instead of inventing a separate configuration path.
+
 Expected step behavior includes:
 
 - Sequential steps where downstream work waits for upstream completion.
@@ -333,6 +477,25 @@ Fan-out compilation should be explicit. A workflow step should identify the expr
 
 Raw work-item submission may remain useful as an internal test or administrative capability, but it is not the primary customer-facing API.
 
+## Local Bootstrap Direction
+
+The first end-to-end local workflow path should be:
+
+1. A client reads backend configuration.
+2. The client checks whether the configured controller URL is reachable.
+3. If the controller is not reachable and local auto-start is enabled, the client starts a local controller.
+4. The client submits a workflow to the controller.
+5. The controller compiles the workflow into concrete work items and places them in the pending queue.
+6. The controller observes pending work and starts one local worker using the configured worker target.
+7. The worker pulls work from the controller, processes it, and reports completion or failure.
+8. The controller may start additional workers one by one when pending work remains and configured worker limits allow it.
+9. The client polls controller status every configured interval.
+10. When the client observes no pending or assigned work, it calls the controller shutdown API if it started that controller.
+
+This local path should be built before HPCC orchestration. The HPCC backend should reuse the same control-plane responsibilities, but replace local process startup with HPCC job submission.
+
+All local bootstrap behavior should be driven by resolved variables. The local client may provide defaults and overrides, but runtime decisions should come from variables such as `controller_url`, `worker_target_environment`, `max_worker_count`, and `client_status_poll_interval`, not from a separate hidden configuration channel.
+
 ## Near-Term Build Direction
 
 The near-term implementation can still build from the worker inward, but each step should keep the eventual Python package boundary in mind:
@@ -346,4 +509,7 @@ The near-term implementation can still build from the worker inward, but each st
 7. Add controller API polling.
 8. Define the typed variable model and precedence resolver before expanding workflow compilation.
 9. Add a minimal workflow submission model that compiles one fan-out step into concrete work items.
-10. Add sequential dependency tracking and sub-workflow invocation incrementally.
+10. Add local client-to-controller workflow submission.
+11. Add controller-side local worker startup when pending work exists.
+12. Add client polling and controller shutdown API use.
+13. Add sequential dependency tracking and sub-workflow invocation incrementally.
