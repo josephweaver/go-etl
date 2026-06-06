@@ -3,37 +3,61 @@ package variable
 type Namespace string
 
 const (
+	NamespaceGlobalConfig          Namespace = "global_config"
 	NamespaceClientEnvironment     Namespace = "client_env"
 	NamespaceControllerEnvironment Namespace = "controller_env"
 	NamespaceWorkerEnvironment     Namespace = "worker_env"
-	NamespaceGlobal                Namespace = "global"
-	NamespaceBackend               Namespace = "backend"
-	NamespaceProject               Namespace = "project"
+	NamespaceClientConfig          Namespace = "client_config"
+	NamespaceControllerConfig      Namespace = "controller_config"
+	NamespaceWorkerConfig          Namespace = "worker_config"
+	NamespaceProjectConfig         Namespace = "project_config"
 	NamespaceWorkflow              Namespace = "workflow"
 	NamespaceOverride              Namespace = "override"
+	NamespaceStep                  Namespace = "step"
+	NamespaceWorkItem              Namespace = "work_item"
+	NamespaceRuntime               Namespace = "runtime"
+
+	// Deprecated compatibility names. Existing workflow JSON and local demo
+	// code still use these while the new config scopes are introduced.
+	NamespaceGlobal  Namespace = "global"
+	NamespaceBackend Namespace = "backend"
+	NamespaceProject Namespace = "project"
 )
 
 var Precedence = []Namespace{
+	NamespaceGlobalConfig,
 	NamespaceClientEnvironment,
 	NamespaceControllerEnvironment,
 	NamespaceWorkerEnvironment,
-	NamespaceGlobal,
-	NamespaceBackend,
-	NamespaceProject,
+	NamespaceClientConfig,
+	NamespaceControllerConfig,
+	NamespaceWorkerConfig,
+	NamespaceProjectConfig,
 	NamespaceWorkflow,
 	NamespaceOverride,
+	NamespaceStep,
+	NamespaceWorkItem,
+	NamespaceRuntime,
 }
 
 func (n Namespace) Valid() bool {
 	switch n {
-	case NamespaceClientEnvironment,
+	case NamespaceGlobalConfig,
+		NamespaceClientEnvironment,
 		NamespaceControllerEnvironment,
 		NamespaceWorkerEnvironment,
+		NamespaceClientConfig,
+		NamespaceControllerConfig,
+		NamespaceWorkerConfig,
+		NamespaceProjectConfig,
+		NamespaceWorkflow,
+		NamespaceOverride,
+		NamespaceStep,
+		NamespaceWorkItem,
+		NamespaceRuntime,
 		NamespaceGlobal,
 		NamespaceBackend,
-		NamespaceProject,
-		NamespaceWorkflow,
-		NamespaceOverride:
+		NamespaceProject:
 		return true
 	default:
 		return false
