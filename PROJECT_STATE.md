@@ -1,10 +1,10 @@
 # Project State
 
-Last updated: 2026-06-02
+Last updated: 2026-06-06
 
 ## Current Focus
 
-We now have a minimal local Go controller and worker runtime. The controller owns an in-memory work queue. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
+We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
 The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
@@ -15,7 +15,11 @@ Project guidance is in `AGENTS.md`. The longer product and architecture directio
 ```text
 go.mod
 demo-workflow.json
+.gitignore
 internal/
+  ledger/
+    sqlite.go
+    sqlite_test.go
   client/
     local_controller.go
     local_controller_test.go
@@ -51,9 +55,14 @@ internal/
     variable.go
     variable_test.go
 cmd/
+  demo-client/
+    main.go
   controller/
     main.go
     main_test.go
+    config.go
+    config_test.go
+    demo-config.json
   worker/
     main.go
     main_test.go
@@ -124,6 +133,21 @@ GET  /status         return queue counts
 
 Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
 
+If started with a config path, the controller loads a variable document and normalizes all variables into `controller_config`. The demo client starts the controller with:
+
+```powershell
+go run ./cmd/controller ./cmd/controller/demo-config.json
+```
+
+`cmd/controller/demo-config.json` currently defines:
+
+```text
+controller_config.controller_url
+controller_config.ledger_db_path
+```
+
+When `controller_config.ledger_db_path` is present, the controller opens or creates the SQLite ledger, initializes the version 1 schema, and stores the DB handle on the `Controller`. The controller remains the only process that talks directly to SQLite. Clients and workers interact through HTTP APIs.
+
 `POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
 
 `POST /workflow` currently accepts JSON containing a workflow and optional submitted variables. Workflow-scope variables live inside the workflow object. Top-level submitted variables are reserved for overrides and runtime/config variables. The controller builds variable scopes from workflow variables and submitted variables, compiles the workflow through `internal/workflow`, checks generated work-item IDs against the existing queue state, and appends generated work items to the pending queue.
@@ -132,7 +156,43 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `GET /status` currently reports pending, assigned, and failed counts.
 
+`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`.
+
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
+
+## SQLite Ledger
+
+`internal/ledger` contains the first SQLite-backed attempt ledger.
+
+Current schema tables:
+
+```text
+schema_version
+attempts
+attempt_variables
+```
+
+The ledger supports:
+
+- Opening SQLite databases through `OpenSQLite`.
+- Creating missing parent directories for file-backed database paths.
+- Initializing the version 1 schema through `InitSQLiteSchema`.
+- Inserting one attempt and its variable snapshot transactionally through `InsertAttempt`.
+
+The first local demo ledger is created at:
+
+```text
+.run/controller/ledger.sqlite
+```
+
+The verified local demo currently records:
+
+```text
+attempts=2
+variables=4
+```
+
+That corresponds to two demo fan-out work items and two stored runtime variables per attempt.
 
 ## Worker Config
 
@@ -172,7 +232,16 @@ type WorkItem struct {
 }
 
 type WorkCompletion struct {
-	ID string `json:"id"`
+	ID                  string `json:"id"`
+	AttemptID           string `json:"attempt_id,omitempty"`
+	WorkflowInstanceID  string `json:"workflow_instance_id,omitempty"`
+	StepInstanceID      string `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint string `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint    string `json:"input_fingerprint,omitempty"`
+	OutputFingerprint   string `json:"output_fingerprint,omitempty"`
+	CodeVersion         string `json:"code_version,omitempty"`
+	StartedAt           string `json:"started_at,omitempty"`
+	CompletedAt         string `json:"completed_at,omitempty"`
 }
 
 type WorkFailure struct {
@@ -194,18 +263,25 @@ Operation support is separate from structural validity. The worker dispatcher re
 
 `internal/variable` contains the early typed-variable model and resolver foundation.
 
-Current variable namespaces are:
+Current canonical variable namespaces, from lowest to highest precedence, are:
 
 ```text
+global_config
 client_env
 controller_env
 worker_env
-global
-backend
-project
+client_config
+controller_config
+worker_config
+project_config
 workflow
 override
+step
+work_item
+runtime
 ```
+
+The legacy namespaces `global`, `backend`, and `project` remain valid during migration but are no longer the target model.
 
 Unqualified references use precedence lookup. Qualified references such as `worker_env.GDAL_DATA` explicitly select a namespace.
 
@@ -241,22 +317,24 @@ Runtime configuration must flow through the variable subsystem. Controller setti
 Important near-term runtime variables include:
 
 ```text
-backend.controller_url
-backend.controller_start_executable
-backend.controller_start_args
-backend.controller_start_lock_path
-backend.worker_target_environment
-backend.worker_start_executable
-backend.worker_start_args
-backend.worker_min_count
-backend.worker_max_count
-backend.worker_count_per_start
-backend.worker_min_elapsed_time_between_starts
-backend.client_status_poll_interval
+controller_config.controller_url
+controller_config.controller_start_executable
+controller_config.controller_start_args
+controller_config.controller_start_lock_path
+controller_config.ledger_db_path
+worker_config.worker_target_environment
+worker_config.worker_start_executable
+worker_config.worker_start_args
+worker_config.worker_min_count
+worker_config.worker_max_count
+worker_config.worker_count_per_start
+worker_config.worker_min_elapsed_time_between_starts
+worker_config.client_status_poll_interval
 override.controller_url
 override.controller_start_executable
 override.controller_start_args
 override.controller_start_lock_path
+override.ledger_db_path
 override.worker_target_environment
 override.worker_start_executable
 override.worker_start_args
@@ -267,7 +345,7 @@ override.worker_min_elapsed_time_between_starts
 override.client_status_poll_interval
 ```
 
-The local Go client may submit override variables such as `override.worker_target_environment = "local"` and `override.client_status_poll_interval = "5s"`. The controller should resolve these variables before choosing local worker bootstrap behavior.
+The local Go client currently uses `controller_config` variables to start the local controller. `demo-workflow.json` uses `worker_config` variables to request local worker startup and scaling behavior. Future client/API arguments may still submit `override` variables when the caller intentionally overrides config.
 
 Workflow identity, step identity, work-item identity, attempt identity, code version, and fingerprints must flow through the variable subsystem. Future durable storage, likely SQLite for local execution, should persist typed variable snapshots rather than create a separate identity/configuration model.
 
@@ -355,7 +433,13 @@ Current client behavior:
 - Uses JSON containing a workflow plus optional submitted override/runtime variables.
 - Treats the controller URL as a typed variable, not a separate config path.
 
-The local controller starter is intentionally minimal. It resolves structured executable and argument variables and starts them as a background process. If `controller_start_lock_path` is configured, it uses an atomic lock file to avoid multiple clients starting duplicate local controllers at the same time. A pre-existing lock is treated as "another client is starting the controller," so the client continues into readiness polling. The client waits for readiness with a bounded number of status checks.
+The local controller starter is intentionally minimal. It resolves structured executable and argument variables and starts them as a background process. If `controller_start_lock_path` is configured, it uses an atomic lock file to avoid multiple clients starting duplicate local controllers at the same time. A pre-existing lock is treated as "another client is starting the controller," so the client continues into readiness polling. The client waits for readiness with a bounded number of status checks. The current local client uses ten readiness checks so cold `go run` startup has time to compile and bind.
+
+The demo client currently starts the controller with:
+
+```text
+controller_config.controller_start_args = ["run", "./cmd/controller", "./cmd/controller/demo-config.json"]
+```
 
 ## Demo Work
 
@@ -375,6 +459,8 @@ WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
 - Logs that the item completed.
 
 This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage. The demo operation is idempotent by overwrite: rerunning the same work item writes the same deterministic content and replaces any existing completed output. Future skip behavior must be based on verifiable correctness, not just the presence of an output filename.
+
+The worker completion reporter now includes deterministic demo attempt metadata in `POST /work/complete`. These demo values are placeholders until real workflow, step, work-item, attempt, fingerprint, and code-version variables are generated by the controller/worker runtime.
 
 ## Tests
 
@@ -410,6 +496,11 @@ Current coverage includes:
 - Controller worker-scaling decision state.
 - Controller shutdown endpoint behavior.
 - Controller rejection of invalid methods and payloads.
+- Controller config loading and namespace normalization.
+- Controller SQLite ledger initialization from `controller_config.ledger_db_path`.
+- SQLite schema creation, parent-directory creation, and attempt snapshot insertion.
+- Controller-owned attempt recording adapter.
+- Controller completion handling that records full completion metadata when present and still accepts legacy `id`-only completions.
 
 Norton antivirus may briefly lock Go's temporary test executables after tests finish. If that happens, assertions still report `PASS`, but Go may print a cleanup error. Re-running the command usually succeeds.
 
@@ -425,6 +516,7 @@ go run ./cmd/demo-client
 The demo client:
 
 - Starts a local controller if `http://localhost:8080` is not reachable.
+- Passes `cmd/controller/demo-config.json` to the local controller.
 - Submits `demo-workflow.json`.
 - Lets the controller start local workers using variables from the submitted workflow file.
 - Polls controller status.
@@ -452,12 +544,20 @@ cmd/worker/.run/data/cdl-demo-2024.txt
 cmd/worker/.run/data/cdl-demo-2025.txt
 ```
 
+Expected local ledger output:
+
+```text
+.run/controller/ledger.sqlite
+```
+
+The current verified demo run records two attempt rows and four attempt-variable rows.
+
 ## Design Direction
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
 
-The current in-memory queue is intentionally small. Do not add database persistence, retry rules, workflow parsing, HPCC integration, or Docker orchestration until the local controller state is observable and its basic transitions are clear.
+The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules, broad workflow parsing, HPCC integration, or Docker orchestration until the local controller state and ledger boundary are clear.
 
 ## Likely Next Step
 
-Design the first SQLite-backed variable snapshot ledger for completed attempts, keeping IDs and fingerprints inside the variable model.
+Replace deterministic demo attempt metadata with controller/worker-generated runtime variables so ledger rows reflect real workflow, step, work-item, attempt, fingerprint, timestamp, and code-version values.
