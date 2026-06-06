@@ -471,9 +471,69 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	attempt, hasAttempt, err := attemptFromCompletion(completion)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if hasAttempt {
+		if err := c.recordAttempt(r.Context(), attempt); err != nil {
+			http.Error(w, "record completion", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	delete(c.assigned, completion.ID)
 	fmt.Println("work item completed:", completion.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, bool, error) {
+	if completion.AttemptID == "" {
+		return ledger.Attempt{}, false, nil
+	}
+
+	startedAt, err := time.Parse(time.RFC3339, completion.StartedAt)
+	if err != nil {
+		return ledger.Attempt{}, false, fmt.Errorf("parse started_at: %w", err)
+	}
+
+	completedAt, err := time.Parse(time.RFC3339, completion.CompletedAt)
+	if err != nil {
+		return ledger.Attempt{}, false, fmt.Errorf("parse completed_at: %w", err)
+	}
+
+	return ledger.Attempt{
+		ID:                  completion.AttemptID,
+		WorkflowInstanceID:  completion.WorkflowInstanceID,
+		StepInstanceID:      completion.StepInstanceID,
+		WorkItemID:          completion.ID,
+		WorkItemFingerprint: completion.WorkItemFingerprint,
+		InputFingerprint:    completion.InputFingerprint,
+		OutputFingerprint:   completion.OutputFingerprint,
+		CodeVersion:         completion.CodeVersion,
+		Status:              ledger.AttemptStatusCompleted,
+		StartedAt:           startedAt,
+		CompletedAt:         completedAt,
+		Variables: []ledger.AttemptVariable{
+			{
+				Namespace: "runtime",
+				Name:      "work_item_id",
+				Type:      "string",
+				Value:     completion.ID,
+				Source:    "worker",
+				Lifecycle: "work_item",
+			},
+			{
+				Namespace: "runtime",
+				Name:      "attempt_id",
+				Type:      "string",
+				Value:     completion.AttemptID,
+				Source:    "worker",
+				Lifecycle: "attempt",
+			},
+		},
+	}, true, nil
 }
 
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
