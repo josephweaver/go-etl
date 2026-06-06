@@ -342,6 +342,38 @@ When metrics cannot be measured from git or shell commands, record them as estim
 
 ---
 
+## Codex Context And Usage Indicators
+
+Record Codex usage estimates for the audited feature. Use exact values when the environment exposes them; otherwise label them as estimates and explain the basis. When local Codex session files are available, check the session JSONL `token_count` records before falling back to rough estimates.
+
+Required indicators:
+
+* Estimated active conversation/context size at feature end
+* Estimated transcript volume, including user, assistant, and tool output
+* Estimated cumulative model input tokens processed
+* Estimated cumulative model output tokens generated
+* Approximate number of EC slices or continuation turns
+* Approximate number of shell/tool calls
+* Approximate number of patch/edit operations
+* Approximate number of focused test runs
+* Approximate number of full test-suite runs
+
+Recommended interpretation:
+
+* Note whether usage was low, moderate, or high for the feature size.
+* Note whether context volume likely increased epistemic drift risk.
+* Note whether future audits should collect exact values during the session instead of reconstructing them afterward.
+
+Backfill source priority:
+
+1. Exact token-count records from local Codex session JSONL files.
+2. Exact values exposed by the client UI or logs.
+3. Derived counts from session JSONL size, event count, and visible transcript.
+4. Git-derived proxies such as commits, files changed, and lines changed.
+5. Clearly labeled estimates based on conversation memory.
+
+---
+
 ## Drift Indicators
 
 * Mismatch between TARGET_STATE.md and implementation
