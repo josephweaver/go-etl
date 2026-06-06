@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestWorkItemValidate(t *testing.T) {
 	tests := []struct {
@@ -71,5 +74,38 @@ func TestWorkItemValidate(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
+	completion := WorkCompletion{
+		ID:                  "work-item-001",
+		AttemptID:           "attempt-001",
+		WorkflowInstanceID:  "workflow-instance-001",
+		StepInstanceID:      "step-instance-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		StartedAt:           "2026-06-06T12:00:00Z",
+		CompletedAt:         "2026-06-06T12:01:00Z",
+	}
+
+	data, err := json.Marshal(completion)
+	if err != nil {
+		t.Fatalf("marshal completion: %v", err)
+	}
+
+	var decoded map[string]string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode completion: %v", err)
+	}
+
+	if decoded["attempt_id"] != completion.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decoded["attempt_id"], completion.AttemptID)
+	}
+
+	if decoded["work_item_fingerprint"] != completion.WorkItemFingerprint {
+		t.Fatalf("work_item_fingerprint = %q, want %q", decoded["work_item_fingerprint"], completion.WorkItemFingerprint)
 	}
 }
