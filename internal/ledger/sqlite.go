@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -75,6 +77,12 @@ type AttemptVariable struct {
 }
 
 func OpenSQLite(path string) (*sql.DB, error) {
+	if path != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return nil, fmt.Errorf("create sqlite ledger directory: %w", err)
+		}
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite ledger: %w", err)

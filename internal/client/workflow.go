@@ -110,7 +110,7 @@ func (c WorkflowClient) EnsureController(controllerURL string) error {
 		return fmt.Errorf("start controller: %w", err)
 	}
 
-	return c.WaitForController(controllerURL, 3)
+	return c.WaitForController(controllerURL, 10)
 }
 
 func (c WorkflowClient) CheckController(controllerURL string) error {

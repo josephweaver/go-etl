@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -37,6 +38,20 @@ func TestInitSQLiteSchemaCreatesVersionOneLedger(t *testing.T) {
 		if name != table {
 			t.Fatalf("table name = %q, want %q", name, table)
 		}
+	}
+}
+
+func TestOpenSQLiteCreatesParentDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "ledger.sqlite")
+
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("OpenSQLite() error = %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping sqlite: %v", err)
 	}
 }
 
