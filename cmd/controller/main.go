@@ -151,6 +151,14 @@ func optionalPathVariable(resolver variable.Resolver, name string) (string, erro
 	return path, nil
 }
 
+func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) error {
+	if c.ledger == nil {
+		return nil
+	}
+
+	return ledger.InsertAttempt(ctx, c.ledger, attempt)
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

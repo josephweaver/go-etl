@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"goetl/internal/ledger"
 	"goetl/internal/variable"
 )
 
@@ -181,5 +183,57 @@ func TestControllerOwnsConfiguredLedger(t *testing.T) {
 
 	if controller.ledger == nil {
 		t.Fatal("expected controller ledger")
+	}
+}
+
+func TestControllerRecordAttemptNoopsWithoutLedger(t *testing.T) {
+	controller := newController(nil)
+
+	if err := controller.recordAttempt(context.Background(), ledger.Attempt{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestControllerRecordAttemptWritesConfiguredLedger(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
+	config := ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: dbPath,
+		},
+	}}
+
+	db, err := initConfiguredLedger(context.Background(), config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer db.Close()
+
+	controller := newController(nil)
+	controller.ledger = db
+	attempt := ledger.Attempt{
+		ID:                  "attempt-001",
+		WorkflowInstanceID:  "workflow-instance-001",
+		StepInstanceID:      "step-instance-001",
+		WorkItemID:          "work-item-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              ledger.AttemptStatusCompleted,
+		StartedAt:           time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC),
+	}
+
+	if err := controller.recordAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts`).Scan(&count); err != nil {
+		t.Fatalf("query attempt count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("attempt count = %d, want 1", count)
 	}
 }
