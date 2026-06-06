@@ -159,3 +159,27 @@ func TestInitConfiguredLedgerRejectsWrongPathType(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestControllerOwnsConfiguredLedger(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
+	config := ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: dbPath,
+		},
+	}}
+
+	db, err := initConfiguredLedger(context.Background(), config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer db.Close()
+
+	controller := newController(nil)
+	controller.ledger = db
+
+	if controller.ledger == nil {
+		t.Fatal("expected controller ledger")
+	}
+}

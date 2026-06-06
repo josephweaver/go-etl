@@ -21,6 +21,7 @@ type Controller struct {
 	pending  []model.WorkItem
 	assigned map[string]model.WorkItem
 	failed   map[string]model.WorkFailure
+	ledger   *sql.DB
 	shutdown func(context.Context) error
 	worker   WorkerStarter
 	scaler   WorkerScaleState
@@ -66,6 +67,7 @@ func main() {
 	}
 
 	controller := newController(nil)
+	controller.ledger = ledgerDB
 	controller.worker = LocalWorkerStarter{}
 
 	mux := http.NewServeMux()
