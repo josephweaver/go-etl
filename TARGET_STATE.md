@@ -131,7 +131,7 @@ The pipeline/config file should define customer-facing workflow behavior: datase
 
 The backend should define reusable deployment behavior: local execution, HPCC execution, Docker image details, mount conventions, Go controller settings, and worker launch strategy.
 
-Runtime configuration must not become a parallel system beside variables. Controller settings, worker settings, backend choices, CLI flags, API arguments, and client overrides should enter the system as typed variables in the variable subsystem. Config structs, JSON fields, and command-line flags are transport or parsing surfaces; after ingestion they should be represented as variables with a clear namespace and source.
+Runtime configuration must not become a parallel system beside variables. Controller settings, worker settings, backend choices, CLI flags, API arguments, and client overrides should enter the system as typed variables in the variable subsystem. Config structs, JSON files, HTTP JSON fields, and command-line flags are transport or parsing surfaces; after ingestion they should be represented as variables with a clear namespace and source.
 
 A serialized workflow submission should keep workflow-local variables inside the workflow object. Top-level submission variables are for runtime, backend, API, and override values supplied by the caller. This keeps customer workflow scope distinct from launch-time configuration while still using the same typed variable subsystem after ingestion.
 
@@ -155,7 +155,7 @@ The worker runtime configuration must still define:
 - Local paths for logs, temp files, and data mounts.
 - The controller API URL.
 
-These worker runtime settings should also be available as typed variables, usually through `worker_env` for values injected into workers and `backend` or `override` for deployment choices made before worker startup.
+These worker runtime settings should also be available as typed variables, usually through `worker_env` for values injected into workers, `worker_config` for explicit worker configuration documents, and `override` for deployment choices made before worker startup.
 
 Early startup priority for the worker is to load local configuration before doing any work. Be cautious about global state; prefer passing a clear config object until a manager or runtime context solves an actual problem.
 
@@ -165,54 +165,78 @@ Workflow state and variable management are central to the system design. Variabl
 
 ### Variable Sources And Precedence
 
-Variable values may come from multiple scopes. When the same variable name exists in more than one scope, the more specific scope overrides the less specific scope.
+Variable values may come from multiple immutable scopes. When the same variable name exists in more than one scope, the more specific scope overrides the less specific scope.
 
 Use this precedence order, from lowest to highest:
 
-1. Client environment variables captured by the submitting client.
-2. Controller environment variables captured from the controller process.
-3. Worker environment variables configured for worker containers.
-4. Global variables shared across installations or deployments.
-5. Backend-specific variables for a named execution backend.
-6. Project-level variables.
-7. Workflow-level variables.
-8. Command-line or API-submission overrides.
+1. Global configuration shared across installations or deployments.
+2. Client environment variables captured by the submitting client.
+3. Controller environment variables captured from the controller process.
+4. Worker environment variables configured for worker containers.
+5. Client configuration documents.
+6. Controller configuration documents.
+7. Worker configuration documents.
+8. Project-level configuration.
+9. Workflow-level variables.
+10. Command-line, Python API, or HTTP-submission overrides.
+11. Step-local bindings created by the controller.
+12. Work-item-local bindings created by the controller.
+13. Generated runtime variables.
 
-Environment variables must use distinct namespaces:
+Use explicit namespaces for these scopes:
 
 ```text
+global_config
 client_env
 controller_env
 worker_env
+client_config
+controller_config
+worker_config
+project_config
+workflow
+override
+step
+work_item
+runtime
 ```
 
 For example:
 
 ```text
+global_config.default_output_root
 client_env.USERPROFILE
 controller_env.TEMP
 worker_env.GDAL_DATA
+controller_config.ledger_db_path
+worker_config.data_dir
+project_config.crop
+workflow.years
+override.worker_max_count
+step.current_year
+work_item.output_filename
+runtime.work_item_id
 ```
 
 An unqualified reference such as `GDAL_DATA` uses precedence lookup. A qualified reference such as `worker_env.GDAL_DATA` explicitly selects one namespace and bypasses precedence lookup.
 
 `worker_env` means the configured environment that the controller injects into worker containers. It is available to the controller control plane before worker creation and may participate in controller-side workflow compilation. It must not be inferred from incidental values observed inside an arbitrary running worker.
 
-Treat `worker_env` as immutable for the lifetime of a controller runtime or submitted workflow. Changing it requires a controller restart or a new workflow run. If a worker's actual environment differs from the configured `worker_env`, treat that as a runtime validation error.
+Treat all scopes as immutable snapshots once captured for a given resolution boundary. Later lifecycle scopes are added by constructing a new resolver or resolved snapshot, not by mutating earlier scopes. In practical terms:
+
+```text
+base snapshot = global_config + *_env + *_config + project_config
+workflow snapshot = base snapshot + workflow + override + workflow runtime values
+step snapshot = workflow snapshot + step + step runtime values
+work-item snapshot = step snapshot + work_item + work-item runtime values
+attempt snapshot = work-item snapshot + attempt runtime values
+```
+
+If a worker's actual environment differs from the configured `worker_env`, treat that as a runtime validation error.
 
 Sub-workflow invocation adds a nested binding scope. Values passed by a parent workflow into a child workflow override the child's inherited values, while preserving the same typed-variable rules. The exact position of explicit child bindings relative to workflow-local defaults should be specified when the first workflow compiler is implemented; parent-provided bindings should generally behave as invocation overrides.
 
 Variable resolution should preserve where each final value came from so errors, status output, and debugging tools can explain which scope won.
-
-Use explicit namespaces for the remaining scopes:
-
-```text
-global
-backend
-project
-workflow
-override
-```
 
 The `override` namespace covers command-line arguments, Python API arguments, and HTTP-submission overrides consistently.
 
@@ -221,23 +245,24 @@ Workflow-level variables belong to the workflow definition itself. In a serializ
 Runtime control variables should use the same precedence system. Examples include:
 
 ```text
-backend.controller_url
-backend.controller_start_executable
-backend.controller_start_args
-backend.controller_start_lock_path
-backend.worker_target_environment
-backend.worker_start_executable
-backend.worker_start_args
-backend.worker_min_count
-backend.worker_max_count
-backend.worker_count_per_start
-backend.worker_min_elapsed_time_between_starts
-backend.max_worker_count
-backend.client_status_poll_interval
+controller_config.controller_url
+controller_config.controller_start_executable
+controller_config.controller_start_args
+controller_config.controller_start_lock_path
+controller_config.ledger_db_path
+worker_config.worker_target_environment
+worker_config.worker_start_executable
+worker_config.worker_start_args
+worker_config.worker_min_count
+worker_config.worker_max_count
+worker_config.worker_count_per_start
+worker_config.worker_min_elapsed_time_between_starts
+worker_config.client_status_poll_interval
 override.controller_url
 override.controller_start_executable
 override.controller_start_args
 override.controller_start_lock_path
+override.ledger_db_path
 override.worker_target_environment
 override.worker_start_executable
 override.worker_start_args
@@ -347,9 +372,26 @@ Fingerprints should be deterministic typed values, initially strings. A fingerpr
 - `runtime.output_fingerprint` identifies produced output content or a verifiable output manifest.
 - `runtime.code_version` identifies the worker/controller code version that produced or would produce the output.
 
+Fingerprints should be computed by the controller from normalized definitions plus resolved variables that are execution-relevant at the current lifecycle boundary. A variable is execution-relevant when it is referenced by the workflow, step, work item, input, output, or parameter being fingerprinted. Merely existing in an available scope is not enough.
+
+For example, `project_config.state = "Michigan"` and `project_config.crop = "corn"` should affect a fingerprint when a step uses those variables to choose inputs, outputs, or processing parameters. An available value such as `runtime.current_datetime` should not affect a fingerprint unless the workflow deliberately references it in an execution-relevant expression.
+
+Use separate meanings for definition identity and concrete run identity:
+
+```text
+workflow definition fingerprint = hash(normalized workflow definition)
+workflow instance fingerprint = hash(workflow definition fingerprint + resolved execution-relevant workflow variables)
+step fingerprint = hash(workflow instance fingerprint + normalized step definition + resolved execution-relevant step variables)
+work-item fingerprint = hash(step fingerprint + bound fan-out item + resolved execution-relevant work-item variables)
+```
+
+These generated fingerprints should be exposed as read-only `runtime.*` variables after the controller computes them. Workflow authors may define stable labels, output path templates, or user-facing IDs, but they should not directly author correctness fingerprints used for skip decisions.
+
 SQLite is an appropriate local persistence backend for these values, but SQLite should store and index variable snapshots rather than define identity outside the variable model. Tables may have convenience columns for common variables such as `workflow_instance_id` or `work_item_id`, but those columns should mirror typed variables and preserve their namespace, type, value, source, and lifecycle.
 
 Verified idempotent skip decisions should be expressed in terms of variables. A skip is valid only when the stored successful attempt variables match the current resolved variables required for correctness, including identity variables, fingerprints, code version, inputs, parameters, output fingerprint or manifest, and prior success status.
+
+When a skipped step has downstream dependencies, the controller must also restore the skipped step's logical outputs from durable state. For fan-out work steps, the step output can initially be derived from the ordered list of successful work-item outputs. Persisted outputs are needed so downstream unresolved steps can resolve references such as `step.previous.items[*]` without rerunning the skipped step.
 
 ### Typed Variables
 
@@ -453,6 +495,15 @@ The controller should own variable resolution needed to compile workflow definit
 
 Worker-runtime variables such as mounted directories or container-specific paths should come from the configured `worker_env` namespace. The controller resolves them using the same immutable values that it later injects into worker containers.
 
+Near-term fix: workers should not resolve workflow variables. The controller knows the selected worker target, configured worker environment, mounts, paths, and backend variables before it starts workers, so it should resolve work-item values into concrete worker-local parameters before assignment. A worker may still read its own runtime config to know where it is running, but it should not evaluate workflow expressions or make independent variable-precedence decisions.
+
+For uneven worker environments, work-item resolution has two phases:
+
+1. Compile-time: the controller resolves workflow intent as far as possible and records pending logical work.
+2. Assignment-time: when a specific worker requests work, the controller finalizes worker-local values using that worker's configured environment, mounts, target, and runtime variables.
+
+The worker receives a finalized work assignment with concrete parameters. For the local demo path, this means the controller should eventually compile enough resolved output information that the worker does not infer workflow-level output paths from unresolved variables. Until the work-item model carries richer resolved parameters, the worker may join its configured `DataDir` with an already-resolved output filename, but this is a transitional boundary.
+
 A dedicated `Variable` model and resolver package should be introduced before building a broad workflow compiler. Start with typed literals, precedence merging, and a small path expression capability; add expression features incrementally with tests.
 
 Resolver configuration should include the recursive-resolution maximum depth. Choose a conservative default and allow deployments or controller configuration to override it.
@@ -472,6 +523,8 @@ Expected step behavior includes:
 - Sub-workflow fan-out where one step starts many child workflow instances with different typed variable bindings.
 
 Step outputs should be represented as JSON-like typed values, not unstructured strings. Later steps may reference prior step outputs through the same expression/accessor system used for variables. This allows a step to produce a list of records, and a later step to fan out over that list.
+
+Downstream step work items should not be enqueued until their dependency steps are complete. For example, if a workflow has step 1 and step 2, step 2 work items remain uncompiled or unqueued until step 1 is marked complete, because step 2 may depend on step 1 outputs. This keeps queue state aligned with workflow readiness instead of flattening the whole workflow into pending work at submission time.
 
 Fan-out compilation should be explicit. A workflow step should identify the expression that produces the list to iterate. The controller evaluates that expression, then creates one work item or sub-workflow invocation per list element, binding the current element into the step's variable context.
 
@@ -512,4 +565,5 @@ The near-term implementation can still build from the worker inward, but each st
 10. Add local client-to-controller workflow submission.
 11. Add controller-side local worker startup when pending work exists.
 12. Add client polling and controller shutdown API use.
-13. Add sequential dependency tracking and sub-workflow invocation incrementally.
+13. Move remaining workflow-variable resolution out of workers by expanding work items to carry resolved worker-local parameters.
+14. Add sequential dependency tracking and sub-workflow invocation incrementally.

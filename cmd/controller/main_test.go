@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -68,6 +69,70 @@ func TestCompleteWorkHandler(t *testing.T) {
 	controller.completeWorkHandler(response, request)
 
 	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+}
+
+func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
+	controller := newTestController()
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+	assignNextWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"attempt-001",
+		"workflow_instance_id":"workflow-instance-001",
+		"step_instance_id":"step-instance-001",
+		"work_item_fingerprint":"work-item-fingerprint",
+		"input_fingerprint":"input-fingerprint",
+		"output_fingerprint":"output-fingerprint",
+		"code_version":"code-version",
+		"started_at":"2026-06-06T12:00:00Z",
+		"completed_at":"2026-06-06T12:01:00Z"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts`).Scan(&count); err != nil {
+		t.Fatalf("query attempt count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("attempt count = %d, want 1", count)
+	}
+}
+
+func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
+	controller := newTestController()
+	assignNextWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"attempt-001",
+		"started_at":"not-a-time",
+		"completed_at":"2026-06-06T12:01:00Z"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
@@ -330,7 +395,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}
@@ -384,7 +449,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}
@@ -433,27 +498,27 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_min_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_min_count"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_max_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_count_per_start"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_count_per_start"},
 				"Type": {"Kind": "int"},
 				"Expression": "2"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_min_elapsed_time_between_starts"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_min_elapsed_time_between_starts"},
 				"Type": {"Kind": "string"},
 				"Expression": "0s"
 			}
@@ -500,12 +565,12 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			},
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_max_count"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
 				"Type": {"Kind": "string"},
 				"Expression": "two"
 			}
@@ -569,7 +634,7 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerTargetType(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "int"},
 				"Expression": "1"
 			}
@@ -650,7 +715,7 @@ func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "worker_target_environment"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
 				"Type": {"Kind": "string"},
 				"Expression": "local"
 			}

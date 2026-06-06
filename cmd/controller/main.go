@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
+	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
@@ -18,6 +21,7 @@ type Controller struct {
 	pending  []model.WorkItem
 	assigned map[string]model.WorkItem
 	failed   map[string]model.WorkFailure
+	ledger   *sql.DB
 	shutdown func(context.Context) error
 	worker   WorkerStarter
 	scaler   WorkerScaleState
@@ -47,7 +51,23 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
+	config, err := controllerConfigFromArgs(os.Args)
+	if err != nil {
+		fmt.Println("controller config failed:", err)
+		return
+	}
+
+	ledgerDB, err := initConfiguredLedger(context.Background(), config)
+	if err != nil {
+		fmt.Println("controller ledger failed:", err)
+		return
+	}
+	if ledgerDB != nil {
+		defer ledgerDB.Close()
+	}
+
 	controller := newController(nil)
+	controller.ledger = ledgerDB
 	controller.worker = LocalWorkerStarter{}
 
 	mux := http.NewServeMux()
@@ -66,6 +86,77 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println("controller failed:", err)
 	}
+}
+
+func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
+	if len(args) < 2 {
+		return ControllerConfig{}, nil
+	}
+
+	return loadControllerConfig(args[1])
+}
+
+func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
+	if len(config.Variables) == 0 {
+		return nil, nil
+	}
+
+	scope, err := variable.NewScope(config.Variables...)
+	if err != nil {
+		return nil, err
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	path, err := optionalPathVariable(resolver, "ledger_db_path")
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, nil
+	}
+
+	db, err := ledger.OpenSQLite(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ledger.InitSQLiteSchema(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func optionalPathVariable(resolver variable.Resolver, name string) (string, error) {
+	reference, err := variable.ParseReference(name)
+	if err != nil {
+		return "", err
+	}
+
+	value, err := resolver.Resolve(reference)
+	if err != nil {
+		return "", nil
+	}
+
+	if value.Type != variable.TypePath {
+		return "", fmt.Errorf("%s has type %s, want path", name, value.Type)
+	}
+
+	path, ok := value.Value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a path", name)
+	}
+
+	return path, nil
+}
+
+func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) error {
+	if c.ledger == nil {
+		return nil
+	}
+
+	return ledger.InsertAttempt(ctx, c.ledger, attempt)
 }
 
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -380,9 +471,69 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	attempt, hasAttempt, err := attemptFromCompletion(completion)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if hasAttempt {
+		if err := c.recordAttempt(r.Context(), attempt); err != nil {
+			http.Error(w, "record completion", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	delete(c.assigned, completion.ID)
 	fmt.Println("work item completed:", completion.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, bool, error) {
+	if completion.AttemptID == "" {
+		return ledger.Attempt{}, false, nil
+	}
+
+	startedAt, err := time.Parse(time.RFC3339, completion.StartedAt)
+	if err != nil {
+		return ledger.Attempt{}, false, fmt.Errorf("parse started_at: %w", err)
+	}
+
+	completedAt, err := time.Parse(time.RFC3339, completion.CompletedAt)
+	if err != nil {
+		return ledger.Attempt{}, false, fmt.Errorf("parse completed_at: %w", err)
+	}
+
+	return ledger.Attempt{
+		ID:                  completion.AttemptID,
+		WorkflowInstanceID:  completion.WorkflowInstanceID,
+		StepInstanceID:      completion.StepInstanceID,
+		WorkItemID:          completion.ID,
+		WorkItemFingerprint: completion.WorkItemFingerprint,
+		InputFingerprint:    completion.InputFingerprint,
+		OutputFingerprint:   completion.OutputFingerprint,
+		CodeVersion:         completion.CodeVersion,
+		Status:              ledger.AttemptStatusCompleted,
+		StartedAt:           startedAt,
+		CompletedAt:         completedAt,
+		Variables: []ledger.AttemptVariable{
+			{
+				Namespace: "runtime",
+				Name:      "work_item_id",
+				Type:      "string",
+				Value:     completion.ID,
+				Source:    "worker",
+				Lifecycle: "work_item",
+			},
+			{
+				Namespace: "runtime",
+				Name:      "attempt_id",
+				Type:      "string",
+				Value:     completion.AttemptID,
+				Source:    "worker",
+				Lifecycle: "attempt",
+			},
+		},
+	}, true, nil
 }
 
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {

@@ -11,14 +11,14 @@ import (
 func TestLocalControllerStarterResolvesCommand(t *testing.T) {
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_executable"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_executable"},
 			Type:       variable.TypeString,
 			Expression: "go",
 		},
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_args"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"},
 			Type:       variable.TypeList(variable.TypeString),
-			Expression: `["run", "./cmd/controller"]`,
+			Expression: `["run", "./cmd/controller", "./cmd/controller/demo-config.json"]`,
 		},
 	))
 
@@ -31,12 +31,16 @@ func TestLocalControllerStarterResolvesCommand(t *testing.T) {
 		t.Fatalf("unexpected executable: %s", executable)
 	}
 
-	if len(args) != 2 {
+	if len(args) != 3 {
 		t.Fatalf("unexpected arg count: %d", len(args))
 	}
 
 	if args[1] != "./cmd/controller" {
 		t.Fatalf("unexpected second arg: %s", args[1])
+	}
+
+	if args[2] != "./cmd/controller/demo-config.json" {
+		t.Fatalf("unexpected third arg: %s", args[2])
 	}
 }
 
@@ -52,7 +56,7 @@ func TestLocalControllerStarterAcquireStartLock(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "controller.lock")
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_lock_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"},
 			Type:       variable.TypeString,
 			Expression: lockPath,
 		},
@@ -82,7 +86,7 @@ func TestLocalControllerStarterTreatsExistingStartLockAsRace(t *testing.T) {
 
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_lock_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"},
 			Type:       variable.TypeString,
 			Expression: lockPath,
 		},

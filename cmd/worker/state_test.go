@@ -53,6 +53,18 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected id: %q", completion.ID)
 		}
 
+		if completion.AttemptID != "test-001-attempt-001" {
+			t.Fatalf("unexpected attempt id: %q", completion.AttemptID)
+		}
+
+		if completion.WorkItemFingerprint != "demo-work-item:test-001" {
+			t.Fatalf("unexpected work item fingerprint: %q", completion.WorkItemFingerprint)
+		}
+
+		if completion.CodeVersion != "demo" {
+			t.Fatalf("unexpected code version: %q", completion.CodeVersion)
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()

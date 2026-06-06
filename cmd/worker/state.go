@@ -13,7 +13,7 @@ import (
 func reportWorkComplete(controllerURL string, itemID string) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-	body, err := json.Marshal(model.WorkCompletion{ID: itemID})
+	body, err := json.Marshal(demoWorkCompletion(itemID))
 	if err != nil {
 		return fmt.Errorf("encode work completion: %w", err)
 	}
@@ -29,6 +29,21 @@ func reportWorkComplete(controllerURL string, itemID string) error {
 	}
 
 	return nil
+}
+
+func demoWorkCompletion(itemID string) model.WorkCompletion {
+	return model.WorkCompletion{
+		ID:                  itemID,
+		AttemptID:           itemID + "-attempt-001",
+		WorkflowInstanceID:  "demo-workflow-instance",
+		StepInstanceID:      "demo-step-instance",
+		WorkItemFingerprint: "demo-work-item:" + itemID,
+		InputFingerprint:    "demo-input:" + itemID,
+		OutputFingerprint:   "demo-output:" + itemID,
+		CodeVersion:         "demo",
+		StartedAt:           "1970-01-01T00:00:00Z",
+		CompletedAt:         "1970-01-01T00:00:00Z",
+	}
 }
 
 func reportWorkFailed(controllerURL string, itemID string, workErr error) error {

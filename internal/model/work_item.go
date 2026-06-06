@@ -18,7 +18,16 @@ type WorkItem struct {
 }
 
 type WorkCompletion struct {
-	ID string `json:"id"`
+	ID                  string `json:"id"`
+	AttemptID           string `json:"attempt_id,omitempty"`
+	WorkflowInstanceID  string `json:"workflow_instance_id,omitempty"`
+	StepInstanceID      string `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint string `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint    string `json:"input_fingerprint,omitempty"`
+	OutputFingerprint   string `json:"output_fingerprint,omitempty"`
+	CodeVersion         string `json:"code_version,omitempty"`
+	StartedAt           string `json:"started_at,omitempty"`
+	CompletedAt         string `json:"completed_at,omitempty"`
 }
 
 type WorkFailure struct {
