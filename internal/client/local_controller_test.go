@@ -18,7 +18,7 @@ func TestLocalControllerStarterResolvesCommand(t *testing.T) {
 		variable.Variable{
 			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"},
 			Type:       variable.TypeList(variable.TypeString),
-			Expression: `["run", "./cmd/controller"]`,
+			Expression: `["run", "./cmd/controller", "./cmd/controller/demo-config.json"]`,
 		},
 	))
 
@@ -31,12 +31,16 @@ func TestLocalControllerStarterResolvesCommand(t *testing.T) {
 		t.Fatalf("unexpected executable: %s", executable)
 	}
 
-	if len(args) != 2 {
+	if len(args) != 3 {
 		t.Fatalf("unexpected arg count: %d", len(args))
 	}
 
 	if args[1] != "./cmd/controller" {
 		t.Fatalf("unexpected second arg: %s", args[1])
+	}
+
+	if args[2] != "./cmd/controller/demo-config.json" {
+		t.Fatalf("unexpected third arg: %s", args[2])
 	}
 }
 
