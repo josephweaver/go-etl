@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
@@ -48,9 +50,19 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
-	if _, err := controllerConfigFromArgs(os.Args); err != nil {
+	config, err := controllerConfigFromArgs(os.Args)
+	if err != nil {
 		fmt.Println("controller config failed:", err)
 		return
+	}
+
+	ledgerDB, err := initConfiguredLedger(context.Background(), config)
+	if err != nil {
+		fmt.Println("controller ledger failed:", err)
+		return
+	}
+	if ledgerDB != nil {
+		defer ledgerDB.Close()
 	}
 
 	controller := newController(nil)
@@ -80,6 +92,61 @@ func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
 	}
 
 	return loadControllerConfig(args[1])
+}
+
+func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
+	if len(config.Variables) == 0 {
+		return nil, nil
+	}
+
+	scope, err := variable.NewScope(config.Variables...)
+	if err != nil {
+		return nil, err
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	path, err := optionalPathVariable(resolver, "ledger_db_path")
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, nil
+	}
+
+	db, err := ledger.OpenSQLite(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ledger.InitSQLiteSchema(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func optionalPathVariable(resolver variable.Resolver, name string) (string, error) {
+	reference, err := variable.ParseReference(name)
+	if err != nil {
+		return "", err
+	}
+
+	value, err := resolver.Resolve(reference)
+	if err != nil {
+		return "", nil
+	}
+
+	if value.Type != variable.TypePath {
+		return "", fmt.Errorf("%s has type %s, want path", name, value.Type)
+	}
+
+	path, ok := value.Value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a path", name)
+	}
+
+	return path, nil
 }
 
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {

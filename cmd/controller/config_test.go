@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,5 +108,54 @@ func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 
 	if len(config.Variables) != 1 {
 		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	}
+}
+
+func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if db != nil {
+		t.Fatal("expected no database")
+	}
+}
+
+func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
+	config := ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: dbPath,
+		},
+	}}
+
+	db, err := initConfiguredLedger(context.Background(), config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer db.Close()
+
+	var version int
+	if err := db.QueryRowContext(context.Background(), `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("query schema version: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("schema version = %d, want 1", version)
+	}
+}
+
+func TestInitConfiguredLedgerRejectsWrongPathType(t *testing.T) {
+	config := ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypeString,
+			Expression: "ledger.sqlite",
+		},
+	}}
+
+	if _, err := initConfiguredLedger(context.Background(), config); err == nil {
+		t.Fatal("expected an error")
 	}
 }
