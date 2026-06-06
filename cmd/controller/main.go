@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -47,6 +48,11 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
+	if _, err := controllerConfigFromArgs(os.Args); err != nil {
+		fmt.Println("controller config failed:", err)
+		return
+	}
+
 	controller := newController(nil)
 	controller.worker = LocalWorkerStarter{}
 
@@ -66,6 +72,14 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println("controller failed:", err)
 	}
+}
+
+func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
+	if len(args) < 2 {
+		return ControllerConfig{}, nil
+	}
+
+	return loadControllerConfig(args[1])
 }
 
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {

@@ -72,3 +72,40 @@ func TestControllerConfigRejectsNoVariables(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestControllerConfigFromArgsReturnsEmptyWithoutPath(t *testing.T) {
+	config, err := controllerConfigFromArgs([]string{"controller"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(config.Variables) != 0 {
+		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	}
+}
+
+func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "controller-config.json")
+	content := []byte(`{
+		"variables": [
+			{
+				"Name": {"Namespace": "controller_config", "Key": "controller_url"},
+				"Type": {"Kind": "string"},
+				"Expression": "http://localhost:8080"
+			}
+		]
+	}`)
+
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := controllerConfigFromArgs([]string{"controller", path})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(config.Variables) != 1 {
+		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	}
+}
