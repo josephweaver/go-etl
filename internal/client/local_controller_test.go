@@ -11,12 +11,12 @@ import (
 func TestLocalControllerStarterResolvesCommand(t *testing.T) {
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_executable"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_executable"},
 			Type:       variable.TypeString,
 			Expression: "go",
 		},
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_args"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"},
 			Type:       variable.TypeList(variable.TypeString),
 			Expression: `["run", "./cmd/controller"]`,
 		},
@@ -52,7 +52,7 @@ func TestLocalControllerStarterAcquireStartLock(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "controller.lock")
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_lock_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"},
 			Type:       variable.TypeString,
 			Expression: lockPath,
 		},
@@ -82,7 +82,7 @@ func TestLocalControllerStarterTreatsExistingStartLockAsRace(t *testing.T) {
 
 	starter := NewLocalControllerStarter(testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_start_lock_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"},
 			Type:       variable.TypeString,
 			Expression: lockPath,
 		},

@@ -360,7 +360,7 @@ func testResolver(t *testing.T, controllerURL string) variable.Resolver {
 	t.Helper()
 
 	return testResolverWithVariables(t, variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_url"},
+		Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"},
 		Type:       variable.TypeString,
 		Expression: controllerURL,
 	})
@@ -371,12 +371,12 @@ func testResolverWithPollInterval(t *testing.T, controllerURL string, interval s
 
 	return testResolverWithVariables(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "controller_url"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"},
 			Type:       variable.TypeString,
 			Expression: controllerURL,
 		},
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceBackend, Key: "client_status_poll_interval"},
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"},
 			Type:       variable.TypeString,
 			Expression: interval,
 		},
