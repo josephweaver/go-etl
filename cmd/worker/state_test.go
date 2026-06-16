@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -53,7 +55,7 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected id: %q", completion.ID)
 		}
 
-		if completion.AttemptID != "test-001-attempt-001" {
+		if !strings.HasPrefix(completion.AttemptID, "test-001-attempt-") {
 			t.Fatalf("unexpected attempt id: %q", completion.AttemptID)
 		}
 
@@ -63,6 +65,18 @@ func TestReportWorkComplete(t *testing.T) {
 
 		if completion.CodeVersion != "demo" {
 			t.Fatalf("unexpected code version: %q", completion.CodeVersion)
+		}
+
+		if completion.StartedAt == "1970-01-01T00:00:00Z" {
+			t.Fatalf("started_at still uses placeholder timestamp")
+		}
+
+		if completion.StartedAt != completion.CompletedAt {
+			t.Fatalf("started_at = %q, completed_at = %q", completion.StartedAt, completion.CompletedAt)
+		}
+
+		if _, err := time.Parse(time.RFC3339, completion.CompletedAt); err != nil {
+			t.Fatalf("parse completed_at: %v", err)
 		}
 
 		w.WriteHeader(http.StatusNoContent)

@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -32,18 +35,28 @@ func reportWorkComplete(controllerURL string, itemID string) error {
 }
 
 func demoWorkCompletion(itemID string) model.WorkCompletion {
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+
 	return model.WorkCompletion{
 		ID:                  itemID,
-		AttemptID:           itemID + "-attempt-001",
+		AttemptID:           itemID + "-attempt-" + randomHex(8),
 		WorkflowInstanceID:  "demo-workflow-instance",
 		StepInstanceID:      "demo-step-instance",
 		WorkItemFingerprint: "demo-work-item:" + itemID,
 		InputFingerprint:    "demo-input:" + itemID,
 		OutputFingerprint:   "demo-output:" + itemID,
 		CodeVersion:         "demo",
-		StartedAt:           "1970-01-01T00:00:00Z",
-		CompletedAt:         "1970-01-01T00:00:00Z",
+		StartedAt:           completedAt,
+		CompletedAt:         completedAt,
 	}
+}
+
+func randomHex(byteCount int) string {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(data)
 }
 
 func reportWorkFailed(controllerURL string, itemID string, workErr error) error {
