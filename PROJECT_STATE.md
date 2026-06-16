@@ -228,6 +228,7 @@ type WorkItem struct {
 	ID             string       `json:"id"`
 	Type           WorkItemType `json:"type"`
 	OutputFilename string       `json:"output_filename"`
+	Parameters     Parameters   `json:"parameters,omitempty"`
 }
 
 type WorkCompletion struct {
@@ -249,6 +250,8 @@ type WorkFailure struct {
 }
 ```
 
+`Parameters` is a map of resolved work-item parameter names to typed JSON values. It is the first transport slot for concrete worker inputs such as input paths, output roots, tile IDs, and other already-resolved values. The worker should receive concrete parameters here rather than resolving workflow expressions locally.
+
 Workflow-compiled work items now include optional controller-generated runtime identity metadata before they enter the pending queue:
 
 ```text
@@ -268,6 +271,7 @@ Raw work-item submissions may still omit these fields for local administration a
 - A non-empty type.
 - A non-empty output filename.
 - An output filename without directory components.
+- Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
 
@@ -419,6 +423,7 @@ Current fan-out compilation behavior:
 - Supports scalar fan-out tokens for `string`, `path`, and `int`.
 - Supports explicit token accessors for object fan-out values, such as `.year`.
 - Supports separate token accessors for work-item IDs and output filenames.
+- Copies static resolved template parameters into every generated work item.
 
 Object fan-out values must use an explicit token accessor. The compiler does not guess which object field should become the work-item ID or output filename.
 

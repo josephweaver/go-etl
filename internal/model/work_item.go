@@ -15,12 +15,20 @@ type WorkItem struct {
 	ID                  string       `json:"id"`
 	Type                WorkItemType `json:"type"`
 	OutputFilename      string       `json:"output_filename"`
+	Parameters          Parameters   `json:"parameters,omitempty"`
 	WorkflowInstanceID  string       `json:"workflow_instance_id,omitempty"`
 	StepInstanceID      string       `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint string       `json:"work_item_fingerprint,omitempty"`
 	InputFingerprint    string       `json:"input_fingerprint,omitempty"`
 	OutputFingerprint   string       `json:"output_fingerprint,omitempty"`
 	CodeVersion         string       `json:"code_version,omitempty"`
+}
+
+type Parameters map[string]Parameter
+
+type Parameter struct {
+	Type  string `json:"type"`
+	Value any    `json:"value"`
 }
 
 type WorkCompletion struct {
@@ -64,6 +72,18 @@ func (item WorkItem) Validate() error {
 
 	if filepath.Base(item.OutputFilename) != item.OutputFilename {
 		return fmt.Errorf("output filename must not contain a directory: %s", item.OutputFilename)
+	}
+
+	for name, parameter := range item.Parameters {
+		if name == "" {
+			return fmt.Errorf("parameter name is required")
+		}
+		if parameter.Type == "" {
+			return fmt.Errorf("parameter %s type is required", name)
+		}
+		if parameter.Value == nil {
+			return fmt.Errorf("parameter %s value is required", name)
+		}
 	}
 
 	return nil
