@@ -154,29 +154,32 @@ func (c WorkflowClient) WaitForController(controllerURL string, maxChecks int) e
 	return fmt.Errorf("controller did not become reachable: %w", lastErr)
 }
 
-func (c WorkflowClient) ShutdownWhenIdle(maxChecks int) error {
+func (c WorkflowClient) ShutdownWhenIdle(maxChecks int) (model.ControllerStatus, error) {
 	if maxChecks <= 0 {
-		return fmt.Errorf("max checks must be positive")
+		return model.ControllerStatus{}, fmt.Errorf("max checks must be positive")
 	}
 
 	controllerURL, err := c.controllerURL()
 	if err != nil {
-		return err
+		return model.ControllerStatus{}, err
 	}
 
 	interval, err := c.statusPollInterval()
 	if err != nil {
-		return err
+		return model.ControllerStatus{}, err
 	}
 
 	for check := range maxChecks {
 		status, err := c.Status(controllerURL)
 		if err != nil {
-			return err
+			return model.ControllerStatus{}, err
 		}
 
 		if status.Pending == 0 && status.Assigned == 0 {
-			return c.Shutdown(controllerURL)
+			if err := c.Shutdown(controllerURL); err != nil {
+				return model.ControllerStatus{}, err
+			}
+			return status, nil
 		}
 
 		if check < maxChecks-1 {
@@ -184,7 +187,7 @@ func (c WorkflowClient) ShutdownWhenIdle(maxChecks int) error {
 		}
 	}
 
-	return fmt.Errorf("controller still has pending or assigned work")
+	return model.ControllerStatus{}, fmt.Errorf("controller still has pending or assigned work")
 }
 
 func (c WorkflowClient) Status(controllerURL string) (model.ControllerStatus, error) {

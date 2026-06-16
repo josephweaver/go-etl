@@ -22,10 +22,19 @@ func main() {
 		return
 	}
 
-	if err := workflowClient.ShutdownWhenIdle(60); err != nil {
+	status, err := workflowClient.ShutdownWhenIdle(60)
+	if err != nil {
 		fmt.Println("wait for shutdown:", err)
 		return
 	}
+
+	fmt.Printf("final status: pending=%d assigned=%d failed=%d attempts=%d attempt_variables=%d\n",
+		status.Pending,
+		status.Assigned,
+		status.Failed,
+		status.Attempts,
+		status.AttemptVariables,
+	)
 }
 
 func demoResolver() (variable.Resolver, error) {

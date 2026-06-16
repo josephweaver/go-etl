@@ -442,6 +442,7 @@ Current client behavior:
 - Loads serialized workflow submission files from disk.
 - Can submit a serialized workflow submission file directly.
 - Can fetch controller status and call `POST /shutdown` when pending and assigned work are both zero.
+- Returns the final idle controller status from `ShutdownWhenIdle`, so callers can inspect queue and ledger counts before shutdown.
 - Uses `client_status_poll_interval` as the typed variable for delay between non-idle status checks.
 - Uses JSON containing a workflow plus optional submitted override/runtime variables.
 - Treats the controller URL as a typed variable, not a separate config path.
@@ -533,6 +534,7 @@ The demo client:
 - Submits `demo-workflow.json`.
 - Lets the controller start local workers using variables from the submitted workflow file.
 - Polls controller status.
+- Prints the final idle status, including queue and ledger counts.
 - Calls `POST /shutdown` when pending and assigned work reach zero.
 
 The worker can still be run manually:
