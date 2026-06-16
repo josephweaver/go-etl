@@ -117,6 +117,21 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("attempt count = %d, want 1", count)
 	}
+
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempt_variables WHERE namespace = 'runtime'`).Scan(&count); err != nil {
+		t.Fatalf("query attempt variable count: %v", err)
+	}
+	if count != 10 {
+		t.Fatalf("attempt variable count = %d, want 10", count)
+	}
+
+	var valueJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_instance_id'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query workflow instance variable: %v", err)
+	}
+	if valueJSON != `"workflow-instance-001"` {
+		t.Fatalf("workflow_instance_id value_json = %q", valueJSON)
+	}
 }
 
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {

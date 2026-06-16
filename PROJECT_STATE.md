@@ -156,7 +156,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `GET /status` currently reports pending, assigned, and failed counts.
 
-`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`.
+`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow instance, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -185,14 +185,14 @@ The first local demo ledger is created at:
 .run/controller/ledger.sqlite
 ```
 
-The verified local demo currently records:
+The verified local demo previously recorded:
 
 ```text
 attempts=2
 variables=4
 ```
 
-That corresponds to two demo fan-out work items and two stored runtime variables per attempt.
+That corresponded to two demo fan-out work items and two stored runtime variables per attempt. New runs store ten runtime variables per completed attempt.
 
 ## Worker Config
 

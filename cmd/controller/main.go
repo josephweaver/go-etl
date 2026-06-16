@@ -544,25 +544,34 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 		Status:              ledger.AttemptStatusCompleted,
 		StartedAt:           startedAt,
 		CompletedAt:         completedAt,
-		Variables: []ledger.AttemptVariable{
-			{
-				Namespace: "runtime",
-				Name:      "work_item_id",
-				Type:      "string",
-				Value:     completion.ID,
-				Source:    "worker",
-				Lifecycle: "work_item",
-			},
-			{
-				Namespace: "runtime",
-				Name:      "attempt_id",
-				Type:      "string",
-				Value:     completion.AttemptID,
-				Source:    "worker",
-				Lifecycle: "attempt",
-			},
-		},
+		Variables:           runtimeVariablesFromCompletion(completion),
 	}, true, nil
+}
+
+func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
+	return []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
+		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
+		runtimeStringVariable("work_item_fingerprint", completion.WorkItemFingerprint, "work_item"),
+		runtimeStringVariable("input_fingerprint", completion.InputFingerprint, "work_item"),
+		runtimeStringVariable("output_fingerprint", completion.OutputFingerprint, "work_item"),
+		runtimeStringVariable("code_version", completion.CodeVersion, "work_item"),
+		runtimeStringVariable("attempt_id", completion.AttemptID, "attempt"),
+		runtimeStringVariable("started_at", completion.StartedAt, "attempt"),
+		runtimeStringVariable("completed_at", completion.CompletedAt, "attempt"),
+	}
+}
+
+func runtimeStringVariable(name string, value string, lifecycle string) ledger.AttemptVariable {
+	return ledger.AttemptVariable{
+		Namespace: "runtime",
+		Name:      name,
+		Type:      "string",
+		Value:     value,
+		Source:    "worker",
+		Lifecycle: lifecycle,
+	}
 }
 
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
