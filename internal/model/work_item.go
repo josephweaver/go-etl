@@ -42,9 +42,11 @@ type WorkFailure struct {
 }
 
 type ControllerStatus struct {
-	Pending  int `json:"pending"`
-	Assigned int `json:"assigned"`
-	Failed   int `json:"failed"`
+	Pending          int `json:"pending"`
+	Assigned         int `json:"assigned"`
+	Failed           int `json:"failed"`
+	Attempts         int `json:"attempts"`
+	AttemptVariables int `json:"attempt_variables"`
 }
 
 func (item WorkItem) Validate() error {

@@ -154,7 +154,7 @@ When `controller_config.ledger_db_path` is present, the controller opens or crea
 
 After workflow submission creates pending work, the controller resolves `worker_target_environment` through the same variable resolver. If that variable is present and a `WorkerStarter` is configured, the controller asks the starter to launch one worker for that target environment. The current `LocalWorkerStarter` supports only `local` and starts a background worker process from typed `worker_start_executable` and `worker_start_args` variables.
 
-`GET /status` currently reports pending, assigned, and failed counts.
+`GET /status` currently reports pending, assigned, failed, attempt, and attempt-variable counts. Attempt counts are zero when the controller has no configured ledger.
 
 `POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow instance, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time.
 

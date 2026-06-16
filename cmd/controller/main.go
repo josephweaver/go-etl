@@ -438,10 +438,36 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
+	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
+	if err != nil {
+		http.Error(w, "query ledger status", http.StatusInternalServerError)
+		return
+	}
+	status.Attempts = attempts
+	status.AttemptVariables = attemptVariables
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
 		http.Error(w, "encode status", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
+	if c.ledger == nil {
+		return 0, 0, nil
+	}
+
+	var attempts int
+	if err := c.ledger.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts`).Scan(&attempts); err != nil {
+		return 0, 0, fmt.Errorf("query attempts count: %w", err)
+	}
+
+	var attemptVariables int
+	if err := c.ledger.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempt_variables`).Scan(&attemptVariables); err != nil {
+		return 0, 0, fmt.Errorf("query attempt variables count: %w", err)
+	}
+
+	return attempts, attemptVariables, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {

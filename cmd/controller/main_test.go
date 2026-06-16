@@ -267,6 +267,53 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
+	controller := newTestController()
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+	assignNextWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"attempt-001",
+		"workflow_instance_id":"workflow-instance-001",
+		"step_instance_id":"step-instance-001",
+		"work_item_fingerprint":"work-item-fingerprint",
+		"input_fingerprint":"input-fingerprint",
+		"output_fingerprint":"output-fingerprint",
+		"code_version":"code-version",
+		"started_at":"2026-06-06T12:00:00Z",
+		"completed_at":"2026-06-06T12:01:00Z"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected completion status code: %d", response.Code)
+	}
+
+	status := getStatus(t, controller)
+
+	if status.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", status.Attempts)
+	}
+
+	if status.AttemptVariables != 10 {
+		t.Fatalf("attempt_variables = %d, want 10", status.AttemptVariables)
+	}
+}
+
 func TestStatusHandlerRejectsPost(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodPost, "/status", nil)
