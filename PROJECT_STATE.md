@@ -185,14 +185,14 @@ The first local demo ledger is created at:
 .run/controller/ledger.sqlite
 ```
 
-The verified local demo previously recorded:
+The current local demo ledger was re-verified on 2026-06-16. Starting from the earlier demo ledger count of two attempts and four variables, one new demo run added two attempts and twenty runtime variables:
 
 ```text
-attempts=2
-variables=4
+attempts=4
+variables=24
 ```
 
-That corresponded to two demo fan-out work items and two stored runtime variables per attempt. New runs store ten runtime variables per completed attempt.
+That corresponds to four total demo fan-out work items in the existing ledger. New runs store ten runtime variables per completed attempt.
 
 ## Worker Config
 
