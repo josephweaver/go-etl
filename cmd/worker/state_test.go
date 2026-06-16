@@ -37,6 +37,8 @@ func TestReportWorkFailed(t *testing.T) {
 }
 
 func TestReportWorkComplete(t *testing.T) {
+	startedAt := time.Now().UTC().Add(-time.Minute)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/work/complete" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -67,23 +69,24 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected code version: %q", completion.CodeVersion)
 		}
 
-		if completion.StartedAt == "1970-01-01T00:00:00Z" {
-			t.Fatalf("started_at still uses placeholder timestamp")
+		if completion.StartedAt != startedAt.Format(time.RFC3339) {
+			t.Fatalf("started_at = %q, want %q", completion.StartedAt, startedAt.Format(time.RFC3339))
 		}
 
-		if completion.StartedAt != completion.CompletedAt {
-			t.Fatalf("started_at = %q, completed_at = %q", completion.StartedAt, completion.CompletedAt)
-		}
-
-		if _, err := time.Parse(time.RFC3339, completion.CompletedAt); err != nil {
+		completedAt, err := time.Parse(time.RFC3339, completion.CompletedAt)
+		if err != nil {
 			t.Fatalf("parse completed_at: %v", err)
+		}
+
+		if completedAt.Before(startedAt) {
+			t.Fatalf("completed_at = %q before started_at = %q", completion.CompletedAt, completion.StartedAt)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, "test-001"); err != nil {
+	if err := reportWorkComplete(server.URL, "test-001", startedAt); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -94,7 +97,7 @@ func TestReportWorkCompleteRejectsServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, "test-001"); err == nil {
+	if err := reportWorkComplete(server.URL, "test-001", time.Now()); err == nil {
 		t.Fatal("expected an error")
 	}
 }

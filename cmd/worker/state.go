@@ -13,10 +13,10 @@ import (
 	"goetl/internal/model"
 )
 
-func reportWorkComplete(controllerURL string, itemID string) error {
+func reportWorkComplete(controllerURL string, itemID string, startedAt time.Time) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-	body, err := json.Marshal(demoWorkCompletion(itemID))
+	body, err := json.Marshal(demoWorkCompletion(itemID, startedAt))
 	if err != nil {
 		return fmt.Errorf("encode work completion: %w", err)
 	}
@@ -34,7 +34,10 @@ func reportWorkComplete(controllerURL string, itemID string) error {
 	return nil
 }
 
-func demoWorkCompletion(itemID string) model.WorkCompletion {
+func demoWorkCompletion(itemID string, startedAt time.Time) model.WorkCompletion {
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
 	completedAt := time.Now().UTC().Format(time.RFC3339)
 
 	return model.WorkCompletion{
@@ -46,7 +49,7 @@ func demoWorkCompletion(itemID string) model.WorkCompletion {
 		InputFingerprint:    "demo-input:" + itemID,
 		OutputFingerprint:   "demo-output:" + itemID,
 		CodeVersion:         "demo",
-		StartedAt:           completedAt,
+		StartedAt:           startedAt.UTC().Format(time.RFC3339),
 		CompletedAt:         completedAt,
 	}
 }

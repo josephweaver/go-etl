@@ -460,7 +460,7 @@ WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
 
 This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage. The demo operation is idempotent by overwrite: rerunning the same work item writes the same deterministic content and replaces any existing completed output. Future skip behavior must be based on verifiable correctness, not just the presence of an output filename.
 
-The worker completion reporter now includes a worker-generated attempt ID and runtime completion timestamp in `POST /work/complete`. Demo workflow, step, fingerprint, and code-version values are still placeholders until the controller/worker runtime generates the full `runtime.*` variable snapshot.
+The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. Demo workflow, step, fingerprint, and code-version values are still placeholders until the controller/worker runtime generates the full `runtime.*` variable snapshot.
 
 ## Tests
 
