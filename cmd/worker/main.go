@@ -55,7 +55,7 @@ func runWorkerLoop(worker Worker) error {
 			return err
 		}
 
-		if err := reportWorkComplete(worker.Config.ControllerURL, item.ID, startedAt); err != nil {
+		if err := reportWorkComplete(worker.Config.ControllerURL, item, startedAt); err != nil {
 			return fmt.Errorf("report completion: %w", err)
 		}
 	}

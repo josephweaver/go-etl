@@ -13,10 +13,10 @@ import (
 	"goetl/internal/model"
 )
 
-func reportWorkComplete(controllerURL string, itemID string, startedAt time.Time) error {
+func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-	body, err := json.Marshal(demoWorkCompletion(itemID, startedAt))
+	body, err := json.Marshal(workCompletion(item, startedAt))
 	if err != nil {
 		return fmt.Errorf("encode work completion: %w", err)
 	}
@@ -34,24 +34,45 @@ func reportWorkComplete(controllerURL string, itemID string, startedAt time.Time
 	return nil
 }
 
-func demoWorkCompletion(itemID string, startedAt time.Time) model.WorkCompletion {
+func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompletion {
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
 	completedAt := time.Now().UTC().Format(time.RFC3339)
 
-	return model.WorkCompletion{
-		ID:                  itemID,
-		AttemptID:           itemID + "-attempt-" + randomHex(8),
-		WorkflowInstanceID:  "demo-workflow-instance",
-		StepInstanceID:      "demo-step-instance",
-		WorkItemFingerprint: "demo-work-item:" + itemID,
-		InputFingerprint:    "demo-input:" + itemID,
-		OutputFingerprint:   "demo-output:" + itemID,
-		CodeVersion:         "demo",
+	completion := model.WorkCompletion{
+		ID:                  item.ID,
+		AttemptID:           item.ID + "-attempt-" + randomHex(8),
+		WorkflowInstanceID:  item.WorkflowInstanceID,
+		StepInstanceID:      item.StepInstanceID,
+		WorkItemFingerprint: item.WorkItemFingerprint,
+		InputFingerprint:    item.InputFingerprint,
+		OutputFingerprint:   item.OutputFingerprint,
+		CodeVersion:         item.CodeVersion,
 		StartedAt:           startedAt.UTC().Format(time.RFC3339),
 		CompletedAt:         completedAt,
 	}
+
+	if completion.WorkflowInstanceID == "" {
+		completion.WorkflowInstanceID = "demo-workflow-instance"
+	}
+	if completion.StepInstanceID == "" {
+		completion.StepInstanceID = "demo-step-instance"
+	}
+	if completion.WorkItemFingerprint == "" {
+		completion.WorkItemFingerprint = "demo-work-item:" + item.ID
+	}
+	if completion.InputFingerprint == "" {
+		completion.InputFingerprint = "demo-input:" + item.ID
+	}
+	if completion.OutputFingerprint == "" {
+		completion.OutputFingerprint = "demo-output:" + item.ID
+	}
+	if completion.CodeVersion == "" {
+		completion.CodeVersion = "demo"
+	}
+
+	return completion
 }
 
 func randomHex(byteCount int) string {

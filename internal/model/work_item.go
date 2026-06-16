@@ -12,9 +12,15 @@ const (
 )
 
 type WorkItem struct {
-	ID             string       `json:"id"`
-	Type           WorkItemType `json:"type"`
-	OutputFilename string       `json:"output_filename"`
+	ID                  string       `json:"id"`
+	Type                WorkItemType `json:"type"`
+	OutputFilename      string       `json:"output_filename"`
+	WorkflowInstanceID  string       `json:"workflow_instance_id,omitempty"`
+	StepInstanceID      string       `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint string       `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint    string       `json:"input_fingerprint,omitempty"`
+	OutputFingerprint   string       `json:"output_fingerprint,omitempty"`
+	CodeVersion         string       `json:"code_version,omitempty"`
 }
 
 type WorkCompletion struct {

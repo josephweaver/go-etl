@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
@@ -362,6 +363,35 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	status := getStatus(t, controller)
 	if status.Pending != 2 {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected next work status code: %d", nextResponse.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&item); err != nil {
+		t.Fatalf("decode next work item: %v", err)
+	}
+
+	if !strings.HasPrefix(item.WorkflowInstanceID, "cdl-instance-") {
+		t.Fatalf("unexpected workflow instance id: %q", item.WorkflowInstanceID)
+	}
+
+	if item.StepInstanceID != item.WorkflowInstanceID+"-step-download" {
+		t.Fatalf("unexpected step instance id: %q", item.StepInstanceID)
+	}
+
+	if item.WorkItemFingerprint != "work-item:"+item.ID {
+		t.Fatalf("unexpected work item fingerprint: %q", item.WorkItemFingerprint)
+	}
+
+	if item.CodeVersion != "demo" {
+		t.Fatalf("unexpected code version: %q", item.CodeVersion)
 	}
 }
 

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -213,11 +215,12 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
-	items, err := workflow.CompileWorkflow(resolver, submission.Workflow)
+	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems)
 
 	workerTarget, err := workerTargetEnvironment(resolver)
 	if err != nil {
@@ -261,6 +264,32 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem) []model.WorkItem {
+	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
+	items := make([]model.WorkItem, 0, len(compiledItems))
+
+	for _, compiled := range compiledItems {
+		item := compiled.WorkItem
+		item.WorkflowInstanceID = workflowInstanceID
+		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
+		item.WorkItemFingerprint = "work-item:" + item.ID
+		item.InputFingerprint = "input:" + item.ID
+		item.OutputFingerprint = "output:" + item.OutputFilename
+		item.CodeVersion = "demo"
+		items = append(items, item)
+	}
+
+	return items
+}
+
+func randomHex(byteCount int) string {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(data)
 }
 
 func workerTargetEnvironment(resolver variable.Resolver) (string, error) {
