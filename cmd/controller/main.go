@@ -41,6 +41,12 @@ type WorkerStarter interface {
 	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
+type WorkReuseDecision struct {
+	Reusable       bool
+	Reason         string
+	PriorAttemptID string
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
 		pending:  items,
@@ -195,6 +201,28 @@ func (c *Controller) reusablePriorAttempt(ctx context.Context, item model.WorkIt
 	}
 
 	return attempt, true, nil
+}
+
+func (c *Controller) workReuseDecision(ctx context.Context, item model.WorkItem) (WorkReuseDecision, error) {
+	attempt, ok, err := c.priorCompletedAttempt(ctx, item)
+	if err != nil {
+		return WorkReuseDecision{}, err
+	}
+	if !ok {
+		return WorkReuseDecision{Reason: "no_prior_completed_attempt"}, nil
+	}
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		return WorkReuseDecision{
+			Reason:         "prior_attempt_mismatch",
+			PriorAttemptID: attempt.ID,
+		}, nil
+	}
+
+	return WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: attempt.ID,
+	}, nil
 }
 
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {

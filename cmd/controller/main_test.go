@@ -396,6 +396,90 @@ func TestReusablePriorAttemptRejectsMismatchedAttempt(t *testing.T) {
 	}
 }
 
+func TestWorkReuseDecisionReportsReusableAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if !decision.Reusable || decision.Reason != "matched_prior_completed_attempt" || decision.PriorAttemptID != "attempt-001" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestWorkReuseDecisionReportsMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if decision.Reusable || decision.Reason != "prior_attempt_mismatch" || decision.PriorAttemptID != "attempt-001" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestWorkReuseDecisionReportsMissingAttempt(t *testing.T) {
+	controller := newController(nil)
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if decision.Reusable || decision.Reason != "no_prior_completed_attempt" || decision.PriorAttemptID != "" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)
