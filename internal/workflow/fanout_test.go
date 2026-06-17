@@ -115,6 +115,46 @@ func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
 	}
 }
 
+func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
+	scope, err := variable.NewScope(variable.Variable{
+		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
+		Type:       variable.TypeList(variable.TypeObject),
+		Expression: `[{"id": "fixture", "input_path": "demo-summary-input.txt"}, {"id": "fixture-2", "input_path": "demo-summary-input-2.txt"}]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	items, err := CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${records[*]}",
+		IDTokenAccessor:  ".id",
+		OutputAccessor:   ".id",
+		Type:             model.WorkItemTypeSummarizeInputFile,
+		IDPrefix:         "summary",
+		OutputPrefix:     "summary",
+		OutputExtension:  ".txt",
+		Parameters: model.Parameters{
+			"input_path": {Type: "path", Value: "unset"},
+		},
+		ParameterAccessors: map[string]string{
+			"input_path": ".input_path",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if items[0].Parameters["input_path"].Value != "demo-summary-input.txt" {
+		t.Fatalf("unexpected input_path parameter: %+v", items[0].Parameters["input_path"])
+	}
+
+	if items[1].Parameters["input_path"].Value != "demo-summary-input-2.txt" {
+		t.Fatalf("unexpected second input_path parameter: %+v", items[1].Parameters["input_path"])
+	}
+}
+
 func TestCompileFanOutStepRejectsMissingID(t *testing.T) {
 	resolver := variable.NewResolver(variable.NewSet(), variable.ResolverConfig{})
 

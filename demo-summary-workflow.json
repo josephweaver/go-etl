@@ -10,10 +10,10 @@
         "Type": {
           "Kind": "list",
           "Element": {
-            "Kind": "string"
+            "Kind": "object"
           }
         },
-        "Expression": "[\"fixture\"]"
+        "Expression": "[{\"id\": \"fixture\", \"input_path\": \"demo-summary-input.txt\"}, {\"id\": \"fixture-2\", \"input_path\": \"demo-summary-input-2.txt\"}]"
       }
     ],
     "Steps": [
@@ -22,14 +22,19 @@
         "FanOut": {
           "WorkItem": {
             "FanOutExpression": "${summary_items[*]}",
+            "IDTokenAccessor": ".id",
+            "OutputAccessor": ".id",
             "Type": "summarize_input_file",
             "OutputPrefix": "summary-demo",
             "OutputExtension": ".txt",
             "Parameters": {
               "input_path": {
                 "type": "path",
-                "value": "demo-summary-input.txt"
+                "value": "unset"
               }
+            },
+            "ParameterAccessors": {
+              "input_path": ".input_path"
             }
           }
         }
