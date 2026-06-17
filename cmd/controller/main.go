@@ -217,12 +217,18 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
+	codeVersion, err := controllerCodeVersion(resolver)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems)
+	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
 
 	workerTarget, err := workerTargetEnvironment(resolver)
 	if err != nil {
@@ -268,7 +274,7 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem) []model.WorkItem {
+func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
 	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
 	items := make([]model.WorkItem, 0, len(compiledItems))
 
@@ -286,14 +292,49 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 		item.OutputFingerprint = fingerprint("output", map[string]any{
 			"output_filename": item.OutputFilename,
 		})
-		item.CodeVersion = controllerCodeVersion()
+		item.CodeVersion = codeVersion
 		items = append(items, item)
 	}
 
 	return items
 }
 
-func controllerCodeVersion() string {
+func controllerCodeVersion(resolver variable.Resolver) (string, error) {
+	configured, ok, err := optionalStringVariable(resolver, "code_version")
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return configured, nil
+	}
+
+	return buildInfoCodeVersion(), nil
+}
+
+func optionalStringVariable(resolver variable.Resolver, name string) (string, bool, error) {
+	reference, err := variable.ParseReference(name)
+	if err != nil {
+		return "", false, err
+	}
+
+	value, err := resolver.Resolve(reference)
+	if err != nil {
+		return "", false, nil
+	}
+
+	if value.Type != variable.TypeString {
+		return "", false, fmt.Errorf("%s has type %s, want string", name, value.Type)
+	}
+
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", false, fmt.Errorf("%s is required", name)
+	}
+
+	return text, true, nil
+}
+
+func buildInfoCodeVersion() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"

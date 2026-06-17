@@ -480,6 +480,66 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
+	controller := newController(nil)
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"Name": {"Namespace": "workflow", "Key": "years"},
+					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
+					"Expression": "[2024]"
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+			{
+				"Name": {"Namespace": "override", "Key": "code_version"},
+				"Type": {"Kind": "string"},
+				"Expression": "test-version"
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected next work status code: %d", nextResponse.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&item); err != nil {
+		t.Fatalf("decode next work item: %v", err)
+	}
+
+	if item.CodeVersion != "test-version" {
+		t.Fatalf("code version = %q, want test-version", item.CodeVersion)
+	}
+}
+
 func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 	items := workItemsWithRuntimeMetadata("summary", []workflow.CompiledWorkItem{
 		{
@@ -506,7 +566,7 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, "test-version")
 
 	if items[0].InputFingerprint == items[1].InputFingerprint {
 		t.Fatalf("input fingerprints should differ: %s", items[0].InputFingerprint)
@@ -520,8 +580,8 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 		t.Fatalf("unexpected work item fingerprint: %q", items[0].WorkItemFingerprint)
 	}
 
-	if items[0].CodeVersion == "" || items[0].CodeVersion == "demo" {
-		t.Fatalf("unexpected code version: %q", items[0].CodeVersion)
+	if items[0].CodeVersion != "test-version" {
+		t.Fatalf("code version = %q, want test-version", items[0].CodeVersion)
 	}
 }
 

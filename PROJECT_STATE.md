@@ -268,7 +268,7 @@ code_version
 
 Workflow-generated work-item, input, and output fingerprints are deterministic SHA-256 labels over resolved assignment content. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. The output fingerprint currently hashes the resolved output filename. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
 
-Workflow-generated assignments set `code_version` from Go build VCS metadata when available. If the Go toolchain did not embed a revision, the controller records `unknown`. A dirty working tree appends `-modified`.
+Workflow-generated assignments set `code_version` from the resolved variable `code_version` when present, so launchers may submit values such as `override.code_version` or `controller_config.code_version`. If no variable is present, the controller falls back to Go build VCS metadata. If the Go toolchain did not embed a revision, the controller records `unknown`. A dirty working tree appends `-modified`.
 
 `WorkItem.Validate()` checks structural validity:
 
@@ -343,6 +343,7 @@ controller_config.controller_start_executable
 controller_config.controller_start_args
 controller_config.controller_start_lock_path
 controller_config.ledger_db_path
+controller_config.code_version
 worker_config.worker_target_environment
 worker_config.worker_start_executable
 worker_config.worker_start_args
@@ -364,6 +365,7 @@ override.worker_max_count
 override.worker_count_per_start
 override.worker_min_elapsed_time_between_starts
 override.client_status_poll_interval
+override.code_version
 ```
 
 The local Go client currently uses `controller_config` variables to start the local controller. `demo-workflow.json` uses `worker_config` variables to request local worker startup and scaling behavior. Future client/API arguments may still submit `override` variables when the caller intentionally overrides config.
@@ -562,7 +564,7 @@ final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
 
 The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
-The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not embed VCS revision metadata.
+The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not submit a `code_version` variable and did not embed VCS revision metadata.
 
 Expected completed summary output:
 
