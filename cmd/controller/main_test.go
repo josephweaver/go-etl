@@ -13,6 +13,7 @@ import (
 
 	"goetl/internal/model"
 	"goetl/internal/variable"
+	"goetl/internal/workflow"
 )
 
 func TestNextWorkHandler(t *testing.T) {
@@ -461,12 +462,53 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected step instance id: %q", item.StepInstanceID)
 	}
 
-	if item.WorkItemFingerprint != "work-item:"+item.ID {
+	if !strings.HasPrefix(item.WorkItemFingerprint, "work-item:sha256:") {
 		t.Fatalf("unexpected work item fingerprint: %q", item.WorkItemFingerprint)
+	}
+
+	if !strings.HasPrefix(item.InputFingerprint, "input:sha256:") {
+		t.Fatalf("unexpected input fingerprint: %q", item.InputFingerprint)
 	}
 
 	if item.CodeVersion != "demo" {
 		t.Fatalf("unexpected code version: %q", item.CodeVersion)
+	}
+}
+
+func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
+	items := workItemsWithRuntimeMetadata("summary", []workflow.CompiledWorkItem{
+		{
+			WorkflowID: "summary",
+			StepID:     "summarize",
+			WorkItem: model.WorkItem{
+				ID:             "summary-a",
+				Type:           model.WorkItemTypeSummarizeInputFile,
+				OutputFilename: "summary-a.txt",
+				Parameters: model.Parameters{
+					"input_path": {Type: "path", Value: "a.txt"},
+				},
+			},
+		},
+		{
+			WorkflowID: "summary",
+			StepID:     "summarize",
+			WorkItem: model.WorkItem{
+				ID:             "summary-b",
+				Type:           model.WorkItemTypeSummarizeInputFile,
+				OutputFilename: "summary-b.txt",
+				Parameters: model.Parameters{
+					"input_path": {Type: "path", Value: "b.txt"},
+				},
+			},
+		},
+	})
+
+	if items[0].InputFingerprint == items[1].InputFingerprint {
+		t.Fatalf("input fingerprints should differ: %s", items[0].InputFingerprint)
+	}
+
+	if !strings.HasPrefix(items[0].WorkItemFingerprint, "work-item:sha256:") {
+		t.Fatalf("unexpected work item fingerprint: %q", items[0].WorkItemFingerprint)
 	}
 }
 

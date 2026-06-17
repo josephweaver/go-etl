@@ -266,7 +266,7 @@ output_fingerprint
 code_version
 ```
 
-Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
+Workflow-generated work-item and input fingerprints are deterministic SHA-256 labels over resolved assignment content. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
 
 `WorkItem.Validate()` checks structural validity:
 

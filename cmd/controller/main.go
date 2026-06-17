@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -274,14 +275,28 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 		item := compiled.WorkItem
 		item.WorkflowInstanceID = workflowInstanceID
 		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
-		item.WorkItemFingerprint = "work-item:" + item.ID
-		item.InputFingerprint = "input:" + item.ID
+		item.WorkItemFingerprint = fingerprint("work-item", map[string]any{
+			"id":              item.ID,
+			"type":            item.Type,
+			"output_filename": item.OutputFilename,
+			"parameters":      item.Parameters,
+		})
+		item.InputFingerprint = fingerprint("input", item.Parameters)
 		item.OutputFingerprint = "output:" + item.OutputFilename
 		item.CodeVersion = "demo"
 		items = append(items, item)
 	}
 
 	return items
+}
+
+func fingerprint(label string, value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		data = []byte(fmt.Sprint(value))
+	}
+	sum := sha256.Sum256(data)
+	return label + ":sha256:" + hex.EncodeToString(sum[:])
 }
 
 func randomHex(byteCount int) string {
