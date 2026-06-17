@@ -557,11 +557,12 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=15 attempt_variables=142
+final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
 ```
 
 The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
+The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not embed VCS revision metadata.
 
 Expected completed summary output:
 
