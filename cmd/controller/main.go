@@ -562,12 +562,20 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c.mu.Lock()
+	pendingItems := append([]model.WorkItem(nil), c.pending...)
 	status := model.ControllerStatus{
 		Pending:  len(c.pending),
 		Assigned: len(c.assigned),
 		Failed:   len(c.failed),
 	}
 	c.mu.Unlock()
+
+	reuseCandidates, err := c.pendingReuseCandidateCount(r.Context(), pendingItems)
+	if err != nil {
+		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
+		return
+	}
+	status.PendingReuseCandidates = reuseCandidates
 
 	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
 	if err != nil {
@@ -599,6 +607,20 @@ func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
 	}
 
 	return attempts, attemptVariables, nil
+}
+
+func (c *Controller) pendingReuseCandidateCount(ctx context.Context, items []model.WorkItem) (int, error) {
+	count := 0
+	for _, item := range items {
+		_, ok, err := c.reusablePriorAttempt(ctx, item)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {

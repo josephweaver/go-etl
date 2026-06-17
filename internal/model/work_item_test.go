@@ -202,3 +202,24 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
 	}
 }
+
+func TestControllerStatusJSONIncludesReuseCandidates(t *testing.T) {
+	status := ControllerStatus{
+		Pending:                2,
+		PendingReuseCandidates: 1,
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+
+	var decoded ControllerStatus
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+
+	if decoded.PendingReuseCandidates != 1 {
+		t.Fatalf("pending_reuse_candidates = %d, want 1", decoded.PendingReuseCandidates)
+	}
+}

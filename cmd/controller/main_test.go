@@ -580,6 +580,40 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerReportsPendingReuseCandidates(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = append(controller.pending, model.WorkItem{
+		ID:                  "test-001",
+		Type:                model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:      "result.txt",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+
+	status := getStatus(t, controller)
+
+	if status.PendingReuseCandidates != 1 {
+		t.Fatalf("pending_reuse_candidates = %d, want 1", status.PendingReuseCandidates)
+	}
+}
+
 func TestStatusHandlerRejectsPost(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodPost, "/status", nil)
