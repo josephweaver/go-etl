@@ -15,6 +15,8 @@ Project guidance is in `AGENTS.md`. The longer product and architecture directio
 ```text
 go.mod
 demo-workflow.json
+demo-summary-workflow.json
+demo-summary-input.txt
 .gitignore
 internal/
   ledger/
@@ -431,6 +433,8 @@ Object fan-out values must use an explicit token accessor. The compiler does not
 
 `demo-workflow.json` contains the first serialized workflow submission payload. It keeps workflow-scope variables inside the workflow object and defines a one-step fan-out workflow that produces `write_demo_output` work items for demo years.
 
+`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It submits one `summarize_input_file` item with `parameters.input_path = "demo-summary-input.txt"` so the local controller/worker path can exercise parameterized work.
+
 ## Local Client
 
 `internal/client` contains the first Go local workflow client helper.
@@ -538,6 +542,26 @@ Run the local workflow demo from the repository root:
 ```powershell
 cd "c:\Joe Local Only\College\Research\go-etl"
 go run ./cmd/demo-client
+```
+
+Run the parameterized summary workflow demo from the repository root:
+
+```powershell
+go run ./cmd/demo-client demo-summary-workflow.json
+```
+
+The current verified summary demo prints:
+
+```text
+final status: pending=0 assigned=0 failed=0 attempts=7 attempt_variables=54
+```
+
+Expected completed summary output:
+
+```text
+cmd/worker/.run/data/summary-demo-fixture.txt
+input_path=demo-summary-input.txt
+size_bytes=22
 ```
 
 The demo client:

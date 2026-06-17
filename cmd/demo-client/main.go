@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"goetl/internal/client"
 	"goetl/internal/variable"
@@ -17,7 +18,7 @@ func main() {
 	starter := client.NewLocalControllerStarter(resolver)
 	workflowClient := client.NewWorkflowClientWithStarter(nil, resolver, starter)
 
-	if err := workflowClient.SubmitWorkflowFile("demo-workflow.json"); err != nil {
+	if err := workflowClient.SubmitWorkflowFile(demoWorkflowPath(os.Args)); err != nil {
 		fmt.Println("submit workflow:", err)
 		return
 	}
@@ -35,6 +36,14 @@ func main() {
 		status.Attempts,
 		status.AttemptVariables,
 	)
+}
+
+func demoWorkflowPath(args []string) string {
+	if len(args) > 1 {
+		return args[1]
+	}
+
+	return "demo-workflow.json"
 }
 
 func demoResolver() (variable.Resolver, error) {

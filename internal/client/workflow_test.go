@@ -96,6 +96,28 @@ func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
 	}
 }
 
+func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
+	path := filepath.Join("..", "..", "demo-summary-workflow.json")
+
+	submission, err := LoadWorkflowSubmissionFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if submission.Workflow.ID != "summary-demo" {
+		t.Fatalf("unexpected workflow id: %s", submission.Workflow.ID)
+	}
+
+	template := submission.Workflow.Steps[0].FanOut.WorkItem
+	if template.Type != model.WorkItemTypeSummarizeInputFile {
+		t.Fatalf("unexpected work item type: %s", template.Type)
+	}
+
+	if template.Parameters["input_path"].Value != "demo-summary-input.txt" {
+		t.Fatalf("unexpected input_path parameter: %+v", template.Parameters["input_path"])
+	}
+}
+
 func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
 	var received WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
