@@ -77,6 +77,38 @@ func TestWorkItemValidate(t *testing.T) {
 	}
 }
 
+func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
+	item := WorkItem{
+		ID:                  "work-item-001",
+		Type:                WorkItemTypeWriteDemoOutput,
+		OutputFilename:      "output.txt",
+		WorkflowInstanceID:  "workflow-instance-001",
+		StepInstanceID:      "step-instance-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+
+	var decoded map[string]string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+
+	if decoded["workflow_instance_id"] != item.WorkflowInstanceID {
+		t.Fatalf("workflow_instance_id = %q, want %q", decoded["workflow_instance_id"], item.WorkflowInstanceID)
+	}
+
+	if decoded["work_item_fingerprint"] != item.WorkItemFingerprint {
+		t.Fatalf("work_item_fingerprint = %q, want %q", decoded["work_item_fingerprint"], item.WorkItemFingerprint)
+	}
+}
+
 func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
 		ID:                  "work-item-001",

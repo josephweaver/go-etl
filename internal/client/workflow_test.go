@@ -270,8 +270,13 @@ func TestWorkflowClientShutdownWhenIdle(t *testing.T) {
 
 	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
 
-	if err := client.ShutdownWhenIdle(1); err != nil {
+	status, err := client.ShutdownWhenIdle(1)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if status.Pending != 0 || status.Assigned != 0 {
+		t.Fatalf("unexpected status: %+v", status)
 	}
 
 	if !shutdown {
@@ -299,7 +304,7 @@ func TestWorkflowClientDoesNotShutdownWhenBusy(t *testing.T) {
 
 	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
 
-	err := client.ShutdownWhenIdle(1)
+	_, err := client.ShutdownWhenIdle(1)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -318,7 +323,7 @@ func TestWorkflowClientUsesStatusPollInterval(t *testing.T) {
 			statusChecks++
 			status := model.ControllerStatus{Pending: 1}
 			if statusChecks == 2 {
-				status = model.ControllerStatus{}
+				status = model.ControllerStatus{Attempts: 2, AttemptVariables: 20}
 			}
 			if err := json.NewEncoder(w).Encode(status); err != nil {
 				t.Fatalf("encode status: %v", err)
@@ -334,8 +339,13 @@ func TestWorkflowClientUsesStatusPollInterval(t *testing.T) {
 
 	client := NewWorkflowClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
 
-	if err := client.ShutdownWhenIdle(2); err != nil {
+	status, err := client.ShutdownWhenIdle(2)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if status.Pending != 0 || status.Attempts != 2 || status.AttemptVariables != 20 {
+		t.Fatalf("unexpected status: %+v", status)
 	}
 
 	if statusChecks != 2 {

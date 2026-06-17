@@ -2,18 +2,21 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"goetl/internal/model"
 )
 
-func reportWorkComplete(controllerURL string, itemID string) error {
+func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-	body, err := json.Marshal(demoWorkCompletion(itemID))
+	body, err := json.Marshal(workCompletion(item, startedAt))
 	if err != nil {
 		return fmt.Errorf("encode work completion: %w", err)
 	}
@@ -31,19 +34,53 @@ func reportWorkComplete(controllerURL string, itemID string) error {
 	return nil
 }
 
-func demoWorkCompletion(itemID string) model.WorkCompletion {
-	return model.WorkCompletion{
-		ID:                  itemID,
-		AttemptID:           itemID + "-attempt-001",
-		WorkflowInstanceID:  "demo-workflow-instance",
-		StepInstanceID:      "demo-step-instance",
-		WorkItemFingerprint: "demo-work-item:" + itemID,
-		InputFingerprint:    "demo-input:" + itemID,
-		OutputFingerprint:   "demo-output:" + itemID,
-		CodeVersion:         "demo",
-		StartedAt:           "1970-01-01T00:00:00Z",
-		CompletedAt:         "1970-01-01T00:00:00Z",
+func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompletion {
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
 	}
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+
+	completion := model.WorkCompletion{
+		ID:                  item.ID,
+		AttemptID:           item.ID + "-attempt-" + randomHex(8),
+		WorkflowInstanceID:  item.WorkflowInstanceID,
+		StepInstanceID:      item.StepInstanceID,
+		WorkItemFingerprint: item.WorkItemFingerprint,
+		InputFingerprint:    item.InputFingerprint,
+		OutputFingerprint:   item.OutputFingerprint,
+		CodeVersion:         item.CodeVersion,
+		StartedAt:           startedAt.UTC().Format(time.RFC3339),
+		CompletedAt:         completedAt,
+	}
+
+	if completion.WorkflowInstanceID == "" {
+		completion.WorkflowInstanceID = "demo-workflow-instance"
+	}
+	if completion.StepInstanceID == "" {
+		completion.StepInstanceID = "demo-step-instance"
+	}
+	if completion.WorkItemFingerprint == "" {
+		completion.WorkItemFingerprint = "demo-work-item:" + item.ID
+	}
+	if completion.InputFingerprint == "" {
+		completion.InputFingerprint = "demo-input:" + item.ID
+	}
+	if completion.OutputFingerprint == "" {
+		completion.OutputFingerprint = "demo-output:" + item.ID
+	}
+	if completion.CodeVersion == "" {
+		completion.CodeVersion = "demo"
+	}
+
+	return completion
+}
+
+func randomHex(byteCount int) string {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(data)
 }
 
 func reportWorkFailed(controllerURL string, itemID string, workErr error) error {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
@@ -115,6 +116,21 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("attempt count = %d, want 1", count)
+	}
+
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempt_variables WHERE namespace = 'runtime'`).Scan(&count); err != nil {
+		t.Fatalf("query attempt variable count: %v", err)
+	}
+	if count != 10 {
+		t.Fatalf("attempt variable count = %d, want 10", count)
+	}
+
+	var valueJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_instance_id'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query workflow instance variable: %v", err)
+	}
+	if valueJSON != `"workflow-instance-001"` {
+		t.Fatalf("workflow_instance_id value_json = %q", valueJSON)
 	}
 }
 
@@ -251,6 +267,53 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
+	controller := newTestController()
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+	assignNextWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"attempt-001",
+		"workflow_instance_id":"workflow-instance-001",
+		"step_instance_id":"step-instance-001",
+		"work_item_fingerprint":"work-item-fingerprint",
+		"input_fingerprint":"input-fingerprint",
+		"output_fingerprint":"output-fingerprint",
+		"code_version":"code-version",
+		"started_at":"2026-06-06T12:00:00Z",
+		"completed_at":"2026-06-06T12:01:00Z"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected completion status code: %d", response.Code)
+	}
+
+	status := getStatus(t, controller)
+
+	if status.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", status.Attempts)
+	}
+
+	if status.AttemptVariables != 10 {
+		t.Fatalf("attempt_variables = %d, want 10", status.AttemptVariables)
+	}
+}
+
 func TestStatusHandlerRejectsPost(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodPost, "/status", nil)
@@ -362,6 +425,35 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	status := getStatus(t, controller)
 	if status.Pending != 2 {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected next work status code: %d", nextResponse.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&item); err != nil {
+		t.Fatalf("decode next work item: %v", err)
+	}
+
+	if !strings.HasPrefix(item.WorkflowInstanceID, "cdl-instance-") {
+		t.Fatalf("unexpected workflow instance id: %q", item.WorkflowInstanceID)
+	}
+
+	if item.StepInstanceID != item.WorkflowInstanceID+"-step-download" {
+		t.Fatalf("unexpected step instance id: %q", item.StepInstanceID)
+	}
+
+	if item.WorkItemFingerprint != "work-item:"+item.ID {
+		t.Fatalf("unexpected work item fingerprint: %q", item.WorkItemFingerprint)
+	}
+
+	if item.CodeVersion != "demo" {
+		t.Fatalf("unexpected code version: %q", item.CodeVersion)
 	}
 }
 

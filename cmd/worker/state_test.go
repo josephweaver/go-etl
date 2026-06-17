@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -35,6 +37,19 @@ func TestReportWorkFailed(t *testing.T) {
 }
 
 func TestReportWorkComplete(t *testing.T) {
+	startedAt := time.Now().UTC().Add(-time.Minute)
+	item := model.WorkItem{
+		ID:                  "test-001",
+		Type:                model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:      "result.txt",
+		WorkflowInstanceID:  "workflow-instance-001",
+		StepInstanceID:      "step-instance-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/work/complete" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -53,23 +68,44 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected id: %q", completion.ID)
 		}
 
-		if completion.AttemptID != "test-001-attempt-001" {
+		if !strings.HasPrefix(completion.AttemptID, "test-001-attempt-") {
 			t.Fatalf("unexpected attempt id: %q", completion.AttemptID)
 		}
 
-		if completion.WorkItemFingerprint != "demo-work-item:test-001" {
+		if completion.WorkflowInstanceID != item.WorkflowInstanceID {
+			t.Fatalf("unexpected workflow instance id: %q", completion.WorkflowInstanceID)
+		}
+
+		if completion.StepInstanceID != item.StepInstanceID {
+			t.Fatalf("unexpected step instance id: %q", completion.StepInstanceID)
+		}
+
+		if completion.WorkItemFingerprint != item.WorkItemFingerprint {
 			t.Fatalf("unexpected work item fingerprint: %q", completion.WorkItemFingerprint)
 		}
 
-		if completion.CodeVersion != "demo" {
+		if completion.CodeVersion != item.CodeVersion {
 			t.Fatalf("unexpected code version: %q", completion.CodeVersion)
+		}
+
+		if completion.StartedAt != startedAt.Format(time.RFC3339) {
+			t.Fatalf("started_at = %q, want %q", completion.StartedAt, startedAt.Format(time.RFC3339))
+		}
+
+		completedAt, err := time.Parse(time.RFC3339, completion.CompletedAt)
+		if err != nil {
+			t.Fatalf("parse completed_at: %v", err)
+		}
+
+		if completedAt.Before(startedAt) {
+			t.Fatalf("completed_at = %q before started_at = %q", completion.CompletedAt, completion.StartedAt)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, "test-001"); err != nil {
+	if err := reportWorkComplete(server.URL, item, startedAt); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -80,7 +116,7 @@ func TestReportWorkCompleteRejectsServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, "test-001"); err == nil {
+	if err := reportWorkComplete(server.URL, model.WorkItem{ID: "test-001"}, time.Now()); err == nil {
 		t.Fatal("expected an error")
 	}
 }

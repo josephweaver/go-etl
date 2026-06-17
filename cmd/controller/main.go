@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -213,11 +215,12 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
-	items, err := workflow.CompileWorkflow(resolver, submission.Workflow)
+	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems)
 
 	workerTarget, err := workerTargetEnvironment(resolver)
 	if err != nil {
@@ -261,6 +264,32 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem) []model.WorkItem {
+	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
+	items := make([]model.WorkItem, 0, len(compiledItems))
+
+	for _, compiled := range compiledItems {
+		item := compiled.WorkItem
+		item.WorkflowInstanceID = workflowInstanceID
+		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
+		item.WorkItemFingerprint = "work-item:" + item.ID
+		item.InputFingerprint = "input:" + item.ID
+		item.OutputFingerprint = "output:" + item.OutputFilename
+		item.CodeVersion = "demo"
+		items = append(items, item)
+	}
+
+	return items
+}
+
+func randomHex(byteCount int) string {
+	data := make([]byte, byteCount)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(data)
 }
 
 func workerTargetEnvironment(resolver variable.Resolver) (string, error) {
@@ -409,10 +438,36 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
+	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
+	if err != nil {
+		http.Error(w, "query ledger status", http.StatusInternalServerError)
+		return
+	}
+	status.Attempts = attempts
+	status.AttemptVariables = attemptVariables
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
 		http.Error(w, "encode status", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
+	if c.ledger == nil {
+		return 0, 0, nil
+	}
+
+	var attempts int
+	if err := c.ledger.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempts`).Scan(&attempts); err != nil {
+		return 0, 0, fmt.Errorf("query attempts count: %w", err)
+	}
+
+	var attemptVariables int
+	if err := c.ledger.QueryRowContext(ctx, `SELECT COUNT(*) FROM attempt_variables`).Scan(&attemptVariables); err != nil {
+		return 0, 0, fmt.Errorf("query attempt variables count: %w", err)
+	}
+
+	return attempts, attemptVariables, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -515,25 +570,34 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 		Status:              ledger.AttemptStatusCompleted,
 		StartedAt:           startedAt,
 		CompletedAt:         completedAt,
-		Variables: []ledger.AttemptVariable{
-			{
-				Namespace: "runtime",
-				Name:      "work_item_id",
-				Type:      "string",
-				Value:     completion.ID,
-				Source:    "worker",
-				Lifecycle: "work_item",
-			},
-			{
-				Namespace: "runtime",
-				Name:      "attempt_id",
-				Type:      "string",
-				Value:     completion.AttemptID,
-				Source:    "worker",
-				Lifecycle: "attempt",
-			},
-		},
+		Variables:           runtimeVariablesFromCompletion(completion),
 	}, true, nil
+}
+
+func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
+	return []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
+		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
+		runtimeStringVariable("work_item_fingerprint", completion.WorkItemFingerprint, "work_item"),
+		runtimeStringVariable("input_fingerprint", completion.InputFingerprint, "work_item"),
+		runtimeStringVariable("output_fingerprint", completion.OutputFingerprint, "work_item"),
+		runtimeStringVariable("code_version", completion.CodeVersion, "work_item"),
+		runtimeStringVariable("attempt_id", completion.AttemptID, "attempt"),
+		runtimeStringVariable("started_at", completion.StartedAt, "attempt"),
+		runtimeStringVariable("completed_at", completion.CompletedAt, "attempt"),
+	}
+}
+
+func runtimeStringVariable(name string, value string, lifecycle string) ledger.AttemptVariable {
+	return ledger.AttemptVariable{
+		Namespace: "runtime",
+		Name:      name,
+		Type:      "string",
+		Value:     value,
+		Source:    "worker",
+		Lifecycle: lifecycle,
+	}
 }
 
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
