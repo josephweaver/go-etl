@@ -553,8 +553,10 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=7 attempt_variables=54
+final status: pending=0 assigned=0 failed=0 attempts=8 attempt_variables=65
 ```
+
+The latest summary run added one attempt and eleven attempt variables: ten generated `runtime` variables plus `work_item.input_path = "demo-summary-input.txt"`.
 
 Expected completed summary output:
 
