@@ -268,6 +268,8 @@ code_version
 
 Workflow-generated work-item, input, and output fingerprints are deterministic SHA-256 labels over resolved assignment content. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. The output fingerprint currently hashes the resolved output filename. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
 
+Workflow-generated assignments set `code_version` from Go build VCS metadata when available. If the Go toolchain did not embed a revision, the controller records `unknown`. A dirty working tree appends `-modified`.
+
 `WorkItem.Validate()` checks structural validity:
 
 - A non-empty ID.

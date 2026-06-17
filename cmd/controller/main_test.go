@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -474,7 +475,7 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected output fingerprint: %q", item.OutputFingerprint)
 	}
 
-	if item.CodeVersion != "demo" {
+	if item.CodeVersion == "" || item.CodeVersion == "demo" {
 		t.Fatalf("unexpected code version: %q", item.CodeVersion)
 	}
 }
@@ -517,6 +518,26 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 
 	if !strings.HasPrefix(items[0].WorkItemFingerprint, "work-item:sha256:") {
 		t.Fatalf("unexpected work item fingerprint: %q", items[0].WorkItemFingerprint)
+	}
+
+	if items[0].CodeVersion == "" || items[0].CodeVersion == "demo" {
+		t.Fatalf("unexpected code version: %q", items[0].CodeVersion)
+	}
+}
+
+func TestBuildSetting(t *testing.T) {
+	info := &debug.BuildInfo{
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "abc123"},
+		},
+	}
+
+	if got := buildSetting(info, "vcs.revision"); got != "abc123" {
+		t.Fatalf("build setting = %q, want abc123", got)
+	}
+
+	if got := buildSetting(info, "missing"); got != "" {
+		t.Fatalf("missing build setting = %q, want empty", got)
 	}
 }
 

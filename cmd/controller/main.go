@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -285,11 +286,39 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 		item.OutputFingerprint = fingerprint("output", map[string]any{
 			"output_filename": item.OutputFilename,
 		})
-		item.CodeVersion = "demo"
+		item.CodeVersion = controllerCodeVersion()
 		items = append(items, item)
 	}
 
 	return items
+}
+
+func controllerCodeVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+
+	revision := buildSetting(info, "vcs.revision")
+	if revision == "" {
+		return "unknown"
+	}
+
+	modified := buildSetting(info, "vcs.modified")
+	if modified == "true" {
+		return revision + "-modified"
+	}
+
+	return revision
+}
+
+func buildSetting(info *debug.BuildInfo, key string) string {
+	for _, setting := range info.Settings {
+		if setting.Key == key {
+			return setting.Value
+		}
+	}
+	return ""
 }
 
 func fingerprint(label string, value any) string {
