@@ -169,6 +169,28 @@ func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) 
 	return ledger.InsertAttempt(ctx, c.ledger, attempt)
 }
 
+func (c *Controller) recordSkippedAttempt(ctx context.Context, item model.WorkItem, skippedAt time.Time) (model.WorkSkip, bool, error) {
+	decision, err := c.workReuseDecision(ctx, item)
+	if err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	skip, ok, err := workSkipForReuseDecision(item, decision)
+	if err != nil || !ok {
+		return model.WorkSkip{}, false, err
+	}
+
+	attempt, err := skippedAttemptFromWorkSkip(item, skip, skippedAt)
+	if err != nil {
+		return model.WorkSkip{}, false, err
+	}
+	if err := c.recordAttempt(ctx, attempt); err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	return skip, true, nil
+}
+
 func (c *Controller) priorCompletedAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
 	if c.ledger == nil || item.WorkItemFingerprint == "" {
 		return ledger.Attempt{}, false, nil

@@ -574,6 +574,104 @@ func TestSkippedAttemptFromWorkSkipRejectsInvalidSkip(t *testing.T) {
 	}
 }
 
+func TestRecordSkippedAttemptStoresSkippedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	item := model.WorkItem{
+		ID:                  "test-001",
+		WorkflowInstanceID:  "workflow-instance-002",
+		StepInstanceID:      "step-instance-002",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), item, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected skipped attempt")
+	}
+	if skip.PriorAttemptID != "attempt-001" {
+		t.Fatalf("prior attempt id = %q, want attempt-001", skip.PriorAttemptID)
+	}
+
+	var status string
+	if err := controller.ledger.QueryRowContext(context.Background(), `SELECT status FROM attempts WHERE status = ?`, string(ledger.AttemptStatusSkipped)).Scan(&status); err != nil {
+		t.Fatalf("query skipped attempt: %v", err)
+	}
+	if status != string(ledger.AttemptStatusSkipped) {
+		t.Fatalf("status = %q, want skipped", status)
+	}
+}
+
+func TestRecordSkippedAttemptReturnsMissingForMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), model.WorkItem{
+		ID:                  "test-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	}, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestRecordSkippedAttemptReturnsMissingWithoutLedger(t *testing.T) {
+	controller := newController(nil)
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), model.WorkItem{
+		ID:                  "test-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)
