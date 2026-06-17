@@ -598,12 +598,12 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
-	reuseCandidates, err := c.pendingReuseCandidateCount(r.Context(), pendingItems)
+	reuseReasons, err := c.pendingReuseDecisionReasons(r.Context(), pendingItems)
 	if err != nil {
 		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
 		return
 	}
-	status.PendingReuseCandidates = reuseCandidates
+	status.PendingReuseCandidates = reuseReasons["matched_prior_completed_attempt"]
 
 	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
 	if err != nil {
@@ -637,18 +637,16 @@ func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
 	return attempts, attemptVariables, nil
 }
 
-func (c *Controller) pendingReuseCandidateCount(ctx context.Context, items []model.WorkItem) (int, error) {
-	count := 0
+func (c *Controller) pendingReuseDecisionReasons(ctx context.Context, items []model.WorkItem) (map[string]int, error) {
+	counts := make(map[string]int)
 	for _, item := range items {
-		_, ok, err := c.reusablePriorAttempt(ctx, item)
+		decision, err := c.workReuseDecision(ctx, item)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		if ok {
-			count++
-		}
+		counts[decision.Reason]++
 	}
-	return count, nil
+	return counts, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {

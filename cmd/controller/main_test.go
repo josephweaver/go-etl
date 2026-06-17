@@ -698,6 +698,60 @@ func TestStatusHandlerReportsPendingReuseCandidates(t *testing.T) {
 	}
 }
 
+func TestPendingReuseDecisionReasonsCountsReasons(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	items := []model.WorkItem{
+		{
+			WorkItemFingerprint: "work-item-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "code-version",
+		},
+		{
+			WorkItemFingerprint: "work-item-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "new-code-version",
+		},
+		{
+			WorkItemFingerprint: "missing-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "code-version",
+		},
+	}
+
+	reasons, err := controller.pendingReuseDecisionReasons(context.Background(), items)
+	if err != nil {
+		t.Fatalf("pendingReuseDecisionReasons() error = %v", err)
+	}
+
+	if reasons["matched_prior_completed_attempt"] != 1 {
+		t.Fatalf("matched count = %d, want 1", reasons["matched_prior_completed_attempt"])
+	}
+	if reasons["prior_attempt_mismatch"] != 1 {
+		t.Fatalf("mismatch count = %d, want 1", reasons["prior_attempt_mismatch"])
+	}
+	if reasons["no_prior_completed_attempt"] != 1 {
+		t.Fatalf("missing count = %d, want 1", reasons["no_prior_completed_attempt"])
+	}
+}
+
 func TestStatusHandlerRejectsPost(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodPost, "/status", nil)
