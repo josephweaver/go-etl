@@ -163,6 +163,14 @@ func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) 
 	return ledger.InsertAttempt(ctx, c.ledger, attempt)
 }
 
+func (c *Controller) priorCompletedAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
+	if c.ledger == nil || item.WorkItemFingerprint == "" {
+		return ledger.Attempt{}, false, nil
+	}
+
+	return ledger.FindLatestCompletedAttemptByWorkItemFingerprint(ctx, c.ledger, item.WorkItemFingerprint)
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

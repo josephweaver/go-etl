@@ -167,6 +167,86 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	}
 }
 
+func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
+	controller := newTestController()
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+
+	completion := model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	}
+	attempt, _, err := attemptFromCompletion(completion)
+	if err != nil {
+		t.Fatalf("build attempt: %v", err)
+	}
+	if err := controller.recordAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("record attempt: %v", err)
+	}
+
+	found, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+	})
+	if err != nil {
+		t.Fatalf("priorCompletedAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a prior attempt")
+	}
+	if found.ID != "attempt-001" {
+		t.Fatalf("attempt id = %q, want attempt-001", found.ID)
+	}
+}
+
+func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testing.T) {
+	controller := newTestController()
+
+	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+	}); err != nil || ok {
+		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
+	}
+
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+
+	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{}); err != nil || ok {
+		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)
