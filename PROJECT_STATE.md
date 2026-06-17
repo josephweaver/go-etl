@@ -181,6 +181,7 @@ The ledger supports:
 - Creating missing parent directories for file-backed database paths.
 - Initializing the version 1 schema through `InitSQLiteSchema`.
 - Inserting one attempt and its variable snapshot transactionally through `InsertAttempt`.
+- Finding the latest completed attempt for a work-item fingerprint through `FindLatestCompletedAttemptByWorkItemFingerprint`.
 
 The first local demo ledger is created at:
 
@@ -410,6 +411,8 @@ runtime.completed_at
 ```
 
 SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
+
+The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller does not use this to skip work yet.
 
 The next controller scheduler should use a conservative organic worker-scaling model:
 
