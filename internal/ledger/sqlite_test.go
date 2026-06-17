@@ -118,6 +118,79 @@ func TestInsertAttemptRejectsInvalidAttempt(t *testing.T) {
 	}
 }
 
+func TestFindLatestCompletedAttemptByWorkItemFingerprint(t *testing.T) {
+	ctx := context.Background()
+	db := testLedgerDB(t, ctx)
+	defer db.Close()
+
+	startedAt := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	attempts := []Attempt{
+		testAttempt("attempt-old", "work-item-fingerprint", AttemptStatusCompleted, startedAt, startedAt.Add(time.Minute)),
+		testAttempt("attempt-failed", "work-item-fingerprint", AttemptStatusFailed, startedAt.Add(time.Minute), startedAt.Add(2*time.Minute)),
+		testAttempt("attempt-new", "work-item-fingerprint", AttemptStatusCompleted, startedAt.Add(2*time.Minute), startedAt.Add(3*time.Minute)),
+		testAttempt("attempt-other", "other-fingerprint", AttemptStatusCompleted, startedAt.Add(3*time.Minute), startedAt.Add(4*time.Minute)),
+	}
+	for _, attempt := range attempts {
+		if err := InsertAttempt(ctx, db, attempt); err != nil {
+			t.Fatalf("InsertAttempt(%s) error = %v", attempt.ID, err)
+		}
+	}
+
+	attempt, ok, err := FindLatestCompletedAttemptByWorkItemFingerprint(ctx, db, "work-item-fingerprint")
+	if err != nil {
+		t.Fatalf("FindLatestCompletedAttemptByWorkItemFingerprint() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a matching attempt")
+	}
+	if attempt.ID != "attempt-new" {
+		t.Fatalf("attempt id = %q, want attempt-new", attempt.ID)
+	}
+	if attempt.Status != AttemptStatusCompleted {
+		t.Fatalf("status = %q, want completed", attempt.Status)
+	}
+}
+
+func TestFindLatestCompletedAttemptByWorkItemFingerprintReturnsMissing(t *testing.T) {
+	ctx := context.Background()
+	db := testLedgerDB(t, ctx)
+	defer db.Close()
+
+	attempt, ok, err := FindLatestCompletedAttemptByWorkItemFingerprint(ctx, db, "missing")
+	if err != nil {
+		t.Fatalf("FindLatestCompletedAttemptByWorkItemFingerprint() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected attempt: %+v", attempt)
+	}
+}
+
+func TestFindLatestCompletedAttemptByWorkItemFingerprintRejectsMissingFingerprint(t *testing.T) {
+	ctx := context.Background()
+	db := testLedgerDB(t, ctx)
+	defer db.Close()
+
+	if _, _, err := FindLatestCompletedAttemptByWorkItemFingerprint(ctx, db, ""); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func testAttempt(id string, fingerprint string, status AttemptStatus, startedAt time.Time, completedAt time.Time) Attempt {
+	return Attempt{
+		ID:                  id,
+		WorkflowInstanceID:  "workflow-instance-001",
+		StepInstanceID:      "step-instance-001",
+		WorkItemID:          "work-item-001",
+		WorkItemFingerprint: fingerprint,
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              status,
+		StartedAt:           startedAt,
+		CompletedAt:         completedAt,
+	}
+}
+
 func testLedgerDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 

@@ -163,6 +163,40 @@ func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) 
 	return ledger.InsertAttempt(ctx, c.ledger, attempt)
 }
 
+func (c *Controller) priorCompletedAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
+	if c.ledger == nil || item.WorkItemFingerprint == "" {
+		return ledger.Attempt{}, false, nil
+	}
+
+	return ledger.FindLatestCompletedAttemptByWorkItemFingerprint(ctx, c.ledger, item.WorkItemFingerprint)
+}
+
+func priorCompletedAttemptMatchesWorkItem(item model.WorkItem, attempt ledger.Attempt) bool {
+	if attempt.Status != ledger.AttemptStatusCompleted {
+		return false
+	}
+	if item.WorkItemFingerprint == "" || item.InputFingerprint == "" || item.OutputFingerprint == "" || item.CodeVersion == "" {
+		return false
+	}
+
+	return item.WorkItemFingerprint == attempt.WorkItemFingerprint &&
+		item.InputFingerprint == attempt.InputFingerprint &&
+		item.OutputFingerprint == attempt.OutputFingerprint &&
+		item.CodeVersion == attempt.CodeVersion
+}
+
+func (c *Controller) reusablePriorAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
+	attempt, ok, err := c.priorCompletedAttempt(ctx, item)
+	if err != nil || !ok {
+		return ledger.Attempt{}, false, err
+	}
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		return ledger.Attempt{}, false, nil
+	}
+
+	return attempt, true, nil
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -217,12 +251,18 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
+	codeVersion, err := controllerCodeVersion(resolver)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems)
+	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
 
 	workerTarget, err := workerTargetEnvironment(resolver)
 	if err != nil {
@@ -268,13 +308,23 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem) []model.WorkItem {
+func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
 	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
+	workflowFingerprint := fingerprint("workflow", map[string]any{
+		"id": workflowID,
+	})
 	items := make([]model.WorkItem, 0, len(compiledItems))
 
 	for _, compiled := range compiledItems {
 		item := compiled.WorkItem
+		item.WorkflowDefinitionID = workflowID
+		item.WorkflowFingerprint = workflowFingerprint
 		item.WorkflowInstanceID = workflowInstanceID
+		item.StepDefinitionID = compiled.StepID
+		item.StepFingerprint = fingerprint("step", map[string]any{
+			"workflow_fingerprint": workflowFingerprint,
+			"id":                   compiled.StepID,
+		})
 		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
 		item.WorkItemFingerprint = fingerprint("work-item", map[string]any{
 			"id":              item.ID,
@@ -286,14 +336,49 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 		item.OutputFingerprint = fingerprint("output", map[string]any{
 			"output_filename": item.OutputFilename,
 		})
-		item.CodeVersion = controllerCodeVersion()
+		item.CodeVersion = codeVersion
 		items = append(items, item)
 	}
 
 	return items
 }
 
-func controllerCodeVersion() string {
+func controllerCodeVersion(resolver variable.Resolver) (string, error) {
+	configured, ok, err := optionalStringVariable(resolver, "code_version")
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return configured, nil
+	}
+
+	return buildInfoCodeVersion(), nil
+}
+
+func optionalStringVariable(resolver variable.Resolver, name string) (string, bool, error) {
+	reference, err := variable.ParseReference(name)
+	if err != nil {
+		return "", false, err
+	}
+
+	value, err := resolver.Resolve(reference)
+	if err != nil {
+		return "", false, nil
+	}
+
+	if value.Type != variable.TypeString {
+		return "", false, fmt.Errorf("%s has type %s, want string", name, value.Type)
+	}
+
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", false, fmt.Errorf("%s is required", name)
+	}
+
+	return text, true, nil
+}
+
+func buildInfoCodeVersion() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"
@@ -477,12 +562,20 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c.mu.Lock()
+	pendingItems := append([]model.WorkItem(nil), c.pending...)
 	status := model.ControllerStatus{
 		Pending:  len(c.pending),
 		Assigned: len(c.assigned),
 		Failed:   len(c.failed),
 	}
 	c.mu.Unlock()
+
+	reuseCandidates, err := c.pendingReuseCandidateCount(r.Context(), pendingItems)
+	if err != nil {
+		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
+		return
+	}
+	status.PendingReuseCandidates = reuseCandidates
 
 	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
 	if err != nil {
@@ -514,6 +607,20 @@ func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
 	}
 
 	return attempts, attemptVariables, nil
+}
+
+func (c *Controller) pendingReuseCandidateCount(ctx context.Context, items []model.WorkItem) (int, error) {
+	count := 0
+	for _, item := range items {
+		_, ok, err := c.reusablePriorAttempt(ctx, item)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -622,7 +729,11 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 
 func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
 	variables := []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_definition_id", completion.WorkflowDefinitionID, "workflow"),
+		runtimeStringVariable("workflow_fingerprint", completion.WorkflowFingerprint, "workflow"),
 		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_definition_id", completion.StepDefinitionID, "step"),
+		runtimeStringVariable("step_fingerprint", completion.StepFingerprint, "step"),
 		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
 		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
 		runtimeStringVariable("work_item_fingerprint", completion.WorkItemFingerprint, "work_item"),

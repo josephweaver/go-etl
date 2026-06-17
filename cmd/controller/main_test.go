@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
@@ -95,7 +96,11 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
 		"id":"test-001",
 		"attempt_id":"attempt-001",
+		"workflow_definition_id":"workflow-definition-001",
+		"workflow_fingerprint":"workflow-fingerprint",
 		"workflow_instance_id":"workflow-instance-001",
+		"step_definition_id":"step-definition-001",
+		"step_fingerprint":"step-fingerprint",
 		"step_instance_id":"step-instance-001",
 		"work_item_fingerprint":"work-item-fingerprint",
 		"input_fingerprint":"input-fingerprint",
@@ -129,11 +134,25 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempt_variables WHERE namespace = 'runtime'`).Scan(&count); err != nil {
 		t.Fatalf("query attempt variable count: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("runtime attempt variable count = %d, want 10", count)
+	if count != 14 {
+		t.Fatalf("runtime attempt variable count = %d, want 14", count)
 	}
 
 	var valueJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_definition_id'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query workflow definition variable: %v", err)
+	}
+	if valueJSON != `"workflow-definition-001"` {
+		t.Fatalf("workflow_definition_id value_json = %q", valueJSON)
+	}
+
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_fingerprint'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query workflow fingerprint variable: %v", err)
+	}
+	if valueJSON != `"workflow-fingerprint"` {
+		t.Fatalf("workflow_fingerprint value_json = %q", valueJSON)
+	}
+
 	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_instance_id'`).Scan(&valueJSON); err != nil {
 		t.Fatalf("query workflow instance variable: %v", err)
 	}
@@ -146,6 +165,234 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	}
 	if valueJSON != `"demo-summary-input.txt"` {
 		t.Fatalf("input_path value_json = %q", valueJSON)
+	}
+}
+
+func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
+	controller := newTestController()
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+
+	completion := model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	}
+	attempt, _, err := attemptFromCompletion(completion)
+	if err != nil {
+		t.Fatalf("build attempt: %v", err)
+	}
+	if err := controller.recordAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("record attempt: %v", err)
+	}
+
+	found, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+	})
+	if err != nil {
+		t.Fatalf("priorCompletedAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected a prior attempt")
+	}
+	if found.ID != "attempt-001" {
+		t.Fatalf("attempt id = %q, want attempt-001", found.ID)
+	}
+}
+
+func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testing.T) {
+	controller := newTestController()
+
+	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+	}); err != nil || ok {
+		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
+	}
+
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	defer db.Close()
+	controller.ledger = db
+
+	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{}); err != nil || ok {
+		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
+	}
+}
+
+func TestPriorCompletedAttemptMatchesWorkItem(t *testing.T) {
+	item := model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+	attempt := ledger.Attempt{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              ledger.AttemptStatusCompleted,
+	}
+
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		t.Fatal("expected matching prior attempt")
+	}
+}
+
+func TestPriorCompletedAttemptMatchesWorkItemRejectsMismatch(t *testing.T) {
+	baseItem := model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+	baseAttempt := ledger.Attempt{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              ledger.AttemptStatusCompleted,
+	}
+
+	tests := []struct {
+		name    string
+		item    model.WorkItem
+		attempt ledger.Attempt
+	}{
+		{
+			name:    "failed prior attempt",
+			item:    baseItem,
+			attempt: withAttemptStatus(baseAttempt, ledger.AttemptStatusFailed),
+		},
+		{
+			name:    "work item fingerprint",
+			item:    withWorkItemFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "input fingerprint",
+			item:    withInputFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "output fingerprint",
+			item:    withOutputFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "code version",
+			item:    withCodeVersion(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "missing current fingerprint",
+			item:    withInputFingerprint(baseItem, ""),
+			attempt: baseAttempt,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if priorCompletedAttemptMatchesWorkItem(test.item, test.attempt) {
+				t.Fatal("expected prior attempt mismatch")
+			}
+		})
+	}
+}
+
+func TestReusablePriorAttemptFindsMatchingAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	attempt, ok, err := controller.reusablePriorAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("reusablePriorAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected reusable prior attempt")
+	}
+	if attempt.ID != "attempt-001" {
+		t.Fatalf("attempt id = %q, want attempt-001", attempt.ID)
+	}
+}
+
+func TestReusablePriorAttemptRejectsMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	attempt, ok, err := controller.reusablePriorAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	})
+	if err != nil {
+		t.Fatalf("reusablePriorAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected reusable attempt: %+v", attempt)
 	}
 }
 
@@ -301,7 +548,11 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
 		"id":"test-001",
 		"attempt_id":"attempt-001",
+		"workflow_definition_id":"workflow-definition-001",
+		"workflow_fingerprint":"workflow-fingerprint",
 		"workflow_instance_id":"workflow-instance-001",
+		"step_definition_id":"step-definition-001",
+		"step_fingerprint":"step-fingerprint",
 		"step_instance_id":"step-instance-001",
 		"work_item_fingerprint":"work-item-fingerprint",
 		"input_fingerprint":"input-fingerprint",
@@ -324,8 +575,42 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", status.Attempts)
 	}
 
-	if status.AttemptVariables != 10 {
-		t.Fatalf("attempt_variables = %d, want 10", status.AttemptVariables)
+	if status.AttemptVariables != 14 {
+		t.Fatalf("attempt_variables = %d, want 14", status.AttemptVariables)
+	}
+}
+
+func TestStatusHandlerReportsPendingReuseCandidates(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = append(controller.pending, model.WorkItem{
+		ID:                  "test-001",
+		Type:                model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:      "result.txt",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+
+	status := getStatus(t, controller)
+
+	if status.PendingReuseCandidates != 1 {
+		t.Fatalf("pending_reuse_candidates = %d, want 1", status.PendingReuseCandidates)
 	}
 }
 
@@ -459,6 +744,22 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected workflow instance id: %q", item.WorkflowInstanceID)
 	}
 
+	if item.WorkflowDefinitionID != "cdl" {
+		t.Fatalf("unexpected workflow definition id: %q", item.WorkflowDefinitionID)
+	}
+
+	if !strings.HasPrefix(item.WorkflowFingerprint, "workflow:sha256:") {
+		t.Fatalf("unexpected workflow fingerprint: %q", item.WorkflowFingerprint)
+	}
+
+	if item.StepDefinitionID != "download" {
+		t.Fatalf("unexpected step definition id: %q", item.StepDefinitionID)
+	}
+
+	if !strings.HasPrefix(item.StepFingerprint, "step:sha256:") {
+		t.Fatalf("unexpected step fingerprint: %q", item.StepFingerprint)
+	}
+
 	if item.StepInstanceID != item.WorkflowInstanceID+"-step-download" {
 		t.Fatalf("unexpected step instance id: %q", item.StepInstanceID)
 	}
@@ -477,6 +778,66 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 
 	if item.CodeVersion == "" || item.CodeVersion == "demo" {
 		t.Fatalf("unexpected code version: %q", item.CodeVersion)
+	}
+}
+
+func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
+	controller := newController(nil)
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"Name": {"Namespace": "workflow", "Key": "years"},
+					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
+					"Expression": "[2024]"
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+			{
+				"Name": {"Namespace": "override", "Key": "code_version"},
+				"Type": {"Kind": "string"},
+				"Expression": "test-version"
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("unexpected next work status code: %d", nextResponse.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&item); err != nil {
+		t.Fatalf("decode next work item: %v", err)
+	}
+
+	if item.CodeVersion != "test-version" {
+		t.Fatalf("code version = %q, want test-version", item.CodeVersion)
 	}
 }
 
@@ -506,7 +867,7 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, "test-version")
 
 	if items[0].InputFingerprint == items[1].InputFingerprint {
 		t.Fatalf("input fingerprints should differ: %s", items[0].InputFingerprint)
@@ -516,12 +877,28 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 		t.Fatalf("output fingerprints should differ: %s", items[0].OutputFingerprint)
 	}
 
+	if items[0].WorkflowDefinitionID != "summary" {
+		t.Fatalf("workflow definition id = %q, want summary", items[0].WorkflowDefinitionID)
+	}
+
+	if !strings.HasPrefix(items[0].WorkflowFingerprint, "workflow:sha256:") {
+		t.Fatalf("unexpected workflow fingerprint: %q", items[0].WorkflowFingerprint)
+	}
+
+	if items[0].StepDefinitionID != "summarize" {
+		t.Fatalf("step definition id = %q, want summarize", items[0].StepDefinitionID)
+	}
+
+	if !strings.HasPrefix(items[0].StepFingerprint, "step:sha256:") {
+		t.Fatalf("unexpected step fingerprint: %q", items[0].StepFingerprint)
+	}
+
 	if !strings.HasPrefix(items[0].WorkItemFingerprint, "work-item:sha256:") {
 		t.Fatalf("unexpected work item fingerprint: %q", items[0].WorkItemFingerprint)
 	}
 
-	if items[0].CodeVersion == "" || items[0].CodeVersion == "demo" {
-		t.Fatalf("unexpected code version: %q", items[0].CodeVersion)
+	if items[0].CodeVersion != "test-version" {
+		t.Fatalf("code version = %q, want test-version", items[0].CodeVersion)
 	}
 }
 
@@ -995,6 +1372,36 @@ func newTestController() *Controller {
 	})
 }
 
+func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkCompletion) *Controller {
+	t.Helper()
+
+	controller := newController(nil)
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	t.Cleanup(func() {
+		db.Close()
+	})
+	controller.ledger = db
+
+	attempt, _, err := attemptFromCompletion(completion)
+	if err != nil {
+		t.Fatalf("build attempt: %v", err)
+	}
+	if err := controller.recordAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("record attempt: %v", err)
+	}
+
+	return controller
+}
+
 func getStatus(t *testing.T, controller *Controller) model.ControllerStatus {
 	t.Helper()
 
@@ -1012,6 +1419,31 @@ func getStatus(t *testing.T, controller *Controller) model.ControllerStatus {
 	}
 
 	return status
+}
+
+func withAttemptStatus(attempt ledger.Attempt, status ledger.AttemptStatus) ledger.Attempt {
+	attempt.Status = status
+	return attempt
+}
+
+func withWorkItemFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.WorkItemFingerprint = fingerprint
+	return item
+}
+
+func withInputFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.InputFingerprint = fingerprint
+	return item
+}
+
+func withOutputFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.OutputFingerprint = fingerprint
+	return item
+}
+
+func withCodeVersion(item model.WorkItem, codeVersion string) model.WorkItem {
+	item.CodeVersion = codeVersion
+	return item
 }
 
 func assignNextWork(t *testing.T, controller *Controller) {

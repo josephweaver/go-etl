@@ -188,6 +188,71 @@ func InsertAttempt(ctx context.Context, db *sql.DB, attempt Attempt) error {
 	return nil
 }
 
+func FindLatestCompletedAttemptByWorkItemFingerprint(ctx context.Context, db *sql.DB, fingerprint string) (Attempt, bool, error) {
+	if fingerprint == "" {
+		return Attempt{}, false, fmt.Errorf("work item fingerprint is required")
+	}
+
+	var attempt Attempt
+	var status string
+	var startedAt string
+	var completedAt sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT
+		attempt_id,
+		workflow_instance_id,
+		step_instance_id,
+		work_item_id,
+		work_item_fingerprint,
+		input_fingerprint,
+		output_fingerprint,
+		code_version,
+		status,
+		started_at,
+		completed_at
+	FROM attempts
+	WHERE work_item_fingerprint = ? AND status = ?
+	ORDER BY completed_at DESC, started_at DESC, attempt_id DESC
+	LIMIT 1`,
+		fingerprint,
+		string(AttemptStatusCompleted),
+	).Scan(
+		&attempt.ID,
+		&attempt.WorkflowInstanceID,
+		&attempt.StepInstanceID,
+		&attempt.WorkItemID,
+		&attempt.WorkItemFingerprint,
+		&attempt.InputFingerprint,
+		&attempt.OutputFingerprint,
+		&attempt.CodeVersion,
+		&status,
+		&startedAt,
+		&completedAt,
+	)
+	if err == sql.ErrNoRows {
+		return Attempt{}, false, nil
+	}
+	if err != nil {
+		return Attempt{}, false, fmt.Errorf("query completed attempt: %w", err)
+	}
+
+	parsedStartedAt, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return Attempt{}, false, fmt.Errorf("parse started_at: %w", err)
+	}
+	attempt.StartedAt = parsedStartedAt
+
+	if completedAt.Valid {
+		parsedCompletedAt, err := time.Parse(time.RFC3339Nano, completedAt.String)
+		if err != nil {
+			return Attempt{}, false, fmt.Errorf("parse completed_at: %w", err)
+		}
+		attempt.CompletedAt = parsedCompletedAt
+	}
+
+	attempt.Status = AttemptStatus(status)
+	return attempt, true, nil
+}
+
 func (a Attempt) Validate() error {
 	if a.ID == "" {
 		return fmt.Errorf("attempt id is required")

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"goetl/internal/client"
+	"goetl/internal/model"
 	"goetl/internal/variable"
 )
 
@@ -29,10 +30,15 @@ func main() {
 		return
 	}
 
-	fmt.Printf("final status: pending=%d assigned=%d failed=%d attempts=%d attempt_variables=%d\n",
+	fmt.Println(formatFinalStatus(status))
+}
+
+func formatFinalStatus(status model.ControllerStatus) string {
+	return fmt.Sprintf("final status: pending=%d assigned=%d failed=%d pending_reuse_candidates=%d attempts=%d attempt_variables=%d",
 		status.Pending,
 		status.Assigned,
 		status.Failed,
+		status.PendingReuseCandidates,
 		status.Attempts,
 		status.AttemptVariables,
 	)

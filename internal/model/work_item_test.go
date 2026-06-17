@@ -102,15 +102,19 @@ func TestWorkItemValidate(t *testing.T) {
 
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
-		ID:                  "work-item-001",
-		Type:                WorkItemTypeWriteDemoOutput,
-		OutputFilename:      "output.txt",
-		WorkflowInstanceID:  "workflow-instance-001",
-		StepInstanceID:      "step-instance-001",
-		WorkItemFingerprint: "work-item-fingerprint",
-		InputFingerprint:    "input-fingerprint",
-		OutputFingerprint:   "output-fingerprint",
-		CodeVersion:         "code-version",
+		ID:                   "work-item-001",
+		Type:                 WorkItemTypeWriteDemoOutput,
+		OutputFilename:       "output.txt",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
 		Parameters: Parameters{
 			"input_path": {Type: "path", Value: "/data/input.tif"},
 		},
@@ -130,6 +134,14 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		t.Fatalf("workflow_instance_id = %q, want %q", decodedItem.WorkflowInstanceID, item.WorkflowInstanceID)
 	}
 
+	if decodedItem.StepDefinitionID != item.StepDefinitionID {
+		t.Fatalf("step_definition_id = %q, want %q", decodedItem.StepDefinitionID, item.StepDefinitionID)
+	}
+
+	if decodedItem.StepFingerprint != item.StepFingerprint {
+		t.Fatalf("step_fingerprint = %q, want %q", decodedItem.StepFingerprint, item.StepFingerprint)
+	}
+
 	if decodedItem.WorkItemFingerprint != item.WorkItemFingerprint {
 		t.Fatalf("work_item_fingerprint = %q, want %q", decodedItem.WorkItemFingerprint, item.WorkItemFingerprint)
 	}
@@ -141,16 +153,20 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 
 func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
-		ID:                  "work-item-001",
-		AttemptID:           "attempt-001",
-		WorkflowInstanceID:  "workflow-instance-001",
-		StepInstanceID:      "step-instance-001",
-		WorkItemFingerprint: "work-item-fingerprint",
-		InputFingerprint:    "input-fingerprint",
-		OutputFingerprint:   "output-fingerprint",
-		CodeVersion:         "code-version",
-		StartedAt:           "2026-06-06T12:00:00Z",
-		CompletedAt:         "2026-06-06T12:01:00Z",
+		ID:                   "work-item-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
 		Parameters: Parameters{
 			"input_path": {Type: "path", Value: "demo-summary-input.txt"},
 		},
@@ -170,11 +186,40 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
 	}
 
+	if decodedCompletion.WorkflowDefinitionID != completion.WorkflowDefinitionID {
+		t.Fatalf("workflow_definition_id = %q, want %q", decodedCompletion.WorkflowDefinitionID, completion.WorkflowDefinitionID)
+	}
+
+	if decodedCompletion.WorkflowFingerprint != completion.WorkflowFingerprint {
+		t.Fatalf("workflow_fingerprint = %q, want %q", decodedCompletion.WorkflowFingerprint, completion.WorkflowFingerprint)
+	}
+
 	if decodedCompletion.WorkItemFingerprint != completion.WorkItemFingerprint {
 		t.Fatalf("work_item_fingerprint = %q, want %q", decodedCompletion.WorkItemFingerprint, completion.WorkItemFingerprint)
 	}
 
 	if decodedCompletion.Parameters["input_path"].Value != "demo-summary-input.txt" {
 		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
+	}
+}
+
+func TestControllerStatusJSONIncludesReuseCandidates(t *testing.T) {
+	status := ControllerStatus{
+		Pending:                2,
+		PendingReuseCandidates: 1,
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+
+	var decoded ControllerStatus
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+
+	if decoded.PendingReuseCandidates != 1 {
+		t.Fatalf("pending_reuse_candidates = %d, want 1", decoded.PendingReuseCandidates)
 	}
 }
