@@ -276,13 +276,21 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 
 func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
 	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
+	workflowFingerprint := fingerprint("workflow", map[string]any{
+		"id": workflowID,
+	})
 	items := make([]model.WorkItem, 0, len(compiledItems))
 
 	for _, compiled := range compiledItems {
 		item := compiled.WorkItem
 		item.WorkflowDefinitionID = workflowID
+		item.WorkflowFingerprint = workflowFingerprint
 		item.WorkflowInstanceID = workflowInstanceID
 		item.StepDefinitionID = compiled.StepID
+		item.StepFingerprint = fingerprint("step", map[string]any{
+			"workflow_fingerprint": workflowFingerprint,
+			"id":                   compiled.StepID,
+		})
 		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
 		item.WorkItemFingerprint = fingerprint("work-item", map[string]any{
 			"id":              item.ID,
@@ -666,8 +674,10 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
 	variables := []ledger.AttemptVariable{
 		runtimeStringVariable("workflow_definition_id", completion.WorkflowDefinitionID, "workflow"),
+		runtimeStringVariable("workflow_fingerprint", completion.WorkflowFingerprint, "workflow"),
 		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
 		runtimeStringVariable("step_definition_id", completion.StepDefinitionID, "step"),
+		runtimeStringVariable("step_fingerprint", completion.StepFingerprint, "step"),
 		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
 		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
 		runtimeStringVariable("work_item_fingerprint", completion.WorkItemFingerprint, "work_item"),

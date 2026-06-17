@@ -43,8 +43,10 @@ func TestReportWorkComplete(t *testing.T) {
 		Type:                 model.WorkItemTypeWriteDemoOutput,
 		OutputFilename:       "result.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
 		WorkflowInstanceID:   "workflow-instance-001",
 		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
 		StepInstanceID:       "step-instance-001",
 		WorkItemFingerprint:  "work-item-fingerprint",
 		InputFingerprint:     "input-fingerprint",
@@ -85,8 +87,16 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected workflow definition id: %q", completion.WorkflowDefinitionID)
 		}
 
+		if completion.WorkflowFingerprint != item.WorkflowFingerprint {
+			t.Fatalf("unexpected workflow fingerprint: %q", completion.WorkflowFingerprint)
+		}
+
 		if completion.StepDefinitionID != item.StepDefinitionID {
 			t.Fatalf("unexpected step definition id: %q", completion.StepDefinitionID)
+		}
+
+		if completion.StepFingerprint != item.StepFingerprint {
+			t.Fatalf("unexpected step fingerprint: %q", completion.StepFingerprint)
 		}
 
 		if completion.StepInstanceID != item.StepInstanceID {

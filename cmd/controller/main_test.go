@@ -96,8 +96,10 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 		"id":"test-001",
 		"attempt_id":"attempt-001",
 		"workflow_definition_id":"workflow-definition-001",
+		"workflow_fingerprint":"workflow-fingerprint",
 		"workflow_instance_id":"workflow-instance-001",
 		"step_definition_id":"step-definition-001",
+		"step_fingerprint":"step-fingerprint",
 		"step_instance_id":"step-instance-001",
 		"work_item_fingerprint":"work-item-fingerprint",
 		"input_fingerprint":"input-fingerprint",
@@ -131,8 +133,8 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempt_variables WHERE namespace = 'runtime'`).Scan(&count); err != nil {
 		t.Fatalf("query attempt variable count: %v", err)
 	}
-	if count != 12 {
-		t.Fatalf("runtime attempt variable count = %d, want 12", count)
+	if count != 14 {
+		t.Fatalf("runtime attempt variable count = %d, want 14", count)
 	}
 
 	var valueJSON string
@@ -141,6 +143,13 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	}
 	if valueJSON != `"workflow-definition-001"` {
 		t.Fatalf("workflow_definition_id value_json = %q", valueJSON)
+	}
+
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_fingerprint'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query workflow fingerprint variable: %v", err)
+	}
+	if valueJSON != `"workflow-fingerprint"` {
+		t.Fatalf("workflow_fingerprint value_json = %q", valueJSON)
 	}
 
 	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_instance_id'`).Scan(&valueJSON); err != nil {
@@ -311,8 +320,10 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 		"id":"test-001",
 		"attempt_id":"attempt-001",
 		"workflow_definition_id":"workflow-definition-001",
+		"workflow_fingerprint":"workflow-fingerprint",
 		"workflow_instance_id":"workflow-instance-001",
 		"step_definition_id":"step-definition-001",
+		"step_fingerprint":"step-fingerprint",
 		"step_instance_id":"step-instance-001",
 		"work_item_fingerprint":"work-item-fingerprint",
 		"input_fingerprint":"input-fingerprint",
@@ -335,8 +346,8 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1", status.Attempts)
 	}
 
-	if status.AttemptVariables != 12 {
-		t.Fatalf("attempt_variables = %d, want 12", status.AttemptVariables)
+	if status.AttemptVariables != 14 {
+		t.Fatalf("attempt_variables = %d, want 14", status.AttemptVariables)
 	}
 }
 
@@ -474,8 +485,16 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected workflow definition id: %q", item.WorkflowDefinitionID)
 	}
 
+	if !strings.HasPrefix(item.WorkflowFingerprint, "workflow:sha256:") {
+		t.Fatalf("unexpected workflow fingerprint: %q", item.WorkflowFingerprint)
+	}
+
 	if item.StepDefinitionID != "download" {
 		t.Fatalf("unexpected step definition id: %q", item.StepDefinitionID)
+	}
+
+	if !strings.HasPrefix(item.StepFingerprint, "step:sha256:") {
+		t.Fatalf("unexpected step fingerprint: %q", item.StepFingerprint)
 	}
 
 	if item.StepInstanceID != item.WorkflowInstanceID+"-step-download" {
@@ -599,8 +618,16 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 		t.Fatalf("workflow definition id = %q, want summary", items[0].WorkflowDefinitionID)
 	}
 
+	if !strings.HasPrefix(items[0].WorkflowFingerprint, "workflow:sha256:") {
+		t.Fatalf("unexpected workflow fingerprint: %q", items[0].WorkflowFingerprint)
+	}
+
 	if items[0].StepDefinitionID != "summarize" {
 		t.Fatalf("step definition id = %q, want summarize", items[0].StepDefinitionID)
+	}
+
+	if !strings.HasPrefix(items[0].StepFingerprint, "step:sha256:") {
+		t.Fatalf("unexpected step fingerprint: %q", items[0].StepFingerprint)
 	}
 
 	if !strings.HasPrefix(items[0].WorkItemFingerprint, "work-item:sha256:") {

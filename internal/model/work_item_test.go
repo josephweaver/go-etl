@@ -106,8 +106,10 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		Type:                 WorkItemTypeWriteDemoOutput,
 		OutputFilename:       "output.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
 		WorkflowInstanceID:   "workflow-instance-001",
 		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
 		StepInstanceID:       "step-instance-001",
 		WorkItemFingerprint:  "work-item-fingerprint",
 		InputFingerprint:     "input-fingerprint",
@@ -136,6 +138,10 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		t.Fatalf("step_definition_id = %q, want %q", decodedItem.StepDefinitionID, item.StepDefinitionID)
 	}
 
+	if decodedItem.StepFingerprint != item.StepFingerprint {
+		t.Fatalf("step_fingerprint = %q, want %q", decodedItem.StepFingerprint, item.StepFingerprint)
+	}
+
 	if decodedItem.WorkItemFingerprint != item.WorkItemFingerprint {
 		t.Fatalf("work_item_fingerprint = %q, want %q", decodedItem.WorkItemFingerprint, item.WorkItemFingerprint)
 	}
@@ -150,8 +156,10 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		ID:                   "work-item-001",
 		AttemptID:            "attempt-001",
 		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
 		WorkflowInstanceID:   "workflow-instance-001",
 		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
 		StepInstanceID:       "step-instance-001",
 		WorkItemFingerprint:  "work-item-fingerprint",
 		InputFingerprint:     "input-fingerprint",
@@ -180,6 +188,10 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 
 	if decodedCompletion.WorkflowDefinitionID != completion.WorkflowDefinitionID {
 		t.Fatalf("workflow_definition_id = %q, want %q", decodedCompletion.WorkflowDefinitionID, completion.WorkflowDefinitionID)
+	}
+
+	if decodedCompletion.WorkflowFingerprint != completion.WorkflowFingerprint {
+		t.Fatalf("workflow_fingerprint = %q, want %q", decodedCompletion.WorkflowFingerprint, completion.WorkflowFingerprint)
 	}
 
 	if decodedCompletion.WorkItemFingerprint != completion.WorkItemFingerprint {

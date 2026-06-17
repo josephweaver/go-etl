@@ -159,7 +159,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `GET /status` currently reports pending, assigned, failed, attempt, and attempt-variable counts. Attempt counts are zero when the controller has no configured ledger.
 
-`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow definition, workflow instance, step definition, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
+`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow definition, workflow fingerprint, workflow instance, step definition, step fingerprint, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -194,7 +194,7 @@ The current local demo ledger was re-verified on 2026-06-16. Starting from the e
 final status: pending=0 assigned=0 failed=0 attempts=6 attempt_variables=44
 ```
 
-That corresponds to six total demo fan-out work items in the existing ledger at the time of that verification. New runs store twelve runtime variables per completed attempt.
+That corresponds to six total demo fan-out work items in the existing ledger at the time of that verification. New runs store fourteen runtime variables per completed attempt.
 
 ## Worker Config
 
@@ -233,8 +233,10 @@ type WorkItem struct {
 	OutputFilename       string       `json:"output_filename"`
 	Parameters           Parameters   `json:"parameters,omitempty"`
 	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string       `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
 	StepDefinitionID     string       `json:"step_definition_id,omitempty"`
+	StepFingerprint      string       `json:"step_fingerprint,omitempty"`
 	StepInstanceID       string       `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint  string       `json:"work_item_fingerprint,omitempty"`
 	InputFingerprint     string       `json:"input_fingerprint,omitempty"`
@@ -246,8 +248,10 @@ type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
 	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string     `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
 	StepDefinitionID     string     `json:"step_definition_id,omitempty"`
+	StepFingerprint      string     `json:"step_fingerprint,omitempty"`
 	StepInstanceID       string     `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint  string     `json:"work_item_fingerprint,omitempty"`
 	InputFingerprint     string     `json:"input_fingerprint,omitempty"`
@@ -270,8 +274,10 @@ Workflow-compiled work items now include optional controller-generated runtime i
 
 ```text
 workflow_definition_id
+workflow_fingerprint
 workflow_instance_id
 step_definition_id
+step_fingerprint
 step_instance_id
 work_item_fingerprint
 input_fingerprint
@@ -279,7 +285,7 @@ output_fingerprint
 code_version
 ```
 
-Workflow-generated work-item, input, and output fingerprints are deterministic SHA-256 labels over resolved assignment content. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. The output fingerprint currently hashes the resolved output filename. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
+Workflow-generated workflow, step, work-item, input, and output fingerprints are deterministic SHA-256 labels over resolved assignment content. The workflow fingerprint currently hashes the workflow definition ID. The step fingerprint currently hashes the workflow fingerprint plus step definition ID. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. The output fingerprint currently hashes the resolved output filename. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
 
 Workflow-generated assignments set `code_version` from the resolved variable `code_version` when present, so launchers may submit values such as `override.code_version` or `controller_config.code_version`. If no variable is present, the controller falls back to Go build VCS metadata. If the Go toolchain did not embed a revision, the controller records `unknown`. A dirty working tree appends `-modified`.
 
@@ -510,7 +516,7 @@ summarize_input_file
 
 It requires `parameters.input_path` with type `path` or `string`, checks that the input is a file, writes a small summary containing the input path and byte size under `TmpDir`, and promotes the completed summary into `DataDir`.
 
-The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. The completion payload echoes assigned work-item parameters so SQLite can record the concrete resolved inputs used by the worker. Workflow-generated assignments carry controller-provided workflow definition, workflow instance, step definition, step instance, fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
+The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. The completion payload echoes assigned work-item parameters so SQLite can record the concrete resolved inputs used by the worker. Workflow-generated assignments carry controller-provided workflow definition, workflow fingerprint, workflow instance, step definition, step fingerprint, step instance, work-item/input/output fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
 
 ## Tests
 
@@ -575,7 +581,7 @@ The current verified summary demo prints:
 final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
 ```
 
-The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add twelve generated `runtime` variables plus one `work_item.input_path` variable per item.
+The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add fourteen generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
 The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not submit a `code_version` variable and did not embed VCS revision metadata.
 

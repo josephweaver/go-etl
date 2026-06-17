@@ -18,8 +18,10 @@ type WorkItem struct {
 	OutputFilename       string       `json:"output_filename"`
 	Parameters           Parameters   `json:"parameters,omitempty"`
 	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string       `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
 	StepDefinitionID     string       `json:"step_definition_id,omitempty"`
+	StepFingerprint      string       `json:"step_fingerprint,omitempty"`
 	StepInstanceID       string       `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint  string       `json:"work_item_fingerprint,omitempty"`
 	InputFingerprint     string       `json:"input_fingerprint,omitempty"`
@@ -38,8 +40,10 @@ type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
 	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string     `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
 	StepDefinitionID     string     `json:"step_definition_id,omitempty"`
+	StepFingerprint      string     `json:"step_fingerprint,omitempty"`
 	StepInstanceID       string     `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint  string     `json:"work_item_fingerprint,omitempty"`
 	InputFingerprint     string     `json:"input_fingerprint,omitempty"`

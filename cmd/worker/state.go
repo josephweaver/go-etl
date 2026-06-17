@@ -44,8 +44,10 @@ func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompleti
 		ID:                   item.ID,
 		AttemptID:            item.ID + "-attempt-" + randomHex(8),
 		WorkflowDefinitionID: item.WorkflowDefinitionID,
+		WorkflowFingerprint:  item.WorkflowFingerprint,
 		WorkflowInstanceID:   item.WorkflowInstanceID,
 		StepDefinitionID:     item.StepDefinitionID,
+		StepFingerprint:      item.StepFingerprint,
 		StepInstanceID:       item.StepInstanceID,
 		WorkItemFingerprint:  item.WorkItemFingerprint,
 		InputFingerprint:     item.InputFingerprint,
@@ -62,11 +64,17 @@ func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompleti
 	if completion.WorkflowDefinitionID == "" {
 		completion.WorkflowDefinitionID = "demo-workflow"
 	}
+	if completion.WorkflowFingerprint == "" {
+		completion.WorkflowFingerprint = "demo-workflow-fingerprint"
+	}
 	if completion.StepInstanceID == "" {
 		completion.StepInstanceID = "demo-step-instance"
 	}
 	if completion.StepDefinitionID == "" {
 		completion.StepDefinitionID = "demo-step"
+	}
+	if completion.StepFingerprint == "" {
+		completion.StepFingerprint = "demo-step-fingerprint"
 	}
 	if completion.WorkItemFingerprint == "" {
 		completion.WorkItemFingerprint = "demo-work-item:" + item.ID
