@@ -60,6 +60,29 @@ func TestWorkItemValidate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid parameters",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypeWriteDemoOutput,
+				OutputFilename: "output.txt",
+				Parameters: Parameters{
+					"input_path": {Type: "path", Value: "/data/input.tif"},
+				},
+			},
+		},
+		{
+			name: "parameter missing type",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypeWriteDemoOutput,
+				OutputFilename: "output.txt",
+				Parameters: Parameters{
+					"input_path": {Value: "/data/input.tif"},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -88,6 +111,9 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		InputFingerprint:    "input-fingerprint",
 		OutputFingerprint:   "output-fingerprint",
 		CodeVersion:         "code-version",
+		Parameters: Parameters{
+			"input_path": {Type: "path", Value: "/data/input.tif"},
+		},
 	}
 
 	data, err := json.Marshal(item)
@@ -95,17 +121,21 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		t.Fatalf("marshal item: %v", err)
 	}
 
-	var decoded map[string]string
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("decode item: %v", err)
+	var decodedItem WorkItem
+	if err := json.Unmarshal(data, &decodedItem); err != nil {
+		t.Fatalf("decode work item: %v", err)
 	}
 
-	if decoded["workflow_instance_id"] != item.WorkflowInstanceID {
-		t.Fatalf("workflow_instance_id = %q, want %q", decoded["workflow_instance_id"], item.WorkflowInstanceID)
+	if decodedItem.WorkflowInstanceID != item.WorkflowInstanceID {
+		t.Fatalf("workflow_instance_id = %q, want %q", decodedItem.WorkflowInstanceID, item.WorkflowInstanceID)
 	}
 
-	if decoded["work_item_fingerprint"] != item.WorkItemFingerprint {
-		t.Fatalf("work_item_fingerprint = %q, want %q", decoded["work_item_fingerprint"], item.WorkItemFingerprint)
+	if decodedItem.WorkItemFingerprint != item.WorkItemFingerprint {
+		t.Fatalf("work_item_fingerprint = %q, want %q", decodedItem.WorkItemFingerprint, item.WorkItemFingerprint)
+	}
+
+	if decodedItem.Parameters["input_path"].Value != "/data/input.tif" {
+		t.Fatalf("unexpected input_path parameter: %+v", decodedItem.Parameters["input_path"])
 	}
 }
 
@@ -121,6 +151,9 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		CodeVersion:         "code-version",
 		StartedAt:           "2026-06-06T12:00:00Z",
 		CompletedAt:         "2026-06-06T12:01:00Z",
+		Parameters: Parameters{
+			"input_path": {Type: "path", Value: "demo-summary-input.txt"},
+		},
 	}
 
 	data, err := json.Marshal(completion)
@@ -128,16 +161,20 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		t.Fatalf("marshal completion: %v", err)
 	}
 
-	var decoded map[string]string
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	var decodedCompletion WorkCompletion
+	if err := json.Unmarshal(data, &decodedCompletion); err != nil {
 		t.Fatalf("decode completion: %v", err)
 	}
 
-	if decoded["attempt_id"] != completion.AttemptID {
-		t.Fatalf("attempt_id = %q, want %q", decoded["attempt_id"], completion.AttemptID)
+	if decodedCompletion.AttemptID != completion.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
 	}
 
-	if decoded["work_item_fingerprint"] != completion.WorkItemFingerprint {
-		t.Fatalf("work_item_fingerprint = %q, want %q", decoded["work_item_fingerprint"], completion.WorkItemFingerprint)
+	if decodedCompletion.WorkItemFingerprint != completion.WorkItemFingerprint {
+		t.Fatalf("work_item_fingerprint = %q, want %q", decodedCompletion.WorkItemFingerprint, completion.WorkItemFingerprint)
+	}
+
+	if decodedCompletion.Parameters["input_path"].Value != "demo-summary-input.txt" {
+		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
 	}
 }

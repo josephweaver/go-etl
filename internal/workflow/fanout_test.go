@@ -78,6 +78,43 @@ func TestCompileFanOutStep(t *testing.T) {
 	}
 }
 
+func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
+	scope, err := variable.NewScope(variable.Variable{
+		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
+		Type:       variable.TypeList(variable.TypeInt),
+		Expression: `[2024]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	parameters := model.Parameters{
+		"input_root": {Type: "path", Value: "/data/cdl"},
+	}
+
+	items, err := CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${years[*]}",
+		Type:             model.WorkItemTypeWriteDemoOutput,
+		IDPrefix:         "cdl",
+		OutputPrefix:     "cdl",
+		OutputExtension:  ".txt",
+		Parameters:       parameters,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if items[0].Parameters["input_root"].Value != "/data/cdl" {
+		t.Fatalf("unexpected parameter: %+v", items[0].Parameters["input_root"])
+	}
+
+	items[0].Parameters["input_root"] = model.Parameter{Type: "path", Value: "/other"}
+	if parameters["input_root"].Value != "/data/cdl" {
+		t.Fatalf("template parameter was mutated: %+v", parameters["input_root"])
+	}
+}
+
 func TestCompileFanOutStepRejectsMissingID(t *testing.T) {
 	resolver := variable.NewResolver(variable.NewSet(), variable.ResolverConfig{})
 

@@ -1,0 +1,114 @@
+{
+  "workflow": {
+    "ID": "summary-demo",
+    "Variables": [
+      {
+        "Name": {
+          "Namespace": "workflow",
+          "Key": "summary_items"
+        },
+        "Type": {
+          "Kind": "list",
+          "Element": {
+            "Kind": "string"
+          }
+        },
+        "Expression": "[\"fixture\"]"
+      }
+    ],
+    "Steps": [
+      {
+        "ID": "summarize-input",
+        "FanOut": {
+          "WorkItem": {
+            "FanOutExpression": "${summary_items[*]}",
+            "Type": "summarize_input_file",
+            "OutputPrefix": "summary-demo",
+            "OutputExtension": ".txt",
+            "Parameters": {
+              "input_path": {
+                "type": "path",
+                "value": "demo-summary-input.txt"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_target_environment"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "local"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_start_executable"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "go"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_start_args"
+      },
+      "Type": {
+        "Kind": "list",
+        "Element": {
+          "Kind": "string"
+        }
+      },
+      "Expression": "[\"run\", \"./cmd/worker\", \"./cmd/worker/demo-config.json\"]"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_max_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_count_per_start"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_elapsed_time_between_starts"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "0s"
+    }
+  ]
+}

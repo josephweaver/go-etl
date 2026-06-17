@@ -48,6 +48,9 @@ func TestReportWorkComplete(t *testing.T) {
 		InputFingerprint:    "input-fingerprint",
 		OutputFingerprint:   "output-fingerprint",
 		CodeVersion:         "code-version",
+		Parameters: model.Parameters{
+			"input_path": {Type: "path", Value: "demo-summary-input.txt"},
+		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +89,10 @@ func TestReportWorkComplete(t *testing.T) {
 
 		if completion.CodeVersion != item.CodeVersion {
 			t.Fatalf("unexpected code version: %q", completion.CodeVersion)
+		}
+
+		if completion.Parameters["input_path"].Value != "demo-summary-input.txt" {
+			t.Fatalf("unexpected input_path parameter: %+v", completion.Parameters["input_path"])
 		}
 
 		if completion.StartedAt != startedAt.Format(time.RFC3339) {

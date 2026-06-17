@@ -8,13 +8,15 @@ import (
 type WorkItemType string
 
 const (
-	WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
+	WorkItemTypeWriteDemoOutput    WorkItemType = "write_demo_output"
+	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 )
 
 type WorkItem struct {
 	ID                  string       `json:"id"`
 	Type                WorkItemType `json:"type"`
 	OutputFilename      string       `json:"output_filename"`
+	Parameters          Parameters   `json:"parameters,omitempty"`
 	WorkflowInstanceID  string       `json:"workflow_instance_id,omitempty"`
 	StepInstanceID      string       `json:"step_instance_id,omitempty"`
 	WorkItemFingerprint string       `json:"work_item_fingerprint,omitempty"`
@@ -23,17 +25,25 @@ type WorkItem struct {
 	CodeVersion         string       `json:"code_version,omitempty"`
 }
 
+type Parameters map[string]Parameter
+
+type Parameter struct {
+	Type  string `json:"type"`
+	Value any    `json:"value"`
+}
+
 type WorkCompletion struct {
-	ID                  string `json:"id"`
-	AttemptID           string `json:"attempt_id,omitempty"`
-	WorkflowInstanceID  string `json:"workflow_instance_id,omitempty"`
-	StepInstanceID      string `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint string `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint    string `json:"input_fingerprint,omitempty"`
-	OutputFingerprint   string `json:"output_fingerprint,omitempty"`
-	CodeVersion         string `json:"code_version,omitempty"`
-	StartedAt           string `json:"started_at,omitempty"`
-	CompletedAt         string `json:"completed_at,omitempty"`
+	ID                  string     `json:"id"`
+	AttemptID           string     `json:"attempt_id,omitempty"`
+	WorkflowInstanceID  string     `json:"workflow_instance_id,omitempty"`
+	StepInstanceID      string     `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint string     `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint    string     `json:"input_fingerprint,omitempty"`
+	OutputFingerprint   string     `json:"output_fingerprint,omitempty"`
+	CodeVersion         string     `json:"code_version,omitempty"`
+	StartedAt           string     `json:"started_at,omitempty"`
+	CompletedAt         string     `json:"completed_at,omitempty"`
+	Parameters          Parameters `json:"parameters,omitempty"`
 }
 
 type WorkFailure struct {
@@ -64,6 +74,18 @@ func (item WorkItem) Validate() error {
 
 	if filepath.Base(item.OutputFilename) != item.OutputFilename {
 		return fmt.Errorf("output filename must not contain a directory: %s", item.OutputFilename)
+	}
+
+	for name, parameter := range item.Parameters {
+		if name == "" {
+			return fmt.Errorf("parameter name is required")
+		}
+		if parameter.Type == "" {
+			return fmt.Errorf("parameter %s type is required", name)
+		}
+		if parameter.Value == nil {
+			return fmt.Errorf("parameter %s value is required", name)
+		}
 	}
 
 	return nil

@@ -51,6 +51,7 @@ func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompleti
 		CodeVersion:         item.CodeVersion,
 		StartedAt:           startedAt.UTC().Format(time.RFC3339),
 		CompletedAt:         completedAt,
+		Parameters:          item.Parameters,
 	}
 
 	if completion.WorkflowInstanceID == "" {

@@ -17,6 +17,7 @@ type FanOutWorkItemTemplate struct {
 	IDPrefix         string
 	OutputPrefix     string
 	OutputExtension  string
+	Parameters       model.Parameters
 }
 
 type FanOutStep struct {
@@ -54,6 +55,7 @@ func CompileFanOutWorkItems(resolver variable.Resolver, template FanOutWorkItemT
 			ID:             fmt.Sprintf("%s-%s", template.IDPrefix, idToken),
 			Type:           template.Type,
 			OutputFilename: fmt.Sprintf("%s-%s%s", template.OutputPrefix, outputToken, template.OutputExtension),
+			Parameters:     copyParameters(template.Parameters),
 		}
 		if err := item.Validate(); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
@@ -63,6 +65,18 @@ func CompileFanOutWorkItems(resolver variable.Resolver, template FanOutWorkItemT
 	}
 
 	return items, nil
+}
+
+func copyParameters(parameters model.Parameters) model.Parameters {
+	if len(parameters) == 0 {
+		return nil
+	}
+
+	copied := make(model.Parameters, len(parameters))
+	for name, parameter := range parameters {
+		copied[name] = parameter
+	}
+	return copied
 }
 
 func fanOutTemplateToken(value variable.ResolvedValue, fallbackAccessor string, accessor string) (string, error) {

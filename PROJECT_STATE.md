@@ -15,6 +15,8 @@ Project guidance is in `AGENTS.md`. The longer product and architecture directio
 ```text
 go.mod
 demo-workflow.json
+demo-summary-workflow.json
+demo-summary-input.txt
 .gitignore
 internal/
   ledger/
@@ -156,7 +158,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `GET /status` currently reports pending, assigned, failed, attempt, and attempt-variable counts. Attempt counts are zero when the controller has no configured ledger.
 
-`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow instance, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time.
+`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow instance, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -228,6 +230,7 @@ type WorkItem struct {
 	ID             string       `json:"id"`
 	Type           WorkItemType `json:"type"`
 	OutputFilename string       `json:"output_filename"`
+	Parameters     Parameters   `json:"parameters,omitempty"`
 }
 
 type WorkCompletion struct {
@@ -249,6 +252,8 @@ type WorkFailure struct {
 }
 ```
 
+`Parameters` is a map of resolved work-item parameter names to typed JSON values. It is the first transport slot for concrete worker inputs such as input paths, output roots, tile IDs, and other already-resolved values. The worker should receive concrete parameters here rather than resolving workflow expressions locally.
+
 Workflow-compiled work items now include optional controller-generated runtime identity metadata before they enter the pending queue:
 
 ```text
@@ -268,6 +273,7 @@ Raw work-item submissions may still omit these fields for local administration a
 - A non-empty type.
 - A non-empty output filename.
 - An output filename without directory components.
+- Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
 
@@ -419,12 +425,15 @@ Current fan-out compilation behavior:
 - Supports scalar fan-out tokens for `string`, `path`, and `int`.
 - Supports explicit token accessors for object fan-out values, such as `.year`.
 - Supports separate token accessors for work-item IDs and output filenames.
+- Copies static resolved template parameters into every generated work item.
 
 Object fan-out values must use an explicit token accessor. The compiler does not guess which object field should become the work-item ID or output filename.
 
 `CompileWorkflow` still returns plain `[]model.WorkItem` for compatibility. `CompileWorkflowItems` returns `[]CompiledWorkItem` when the caller needs workflow and step traceability. `CompileWorkflowResult` returns the richer compile result.
 
 `demo-workflow.json` contains the first serialized workflow submission payload. It keeps workflow-scope variables inside the workflow object and defines a one-step fan-out workflow that produces `write_demo_output` work items for demo years.
+
+`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It submits one `summarize_input_file` item with `parameters.input_path = "demo-summary-input.txt"` so the local controller/worker path can exercise parameterized work.
 
 ## Local Client
 
@@ -460,6 +469,7 @@ The worker currently supports one operation:
 
 ```go
 WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
+WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 ```
 
 `cmd/worker/work_demo.go`:
@@ -473,7 +483,15 @@ WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
 
 This models the intended mounted-storage pattern: incomplete output stays temporary, while completed output appears in persistent data storage. The demo operation is idempotent by overwrite: rerunning the same work item writes the same deterministic content and replaces any existing completed output. Future skip behavior must be based on verifiable correctness, not just the presence of an output filename.
 
-The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. Workflow-generated assignments carry controller-provided workflow instance, step instance, fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
+`cmd/worker/work_summary.go` adds the first parameter-consuming worker operation:
+
+```text
+summarize_input_file
+```
+
+It requires `parameters.input_path` with type `path` or `string`, checks that the input is a file, writes a small summary containing the input path and byte size under `TmpDir`, and promotes the completed summary into `DataDir`.
+
+The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. The completion payload echoes assigned work-item parameters so SQLite can record the concrete resolved inputs used by the worker. Workflow-generated assignments carry controller-provided workflow instance, step instance, fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
 
 ## Tests
 
@@ -524,6 +542,28 @@ Run the local workflow demo from the repository root:
 ```powershell
 cd "c:\Joe Local Only\College\Research\go-etl"
 go run ./cmd/demo-client
+```
+
+Run the parameterized summary workflow demo from the repository root:
+
+```powershell
+go run ./cmd/demo-client demo-summary-workflow.json
+```
+
+The current verified summary demo prints:
+
+```text
+final status: pending=0 assigned=0 failed=0 attempts=8 attempt_variables=65
+```
+
+The latest summary run added one attempt and eleven attempt variables: ten generated `runtime` variables plus `work_item.input_path = "demo-summary-input.txt"`.
+
+Expected completed summary output:
+
+```text
+cmd/worker/.run/data/summary-demo-fixture.txt
+input_path=demo-summary-input.txt
+size_bytes=22
 ```
 
 The demo client:

@@ -575,7 +575,7 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 }
 
 func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
-	return []ledger.AttemptVariable{
+	variables := []ledger.AttemptVariable{
 		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
 		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
 		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
@@ -587,6 +587,19 @@ func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.At
 		runtimeStringVariable("started_at", completion.StartedAt, "attempt"),
 		runtimeStringVariable("completed_at", completion.CompletedAt, "attempt"),
 	}
+
+	for name, parameter := range completion.Parameters {
+		variables = append(variables, ledger.AttemptVariable{
+			Namespace: "work_item",
+			Name:      name,
+			Type:      parameter.Type,
+			Value:     parameter.Value,
+			Source:    "controller",
+			Lifecycle: "work_item",
+		})
+	}
+
+	return variables
 }
 
 func runtimeStringVariable(name string, value string, lifecycle string) ledger.AttemptVariable {
