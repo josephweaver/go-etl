@@ -119,7 +119,7 @@ func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
 		Type:       variable.TypeList(variable.TypeObject),
-		Expression: `[{"id": "fixture", "input_path": "demo-summary-input.txt"}]`,
+		Expression: `[{"id": "fixture", "input_path": "demo-summary-input.txt"}, {"id": "fixture-2", "input_path": "demo-summary-input-2.txt"}]`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +148,10 @@ func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 
 	if items[0].Parameters["input_path"].Value != "demo-summary-input.txt" {
 		t.Fatalf("unexpected input_path parameter: %+v", items[0].Parameters["input_path"])
+	}
+
+	if items[1].Parameters["input_path"].Value != "demo-summary-input-2.txt" {
+		t.Fatalf("unexpected second input_path parameter: %+v", items[1].Parameters["input_path"])
 	}
 }
 

@@ -17,6 +17,7 @@ go.mod
 demo-workflow.json
 demo-summary-workflow.json
 demo-summary-input.txt
+demo-summary-input-2.txt
 .gitignore
 internal/
   ledger/
@@ -434,7 +435,7 @@ Object fan-out values must use an explicit token accessor. The compiler does not
 
 `demo-workflow.json` contains the first serialized workflow submission payload. It keeps workflow-scope variables inside the workflow object and defines a one-step fan-out workflow that produces `write_demo_output` work items for demo years.
 
-`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It fans out over one object record, uses `.id` for the work-item/output token, and uses `ParameterAccessors.input_path = ".input_path"` so the generated `summarize_input_file` item receives `parameters.input_path = "demo-summary-input.txt"`.
+`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It fans out over object records, uses `.id` for the work-item/output token, and uses `ParameterAccessors.input_path = ".input_path"` so each generated `summarize_input_file` item receives a different `parameters.input_path`.
 
 ## Local Client
 
@@ -554,10 +555,10 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=9 attempt_variables=76
+final status: pending=0 assigned=0 failed=0 attempts=11 attempt_variables=98
 ```
 
-The latest summary run added one attempt and eleven attempt variables: ten generated `runtime` variables plus `work_item.input_path = "demo-summary-input.txt"`.
+The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
 
 Expected completed summary output:
 
@@ -565,6 +566,10 @@ Expected completed summary output:
 cmd/worker/.run/data/summary-demo-fixture.txt
 input_path=demo-summary-input.txt
 size_bytes=22
+
+cmd/worker/.run/data/summary-demo-fixture-2.txt
+input_path=demo-summary-input-2.txt
+size_bytes=29
 ```
 
 The demo client:

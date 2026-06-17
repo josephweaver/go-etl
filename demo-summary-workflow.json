@@ -13,7 +13,7 @@
             "Kind": "object"
           }
         },
-        "Expression": "[{\"id\": \"fixture\", \"input_path\": \"demo-summary-input.txt\"}]"
+        "Expression": "[{\"id\": \"fixture\", \"input_path\": \"demo-summary-input.txt\"}, {\"id\": \"fixture-2\", \"input_path\": \"demo-summary-input-2.txt\"}]"
       }
     ],
     "Steps": [
