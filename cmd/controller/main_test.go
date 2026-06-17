@@ -480,6 +480,45 @@ func TestWorkReuseDecisionReportsMissingAttempt(t *testing.T) {
 	}
 }
 
+func TestWorkSkipForReuseDecisionBuildsSkip(t *testing.T) {
+	skip, ok, err := workSkipForReuseDecision(model.WorkItem{ID: "work-item-001"}, WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: "attempt-001",
+	})
+	if err != nil {
+		t.Fatalf("workSkipForReuseDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected skip marker")
+	}
+	if skip.ID != "work-item-001" || skip.PriorAttemptID != "attempt-001" || skip.Reason != "matched_prior_completed_attempt" {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestWorkSkipForReuseDecisionReturnsMissingForNonReusableDecision(t *testing.T) {
+	skip, ok, err := workSkipForReuseDecision(model.WorkItem{ID: "work-item-001"}, WorkReuseDecision{
+		Reason: "prior_attempt_mismatch",
+	})
+	if err != nil {
+		t.Fatalf("workSkipForReuseDecision() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestWorkSkipForReuseDecisionRejectsInvalidSkip(t *testing.T) {
+	if _, _, err := workSkipForReuseDecision(model.WorkItem{}, WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: "attempt-001",
+	}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)

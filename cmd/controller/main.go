@@ -225,6 +225,23 @@ func (c *Controller) workReuseDecision(ctx context.Context, item model.WorkItem)
 	}, nil
 }
 
+func workSkipForReuseDecision(item model.WorkItem, decision WorkReuseDecision) (model.WorkSkip, bool, error) {
+	if !decision.Reusable {
+		return model.WorkSkip{}, false, nil
+	}
+
+	skip := model.WorkSkip{
+		ID:             item.ID,
+		PriorAttemptID: decision.PriorAttemptID,
+		Reason:         decision.Reason,
+	}
+	if err := skip.Validate(); err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	return skip, true, nil
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
