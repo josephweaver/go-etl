@@ -426,6 +426,7 @@ Current fan-out compilation behavior:
 - Supports explicit token accessors for object fan-out values, such as `.year`.
 - Supports separate token accessors for work-item IDs and output filenames.
 - Copies static resolved template parameters into every generated work item.
+- Can bind parameter values from the current fan-out object using `ParameterAccessors`.
 
 Object fan-out values must use an explicit token accessor. The compiler does not guess which object field should become the work-item ID or output filename.
 
@@ -433,7 +434,7 @@ Object fan-out values must use an explicit token accessor. The compiler does not
 
 `demo-workflow.json` contains the first serialized workflow submission payload. It keeps workflow-scope variables inside the workflow object and defines a one-step fan-out workflow that produces `write_demo_output` work items for demo years.
 
-`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It submits one `summarize_input_file` item with `parameters.input_path = "demo-summary-input.txt"` so the local controller/worker path can exercise parameterized work.
+`demo-summary-workflow.json` is a tiny parameterized workflow fixture. It fans out over one object record, uses `.id` for the work-item/output token, and uses `ParameterAccessors.input_path = ".input_path"` so the generated `summarize_input_file` item receives `parameters.input_path = "demo-summary-input.txt"`.
 
 ## Local Client
 
@@ -553,7 +554,7 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=8 attempt_variables=65
+final status: pending=0 assigned=0 failed=0 attempts=9 attempt_variables=76
 ```
 
 The latest summary run added one attempt and eleven attempt variables: ten generated `runtime` variables plus `work_item.input_path = "demo-summary-input.txt"`.

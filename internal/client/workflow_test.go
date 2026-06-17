@@ -113,8 +113,12 @@ func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
 		t.Fatalf("unexpected work item type: %s", template.Type)
 	}
 
-	if template.Parameters["input_path"].Value != "demo-summary-input.txt" {
-		t.Fatalf("unexpected input_path parameter: %+v", template.Parameters["input_path"])
+	if template.Parameters["input_path"].Value != "unset" {
+		t.Fatalf("unexpected input_path template parameter: %+v", template.Parameters["input_path"])
+	}
+
+	if template.ParameterAccessors["input_path"] != ".input_path" {
+		t.Fatalf("unexpected input_path parameter accessor: %s", template.ParameterAccessors["input_path"])
 	}
 }
 
