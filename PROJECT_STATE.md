@@ -184,6 +184,7 @@ The ledger supports:
 - Initializing the version 1 schema through `InitSQLiteSchema`.
 - Inserting one attempt and its variable snapshot transactionally through `InsertAttempt`.
 - Finding the latest completed attempt for a work-item fingerprint through `FindLatestCompletedAttemptByWorkItemFingerprint`.
+- Storing `completed`, `failed`, and `skipped` attempt statuses. Skipped attempts can link to the reused prior attempt through runtime variables such as `runtime.prior_attempt_id` and `runtime.skip_reason`.
 
 The first local demo ledger is created at:
 
@@ -422,7 +423,7 @@ runtime.completed_at
 
 SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
 
-The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`, but it does not use this to skip work yet.
+The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`. The ledger can store skipped attempt snapshots, but the controller does not create them during scheduling yet.
 
 The next controller scheduler should use a conservative organic worker-scaling model:
 
