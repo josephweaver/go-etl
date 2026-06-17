@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
@@ -515,6 +516,60 @@ func TestWorkSkipForReuseDecisionRejectsInvalidSkip(t *testing.T) {
 		Reason:         "matched_prior_completed_attempt",
 		PriorAttemptID: "attempt-001",
 	}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestSkippedAttemptFromWorkSkip(t *testing.T) {
+	skippedAt := mustParseTime(t, "2026-06-06T12:00:00Z")
+	item := model.WorkItem{
+		ID:                   "work-item-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+	}
+	skip := model.WorkSkip{
+		ID:             "work-item-001",
+		PriorAttemptID: "attempt-001",
+		Reason:         "matched_prior_completed_attempt",
+	}
+
+	attempt, err := skippedAttemptFromWorkSkip(item, skip, skippedAt)
+	if err != nil {
+		t.Fatalf("skippedAttemptFromWorkSkip() error = %v", err)
+	}
+
+	if !strings.HasPrefix(attempt.ID, "work-item-001-skip-") {
+		t.Fatalf("unexpected attempt id: %q", attempt.ID)
+	}
+	if attempt.Status != ledger.AttemptStatusSkipped {
+		t.Fatalf("status = %q, want skipped", attempt.Status)
+	}
+	if attempt.WorkItemFingerprint != item.WorkItemFingerprint {
+		t.Fatalf("work item fingerprint = %q, want %q", attempt.WorkItemFingerprint, item.WorkItemFingerprint)
+	}
+	if !attempt.StartedAt.Equal(skippedAt) || !attempt.CompletedAt.Equal(skippedAt) {
+		t.Fatalf("unexpected timestamps: started=%s completed=%s", attempt.StartedAt, attempt.CompletedAt)
+	}
+
+	variables := attemptVariablesByName(attempt.Variables)
+	if variables["prior_attempt_id"].Value != "attempt-001" {
+		t.Fatalf("prior_attempt_id = %+v", variables["prior_attempt_id"])
+	}
+	if variables["skip_reason"].Value != "matched_prior_completed_attempt" {
+		t.Fatalf("skip_reason = %+v", variables["skip_reason"])
+	}
+}
+
+func TestSkippedAttemptFromWorkSkipRejectsInvalidSkip(t *testing.T) {
+	if _, err := skippedAttemptFromWorkSkip(model.WorkItem{}, model.WorkSkip{}, time.Time{}); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -1621,6 +1676,24 @@ func withOutputFingerprint(item model.WorkItem, fingerprint string) model.WorkIt
 func withCodeVersion(item model.WorkItem, codeVersion string) model.WorkItem {
 	item.CodeVersion = codeVersion
 	return item
+}
+
+func mustParseTime(t *testing.T, text string) time.Time {
+	t.Helper()
+
+	parsed, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		t.Fatalf("parse time %q: %v", text, err)
+	}
+	return parsed
+}
+
+func attemptVariablesByName(variables []ledger.AttemptVariable) map[string]ledger.AttemptVariable {
+	byName := make(map[string]ledger.AttemptVariable, len(variables))
+	for _, variable := range variables {
+		byName[variable.Name] = variable
+	}
+	return byName
 }
 
 func assignNextWork(t *testing.T, controller *Controller) {

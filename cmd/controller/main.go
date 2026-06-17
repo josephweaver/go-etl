@@ -242,6 +242,30 @@ func workSkipForReuseDecision(item model.WorkItem, decision WorkReuseDecision) (
 	return skip, true, nil
 }
 
+func skippedAttemptFromWorkSkip(item model.WorkItem, skip model.WorkSkip, skippedAt time.Time) (ledger.Attempt, error) {
+	if err := skip.Validate(); err != nil {
+		return ledger.Attempt{}, err
+	}
+	if skippedAt.IsZero() {
+		skippedAt = time.Now().UTC()
+	}
+
+	return ledger.Attempt{
+		ID:                  skip.ID + "-skip-" + randomHex(8),
+		WorkflowInstanceID:  item.WorkflowInstanceID,
+		StepInstanceID:      item.StepInstanceID,
+		WorkItemID:          skip.ID,
+		WorkItemFingerprint: item.WorkItemFingerprint,
+		InputFingerprint:    item.InputFingerprint,
+		OutputFingerprint:   item.OutputFingerprint,
+		CodeVersion:         item.CodeVersion,
+		Status:              ledger.AttemptStatusSkipped,
+		StartedAt:           skippedAt.UTC(),
+		CompletedAt:         skippedAt.UTC(),
+		Variables:           runtimeVariablesFromSkip(item, skip, skippedAt.UTC()),
+	}, nil
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -800,6 +824,27 @@ func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.At
 	}
 
 	return variables
+}
+
+func runtimeVariablesFromSkip(item model.WorkItem, skip model.WorkSkip, skippedAt time.Time) []ledger.AttemptVariable {
+	timestamp := skippedAt.UTC().Format(time.RFC3339)
+	return []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_definition_id", item.WorkflowDefinitionID, "workflow"),
+		runtimeStringVariable("workflow_fingerprint", item.WorkflowFingerprint, "workflow"),
+		runtimeStringVariable("workflow_instance_id", item.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_definition_id", item.StepDefinitionID, "step"),
+		runtimeStringVariable("step_fingerprint", item.StepFingerprint, "step"),
+		runtimeStringVariable("step_instance_id", item.StepInstanceID, "step"),
+		runtimeStringVariable("work_item_id", skip.ID, "work_item"),
+		runtimeStringVariable("work_item_fingerprint", item.WorkItemFingerprint, "work_item"),
+		runtimeStringVariable("input_fingerprint", item.InputFingerprint, "work_item"),
+		runtimeStringVariable("output_fingerprint", item.OutputFingerprint, "work_item"),
+		runtimeStringVariable("code_version", item.CodeVersion, "work_item"),
+		runtimeStringVariable("prior_attempt_id", skip.PriorAttemptID, "attempt"),
+		runtimeStringVariable("skip_reason", skip.Reason, "attempt"),
+		runtimeStringVariable("started_at", timestamp, "attempt"),
+		runtimeStringVariable("completed_at", timestamp, "attempt"),
+	}
 }
 
 func runtimeStringVariable(name string, value string, lifecycle string) ledger.AttemptVariable {
