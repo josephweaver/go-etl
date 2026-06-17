@@ -8,7 +8,8 @@ import (
 type WorkItemType string
 
 const (
-	WorkItemTypeWriteDemoOutput WorkItemType = "write_demo_output"
+	WorkItemTypeWriteDemoOutput    WorkItemType = "write_demo_output"
+	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 )
 
 type WorkItem struct {

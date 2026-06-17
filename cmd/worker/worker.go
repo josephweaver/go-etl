@@ -73,6 +73,8 @@ func (w Worker) runWorkItem(item model.WorkItem) error {
 	switch item.Type {
 	case model.WorkItemTypeWriteDemoOutput:
 		return w.writeDemoOutput(item)
+	case model.WorkItemTypeSummarizeInputFile:
+		return w.summarizeInputFile(item)
 	default:
 		return fmt.Errorf("unsupported work item type: %s", item.Type)
 	}

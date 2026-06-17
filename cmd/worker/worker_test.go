@@ -95,6 +95,32 @@ func TestWorkerRun(t *testing.T) {
 	}
 }
 
+func TestWorkerRunSummarizeInputFile(t *testing.T) {
+	worker := newTestWorker(t)
+	inputPath := filepath.Join(t.TempDir(), "input.txt")
+	if err := os.WriteFile(inputPath, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	item := model.WorkItem{
+		ID:             "summary-001",
+		Type:           model.WorkItemTypeSummarizeInputFile,
+		OutputFilename: "summary.txt",
+		Parameters: model.Parameters{
+			"input_path": {Type: "path", Value: inputPath},
+		},
+	}
+
+	if err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dataPath := filepath.Join(worker.Config.DataDir, item.OutputFilename)
+	if _, err := os.Stat(dataPath); err != nil {
+		t.Fatalf("completed output does not exist: %v", err)
+	}
+}
+
 func TestWorkerRunWorkItemRejectsUnsupportedType(t *testing.T) {
 	worker := newTestWorker(t)
 
