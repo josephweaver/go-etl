@@ -555,10 +555,11 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=11 attempt_variables=98
+final status: pending=0 assigned=0 failed=0 attempts=13 attempt_variables=120
 ```
 
 The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
+It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix, one for each resolved parameter map.
 
 Expected completed summary output:
 
