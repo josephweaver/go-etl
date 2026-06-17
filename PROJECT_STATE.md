@@ -268,6 +268,8 @@ code_version
 
 Workflow-generated work-item, input, and output fingerprints are deterministic SHA-256 labels over resolved assignment content. The work-item fingerprint includes ID, type, output filename, and parameters. The input fingerprint currently hashes the resolved parameter map. The output fingerprint currently hashes the resolved output filename. Raw work-item submissions may still omit these fields for local administration and tests. The worker echoes assignment metadata into `POST /work/complete` when present and falls back to demo values only for legacy/raw assignments.
 
+Workflow-generated assignments set `code_version` from Go build VCS metadata when available. If the Go toolchain did not embed a revision, the controller records `unknown`. A dirty working tree appends `-modified`.
+
 `WorkItem.Validate()` checks structural validity:
 
 - A non-empty ID.
@@ -555,11 +557,12 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=15 attempt_variables=142
+final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
 ```
 
 The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
+The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not embed VCS revision metadata.
 
 Expected completed summary output:
 
