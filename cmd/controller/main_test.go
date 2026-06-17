@@ -470,6 +470,10 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected input fingerprint: %q", item.InputFingerprint)
 	}
 
+	if !strings.HasPrefix(item.OutputFingerprint, "output:sha256:") {
+		t.Fatalf("unexpected output fingerprint: %q", item.OutputFingerprint)
+	}
+
 	if item.CodeVersion != "demo" {
 		t.Fatalf("unexpected code version: %q", item.CodeVersion)
 	}
@@ -505,6 +509,10 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 
 	if items[0].InputFingerprint == items[1].InputFingerprint {
 		t.Fatalf("input fingerprints should differ: %s", items[0].InputFingerprint)
+	}
+
+	if items[0].OutputFingerprint == items[1].OutputFingerprint {
+		t.Fatalf("output fingerprints should differ: %s", items[0].OutputFingerprint)
 	}
 
 	if !strings.HasPrefix(items[0].WorkItemFingerprint, "work-item:sha256:") {

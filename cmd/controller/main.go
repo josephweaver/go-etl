@@ -282,7 +282,9 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 			"parameters":      item.Parameters,
 		})
 		item.InputFingerprint = fingerprint("input", item.Parameters)
-		item.OutputFingerprint = "output:" + item.OutputFilename
+		item.OutputFingerprint = fingerprint("output", map[string]any{
+			"output_filename": item.OutputFilename,
+		})
 		item.CodeVersion = "demo"
 		items = append(items, item)
 	}
