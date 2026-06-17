@@ -59,6 +59,12 @@ type WorkFailure struct {
 	Error string `json:"error"`
 }
 
+type WorkSkip struct {
+	ID             string `json:"id"`
+	PriorAttemptID string `json:"prior_attempt_id"`
+	Reason         string `json:"reason"`
+}
+
 type ControllerStatus struct {
 	Pending                int `json:"pending"`
 	Assigned               int `json:"assigned"`
@@ -95,6 +101,20 @@ func (item WorkItem) Validate() error {
 		if parameter.Value == nil {
 			return fmt.Errorf("parameter %s value is required", name)
 		}
+	}
+
+	return nil
+}
+
+func (skip WorkSkip) Validate() error {
+	if skip.ID == "" {
+		return fmt.Errorf("work item id is required")
+	}
+	if skip.PriorAttemptID == "" {
+		return fmt.Errorf("prior attempt id is required")
+	}
+	if skip.Reason == "" {
+		return fmt.Errorf("skip reason is required")
 	}
 
 	return nil

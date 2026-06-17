@@ -50,6 +50,7 @@ type AttemptStatus string
 const (
 	AttemptStatusCompleted AttemptStatus = "completed"
 	AttemptStatusFailed    AttemptStatus = "failed"
+	AttemptStatusSkipped   AttemptStatus = "skipped"
 )
 
 type Attempt struct {
@@ -278,7 +279,7 @@ func (a Attempt) Validate() error {
 	if a.CodeVersion == "" {
 		return fmt.Errorf("code version is required")
 	}
-	if a.Status != AttemptStatusCompleted && a.Status != AttemptStatusFailed {
+	if a.Status != AttemptStatusCompleted && a.Status != AttemptStatusFailed && a.Status != AttemptStatusSkipped {
 		return fmt.Errorf("unsupported attempt status: %s", a.Status)
 	}
 	if a.StartedAt.IsZero() {

@@ -41,6 +41,12 @@ type WorkerStarter interface {
 	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
+type WorkReuseDecision struct {
+	Reusable       bool
+	Reason         string
+	PriorAttemptID string
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
 		pending:  items,
@@ -163,6 +169,28 @@ func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) 
 	return ledger.InsertAttempt(ctx, c.ledger, attempt)
 }
 
+func (c *Controller) recordSkippedAttempt(ctx context.Context, item model.WorkItem, skippedAt time.Time) (model.WorkSkip, bool, error) {
+	decision, err := c.workReuseDecision(ctx, item)
+	if err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	skip, ok, err := workSkipForReuseDecision(item, decision)
+	if err != nil || !ok {
+		return model.WorkSkip{}, false, err
+	}
+
+	attempt, err := skippedAttemptFromWorkSkip(item, skip, skippedAt)
+	if err != nil {
+		return model.WorkSkip{}, false, err
+	}
+	if err := c.recordAttempt(ctx, attempt); err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	return skip, true, nil
+}
+
 func (c *Controller) priorCompletedAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
 	if c.ledger == nil || item.WorkItemFingerprint == "" {
 		return ledger.Attempt{}, false, nil
@@ -195,6 +223,69 @@ func (c *Controller) reusablePriorAttempt(ctx context.Context, item model.WorkIt
 	}
 
 	return attempt, true, nil
+}
+
+func (c *Controller) workReuseDecision(ctx context.Context, item model.WorkItem) (WorkReuseDecision, error) {
+	attempt, ok, err := c.priorCompletedAttempt(ctx, item)
+	if err != nil {
+		return WorkReuseDecision{}, err
+	}
+	if !ok {
+		return WorkReuseDecision{Reason: "no_prior_completed_attempt"}, nil
+	}
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		return WorkReuseDecision{
+			Reason:         "prior_attempt_mismatch",
+			PriorAttemptID: attempt.ID,
+		}, nil
+	}
+
+	return WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: attempt.ID,
+	}, nil
+}
+
+func workSkipForReuseDecision(item model.WorkItem, decision WorkReuseDecision) (model.WorkSkip, bool, error) {
+	if !decision.Reusable {
+		return model.WorkSkip{}, false, nil
+	}
+
+	skip := model.WorkSkip{
+		ID:             item.ID,
+		PriorAttemptID: decision.PriorAttemptID,
+		Reason:         decision.Reason,
+	}
+	if err := skip.Validate(); err != nil {
+		return model.WorkSkip{}, false, err
+	}
+
+	return skip, true, nil
+}
+
+func skippedAttemptFromWorkSkip(item model.WorkItem, skip model.WorkSkip, skippedAt time.Time) (ledger.Attempt, error) {
+	if err := skip.Validate(); err != nil {
+		return ledger.Attempt{}, err
+	}
+	if skippedAt.IsZero() {
+		skippedAt = time.Now().UTC()
+	}
+
+	return ledger.Attempt{
+		ID:                  skip.ID + "-skip-" + randomHex(8),
+		WorkflowInstanceID:  item.WorkflowInstanceID,
+		StepInstanceID:      item.StepInstanceID,
+		WorkItemID:          skip.ID,
+		WorkItemFingerprint: item.WorkItemFingerprint,
+		InputFingerprint:    item.InputFingerprint,
+		OutputFingerprint:   item.OutputFingerprint,
+		CodeVersion:         item.CodeVersion,
+		Status:              ledger.AttemptStatusSkipped,
+		StartedAt:           skippedAt.UTC(),
+		CompletedAt:         skippedAt.UTC(),
+		Variables:           runtimeVariablesFromSkip(item, skip, skippedAt.UTC()),
+	}, nil
 }
 
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -570,12 +661,12 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
-	reuseCandidates, err := c.pendingReuseCandidateCount(r.Context(), pendingItems)
+	reuseReasons, err := c.pendingReuseDecisionReasons(r.Context(), pendingItems)
 	if err != nil {
 		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
 		return
 	}
-	status.PendingReuseCandidates = reuseCandidates
+	status.PendingReuseCandidates = reuseReasons["matched_prior_completed_attempt"]
 
 	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
 	if err != nil {
@@ -609,18 +700,16 @@ func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
 	return attempts, attemptVariables, nil
 }
 
-func (c *Controller) pendingReuseCandidateCount(ctx context.Context, items []model.WorkItem) (int, error) {
-	count := 0
+func (c *Controller) pendingReuseDecisionReasons(ctx context.Context, items []model.WorkItem) (map[string]int, error) {
+	counts := make(map[string]int)
 	for _, item := range items {
-		_, ok, err := c.reusablePriorAttempt(ctx, item)
+		decision, err := c.workReuseDecision(ctx, item)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		if ok {
-			count++
-		}
+		counts[decision.Reason]++
 	}
-	return count, nil
+	return counts, nil
 }
 
 func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -759,6 +848,27 @@ func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.At
 	return variables
 }
 
+func runtimeVariablesFromSkip(item model.WorkItem, skip model.WorkSkip, skippedAt time.Time) []ledger.AttemptVariable {
+	timestamp := skippedAt.UTC().Format(time.RFC3339)
+	return []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_definition_id", item.WorkflowDefinitionID, "workflow"),
+		runtimeStringVariable("workflow_fingerprint", item.WorkflowFingerprint, "workflow"),
+		runtimeStringVariable("workflow_instance_id", item.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_definition_id", item.StepDefinitionID, "step"),
+		runtimeStringVariable("step_fingerprint", item.StepFingerprint, "step"),
+		runtimeStringVariable("step_instance_id", item.StepInstanceID, "step"),
+		runtimeStringVariable("work_item_id", skip.ID, "work_item"),
+		runtimeStringVariable("work_item_fingerprint", item.WorkItemFingerprint, "work_item"),
+		runtimeStringVariable("input_fingerprint", item.InputFingerprint, "work_item"),
+		runtimeStringVariable("output_fingerprint", item.OutputFingerprint, "work_item"),
+		runtimeStringVariable("code_version", item.CodeVersion, "work_item"),
+		runtimeStringVariable("prior_attempt_id", skip.PriorAttemptID, "attempt"),
+		runtimeStringVariable("skip_reason", skip.Reason, "attempt"),
+		runtimeStringVariable("started_at", timestamp, "attempt"),
+		runtimeStringVariable("completed_at", timestamp, "attempt"),
+	}
+}
+
 func runtimeStringVariable(name string, value string, lifecycle string) ledger.AttemptVariable {
 	return ledger.AttemptVariable{
 		Namespace: "runtime",
@@ -776,20 +886,38 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	for {
+		c.mu.Lock()
+		if len(c.pending) == 0 {
+			c.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		item := c.pending[0]
+		c.pending = c.pending[1:]
+		c.mu.Unlock()
 
-	if len(c.pending) == 0 {
-		w.WriteHeader(http.StatusNoContent)
+		_, skipped, err := c.recordSkippedAttempt(r.Context(), item, time.Now().UTC())
+		if err != nil {
+			c.mu.Lock()
+			c.pending = append([]model.WorkItem{item}, c.pending...)
+			c.mu.Unlock()
+			http.Error(w, "record skipped attempt", http.StatusInternalServerError)
+			return
+		}
+		if skipped {
+			fmt.Println("work item skipped:", item.ID)
+			continue
+		}
+
+		c.mu.Lock()
+		c.assigned[item.ID] = item
+		c.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(item); err != nil {
+			http.Error(w, "encode work item", http.StatusInternalServerError)
+		}
 		return
-	}
-
-	item := c.pending[0]
-	c.pending = c.pending[1:]
-	c.assigned[item.ID] = item
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(item); err != nil {
-		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
 }

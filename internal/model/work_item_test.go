@@ -223,3 +223,80 @@ func TestControllerStatusJSONIncludesReuseCandidates(t *testing.T) {
 		t.Fatalf("pending_reuse_candidates = %d, want 1", decoded.PendingReuseCandidates)
 	}
 }
+
+func TestWorkSkipValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		skip    WorkSkip
+		wantErr bool
+	}{
+		{
+			name: "valid skip",
+			skip: WorkSkip{
+				ID:             "work-item-001",
+				PriorAttemptID: "attempt-001",
+				Reason:         "matched_prior_completed_attempt",
+			},
+		},
+		{
+			name: "missing id",
+			skip: WorkSkip{
+				PriorAttemptID: "attempt-001",
+				Reason:         "matched_prior_completed_attempt",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing prior attempt id",
+			skip: WorkSkip{
+				ID:     "work-item-001",
+				Reason: "matched_prior_completed_attempt",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing reason",
+			skip: WorkSkip{
+				ID:             "work-item-001",
+				PriorAttemptID: "attempt-001",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.skip.Validate()
+
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkSkipJSON(t *testing.T) {
+	skip := WorkSkip{
+		ID:             "work-item-001",
+		PriorAttemptID: "attempt-001",
+		Reason:         "matched_prior_completed_attempt",
+	}
+
+	data, err := json.Marshal(skip)
+	if err != nil {
+		t.Fatalf("marshal skip: %v", err)
+	}
+
+	var decoded WorkSkip
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode skip: %v", err)
+	}
+
+	if decoded.PriorAttemptID != skip.PriorAttemptID {
+		t.Fatalf("prior_attempt_id = %q, want %q", decoded.PriorAttemptID, skip.PriorAttemptID)
+	}
+}

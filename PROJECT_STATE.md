@@ -161,7 +161,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow definition, workflow fingerprint, workflow instance, step definition, step fingerprint, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
 
-The controller has small read and comparison helpers for idempotency groundwork. `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. `priorCompletedAttemptMatchesWorkItem` checks that the prior attempt was completed and that work-item, input, output, and code-version fingerprints still match the current assignment. `reusablePriorAttempt` composes those checks into a single controller question. `/status` reports how many pending work items are currently reuse candidates. The scheduler does not skip or alter queue behavior yet.
+The controller has small read, comparison, decision, marker, and skipped-attempt helpers for idempotency groundwork. `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. `priorCompletedAttemptMatchesWorkItem` checks that the prior attempt was completed and that work-item, input, output, and code-version fingerprints still match the current assignment. `reusablePriorAttempt` composes those checks into a single controller question. `workReuseDecision` returns an observational decision with reason strings such as `no_prior_completed_attempt`, `prior_attempt_mismatch`, and `matched_prior_completed_attempt`. `workSkipForReuseDecision` can build a validated `WorkSkip` marker from a positive reuse decision. `skippedAttemptFromWorkSkip` can build a skipped `ledger.Attempt` snapshot with `runtime.prior_attempt_id` and `runtime.skip_reason`. `recordSkippedAttempt` can persist that skipped snapshot when called explicitly. `/status` reports how many pending work items are currently reuse candidates, derived from pending reuse-decision reason counts. `/work/next` now records and removes reusable pending items as skipped attempts before assigning the next non-reusable item.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -184,6 +184,7 @@ The ledger supports:
 - Initializing the version 1 schema through `InitSQLiteSchema`.
 - Inserting one attempt and its variable snapshot transactionally through `InsertAttempt`.
 - Finding the latest completed attempt for a work-item fingerprint through `FindLatestCompletedAttemptByWorkItemFingerprint`.
+- Storing `completed`, `failed`, and `skipped` attempt statuses. Skipped attempts can link to the reused prior attempt through runtime variables such as `runtime.prior_attempt_id` and `runtime.skip_reason`.
 
 The first local demo ledger is created at:
 
@@ -269,6 +270,12 @@ type WorkFailure struct {
 	ID    string `json:"id"`
 	Error string `json:"error"`
 }
+
+type WorkSkip struct {
+	ID             string `json:"id"`
+	PriorAttemptID string `json:"prior_attempt_id"`
+	Reason         string `json:"reason"`
+}
 ```
 
 `Parameters` is a map of resolved work-item parameter names to typed JSON values. It is the first transport slot for concrete worker inputs such as input paths, output roots, tile IDs, and other already-resolved values. The worker should receive concrete parameters here rather than resolving workflow expressions locally.
@@ -301,6 +308,8 @@ Workflow-generated assignments set `code_version` from the resolved variable `co
 - Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
+
+`WorkSkip` is a shared marker shape for future skip behavior. It is not sent over HTTP or recorded by the controller yet.
 
 ## Variable Model
 
@@ -414,7 +423,7 @@ runtime.completed_at
 
 SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
 
-The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`, but it does not use this to skip work yet.
+The ledger now has the first read-side helper for this skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`. The ledger can store skipped attempt snapshots, and `/work/next` creates them when a pending item is reusable.
 
 The next controller scheduler should use a conservative organic worker-scaling model:
 
@@ -589,6 +598,30 @@ final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=
 The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add fourteen generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
 The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not submit a `code_version` variable and did not embed VCS revision metadata.
+
+The first verified skip run after enabling `/work/next` skip behavior ran the summary workflow twice:
+
+```powershell
+go run ./cmd/demo-client demo-summary-workflow.json
+go run ./cmd/demo-client demo-summary-workflow.json
+```
+
+The two runs printed:
+
+```text
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=19 attempt_variables=194
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=21 attempt_variables=224
+```
+
+The ledger then reported:
+
+```text
+completed=17
+skipped=4
+skip_reason "matched_prior_completed_attempt" 4
+```
+
+The two summary items were reusable from existing completed attempts, so each run recorded two skipped attempts rather than assigning those items to a worker.
 
 Expected completed summary output:
 

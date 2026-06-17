@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
@@ -48,6 +49,91 @@ func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+}
+
+func TestNextWorkHandlerSkipsReusablePendingWork(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = []model.WorkItem{
+		reusableTestWorkItem("test-001"),
+		{
+			ID:             "test-002",
+			Type:           model.WorkItemTypeWriteDemoOutput,
+			OutputFilename: "result-2.txt",
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if item.ID != "test-002" {
+		t.Fatalf("assigned item id = %q, want test-002", item.ID)
+	}
+	if _, ok := controller.assigned["test-001"]; ok {
+		t.Fatal("skipped item should not be assigned")
+	}
+
+	var skippedCount int
+	if err := controller.ledger.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts WHERE status = ?`, string(ledger.AttemptStatusSkipped)).Scan(&skippedCount); err != nil {
+		t.Fatalf("query skipped count: %v", err)
+	}
+	if skippedCount != 1 {
+		t.Fatalf("skipped count = %d, want 1", skippedCount)
+	}
+}
+
+func TestNextWorkHandlerReturnsNoContentWhenAllPendingWorkIsReusable(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = []model.WorkItem{reusableTestWorkItem("test-001")}
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if len(controller.assigned) != 0 {
+		t.Fatalf("assigned count = %d, want 0", len(controller.assigned))
 	}
 }
 
@@ -396,6 +482,281 @@ func TestReusablePriorAttemptRejectsMismatchedAttempt(t *testing.T) {
 	}
 }
 
+func TestWorkReuseDecisionReportsReusableAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if !decision.Reusable || decision.Reason != "matched_prior_completed_attempt" || decision.PriorAttemptID != "attempt-001" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestWorkReuseDecisionReportsMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if decision.Reusable || decision.Reason != "prior_attempt_mismatch" || decision.PriorAttemptID != "attempt-001" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestWorkReuseDecisionReportsMissingAttempt(t *testing.T) {
+	controller := newController(nil)
+
+	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("workReuseDecision() error = %v", err)
+	}
+
+	if decision.Reusable || decision.Reason != "no_prior_completed_attempt" || decision.PriorAttemptID != "" {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestWorkSkipForReuseDecisionBuildsSkip(t *testing.T) {
+	skip, ok, err := workSkipForReuseDecision(model.WorkItem{ID: "work-item-001"}, WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: "attempt-001",
+	})
+	if err != nil {
+		t.Fatalf("workSkipForReuseDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected skip marker")
+	}
+	if skip.ID != "work-item-001" || skip.PriorAttemptID != "attempt-001" || skip.Reason != "matched_prior_completed_attempt" {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestWorkSkipForReuseDecisionReturnsMissingForNonReusableDecision(t *testing.T) {
+	skip, ok, err := workSkipForReuseDecision(model.WorkItem{ID: "work-item-001"}, WorkReuseDecision{
+		Reason: "prior_attempt_mismatch",
+	})
+	if err != nil {
+		t.Fatalf("workSkipForReuseDecision() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestWorkSkipForReuseDecisionRejectsInvalidSkip(t *testing.T) {
+	if _, _, err := workSkipForReuseDecision(model.WorkItem{}, WorkReuseDecision{
+		Reusable:       true,
+		Reason:         "matched_prior_completed_attempt",
+		PriorAttemptID: "attempt-001",
+	}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestSkippedAttemptFromWorkSkip(t *testing.T) {
+	skippedAt := mustParseTime(t, "2026-06-06T12:00:00Z")
+	item := model.WorkItem{
+		ID:                   "work-item-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+	}
+	skip := model.WorkSkip{
+		ID:             "work-item-001",
+		PriorAttemptID: "attempt-001",
+		Reason:         "matched_prior_completed_attempt",
+	}
+
+	attempt, err := skippedAttemptFromWorkSkip(item, skip, skippedAt)
+	if err != nil {
+		t.Fatalf("skippedAttemptFromWorkSkip() error = %v", err)
+	}
+
+	if !strings.HasPrefix(attempt.ID, "work-item-001-skip-") {
+		t.Fatalf("unexpected attempt id: %q", attempt.ID)
+	}
+	if attempt.Status != ledger.AttemptStatusSkipped {
+		t.Fatalf("status = %q, want skipped", attempt.Status)
+	}
+	if attempt.WorkItemFingerprint != item.WorkItemFingerprint {
+		t.Fatalf("work item fingerprint = %q, want %q", attempt.WorkItemFingerprint, item.WorkItemFingerprint)
+	}
+	if !attempt.StartedAt.Equal(skippedAt) || !attempt.CompletedAt.Equal(skippedAt) {
+		t.Fatalf("unexpected timestamps: started=%s completed=%s", attempt.StartedAt, attempt.CompletedAt)
+	}
+
+	variables := attemptVariablesByName(attempt.Variables)
+	if variables["prior_attempt_id"].Value != "attempt-001" {
+		t.Fatalf("prior_attempt_id = %+v", variables["prior_attempt_id"])
+	}
+	if variables["skip_reason"].Value != "matched_prior_completed_attempt" {
+		t.Fatalf("skip_reason = %+v", variables["skip_reason"])
+	}
+}
+
+func TestSkippedAttemptFromWorkSkipRejectsInvalidSkip(t *testing.T) {
+	if _, err := skippedAttemptFromWorkSkip(model.WorkItem{}, model.WorkSkip{}, time.Time{}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestRecordSkippedAttemptStoresSkippedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	item := model.WorkItem{
+		ID:                  "test-001",
+		WorkflowInstanceID:  "workflow-instance-002",
+		StepInstanceID:      "step-instance-002",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), item, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected skipped attempt")
+	}
+	if skip.PriorAttemptID != "attempt-001" {
+		t.Fatalf("prior attempt id = %q, want attempt-001", skip.PriorAttemptID)
+	}
+
+	var status string
+	if err := controller.ledger.QueryRowContext(context.Background(), `SELECT status FROM attempts WHERE status = ?`, string(ledger.AttemptStatusSkipped)).Scan(&status); err != nil {
+		t.Fatalf("query skipped attempt: %v", err)
+	}
+	if status != string(ledger.AttemptStatusSkipped) {
+		t.Fatalf("status = %q, want skipped", status)
+	}
+}
+
+func TestRecordSkippedAttemptReturnsMissingForMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), model.WorkItem{
+		ID:                  "test-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	}, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
+func TestRecordSkippedAttemptReturnsMissingWithoutLedger(t *testing.T) {
+	controller := newController(nil)
+
+	skip, ok, err := controller.recordSkippedAttempt(context.Background(), model.WorkItem{
+		ID:                  "test-001",
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}, mustParseTime(t, "2026-06-06T12:02:00Z"))
+	if err != nil {
+		t.Fatalf("recordSkippedAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected skip marker: %+v", skip)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)
@@ -611,6 +972,60 @@ func TestStatusHandlerReportsPendingReuseCandidates(t *testing.T) {
 
 	if status.PendingReuseCandidates != 1 {
 		t.Fatalf("pending_reuse_candidates = %d, want 1", status.PendingReuseCandidates)
+	}
+}
+
+func TestPendingReuseDecisionReasonsCountsReasons(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	items := []model.WorkItem{
+		{
+			WorkItemFingerprint: "work-item-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "code-version",
+		},
+		{
+			WorkItemFingerprint: "work-item-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "new-code-version",
+		},
+		{
+			WorkItemFingerprint: "missing-fingerprint",
+			InputFingerprint:    "input-fingerprint",
+			OutputFingerprint:   "output-fingerprint",
+			CodeVersion:         "code-version",
+		},
+	}
+
+	reasons, err := controller.pendingReuseDecisionReasons(context.Background(), items)
+	if err != nil {
+		t.Fatalf("pendingReuseDecisionReasons() error = %v", err)
+	}
+
+	if reasons["matched_prior_completed_attempt"] != 1 {
+		t.Fatalf("matched count = %d, want 1", reasons["matched_prior_completed_attempt"])
+	}
+	if reasons["prior_attempt_mismatch"] != 1 {
+		t.Fatalf("mismatch count = %d, want 1", reasons["prior_attempt_mismatch"])
+	}
+	if reasons["no_prior_completed_attempt"] != 1 {
+		t.Fatalf("missing count = %d, want 1", reasons["no_prior_completed_attempt"])
 	}
 }
 
@@ -1372,6 +1787,24 @@ func newTestController() *Controller {
 	})
 }
 
+func reusableTestWorkItem(id string) model.WorkItem {
+	return model.WorkItem{
+		ID:                   id,
+		Type:                 model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:       id + ".txt",
+		WorkflowDefinitionID: "workflow-definition-002",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-002",
+		StepDefinitionID:     "step-definition-002",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-002",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+	}
+}
+
 func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkCompletion) *Controller {
 	t.Helper()
 
@@ -1444,6 +1877,24 @@ func withOutputFingerprint(item model.WorkItem, fingerprint string) model.WorkIt
 func withCodeVersion(item model.WorkItem, codeVersion string) model.WorkItem {
 	item.CodeVersion = codeVersion
 	return item
+}
+
+func mustParseTime(t *testing.T, text string) time.Time {
+	t.Helper()
+
+	parsed, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		t.Fatalf("parse time %q: %v", text, err)
+	}
+	return parsed
+}
+
+func attemptVariablesByName(variables []ledger.AttemptVariable) map[string]ledger.AttemptVariable {
+	byName := make(map[string]ledger.AttemptVariable, len(variables))
+	for _, variable := range variables {
+		byName[variable.Name] = variable
+	}
+	return byName
 }
 
 func assignNextWork(t *testing.T, controller *Controller) {

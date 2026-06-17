@@ -108,6 +108,59 @@ func TestInsertAttemptStoresAttemptAndVariables(t *testing.T) {
 	}
 }
 
+func TestInsertAttemptStoresSkippedAttempt(t *testing.T) {
+	ctx := context.Background()
+	db := testLedgerDB(t, ctx)
+	defer db.Close()
+
+	attempt := testAttempt(
+		"attempt-skip-001",
+		"work-item-fingerprint",
+		AttemptStatusSkipped,
+		time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC),
+	)
+	attempt.Variables = []AttemptVariable{
+		{
+			Namespace: "runtime",
+			Name:      "prior_attempt_id",
+			Type:      "string",
+			Value:     "attempt-001",
+			Source:    "controller",
+			Lifecycle: "attempt",
+		},
+		{
+			Namespace: "runtime",
+			Name:      "skip_reason",
+			Type:      "string",
+			Value:     "matched_prior_completed_attempt",
+			Source:    "controller",
+			Lifecycle: "attempt",
+		},
+	}
+
+	if err := InsertAttempt(ctx, db, attempt); err != nil {
+		t.Fatalf("InsertAttempt() error = %v", err)
+	}
+
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM attempts WHERE attempt_id = ?`, attempt.ID).Scan(&status); err != nil {
+		t.Fatalf("query skipped attempt: %v", err)
+	}
+	if status != string(AttemptStatusSkipped) {
+		t.Fatalf("status = %q, want %q", status, AttemptStatusSkipped)
+	}
+
+	var valueJSON string
+	if err := db.QueryRowContext(ctx, `SELECT value_json FROM attempt_variables WHERE attempt_id = ? AND namespace = ? AND name = ?`,
+		attempt.ID, "runtime", "prior_attempt_id").Scan(&valueJSON); err != nil {
+		t.Fatalf("query prior attempt variable: %v", err)
+	}
+	if valueJSON != `"attempt-001"` {
+		t.Fatalf("prior_attempt_id value_json = %q, want %q", valueJSON, `"attempt-001"`)
+	}
+}
+
 func TestInsertAttemptRejectsInvalidAttempt(t *testing.T) {
 	ctx := context.Background()
 	db := testLedgerDB(t, ctx)
