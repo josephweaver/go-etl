@@ -185,6 +185,18 @@ func priorCompletedAttemptMatchesWorkItem(item model.WorkItem, attempt ledger.At
 		item.CodeVersion == attempt.CodeVersion
 }
 
+func (c *Controller) reusablePriorAttempt(ctx context.Context, item model.WorkItem) (ledger.Attempt, bool, error) {
+	attempt, ok, err := c.priorCompletedAttempt(ctx, item)
+	if err != nil || !ok {
+		return ledger.Attempt{}, false, err
+	}
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		return ledger.Attempt{}, false, nil
+	}
+
+	return attempt, true, nil
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

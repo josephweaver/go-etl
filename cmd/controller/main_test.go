@@ -329,6 +329,73 @@ func TestPriorCompletedAttemptMatchesWorkItemRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestReusablePriorAttemptFindsMatchingAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	attempt, ok, err := controller.reusablePriorAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	})
+	if err != nil {
+		t.Fatalf("reusablePriorAttempt() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected reusable prior attempt")
+	}
+	if attempt.ID != "attempt-001" {
+		t.Fatalf("attempt id = %q, want attempt-001", attempt.ID)
+	}
+}
+
+func TestReusablePriorAttemptRejectsMismatchedAttempt(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "old-code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+
+	attempt, ok, err := controller.reusablePriorAttempt(context.Background(), model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "new-code-version",
+	})
+	if err != nil {
+		t.Fatalf("reusablePriorAttempt() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("unexpected reusable attempt: %+v", attempt)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 	controller := newTestController()
 	assignNextWork(t, controller)
@@ -1269,6 +1336,36 @@ func newTestController() *Controller {
 			OutputFilename: "result.txt",
 		},
 	})
+}
+
+func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkCompletion) *Controller {
+	t.Helper()
+
+	controller := newController(nil)
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
+		{
+			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
+			Type:       variable.TypePath,
+			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("initialize ledger: %v", err)
+	}
+	t.Cleanup(func() {
+		db.Close()
+	})
+	controller.ledger = db
+
+	attempt, _, err := attemptFromCompletion(completion)
+	if err != nil {
+		t.Fatalf("build attempt: %v", err)
+	}
+	if err := controller.recordAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("record attempt: %v", err)
+	}
+
+	return controller
 }
 
 func getStatus(t *testing.T, controller *Controller) model.ControllerStatus {
