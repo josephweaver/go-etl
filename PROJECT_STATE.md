@@ -423,7 +423,7 @@ runtime.completed_at
 
 SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
 
-The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`. The ledger can store skipped attempt snapshots, but the controller does not create them during scheduling yet.
+The ledger now has the first read-side helper for this skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment through `reusablePriorAttempt`. The ledger can store skipped attempt snapshots, and `/work/next` creates them when a pending item is reusable.
 
 The next controller scheduler should use a conservative organic worker-scaling model:
 
@@ -598,6 +598,30 @@ final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=
 The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add fourteen generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
 The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not submit a `code_version` variable and did not embed VCS revision metadata.
+
+The first verified skip run after enabling `/work/next` skip behavior ran the summary workflow twice:
+
+```powershell
+go run ./cmd/demo-client demo-summary-workflow.json
+go run ./cmd/demo-client demo-summary-workflow.json
+```
+
+The two runs printed:
+
+```text
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=19 attempt_variables=194
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=21 attempt_variables=224
+```
+
+The ledger then reported:
+
+```text
+completed=17
+skipped=4
+skip_reason "matched_prior_completed_attempt" 4
+```
+
+The two summary items were reusable from existing completed attempts, so each run recorded two skipped attempts rather than assigning those items to a worker.
 
 Expected completed summary output:
 
