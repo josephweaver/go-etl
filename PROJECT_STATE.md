@@ -269,6 +269,12 @@ type WorkFailure struct {
 	ID    string `json:"id"`
 	Error string `json:"error"`
 }
+
+type WorkSkip struct {
+	ID             string `json:"id"`
+	PriorAttemptID string `json:"prior_attempt_id"`
+	Reason         string `json:"reason"`
+}
 ```
 
 `Parameters` is a map of resolved work-item parameter names to typed JSON values. It is the first transport slot for concrete worker inputs such as input paths, output roots, tile IDs, and other already-resolved values. The worker should receive concrete parameters here rather than resolving workflow expressions locally.
@@ -301,6 +307,8 @@ Workflow-generated assignments set `code_version` from the resolved variable `co
 - Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
+
+`WorkSkip` is a shared marker shape for future skip behavior. It is not sent over HTTP or recorded by the controller yet.
 
 ## Variable Model
 
