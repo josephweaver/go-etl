@@ -151,6 +151,9 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		CodeVersion:         "code-version",
 		StartedAt:           "2026-06-06T12:00:00Z",
 		CompletedAt:         "2026-06-06T12:01:00Z",
+		Parameters: Parameters{
+			"input_path": {Type: "path", Value: "demo-summary-input.txt"},
+		},
 	}
 
 	data, err := json.Marshal(completion)
@@ -158,16 +161,20 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		t.Fatalf("marshal completion: %v", err)
 	}
 
-	var decoded map[string]string
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	var decodedCompletion WorkCompletion
+	if err := json.Unmarshal(data, &decodedCompletion); err != nil {
 		t.Fatalf("decode completion: %v", err)
 	}
 
-	if decoded["attempt_id"] != completion.AttemptID {
-		t.Fatalf("attempt_id = %q, want %q", decoded["attempt_id"], completion.AttemptID)
+	if decodedCompletion.AttemptID != completion.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
 	}
 
-	if decoded["work_item_fingerprint"] != completion.WorkItemFingerprint {
-		t.Fatalf("work_item_fingerprint = %q, want %q", decoded["work_item_fingerprint"], completion.WorkItemFingerprint)
+	if decodedCompletion.WorkItemFingerprint != completion.WorkItemFingerprint {
+		t.Fatalf("work_item_fingerprint = %q, want %q", decodedCompletion.WorkItemFingerprint, completion.WorkItemFingerprint)
+	}
+
+	if decodedCompletion.Parameters["input_path"].Value != "demo-summary-input.txt" {
+		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
 	}
 }

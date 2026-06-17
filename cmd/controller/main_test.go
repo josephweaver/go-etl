@@ -100,7 +100,13 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 		"output_fingerprint":"output-fingerprint",
 		"code_version":"code-version",
 		"started_at":"2026-06-06T12:00:00Z",
-		"completed_at":"2026-06-06T12:01:00Z"
+		"completed_at":"2026-06-06T12:01:00Z",
+		"parameters": {
+			"input_path": {
+				"type": "path",
+				"value": "demo-summary-input.txt"
+			}
+		}
 	}`))
 	response := httptest.NewRecorder()
 
@@ -122,7 +128,7 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 		t.Fatalf("query attempt variable count: %v", err)
 	}
 	if count != 10 {
-		t.Fatalf("attempt variable count = %d, want 10", count)
+		t.Fatalf("runtime attempt variable count = %d, want 10", count)
 	}
 
 	var valueJSON string
@@ -131,6 +137,13 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	}
 	if valueJSON != `"workflow-instance-001"` {
 		t.Fatalf("workflow_instance_id value_json = %q", valueJSON)
+	}
+
+	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'work_item' AND name = 'input_path'`).Scan(&valueJSON); err != nil {
+		t.Fatalf("query input path variable: %v", err)
+	}
+	if valueJSON != `"demo-summary-input.txt"` {
+		t.Fatalf("input_path value_json = %q", valueJSON)
 	}
 }
 
