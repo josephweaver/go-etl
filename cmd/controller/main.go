@@ -886,20 +886,38 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	for {
+		c.mu.Lock()
+		if len(c.pending) == 0 {
+			c.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		item := c.pending[0]
+		c.pending = c.pending[1:]
+		c.mu.Unlock()
 
-	if len(c.pending) == 0 {
-		w.WriteHeader(http.StatusNoContent)
+		_, skipped, err := c.recordSkippedAttempt(r.Context(), item, time.Now().UTC())
+		if err != nil {
+			c.mu.Lock()
+			c.pending = append([]model.WorkItem{item}, c.pending...)
+			c.mu.Unlock()
+			http.Error(w, "record skipped attempt", http.StatusInternalServerError)
+			return
+		}
+		if skipped {
+			fmt.Println("work item skipped:", item.ID)
+			continue
+		}
+
+		c.mu.Lock()
+		c.assigned[item.ID] = item
+		c.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(item); err != nil {
+			http.Error(w, "encode work item", http.StatusInternalServerError)
+		}
 		return
-	}
-
-	item := c.pending[0]
-	c.pending = c.pending[1:]
-	c.assigned[item.ID] = item
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(item); err != nil {
-		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
 }

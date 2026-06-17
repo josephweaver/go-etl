@@ -52,6 +52,91 @@ func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
 	}
 }
 
+func TestNextWorkHandlerSkipsReusablePendingWork(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = []model.WorkItem{
+		reusableTestWorkItem("test-001"),
+		{
+			ID:             "test-002",
+			Type:           model.WorkItemTypeWriteDemoOutput,
+			OutputFilename: "result-2.txt",
+		},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if item.ID != "test-002" {
+		t.Fatalf("assigned item id = %q, want test-002", item.ID)
+	}
+	if _, ok := controller.assigned["test-001"]; ok {
+		t.Fatal("skipped item should not be assigned")
+	}
+
+	var skippedCount int
+	if err := controller.ledger.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts WHERE status = ?`, string(ledger.AttemptStatusSkipped)).Scan(&skippedCount); err != nil {
+		t.Fatalf("query skipped count: %v", err)
+	}
+	if skippedCount != 1 {
+		t.Fatalf("skipped count = %d, want 1", skippedCount)
+	}
+}
+
+func TestNextWorkHandlerReturnsNoContentWhenAllPendingWorkIsReusable(t *testing.T) {
+	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
+		ID:                   "test-001",
+		AttemptID:            "attempt-001",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+		StartedAt:            "2026-06-06T12:00:00Z",
+		CompletedAt:          "2026-06-06T12:01:00Z",
+	})
+	controller.pending = []model.WorkItem{reusableTestWorkItem("test-001")}
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if len(controller.assigned) != 0 {
+		t.Fatalf("assigned count = %d, want 0", len(controller.assigned))
+	}
+}
+
 func TestNextWorkHandlerRejectsPost(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodPost, "/work/next", nil)
@@ -1700,6 +1785,24 @@ func newTestController() *Controller {
 			OutputFilename: "result.txt",
 		},
 	})
+}
+
+func reusableTestWorkItem(id string) model.WorkItem {
+	return model.WorkItem{
+		ID:                   id,
+		Type:                 model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:       id + ".txt",
+		WorkflowDefinitionID: "workflow-definition-002",
+		WorkflowFingerprint:  "workflow-fingerprint",
+		WorkflowInstanceID:   "workflow-instance-002",
+		StepDefinitionID:     "step-definition-002",
+		StepFingerprint:      "step-fingerprint",
+		StepInstanceID:       "step-instance-002",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
+	}
 }
 
 func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkCompletion) *Controller {
