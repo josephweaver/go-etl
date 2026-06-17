@@ -159,7 +159,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `GET /status` currently reports pending, assigned, failed, attempt, and attempt-variable counts. Attempt counts are zero when the controller has no configured ledger.
 
-`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow instance, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
+`POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow definition, workflow instance, step definition, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -194,7 +194,7 @@ The current local demo ledger was re-verified on 2026-06-16. Starting from the e
 final status: pending=0 assigned=0 failed=0 attempts=6 attempt_variables=44
 ```
 
-That corresponds to six total demo fan-out work items in the existing ledger. New runs store ten runtime variables per completed attempt.
+That corresponds to six total demo fan-out work items in the existing ledger at the time of that verification. New runs store twelve runtime variables per completed attempt.
 
 ## Worker Config
 
@@ -228,23 +228,34 @@ The local paths are relative to the directory where the worker is run.
 
 ```go
 type WorkItem struct {
-	ID             string       `json:"id"`
-	Type           WorkItemType `json:"type"`
-	OutputFilename string       `json:"output_filename"`
-	Parameters     Parameters   `json:"parameters,omitempty"`
+	ID                   string       `json:"id"`
+	Type                 WorkItemType `json:"type"`
+	OutputFilename       string       `json:"output_filename"`
+	Parameters           Parameters   `json:"parameters,omitempty"`
+	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
+	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string       `json:"step_definition_id,omitempty"`
+	StepInstanceID       string       `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string       `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string       `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string       `json:"output_fingerprint,omitempty"`
+	CodeVersion          string       `json:"code_version,omitempty"`
 }
 
 type WorkCompletion struct {
-	ID                  string `json:"id"`
-	AttemptID           string `json:"attempt_id,omitempty"`
-	WorkflowInstanceID  string `json:"workflow_instance_id,omitempty"`
-	StepInstanceID      string `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint string `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint    string `json:"input_fingerprint,omitempty"`
-	OutputFingerprint   string `json:"output_fingerprint,omitempty"`
-	CodeVersion         string `json:"code_version,omitempty"`
-	StartedAt           string `json:"started_at,omitempty"`
-	CompletedAt         string `json:"completed_at,omitempty"`
+	ID                   string     `json:"id"`
+	AttemptID            string     `json:"attempt_id,omitempty"`
+	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
+	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string     `json:"step_definition_id,omitempty"`
+	StepInstanceID       string     `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string     `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string     `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string     `json:"output_fingerprint,omitempty"`
+	CodeVersion          string     `json:"code_version,omitempty"`
+	StartedAt            string     `json:"started_at,omitempty"`
+	CompletedAt          string     `json:"completed_at,omitempty"`
+	Parameters           Parameters `json:"parameters,omitempty"`
 }
 
 type WorkFailure struct {
@@ -258,7 +269,9 @@ type WorkFailure struct {
 Workflow-compiled work items now include optional controller-generated runtime identity metadata before they enter the pending queue:
 
 ```text
+workflow_definition_id
 workflow_instance_id
+step_definition_id
 step_instance_id
 work_item_fingerprint
 input_fingerprint
@@ -497,7 +510,7 @@ summarize_input_file
 
 It requires `parameters.input_path` with type `path` or `string`, checks that the input is a file, writes a small summary containing the input path and byte size under `TmpDir`, and promotes the completed summary into `DataDir`.
 
-The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. The completion payload echoes assigned work-item parameters so SQLite can record the concrete resolved inputs used by the worker. Workflow-generated assignments carry controller-provided workflow instance, step instance, fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
+The worker completion reporter now includes a worker-generated attempt ID plus runtime start and completion timestamps in `POST /work/complete`. The worker captures `StartedAt` before executing the item and `CompletedAt` when building the completion payload. The completion payload echoes assigned work-item parameters so SQLite can record the concrete resolved inputs used by the worker. Workflow-generated assignments carry controller-provided workflow definition, workflow instance, step definition, step instance, fingerprint, and code-version fields; raw or legacy assignments still receive demo fallback values until the runtime variable snapshot is fully generated by the controller/worker runtime.
 
 ## Tests
 
@@ -562,7 +575,7 @@ The current verified summary demo prints:
 final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
 ```
 
-The latest summary run added two attempts and twenty-two attempt variables: ten generated `runtime` variables plus one `work_item.input_path` variable per item.
+The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add twelve generated `runtime` variables plus one `work_item.input_path` variable per item.
 It also recorded two distinct `runtime.input_fingerprint` values with the `input:sha256:` prefix and two distinct `runtime.output_fingerprint` values with the `output:sha256:` prefix.
 The latest run recorded `runtime.code_version = "unknown"` for both attempts because this local `go run` path did not submit a `code_version` variable and did not embed VCS revision metadata.
 

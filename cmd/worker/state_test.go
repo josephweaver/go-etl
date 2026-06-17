@@ -39,15 +39,17 @@ func TestReportWorkFailed(t *testing.T) {
 func TestReportWorkComplete(t *testing.T) {
 	startedAt := time.Now().UTC().Add(-time.Minute)
 	item := model.WorkItem{
-		ID:                  "test-001",
-		Type:                model.WorkItemTypeWriteDemoOutput,
-		OutputFilename:      "result.txt",
-		WorkflowInstanceID:  "workflow-instance-001",
-		StepInstanceID:      "step-instance-001",
-		WorkItemFingerprint: "work-item-fingerprint",
-		InputFingerprint:    "input-fingerprint",
-		OutputFingerprint:   "output-fingerprint",
-		CodeVersion:         "code-version",
+		ID:                   "test-001",
+		Type:                 model.WorkItemTypeWriteDemoOutput,
+		OutputFilename:       "result.txt",
+		WorkflowDefinitionID: "workflow-definition-001",
+		WorkflowInstanceID:   "workflow-instance-001",
+		StepDefinitionID:     "step-definition-001",
+		StepInstanceID:       "step-instance-001",
+		WorkItemFingerprint:  "work-item-fingerprint",
+		InputFingerprint:     "input-fingerprint",
+		OutputFingerprint:    "output-fingerprint",
+		CodeVersion:          "code-version",
 		Parameters: model.Parameters{
 			"input_path": {Type: "path", Value: "demo-summary-input.txt"},
 		},
@@ -77,6 +79,14 @@ func TestReportWorkComplete(t *testing.T) {
 
 		if completion.WorkflowInstanceID != item.WorkflowInstanceID {
 			t.Fatalf("unexpected workflow instance id: %q", completion.WorkflowInstanceID)
+		}
+
+		if completion.WorkflowDefinitionID != item.WorkflowDefinitionID {
+			t.Fatalf("unexpected workflow definition id: %q", completion.WorkflowDefinitionID)
+		}
+
+		if completion.StepDefinitionID != item.StepDefinitionID {
+			t.Fatalf("unexpected step definition id: %q", completion.StepDefinitionID)
 		}
 
 		if completion.StepInstanceID != item.StepInstanceID {

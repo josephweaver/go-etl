@@ -41,24 +41,32 @@ func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompleti
 	completedAt := time.Now().UTC().Format(time.RFC3339)
 
 	completion := model.WorkCompletion{
-		ID:                  item.ID,
-		AttemptID:           item.ID + "-attempt-" + randomHex(8),
-		WorkflowInstanceID:  item.WorkflowInstanceID,
-		StepInstanceID:      item.StepInstanceID,
-		WorkItemFingerprint: item.WorkItemFingerprint,
-		InputFingerprint:    item.InputFingerprint,
-		OutputFingerprint:   item.OutputFingerprint,
-		CodeVersion:         item.CodeVersion,
-		StartedAt:           startedAt.UTC().Format(time.RFC3339),
-		CompletedAt:         completedAt,
-		Parameters:          item.Parameters,
+		ID:                   item.ID,
+		AttemptID:            item.ID + "-attempt-" + randomHex(8),
+		WorkflowDefinitionID: item.WorkflowDefinitionID,
+		WorkflowInstanceID:   item.WorkflowInstanceID,
+		StepDefinitionID:     item.StepDefinitionID,
+		StepInstanceID:       item.StepInstanceID,
+		WorkItemFingerprint:  item.WorkItemFingerprint,
+		InputFingerprint:     item.InputFingerprint,
+		OutputFingerprint:    item.OutputFingerprint,
+		CodeVersion:          item.CodeVersion,
+		StartedAt:            startedAt.UTC().Format(time.RFC3339),
+		CompletedAt:          completedAt,
+		Parameters:           item.Parameters,
 	}
 
 	if completion.WorkflowInstanceID == "" {
 		completion.WorkflowInstanceID = "demo-workflow-instance"
 	}
+	if completion.WorkflowDefinitionID == "" {
+		completion.WorkflowDefinitionID = "demo-workflow"
+	}
 	if completion.StepInstanceID == "" {
 		completion.StepInstanceID = "demo-step-instance"
+	}
+	if completion.StepDefinitionID == "" {
+		completion.StepDefinitionID = "demo-step"
 	}
 	if completion.WorkItemFingerprint == "" {
 		completion.WorkItemFingerprint = "demo-work-item:" + item.ID

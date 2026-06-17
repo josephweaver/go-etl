@@ -13,16 +13,18 @@ const (
 )
 
 type WorkItem struct {
-	ID                  string       `json:"id"`
-	Type                WorkItemType `json:"type"`
-	OutputFilename      string       `json:"output_filename"`
-	Parameters          Parameters   `json:"parameters,omitempty"`
-	WorkflowInstanceID  string       `json:"workflow_instance_id,omitempty"`
-	StepInstanceID      string       `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint string       `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint    string       `json:"input_fingerprint,omitempty"`
-	OutputFingerprint   string       `json:"output_fingerprint,omitempty"`
-	CodeVersion         string       `json:"code_version,omitempty"`
+	ID                   string       `json:"id"`
+	Type                 WorkItemType `json:"type"`
+	OutputFilename       string       `json:"output_filename"`
+	Parameters           Parameters   `json:"parameters,omitempty"`
+	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
+	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string       `json:"step_definition_id,omitempty"`
+	StepInstanceID       string       `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string       `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string       `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string       `json:"output_fingerprint,omitempty"`
+	CodeVersion          string       `json:"code_version,omitempty"`
 }
 
 type Parameters map[string]Parameter
@@ -33,17 +35,19 @@ type Parameter struct {
 }
 
 type WorkCompletion struct {
-	ID                  string     `json:"id"`
-	AttemptID           string     `json:"attempt_id,omitempty"`
-	WorkflowInstanceID  string     `json:"workflow_instance_id,omitempty"`
-	StepInstanceID      string     `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint string     `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint    string     `json:"input_fingerprint,omitempty"`
-	OutputFingerprint   string     `json:"output_fingerprint,omitempty"`
-	CodeVersion         string     `json:"code_version,omitempty"`
-	StartedAt           string     `json:"started_at,omitempty"`
-	CompletedAt         string     `json:"completed_at,omitempty"`
-	Parameters          Parameters `json:"parameters,omitempty"`
+	ID                   string     `json:"id"`
+	AttemptID            string     `json:"attempt_id,omitempty"`
+	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
+	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string     `json:"step_definition_id,omitempty"`
+	StepInstanceID       string     `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string     `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string     `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string     `json:"output_fingerprint,omitempty"`
+	CodeVersion          string     `json:"code_version,omitempty"`
+	StartedAt            string     `json:"started_at,omitempty"`
+	CompletedAt          string     `json:"completed_at,omitempty"`
+	Parameters           Parameters `json:"parameters,omitempty"`
 }
 
 type WorkFailure struct {

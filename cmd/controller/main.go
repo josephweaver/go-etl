@@ -280,7 +280,9 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 
 	for _, compiled := range compiledItems {
 		item := compiled.WorkItem
+		item.WorkflowDefinitionID = workflowID
 		item.WorkflowInstanceID = workflowInstanceID
+		item.StepDefinitionID = compiled.StepID
 		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
 		item.WorkItemFingerprint = fingerprint("work-item", map[string]any{
 			"id":              item.ID,
@@ -663,7 +665,9 @@ func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, boo
 
 func runtimeVariablesFromCompletion(completion model.WorkCompletion) []ledger.AttemptVariable {
 	variables := []ledger.AttemptVariable{
+		runtimeStringVariable("workflow_definition_id", completion.WorkflowDefinitionID, "workflow"),
 		runtimeStringVariable("workflow_instance_id", completion.WorkflowInstanceID, "workflow"),
+		runtimeStringVariable("step_definition_id", completion.StepDefinitionID, "step"),
 		runtimeStringVariable("step_instance_id", completion.StepInstanceID, "step"),
 		runtimeStringVariable("work_item_id", completion.ID, "work_item"),
 		runtimeStringVariable("work_item_fingerprint", completion.WorkItemFingerprint, "work_item"),
