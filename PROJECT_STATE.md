@@ -194,7 +194,7 @@ The first local demo ledger is created at:
 The current local demo ledger was re-verified on 2026-06-16. Starting from the earlier demo ledger count of four attempts and twenty-four variables, one new demo run added two attempts and twenty runtime variables and printed:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=6 attempt_variables=44
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=6 attempt_variables=44
 ```
 
 That corresponds to six total demo fan-out work items in the existing ledger at the time of that verification. New runs store fourteen runtime variables per completed attempt.
@@ -583,7 +583,7 @@ go run ./cmd/demo-client demo-summary-workflow.json
 The current verified summary demo prints:
 
 ```text
-final status: pending=0 assigned=0 failed=0 attempts=17 attempt_variables=164
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=17 attempt_variables=164
 ```
 
 The latest verified summary run added two attempts and twenty-two attempt variables under the previous ten-runtime-variable snapshot shape. New summary runs add fourteen generated `runtime` variables plus one `work_item.input_path` variable per item.
