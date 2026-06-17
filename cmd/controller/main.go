@@ -171,6 +171,20 @@ func (c *Controller) priorCompletedAttempt(ctx context.Context, item model.WorkI
 	return ledger.FindLatestCompletedAttemptByWorkItemFingerprint(ctx, c.ledger, item.WorkItemFingerprint)
 }
 
+func priorCompletedAttemptMatchesWorkItem(item model.WorkItem, attempt ledger.Attempt) bool {
+	if attempt.Status != ledger.AttemptStatusCompleted {
+		return false
+	}
+	if item.WorkItemFingerprint == "" || item.InputFingerprint == "" || item.OutputFingerprint == "" || item.CodeVersion == "" {
+		return false
+	}
+
+	return item.WorkItemFingerprint == attempt.WorkItemFingerprint &&
+		item.InputFingerprint == attempt.InputFingerprint &&
+		item.OutputFingerprint == attempt.OutputFingerprint &&
+		item.CodeVersion == attempt.CodeVersion
+}
+
 func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

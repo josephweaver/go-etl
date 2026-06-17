@@ -161,7 +161,7 @@ After workflow submission creates pending work, the controller resolves `worker_
 
 `POST /work/complete` still accepts legacy completion payloads containing only `id`. When a completion payload includes full attempt metadata, the controller converts it into a `ledger.Attempt` and records it in SQLite before removing the item from `assigned`. The stored attempt snapshot now includes runtime variables for workflow definition, workflow fingerprint, workflow instance, step definition, step fingerprint, step instance, work-item ID, work-item fingerprint, input fingerprint, output fingerprint, code version, attempt ID, started time, and completed time. Completion payload parameters are stored as `work_item` variables so the ledger records the resolved inputs used by the worker.
 
-The controller has a small read adapter for idempotency groundwork: `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. The scheduler does not skip or alter queue behavior yet.
+The controller has small read and comparison helpers for idempotency groundwork. `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. `priorCompletedAttemptMatchesWorkItem` checks that the prior attempt was completed and that work-item, input, output, and code-version fingerprints still match the current assignment. The scheduler does not skip or alter queue behavior yet.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
 
@@ -414,7 +414,7 @@ runtime.completed_at
 
 SQLite tables may expose common IDs and fingerprints as convenience columns for indexing, but those columns should mirror typed variables with namespace, type, value, source, and lifecycle. Verified skip decisions should compare the current resolved variables against a prior successful attempt's stored variables; an output filename alone is not enough.
 
-The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter, but it does not use this to skip work yet.
+The ledger now has the first read-side helper for this future skip path: it can find the latest completed attempt matching a work-item fingerprint. The controller can call this through its own ledger adapter and compare the prior attempt against the current assignment, but it does not use this to skip work yet.
 
 The next controller scheduler should use a conservative organic worker-scaling model:
 

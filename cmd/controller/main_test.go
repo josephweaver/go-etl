@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
@@ -244,6 +245,87 @@ func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testin
 
 	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{}); err != nil || ok {
 		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
+	}
+}
+
+func TestPriorCompletedAttemptMatchesWorkItem(t *testing.T) {
+	item := model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+	attempt := ledger.Attempt{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              ledger.AttemptStatusCompleted,
+	}
+
+	if !priorCompletedAttemptMatchesWorkItem(item, attempt) {
+		t.Fatal("expected matching prior attempt")
+	}
+}
+
+func TestPriorCompletedAttemptMatchesWorkItemRejectsMismatch(t *testing.T) {
+	baseItem := model.WorkItem{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+	}
+	baseAttempt := ledger.Attempt{
+		WorkItemFingerprint: "work-item-fingerprint",
+		InputFingerprint:    "input-fingerprint",
+		OutputFingerprint:   "output-fingerprint",
+		CodeVersion:         "code-version",
+		Status:              ledger.AttemptStatusCompleted,
+	}
+
+	tests := []struct {
+		name    string
+		item    model.WorkItem
+		attempt ledger.Attempt
+	}{
+		{
+			name:    "failed prior attempt",
+			item:    baseItem,
+			attempt: withAttemptStatus(baseAttempt, ledger.AttemptStatusFailed),
+		},
+		{
+			name:    "work item fingerprint",
+			item:    withWorkItemFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "input fingerprint",
+			item:    withInputFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "output fingerprint",
+			item:    withOutputFingerprint(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "code version",
+			item:    withCodeVersion(baseItem, "changed"),
+			attempt: baseAttempt,
+		},
+		{
+			name:    "missing current fingerprint",
+			item:    withInputFingerprint(baseItem, ""),
+			attempt: baseAttempt,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if priorCompletedAttemptMatchesWorkItem(test.item, test.attempt) {
+				t.Fatal("expected prior attempt mismatch")
+			}
+		})
 	}
 }
 
@@ -1206,6 +1288,31 @@ func getStatus(t *testing.T, controller *Controller) model.ControllerStatus {
 	}
 
 	return status
+}
+
+func withAttemptStatus(attempt ledger.Attempt, status ledger.AttemptStatus) ledger.Attempt {
+	attempt.Status = status
+	return attempt
+}
+
+func withWorkItemFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.WorkItemFingerprint = fingerprint
+	return item
+}
+
+func withInputFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.InputFingerprint = fingerprint
+	return item
+}
+
+func withOutputFingerprint(item model.WorkItem, fingerprint string) model.WorkItem {
+	item.OutputFingerprint = fingerprint
+	return item
+}
+
+func withCodeVersion(item model.WorkItem, codeVersion string) model.WorkItem {
+	item.CodeVersion = codeVersion
+	return item
 }
 
 func assignNextWork(t *testing.T, controller *Controller) {
