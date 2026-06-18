@@ -165,6 +165,12 @@ cmd/controller/slurm_worker_script.go
 
 It generates one script for one worker process. The script creates the log directory, then runs the configured worker executable with the generated worker config path.
 
+The companion writer helper creates parent directories and writes the generated script to a path such as:
+
+```text
+.run/fake-hpcc/worker.slurm
+```
+
 ## Provenance Rules
 
 To keep the development history clean:

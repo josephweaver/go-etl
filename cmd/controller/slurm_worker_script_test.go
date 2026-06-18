@@ -63,6 +63,34 @@ func TestGenerateSlurmWorkerScriptRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestWriteSlurmWorkerScript(t *testing.T) {
+	scriptPath := filepath.Join(".run", "fake-hpcc", "worker.slurm")
+	if err := os.RemoveAll(filepath.Join(".run", "fake-hpcc")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(".run", "fake-hpcc"))
+	})
+
+	err := WriteSlurmWorkerScript(scriptPath, SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/bin/echo",
+		WorkerConfigPath: "fake-worker-config",
+		LogDir:           filepath.ToSlash(filepath.Join(".run", "fake-hpcc", "logs")),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "'/bin/echo' 'fake-worker-config'") {
+		t.Fatalf("script missing worker command:\n%s", script)
+	}
+}
+
 func TestGeneratedSlurmWorkerScriptRunsThroughFakeSbatch(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is required for fake sbatch integration test")

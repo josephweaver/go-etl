@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,6 +28,29 @@ func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	script.WriteString("mkdir -p " + shellQuote(cfg.LogDir) + "\n")
 	script.WriteString(shellQuote(cfg.WorkerExecutable) + " " + shellQuote(cfg.WorkerConfigPath) + "\n")
 	return script.String(), nil
+}
+
+func WriteSlurmWorkerScript(path string, cfg SlurmWorkerScriptConfig) error {
+	if path == "" {
+		return fmt.Errorf("slurm script path is required")
+	}
+
+	script, err := GenerateSlurmWorkerScript(cfg)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create slurm script dir: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		return fmt.Errorf("write slurm script: %w", err)
+	}
+	return nil
 }
 
 func (cfg SlurmWorkerScriptConfig) validate() error {
