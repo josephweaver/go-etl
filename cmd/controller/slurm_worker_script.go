@@ -10,6 +10,7 @@ import (
 type SlurmWorkerScriptConfig struct {
 	JobName          string
 	WorkerExecutable string
+	WorkerArgs       []string
 	WorkerConfigPath string
 	LogDir           string
 }
@@ -26,7 +27,7 @@ func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	script.WriteString("#SBATCH --error=" + cfg.LogDir + "/%x-%j.err\n")
 	script.WriteString("set -euo pipefail\n")
 	script.WriteString("mkdir -p " + shellQuote(cfg.LogDir) + "\n")
-	script.WriteString(shellQuote(cfg.WorkerExecutable) + " " + shellQuote(cfg.WorkerConfigPath) + "\n")
+	script.WriteString(shellCommand(append([]string{cfg.WorkerExecutable}, append(cfg.WorkerArgs, cfg.WorkerConfigPath)...)) + "\n")
 	return script.String(), nil
 }
 
@@ -53,6 +54,16 @@ func WriteSlurmWorkerScript(path string, cfg SlurmWorkerScriptConfig) error {
 	return nil
 }
 
+func WriteFakeHPCCWorkerScript() error {
+	return WriteSlurmWorkerScript(".run/fake-hpcc/worker.slurm", SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "go",
+		WorkerArgs:       []string{"run", "./cmd/worker"},
+		WorkerConfigPath: "./cmd/worker/demo-config.json",
+		LogDir:           ".run/fake-hpcc/logs",
+	})
+}
+
 func (cfg SlurmWorkerScriptConfig) validate() error {
 	if cfg.JobName == "" {
 		return fmt.Errorf("slurm job name is required")
@@ -69,7 +80,7 @@ func (cfg SlurmWorkerScriptConfig) validate() error {
 	if cfg.LogDir == "" {
 		return fmt.Errorf("log dir is required")
 	}
-	if containsNewline(cfg.WorkerExecutable) || containsNewline(cfg.WorkerConfigPath) || containsNewline(cfg.LogDir) {
+	if containsNewline(cfg.WorkerExecutable) || containsNewline(cfg.WorkerConfigPath) || containsNewline(cfg.LogDir) || containsNewlineInList(cfg.WorkerArgs) {
 		return fmt.Errorf("slurm script values must not contain newlines")
 	}
 	return nil
@@ -77,6 +88,23 @@ func (cfg SlurmWorkerScriptConfig) validate() error {
 
 func containsNewline(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
+}
+
+func containsNewlineInList(values []string) bool {
+	for _, value := range values {
+		if containsNewline(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
 }
 
 func shellQuote(value string) string {

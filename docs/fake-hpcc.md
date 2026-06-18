@@ -171,6 +171,8 @@ The companion writer helper creates parent directories and writes the generated 
 .run/fake-hpcc/worker.slurm
 ```
 
+`WriteFakeHPCCWorkerScript` prepares that path for the current local fake-HPCC fixture. It writes a script that starts the Go worker with `cmd/worker/demo-config.json`.
+
 ## Provenance Rules
 
 To keep the development history clean:

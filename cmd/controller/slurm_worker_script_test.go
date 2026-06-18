@@ -38,6 +38,7 @@ func TestGenerateSlurmWorkerScriptQuotesShellValues(t *testing.T) {
 	script, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
 		JobName:          "goetl-worker",
 		WorkerExecutable: "/fake path/goetl-worker",
+		WorkerArgs:       []string{"--mode", "worker mode"},
 		WorkerConfigPath: "/fake path/worker's config.json",
 		LogDir:           "/fake path/logs",
 	})
@@ -45,7 +46,7 @@ func TestGenerateSlurmWorkerScriptQuotesShellValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "'/fake path/goetl-worker' '/fake path/worker'\"'\"'s config.json'"
+	want := "'/fake path/goetl-worker' '--mode' 'worker mode' '/fake path/worker'\"'\"'s config.json'"
 	if !strings.Contains(script, want) {
 		t.Fatalf("script missing quoted command %q:\n%s", want, script)
 	}
@@ -88,6 +89,29 @@ func TestWriteSlurmWorkerScript(t *testing.T) {
 	}
 	if !strings.Contains(string(script), "'/bin/echo' 'fake-worker-config'") {
 		t.Fatalf("script missing worker command:\n%s", script)
+	}
+}
+
+func TestWriteFakeHPCCWorkerScript(t *testing.T) {
+	scriptRoot := filepath.Join(".run", "fake-hpcc")
+	if err := os.RemoveAll(scriptRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(scriptRoot)
+	})
+
+	if err := WriteFakeHPCCWorkerScript(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	script, err := os.ReadFile(filepath.Join(scriptRoot, "worker.slurm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "'go' 'run' './cmd/worker' './cmd/worker/demo-config.json'"
+	if !strings.Contains(string(script), want) {
+		t.Fatalf("script missing fake HPCC worker command %q:\n%s", want, script)
 	}
 }
 
