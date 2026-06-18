@@ -213,6 +213,39 @@ final status: pending=0 assigned=0 failed=0
 
 If the controller is started from Windows while the fake worker runs under Bash, the worker may fail to reach `http://localhost:8080`. That is a local development namespace issue, not an HPCC scheduler issue. Keep both controller and fake worker on the same side of the boundary until the SSH-backed path gives the controller an explicit network address.
 
+## Generated Run Artifacts
+
+Fake-HPCC runs create local artifacts under `.run/`.
+
+The fake HPCC helper uses:
+
+```text
+.run/fake-hpcc/
+  controller
+  controller.out
+  controller.err
+  worker.slurm
+  logs/
+```
+
+The fake `sbatch` command uses:
+
+```text
+.run/fake-slurm/
+  job-counter
+  submissions.log
+  job-<id>.out
+  job-<id>.err
+```
+
+These files are generated runtime state. They are useful for debugging a failed local run, but they are not reusable workflow or backend configuration.
+
+To reset the fake HPCC runtime state:
+
+```bash
+rm -rf .run/fake-hpcc .run/fake-slurm
+```
+
 ## Provenance Rules
 
 To keep the development history clean:
