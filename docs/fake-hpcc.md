@@ -147,6 +147,14 @@ It should:
 
 The first script does not need advanced Slurm behavior such as arrays, dependencies, reservations, modules, GPU resources, or site-specific accounting.
 
+The initial Go helper for this contract is:
+
+```text
+cmd/controller/slurm_worker_script.go
+```
+
+It generates one script for one worker process. The script creates the log directory, then runs the configured worker executable with the generated worker config path.
+
 ## Provenance Rules
 
 To keep the development history clean:
