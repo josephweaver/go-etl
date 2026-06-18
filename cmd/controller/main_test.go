@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -1383,6 +1384,73 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 
 	if starter.target != "local" {
 		t.Fatalf("unexpected worker target: %s", starter.target)
+	}
+}
+
+func TestSubmitWorkflowHandlerPreparesFakeHPCCWorkerScript(t *testing.T) {
+	scriptRoot := filepath.Join(".run", "fake-hpcc")
+	if err := os.RemoveAll(scriptRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(scriptRoot)
+	})
+
+	starter := &testWorkerStarter{}
+	controller := newController(nil)
+	controller.worker = starter
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"Name": {"Namespace": "workflow", "Key": "years"},
+					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
+					"Expression": "[2024]"
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+			{
+				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
+				"Type": {"Kind": "string"},
+				"Expression": "hpcc"
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if starter.calls != 1 {
+		t.Fatalf("unexpected worker starter calls: %d", starter.calls)
+	}
+	if starter.target != "hpcc" {
+		t.Fatalf("unexpected worker target: %s", starter.target)
+	}
+
+	script, err := os.ReadFile(filepath.Join(scriptRoot, "worker.slurm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "'go' 'run' './cmd/worker' './cmd/worker/demo-config.json'") {
+		t.Fatalf("script missing fake HPCC worker command:\n%s", script)
 	}
 }
 

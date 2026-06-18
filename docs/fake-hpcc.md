@@ -173,6 +173,8 @@ The companion writer helper creates parent directories and writes the generated 
 
 `WriteFakeHPCCWorkerScript` prepares that path for the current local fake-HPCC fixture. It writes a script that starts the Go worker with `cmd/worker/demo-config.json`.
 
+When a submitted workflow resolves `worker_target_environment` to `hpcc`, the controller prepares this fake-HPCC worker script before it calls the command-backed worker starter.
+
 ## Provenance Rules
 
 To keep the development history clean:

@@ -388,6 +388,10 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	c.mu.Unlock()
 
 	if workerTarget != "" && c.worker != nil {
+		if err := prepareWorkerTarget(workerTarget); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		for range startCount {
 			if err := c.worker.StartWorker(workerTarget, resolver); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -397,6 +401,13 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func prepareWorkerTarget(targetEnvironment string) error {
+	if targetEnvironment == "hpcc" {
+		return WriteFakeHPCCWorkerScript()
+	}
+	return nil
 }
 
 func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
