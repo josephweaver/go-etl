@@ -135,6 +135,14 @@ The controller should not need to know whether the target is the fake HPCC or a 
 
 The current controller starter treats `local` and `hpcc` as command-backed targets. For fake HPCC, those command variables can point at the fake `sbatch` path until SSH-backed submission is introduced.
 
+The repository includes a first fake-HPCC submission fixture:
+
+```text
+demo-fake-hpcc-workflow.json
+```
+
+It resolves `worker_target_environment` to `hpcc` and points `worker_start_executable` plus `worker_start_args` at the fake `sbatch` command. It is a variable-contract fixture: a generated `.run/fake-hpcc/worker.slurm` script must exist before it can be used to launch a worker.
+
 ## Slurm Script Contract
 
 The generated worker script should be small and boring.

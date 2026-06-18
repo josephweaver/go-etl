@@ -1,0 +1,108 @@
+{
+  "workflow": {
+    "ID": "fake-hpcc-demo",
+    "Variables": [
+      {
+        "Name": {
+          "Namespace": "workflow",
+          "Key": "years"
+        },
+        "Type": {
+          "Kind": "list",
+          "Element": {
+            "Kind": "int"
+          }
+        },
+        "Expression": "[2024]"
+      }
+    ],
+    "Steps": [
+      {
+        "ID": "write-demo",
+        "FanOut": {
+          "WorkItem": {
+            "FanOutExpression": "${years[*]}",
+            "Type": "write_demo_output",
+            "OutputPrefix": "fake-hpcc-demo",
+            "OutputExtension": ".txt"
+          }
+        }
+      }
+    ]
+  },
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_target_environment"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "hpcc"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_start_executable"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "bash"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_start_args"
+      },
+      "Type": {
+        "Kind": "list",
+        "Element": {
+          "Kind": "string"
+        }
+      },
+      "Expression": "[\"scripts/fake-hpcc/sbatch\", \".run/fake-hpcc/worker.slurm\"]"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_max_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_count_per_start"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_elapsed_time_between_starts"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "0s"
+    }
+  ]
+}
