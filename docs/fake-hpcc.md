@@ -175,6 +175,36 @@ The companion writer helper creates parent directories and writes the generated 
 
 When a submitted workflow resolves `worker_target_environment` to `hpcc`, the controller prepares this fake-HPCC worker script before it calls the command-backed worker starter.
 
+## Current Local End-To-End Run
+
+On the current Windows plus Git Bash development path, run the fake-HPCC demo from the Bash/Linux side. The generated worker script starts the worker through Bash, and that worker must be able to reach the controller at `http://localhost:8080`.
+
+Build the controller binary from Bash first:
+
+```bash
+go build -o .run/fake-hpcc/controller ./cmd/controller
+```
+
+Start the controller from Bash:
+
+```bash
+.run/fake-hpcc/controller ./cmd/controller/demo-config.json
+```
+
+In another Bash shell, submit the fake-HPCC workflow:
+
+```bash
+go run ./cmd/demo-client demo-fake-hpcc-workflow.json
+```
+
+The expected successful final status has no pending, assigned, or failed work:
+
+```text
+final status: pending=0 assigned=0 failed=0
+```
+
+If the controller is started from Windows while the fake worker runs under Bash, the worker may fail to reach `http://localhost:8080`. That is a local development namespace issue, not an HPCC scheduler issue. Keep both controller and fake worker on the same side of the boundary until the SSH-backed path gives the controller an explicit network address.
+
 ## Provenance Rules
 
 To keep the development history clean:
