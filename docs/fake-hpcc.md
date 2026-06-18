@@ -141,7 +141,7 @@ The repository includes a first fake-HPCC submission fixture:
 demo-fake-hpcc-workflow.json
 ```
 
-It resolves `worker_target_environment` to `hpcc` and points `worker_start_executable` plus `worker_start_args` at the fake `sbatch` command. It is a variable-contract fixture: a generated `.run/fake-hpcc/worker.slurm` script must exist before it can be used to launch a worker.
+It resolves `worker_target_environment` to `hpcc` and points `worker_start_executable` plus `worker_start_args` at the fake `sbatch` command. The local fixture runs fake `sbatch` with `FAKE_SLURM_FOREGROUND=1` so end-to-end tests are deterministic on the current Windows/Git Bash development path. It is a variable-contract fixture: a generated `.run/fake-hpcc/worker.slurm` script must exist before it can be used to launch a worker.
 
 ## Slurm Script Contract
 

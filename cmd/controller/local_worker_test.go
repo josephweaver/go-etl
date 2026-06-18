@@ -97,7 +97,7 @@ func TestFakeHPCCWorkflowFixtureResolvesWorkerCommand(t *testing.T) {
 	if executable != "bash" {
 		t.Fatalf("unexpected executable: %s", executable)
 	}
-	if len(args) != 2 || args[0] != "scripts/fake-hpcc/sbatch" || args[1] != ".run/fake-hpcc/worker.slurm" {
+	if len(args) != 2 || args[0] != "-lc" || args[1] != "FAKE_SLURM_FOREGROUND=1 scripts/fake-hpcc/sbatch .run/fake-hpcc/worker.slurm" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }

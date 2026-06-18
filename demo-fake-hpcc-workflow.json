@@ -62,7 +62,7 @@
           "Kind": "string"
         }
       },
-      "Expression": "[\"scripts/fake-hpcc/sbatch\", \".run/fake-hpcc/worker.slurm\"]"
+      "Expression": "[\"-lc\", \"FAKE_SLURM_FOREGROUND=1 scripts/fake-hpcc/sbatch .run/fake-hpcc/worker.slurm\"]"
     },
     {
       "Name": {
