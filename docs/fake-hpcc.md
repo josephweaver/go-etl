@@ -133,6 +133,8 @@ From the Go controller's point of view, fake HPCC worker startup should look lik
 
 The controller should not need to know whether the target is the fake HPCC or a real Slurm-backed environment, except through resolved backend variables.
 
+The current controller starter treats `local` and `hpcc` as command-backed targets. For fake HPCC, those command variables can point at the fake `sbatch` path until SSH-backed submission is introduced.
+
 ## Slurm Script Contract
 
 The generated worker script should be small and boring.

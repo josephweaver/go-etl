@@ -37,10 +37,18 @@ func TestLocalWorkerStarterResolvesCommand(t *testing.T) {
 	}
 }
 
+func TestLocalWorkerStarterSupportsCommandBackedTargets(t *testing.T) {
+	for _, target := range []string{"local", "hpcc"} {
+		if !isCommandBackedWorkerTarget(target) {
+			t.Fatalf("expected target %q to be supported", target)
+		}
+	}
+}
+
 func TestLocalWorkerStarterRejectsUnsupportedTarget(t *testing.T) {
 	starter := LocalWorkerStarter{}
 
-	err := starter.StartWorker("hpcc", variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
+	err := starter.StartWorker("unknown", variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
 	if err == nil {
 		t.Fatal("expected an error")
 	}

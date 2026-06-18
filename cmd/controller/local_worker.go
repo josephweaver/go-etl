@@ -10,7 +10,7 @@ import (
 type LocalWorkerStarter struct{}
 
 func (s LocalWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
-	if targetEnvironment != "local" {
+	if !isCommandBackedWorkerTarget(targetEnvironment) {
 		return fmt.Errorf("unsupported worker target environment: %s", targetEnvironment)
 	}
 
@@ -25,6 +25,10 @@ func (s LocalWorkerStarter) StartWorker(targetEnvironment string, resolver varia
 	}
 
 	return nil
+}
+
+func isCommandBackedWorkerTarget(targetEnvironment string) bool {
+	return targetEnvironment == "local" || targetEnvironment == "hpcc"
 }
 
 func (s LocalWorkerStarter) command(resolver variable.Resolver) (string, []string, error) {
