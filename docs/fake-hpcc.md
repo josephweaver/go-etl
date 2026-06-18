@@ -179,6 +179,14 @@ When a submitted workflow resolves `worker_target_environment` to `hpcc`, the co
 
 On the current Windows plus Git Bash development path, run the fake-HPCC demo from the Bash/Linux side. The generated worker script starts the worker through Bash, and that worker must be able to reach the controller at `http://localhost:8080`.
 
+Use the helper script for the normal local check:
+
+```bash
+scripts/fake-hpcc/run-demo
+```
+
+The helper builds a controller binary, starts it from Bash, waits for `/status`, submits `demo-fake-hpcc-workflow.json`, and asks the controller to shut down when the demo client finishes.
+
 Build the controller binary from Bash first:
 
 ```bash
