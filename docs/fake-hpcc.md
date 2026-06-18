@@ -85,6 +85,27 @@ Minimum behavior:
 
 The fake `sbatch` should intentionally support only the Slurm options needed by the current generated worker script. Unsupported options should fail clearly so the contract stays small.
 
+The initial repository script lives at:
+
+```text
+scripts/fake-hpcc/sbatch
+```
+
+Run it by placing `scripts/fake-hpcc` before the real system paths:
+
+```bash
+PATH="$PWD/scripts/fake-hpcc:$PATH" sbatch worker.slurm
+```
+
+By default, it writes fake scheduler state and job logs under:
+
+```text
+.run/fake-slurm/
+```
+
+Set `FAKE_SLURM_RUN_ROOT` to choose another run directory.
+Set `FAKE_SLURM_FOREGROUND=1` to run the submitted script synchronously during tests.
+
 ### Worker Job
 
 The submitted job should start a `goetl` worker with a concrete runtime config.
