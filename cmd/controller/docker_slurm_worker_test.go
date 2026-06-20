@@ -161,16 +161,16 @@ func TestDockerSlurmWorkflowFixtureResolvesWorkerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.scriptPath != "/tmp/goetl-docker-slurm-worker.slurm" {
+	if cfg.scriptPath != "/data/goetl/scripts/worker.slurm" {
 		t.Fatalf("script path = %q, want fixture path", cfg.scriptPath)
 	}
-	if cfg.slurm.WorkerExecutable != "/bin/echo" {
-		t.Fatalf("worker executable = %q, want /bin/echo", cfg.slurm.WorkerExecutable)
+	if cfg.slurm.WorkerExecutable != "/data/goetl/artifacts/goetl-worker" {
+		t.Fatalf("worker executable = %q, want fixture executable", cfg.slurm.WorkerExecutable)
 	}
-	if cfg.slurm.WorkerConfigPath != "/shared/goetl/config/worker.json" {
+	if cfg.slurm.WorkerConfigPath != "/data/goetl/config/worker.json" {
 		t.Fatalf("worker config path = %q, want fixture config path", cfg.slurm.WorkerConfigPath)
 	}
-	if cfg.slurm.LogDir != "/tmp/goetl-docker-slurm-logs" {
+	if cfg.slurm.LogDir != "/data/goetl/logs" {
 		t.Fatalf("log dir = %q, want fixture log dir", cfg.slurm.LogDir)
 	}
 }

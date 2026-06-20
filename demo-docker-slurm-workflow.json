@@ -49,7 +49,7 @@
       "Type": {
         "Kind": "path"
       },
-      "Expression": "/tmp/goetl-docker-slurm-worker.slurm"
+      "Expression": "/data/goetl/scripts/worker.slurm"
     },
     {
       "Name": {
@@ -59,7 +59,7 @@
       "Type": {
         "Kind": "string"
       },
-      "Expression": "/bin/echo"
+      "Expression": "/data/goetl/artifacts/goetl-worker"
     },
     {
       "Name": {
@@ -69,7 +69,7 @@
       "Type": {
         "Kind": "path"
       },
-      "Expression": "/shared/goetl/config/worker.json"
+      "Expression": "/data/goetl/config/worker.json"
     },
     {
       "Name": {
@@ -79,7 +79,7 @@
       "Type": {
         "Kind": "path"
       },
-      "Expression": "/tmp/goetl-docker-slurm-logs"
+      "Expression": "/data/goetl/logs"
     },
     {
       "Name": {

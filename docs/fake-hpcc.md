@@ -70,7 +70,18 @@ The repository includes a Dockerized Slurm submission fixture:
 demo-docker-slurm-workflow.json
 ```
 
-This fixture is for the worker-start boundary only. It uses `/bin/echo` as the submitted Slurm job command so the Dockerized Slurm job can complete without a mounted Go worker artifact. It will not drain the submitted workflow queue end to end until the real worker binary/config/shared storage are available inside the Slurm worker containers.
+This fixture is for the worker-start boundary only. It points at the generic shared Dockerized Slurm root `/data/goetl`, where the worker artifact, worker config, Slurm script, logs, temp files, and completed output should live. It will not drain the submitted workflow queue end to end until the real worker binary and config are written into that shared path.
+
+The current shared-path convention is:
+
+```text
+/data/goetl/artifacts/goetl-worker
+/data/goetl/config/worker.json
+/data/goetl/scripts/worker.slurm
+/data/goetl/logs
+/data/goetl/tmp
+/data/goetl/data
+```
 
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 
