@@ -1,0 +1,125 @@
+{
+  "workflow": {
+    "ID": "docker-slurm-submit-demo",
+    "Variables": [
+      {
+        "Name": {
+          "Namespace": "workflow",
+          "Key": "years"
+        },
+        "Type": {
+          "Kind": "list",
+          "Element": {
+            "Kind": "int"
+          }
+        },
+        "Expression": "[2024]"
+      }
+    ],
+    "Steps": [
+      {
+        "ID": "write-demo",
+        "FanOut": {
+          "WorkItem": {
+            "FanOutExpression": "${years[*]}",
+            "Type": "write_demo_output",
+            "OutputPrefix": "docker-slurm-submit-demo",
+            "OutputExtension": ".txt"
+          }
+        }
+      }
+    ]
+  },
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_target_environment"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "docker_slurm"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "docker_slurm_script_path"
+      },
+      "Type": {
+        "Kind": "path"
+      },
+      "Expression": "/tmp/goetl-docker-slurm-worker.slurm"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_start_executable"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "/bin/echo"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_config_path"
+      },
+      "Type": {
+        "Kind": "path"
+      },
+      "Expression": "/shared/goetl/config/worker.json"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_log_dir"
+      },
+      "Type": {
+        "Kind": "path"
+      },
+      "Expression": "/tmp/goetl-docker-slurm-logs"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_max_count"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_count_per_start"
+      },
+      "Type": {
+        "Kind": "int"
+      },
+      "Expression": "1"
+    },
+    {
+      "Name": {
+        "Namespace": "worker_config",
+        "Key": "worker_min_elapsed_time_between_starts"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "0s"
+    }
+  ]
+}

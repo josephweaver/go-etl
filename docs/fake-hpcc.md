@@ -64,6 +64,14 @@ worker_config.docker_executable
 worker_config.docker_slurm_container
 ```
 
+The repository includes a Dockerized Slurm submission fixture:
+
+```text
+demo-docker-slurm-workflow.json
+```
+
+This fixture is for the worker-start boundary only. It uses `/bin/echo` as the submitted Slurm job command so the Dockerized Slurm job can complete without a mounted Go worker artifact. It will not drain the submitted workflow queue end to end until the real worker binary/config/shared storage are available inside the Slurm worker containers.
+
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 
 ```bash

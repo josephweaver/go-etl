@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -127,5 +129,48 @@ func TestDefaultWorkerStarterRoutesDockerSlurmTarget(t *testing.T) {
 	}
 	if submitted.ScriptPath != "/tmp/goetl-worker.slurm" {
 		t.Fatalf("script path = %q, want /tmp/goetl-worker.slurm", submitted.ScriptPath)
+	}
+}
+
+func TestDockerSlurmWorkflowFixtureResolvesWorkerConfig(t *testing.T) {
+	data, err := os.ReadFile("../../demo-docker-slurm-workflow.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var submission WorkflowSubmission
+	if err := json.Unmarshal(data, &submission); err != nil {
+		t.Fatal(err)
+	}
+
+	scope, err := variable.NewScope(submission.Variables...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	target, err := workerTargetEnvironment(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "docker_slurm" {
+		t.Fatalf("target = %q, want docker_slurm", target)
+	}
+
+	cfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.scriptPath != "/tmp/goetl-docker-slurm-worker.slurm" {
+		t.Fatalf("script path = %q, want fixture path", cfg.scriptPath)
+	}
+	if cfg.slurm.WorkerExecutable != "/bin/echo" {
+		t.Fatalf("worker executable = %q, want /bin/echo", cfg.slurm.WorkerExecutable)
+	}
+	if cfg.slurm.WorkerConfigPath != "/shared/goetl/config/worker.json" {
+		t.Fatalf("worker config path = %q, want fixture config path", cfg.slurm.WorkerConfigPath)
+	}
+	if cfg.slurm.LogDir != "/tmp/goetl-docker-slurm-logs" {
+		t.Fatalf("log dir = %q, want fixture log dir", cfg.slurm.LogDir)
 	}
 }
