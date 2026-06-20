@@ -8,6 +8,26 @@ Its purpose is to prove the reusable Go ETL controller and worker runtime withou
 
 This environment must stay generic. Do not put real institutional hostnames, usernames, queues, accounts, partitions, module names, filesystem paths, or launch scripts in this repository.
 
+The preferred fake-HPCC backend is now a locally controlled Dockerized Slurm cluster, currently installed outside this repository from `https://github.com/giovtorres/slurm-docker-cluster`. The repository's `scripts/fake-hpcc/sbatch` command remains useful as a minimal smoke-test fallback, but it should not grow into a full scheduler replacement while Dockerized Slurm is available.
+
+## Current Backend Choice
+
+The current fake-HPCC backend is Dockerized real Slurm, not a hand-rolled fake scheduler.
+
+Current local install:
+
+```text
+/home/the_amatuer/src/slurm-docker-cluster
+```
+
+Upstream:
+
+```text
+https://github.com/giovtorres/slurm-docker-cluster
+```
+
+The repository's `scripts/fake-hpcc/sbatch` remains a minimal smoke-test fallback for testing the command boundary without the Dockerized Slurm stack.
+
 ## Boundary
 
 The fake HPCC should behave like an HPCC system at the boundary the Go controller needs:
@@ -20,42 +40,39 @@ The fake HPCC should behave like an HPCC system at the boundary the Go controlle
 
 The fake environment does not need to reproduce a real scheduler internally at first. It only needs to preserve the external contract well enough for local development and tests.
 
-## Initial Topology
+## Current Topology
 
-The first fake HPCC can run on a local machine with Docker Compose:
+The preferred fake HPCC runs on a local machine with Docker Compose:
 
 ```text
-host controller
-  |
-  | SSH
-  v
-fake login container
+host or containerized controller
   |
   | sbatch worker.slurm
   v
-fake job runner
+Dockerized Slurm controller
   |
   v
-goetl worker process or container
+Dockerized Slurm compute node
+  |
+  v
+goetl worker process
 ```
 
-The controller may run on the host during early development. Later, it can also run in a container if that better matches test needs.
+The controller may still run on the host during early development. Later, it can also run in a container if that better matches test needs.
 
 ## Components
 
-### Login Node
+### Slurm Controller
 
-The login node container provides the SSH boundary.
+The Slurm controller container provides the scheduler boundary.
 
 It should include:
 
-- An SSH server.
-- A configured test user.
-- A writable working directory.
-- Access to the shared filesystem volume.
 - An `sbatch` executable on `PATH`.
+- Access to the generated worker script.
+- Access to storage visible to worker jobs.
 
-The login node should not contain real HPCC-specific configuration.
+The Slurm controller should not contain real institutional HPCC-specific configuration.
 
 ### Shared Filesystem
 
@@ -72,9 +89,9 @@ It should contain separate areas for:
 
 The exact paths should be fake-environment paths, not copied from any real cluster.
 
-### Fake `sbatch`
+### Smoke-Test `sbatch`
 
-The first `sbatch` implementation can be a small script.
+The repository fallback `sbatch` implementation is a small script.
 
 Minimum behavior:
 
@@ -83,7 +100,7 @@ Minimum behavior:
 - Run the submitted script in the background or hand it to a simple fake job runner.
 - Write enough log output to debug failed submissions.
 
-The fake `sbatch` should intentionally support only the Slurm options needed by the current generated worker script. Unsupported options should fail clearly so the contract stays small.
+The smoke-test `sbatch` should intentionally support only the Slurm options needed by the current generated worker script. Unsupported options should fail clearly so the contract stays small.
 
 The initial repository script lives at:
 
@@ -246,6 +263,10 @@ To reset the fake HPCC runtime state:
 rm -rf .run/fake-hpcc .run/fake-slurm
 ```
 
+## Later Home-Cluster Option
+
+A home multi-machine cluster may still be useful later for testing real-network behavior. It is not the current fake-HPCC path. The current path is Dockerized Slurm first, repository fake `sbatch` second as a smoke-test fallback.
+
 ## Provenance Rules
 
 To keep the development history clean:
@@ -258,11 +279,10 @@ To keep the development history clean:
 
 ## First Useful Milestones
 
-1. Document the fake HPCC contract.
-2. Add a minimal local fake `sbatch` script and tests for its behavior.
-3. Add a generated Slurm worker script function.
-4. Add an SSH connection interface with a local or fake implementation for tests.
-5. Add an HPCC worker starter that composes SSH, script generation, and `sbatch`.
-6. Run an existing demo workflow through the fake HPCC path.
+1. Keep the fake HPCC contract documented.
+2. Keep the repository fake `sbatch` as a minimal smoke-test fallback.
+3. Submit generated worker scripts to real `sbatch` inside Dockerized Slurm.
+4. Run an existing demo workflow through Dockerized Slurm.
+5. Add SSH or remote submission only after the Dockerized Slurm boundary is clear.
 
 Each milestone should be small enough to review independently under the HCI slice budget.

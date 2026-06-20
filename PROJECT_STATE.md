@@ -1,10 +1,12 @@
 # Project State
 
-Last updated: 2026-06-16
+Last updated: 2026-06-20
 
 ## Current Focus
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
+
+The current HPCC-facing work is a locally controlled fake-HPCC bootstrap. The repository has a command-backed `hpcc` worker target, a generated Slurm worker script, a small fake `sbatch` smoke-test command, and a repeatable fake-HPCC demo runner. A Dockerized Slurm cluster from `giovtorres/slurm-docker-cluster` is also installed outside this repository in WSL and verified with a real `sbatch` job. That Dockerized Slurm stack is now the preferred fake-HPCC backend for future integration experiments; the repository's fake `sbatch` should remain a minimal smoke-test fallback rather than grow into a full scheduler.
 
 The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
@@ -15,10 +17,18 @@ Project guidance is in `AGENTS.md`. The longer product and architecture directio
 ```text
 go.mod
 demo-workflow.json
+demo-fake-hpcc-workflow.json
 demo-summary-workflow.json
 demo-summary-input.txt
 demo-summary-input-2.txt
 .gitignore
+docs/
+  fake-hpcc.md
+  sqlite-ledger.md
+scripts/
+  fake-hpcc/
+    run-demo
+    sbatch
 internal/
   ledger/
     sqlite.go
@@ -65,6 +75,12 @@ cmd/
     main_test.go
     config.go
     config_test.go
+    local_worker.go
+    local_worker_test.go
+    slurm_worker_script.go
+    slurm_worker_script_test.go
+    worker_scaler.go
+    worker_scaler_test.go
     demo-config.json
   worker/
     main.go
@@ -502,6 +518,68 @@ The demo client currently starts the controller with:
 controller_config.controller_start_args = ["run", "./cmd/controller", "./cmd/controller/demo-config.json"]
 ```
 
+## Fake HPCC And Dockerized Slurm
+
+The repository now has a first fake-HPCC bootstrap path documented in `docs/fake-hpcc.md`.
+
+Current repository pieces:
+
+- `scripts/fake-hpcc/sbatch` is a deliberately tiny fake `sbatch` command. It accepts a script path, records fake scheduler state under `.run/fake-slurm`, prints a Slurm-like submitted-job line, and runs the script in background or foreground test mode.
+- `cmd/controller/slurm_worker_script.go` generates a small Slurm-style worker script.
+- `WriteFakeHPCCWorkerScript` prepares `.run/fake-hpcc/worker.slurm` for the current fake-HPCC fixture.
+- `demo-fake-hpcc-workflow.json` submits a one-year `write_demo_output` workflow with `worker_target_environment = "hpcc"`.
+- The controller currently treats `local` and `hpcc` as command-backed worker targets. For `hpcc`, workflow submission prepares `.run/fake-hpcc/worker.slurm` before starting workers.
+- `scripts/fake-hpcc/run-demo` builds and starts a Bash-side controller, submits the fake-HPCC fixture, and shuts the controller down when idle.
+
+The repository fake `sbatch` is now a smoke-test fallback, not the preferred long-term fake scheduler. The preferred locally controlled fake-HPCC backend is a Dockerized Slurm cluster installed outside this repository:
+
+```text
+/home/the_amatuer/src/slurm-docker-cluster
+```
+
+Upstream project:
+
+```text
+https://github.com/giovtorres/slurm-docker-cluster
+```
+
+Current checked-out commit:
+
+```text
+978c3de
+```
+
+Install/start path used in WSL:
+
+```bash
+cp .env.example .env
+docker pull giovtorres/slurm-docker-cluster:latest
+docker tag giovtorres/slurm-docker-cluster:latest slurm-docker-cluster:25.11.4
+make up
+```
+
+Verified containers:
+
+```text
+mysql
+slurmdbd
+slurmctld
+slurmrestd
+slurm-cpu-worker-1
+slurm-cpu-worker-2
+```
+
+Verified Slurm behavior:
+
+```text
+sinfo -> cpu partition up, c[1-2] idle
+sbatch --version -> slurm 25.11.4
+sbatch --wrap="hostname" -> Submitted batch job 1
+sacct -> job 1 COMPLETED 0:0
+```
+
+Future fake-HPCC work should adapt the controller/runtime boundary to submit generated worker scripts to this Dockerized Slurm stack. Avoid expanding the homegrown fake `sbatch` beyond the minimum smoke-test role unless the Dockerized Slurm stack is unavailable.
+
 ## Demo Work
 
 The worker currently supports one operation:
@@ -587,6 +665,26 @@ Run the parameterized summary workflow demo from the repository root:
 
 ```powershell
 go run ./cmd/demo-client demo-summary-workflow.json
+```
+
+Run the repository fake-HPCC smoke demo from WSL/Bash:
+
+```bash
+scripts/fake-hpcc/run-demo
+```
+
+This uses the repository's tiny fake `sbatch` command and should remain a smoke test.
+
+Start and inspect the preferred Dockerized Slurm fake-HPCC backend from WSL:
+
+```bash
+cd ~/src/slurm-docker-cluster
+make up
+docker compose ps
+docker exec slurmctld sinfo
+docker exec slurmctld sbatch --version
+docker exec slurmctld sbatch --wrap="hostname"
+docker exec slurmctld sacct --format=JobID,JobName,State,ExitCode --parsable2
 ```
 
 The current verified summary demo prints:
@@ -679,8 +777,10 @@ The current verified demo run records two attempt rows and four attempt-variable
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
 
-The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules, broad workflow parsing, HPCC integration, or Docker orchestration until the local controller state and ledger boundary are clear.
+The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
+
+For HPCC work, use the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller.
 
 ## Likely Next Step
 
-Replace deterministic demo attempt metadata with controller/worker-generated runtime variables so ledger rows reflect real workflow, step, work-item, attempt, fingerprint, timestamp, and code-version values.
+Connect the fake-HPCC `hpcc` worker target to the Dockerized Slurm cluster by submitting generated worker scripts to real `sbatch` inside the Slurm container stack. Keep the repository fake `sbatch` only as a smoke-test fallback.
