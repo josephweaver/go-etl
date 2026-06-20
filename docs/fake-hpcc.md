@@ -28,6 +28,20 @@ https://github.com/giovtorres/slurm-docker-cluster
 
 The repository's `scripts/fake-hpcc/sbatch` remains a minimal smoke-test fallback for testing the command boundary without the Dockerized Slurm stack.
 
+The first Go helper for the Dockerized Slurm boundary is:
+
+```text
+cmd/controller/docker_slurm_submit.go
+```
+
+It builds and executes the command shape:
+
+```bash
+docker exec slurmctld sbatch <script>
+```
+
+and parses the submitted Slurm job ID from `sbatch` output. It is not wired into workflow submission yet.
+
 ## Boundary
 
 The fake HPCC should behave like an HPCC system at the boundary the Go controller needs:
