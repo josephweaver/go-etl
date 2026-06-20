@@ -51,6 +51,30 @@ func TestDockerSlurmSbatchCommandRejectsMissingScript(t *testing.T) {
 	}
 }
 
+func TestDockerSlurmWriteScriptCommandUsesDefaults(t *testing.T) {
+	executable, args, err := dockerSlurmWriteScriptCommand(DockerSlurmScriptConfig{
+		ScriptPath: "/tmp/goetl-worker.slurm",
+		Script:     "#!/usr/bin/env bash\nhostname\n",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if executable != "docker" {
+		t.Fatalf("executable = %q, want docker", executable)
+	}
+	want := []string{"exec", "-i", "slurmctld", "tee", "/tmp/goetl-worker.slurm"}
+	if !stringSlicesEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestDockerSlurmWriteScriptCommandRejectsMissingContent(t *testing.T) {
+	if _, _, err := dockerSlurmWriteScriptCommand(DockerSlurmScriptConfig{ScriptPath: "/tmp/goetl-worker.slurm"}); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func TestParseSubmittedSlurmJobID(t *testing.T) {
 	jobID, err := parseSubmittedSlurmJobID("Submitted batch job 42\n")
 	if err != nil {
@@ -90,6 +114,38 @@ func TestSubmitDockerSlurmScriptIntegration(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("submit script: %v", err)
+	}
+	if jobID == "" {
+		t.Fatal("expected a job id")
+	}
+
+	state, err := waitDockerSlurmJobState(ctx, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "COMPLETED" {
+		t.Fatalf("job state = %q, want COMPLETED", state)
+	}
+}
+
+func TestWriteAndSubmitDockerSlurmScriptIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {
+		t.Skipf("slurmctld container with sbatch is required: %v", err)
+	}
+
+	jobID, err := WriteAndSubmitDockerSlurmScript(ctx, DockerSlurmScriptConfig{
+		ScriptPath: "/tmp/goetl-write-submit.slurm",
+		Script:     "#!/usr/bin/env bash\nset -euo pipefail\nhostname\n",
+	})
+	if err != nil {
+		t.Fatalf("write and submit script: %v", err)
 	}
 	if jobID == "" {
 		t.Fatal("expected a job id")
