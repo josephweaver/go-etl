@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestDockerSlurmSbatchCommandUsesDefaults(t *testing.T) {
 	executable, args, err := dockerSlurmSbatchCommand(DockerSlurmSubmitConfig{
@@ -60,6 +67,43 @@ func TestParseSubmittedSlurmJobIDRejectsUnexpectedOutput(t *testing.T) {
 	}
 }
 
+func TestSubmitDockerSlurmScriptIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {
+		t.Skipf("slurmctld container with sbatch is required: %v", err)
+	}
+
+	const scriptPath = "/tmp/goetl-integration.slurm"
+	script := "#!/usr/bin/env bash\nset -euo pipefail\nhostname\n"
+	if err := dockerExec(ctx, "slurmctld", "bash", "-lc", "cat > "+shellQuote(scriptPath)+" <<'EOF'\n"+script+"EOF\n"); err != nil {
+		t.Fatalf("write integration script: %v", err)
+	}
+
+	jobID, err := SubmitDockerSlurmScript(ctx, DockerSlurmSubmitConfig{
+		ScriptPath: scriptPath,
+	})
+	if err != nil {
+		t.Fatalf("submit script: %v", err)
+	}
+	if jobID == "" {
+		t.Fatal("expected a job id")
+	}
+
+	state, err := waitDockerSlurmJobState(ctx, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "COMPLETED" {
+		t.Fatalf("job state = %q, want COMPLETED", state)
+	}
+}
+
 func stringSlicesEqual(left []string, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -70,4 +114,46 @@ func stringSlicesEqual(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+func dockerExec(ctx context.Context, container string, args ...string) error {
+	commandArgs := append([]string{"exec", container}, args...)
+	output, err := exec.CommandContext(ctx, "docker", commandArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func waitDockerSlurmJobState(ctx context.Context, jobID string) (string, error) {
+	for {
+		state, err := dockerSlurmJobState(ctx, jobID)
+		if err != nil {
+			return "", err
+		}
+		if state != "" && state != "PENDING" && state != "RUNNING" && state != "CONFIGURING" {
+			return state, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func dockerSlurmJobState(ctx context.Context, jobID string) (string, error) {
+	output, err := exec.CommandContext(ctx, "docker", "exec", "slurmctld", "sacct", "-j", jobID, "--format=State", "--noheader", "--parsable2").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("query slurm job state: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	for _, line := range strings.Split(string(output), "\n") {
+		state := strings.TrimSpace(line)
+		if state != "" {
+			return strings.Split(state, "|")[0], nil
+		}
+	}
+	return "", nil
 }

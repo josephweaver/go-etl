@@ -42,6 +42,12 @@ docker exec slurmctld sbatch <script>
 
 and parses the submitted Slurm job ID from `sbatch` output. It is not wired into workflow submission yet.
 
+When Dockerized Slurm is running, verify the real submission boundary from WSL with:
+
+```bash
+go test ./cmd/controller -run TestSubmitDockerSlurmScriptIntegration -count=1 -v
+```
+
 ## Boundary
 
 The fake HPCC should behave like an HPCC system at the boundary the Go controller needs:
