@@ -47,7 +47,7 @@ and parses the submitted Slurm job ID from `sbatch` output. It is not wired into
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 
 ```bash
-go test ./cmd/controller -run 'TestSubmitDockerSlurmScriptIntegration|TestWriteAndSubmitDockerSlurmScriptIntegration' -count=1 -v
+go test ./cmd/controller -run 'DockerSlurm.*Integration' -count=1 -v
 ```
 
 ## Boundary

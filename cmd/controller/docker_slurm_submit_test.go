@@ -160,6 +160,45 @@ func TestWriteAndSubmitDockerSlurmScriptIntegration(t *testing.T) {
 	}
 }
 
+func TestGeneratedWorkerScriptSubmitsToDockerSlurmIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {
+		t.Skipf("slurmctld container with sbatch is required: %v", err)
+	}
+
+	script, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-generated",
+		WorkerExecutable: "/bin/echo",
+		WorkerConfigPath: "generated-worker-config",
+		LogDir:           "/tmp/goetl-generated-logs",
+	})
+	if err != nil {
+		t.Fatalf("generate script: %v", err)
+	}
+
+	jobID, err := WriteAndSubmitDockerSlurmScript(ctx, DockerSlurmScriptConfig{
+		ScriptPath: "/tmp/goetl-generated-worker.slurm",
+		Script:     script,
+	})
+	if err != nil {
+		t.Fatalf("write and submit generated script: %v", err)
+	}
+
+	state, err := waitDockerSlurmJobState(ctx, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "COMPLETED" {
+		t.Fatalf("job state = %q, want COMPLETED", state)
+	}
+}
+
 func stringSlicesEqual(left []string, right []string) bool {
 	if len(left) != len(right) {
 		return false
