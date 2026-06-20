@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const dockerSlurmIntegrationTimeout = 30 * time.Second
+
 func TestDockerSlurmSbatchCommandUsesDefaults(t *testing.T) {
 	executable, args, err := dockerSlurmSbatchCommand(DockerSlurmSubmitConfig{
 		ScriptPath: "/shared/goetl/worker.slurm",
@@ -96,7 +98,7 @@ func TestSubmitDockerSlurmScriptIntegration(t *testing.T) {
 		t.Skip("docker is required for Dockerized Slurm integration test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
 	defer cancel()
 
 	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {
@@ -133,7 +135,7 @@ func TestWriteAndSubmitDockerSlurmScriptIntegration(t *testing.T) {
 		t.Skip("docker is required for Dockerized Slurm integration test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
 	defer cancel()
 
 	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {
@@ -165,7 +167,7 @@ func TestGeneratedWorkerScriptSubmitsToDockerSlurmIntegration(t *testing.T) {
 		t.Skip("docker is required for Dockerized Slurm integration test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
 	defer cancel()
 
 	if err := dockerExec(ctx, "slurmctld", "test", "-x", "/usr/bin/sbatch"); err != nil {

@@ -83,6 +83,8 @@ The current shared-path convention is:
 /data/goetl/data
 ```
 
+`PrepareDockerSlurmRuntime` creates those shared directories through the `slurmctld` container and writes the generated worker config to `/data/goetl/config/worker.json`.
+
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 
 ```bash

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"os/exec"
 	"testing"
 )
 
@@ -45,5 +47,56 @@ func TestGenerateDockerSlurmWorkerConfig(t *testing.T) {
 func TestGenerateDockerSlurmWorkerConfigRejectsMissingControllerURL(t *testing.T) {
 	if _, err := GenerateDockerSlurmWorkerConfig("", DefaultDockerSlurmRuntimePaths()); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestDockerSlurmMkdirCommandUsesDefaults(t *testing.T) {
+	executable, args, err := dockerSlurmMkdirCommand(DockerSlurmRuntimeConfig{}, DefaultDockerSlurmRuntimePaths())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if executable != "docker" {
+		t.Fatalf("executable = %q, want docker", executable)
+	}
+	want := []string{
+		"exec", "slurmctld", "mkdir", "-p",
+		"/data/goetl/artifacts",
+		"/data/goetl/config",
+		"/data/goetl/scripts",
+		"/data/goetl/logs",
+		"/data/goetl/tmp",
+		"/data/goetl/data",
+	}
+	if !stringSlicesEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestPrepareDockerSlurmRuntimeIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-d", "/data"); err != nil {
+		t.Skipf("slurmctld container with /data is required: %v", err)
+	}
+
+	err := PrepareDockerSlurmRuntime(ctx, DockerSlurmRuntimeConfig{
+		ControllerURL: "http://host.docker.internal:8080",
+		Paths:         DockerSlurmRuntimePathsForRoot("/data/goetl-test-runtime"),
+	})
+	if err != nil {
+		t.Fatalf("prepare runtime: %v", err)
+	}
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-f", "/data/goetl-test-runtime/config/worker.json"); err != nil {
+		t.Fatalf("worker config was not written: %v", err)
+	}
+	if err := dockerExec(ctx, "slurm-cpu-worker-1", "test", "-d", "/data/goetl-test-runtime/logs"); err != nil {
+		t.Fatalf("runtime logs dir is not visible on worker: %v", err)
 	}
 }
