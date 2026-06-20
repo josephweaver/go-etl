@@ -44,6 +44,26 @@ and parses the submitted Slurm job ID from `sbatch` output. It is not wired into
 
 `WriteAndSubmitDockerSlurmScript` adds the next boundary: write generated script text into the `slurmctld` container at a known path, then submit that path with real `sbatch`.
 
+The controller can now route `worker_target_environment = "docker_slurm"` through a Dockerized Slurm starter. That target still uses Docker locally, not SSH. It resolves typed worker variables, generates a Slurm script, writes it into the `slurmctld` container, and submits it with `sbatch`.
+
+Required worker variables for the `docker_slurm` target:
+
+```text
+worker_config.docker_slurm_script_path
+worker_config.worker_start_executable
+worker_config.worker_config_path
+worker_config.worker_log_dir
+```
+
+Optional worker variables:
+
+```text
+worker_config.worker_start_args
+worker_config.worker_slurm_job_name
+worker_config.docker_executable
+worker_config.docker_slurm_container
+```
+
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 
 ```bash

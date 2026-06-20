@@ -78,7 +78,7 @@ func main() {
 
 	controller := newController(nil)
 	controller.ledger = ledgerDB
-	controller.worker = LocalWorkerStarter{}
+	controller.worker = DefaultWorkerStarter{}
 
 	mux := http.NewServeMux()
 	server := &http.Server{Addr: ":8080", Handler: mux}
