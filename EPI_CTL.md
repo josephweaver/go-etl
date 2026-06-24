@@ -374,6 +374,89 @@ Backfill source priority:
 
 ---
 
+## ActivityWatch Distraction And Context-Switch Metrics
+
+When ActivityWatch is available, record objective attention/activity proxies for the audited local date. Do not over-interpret these as moralized "distraction" scores. Use them as context for epistemic drift risk, especially when architectural vocabulary is changing.
+
+Required metrics:
+
+* ActivityWatch version and hostname.
+* Local date and UTC range used for the query.
+* Available bucket names used.
+* Window-tracked time.
+* Not-AFK time.
+* AFK time.
+* Window event count.
+* Distinct app count.
+* Window events per tracked active hour.
+* Top apps by tracked time, including hours and event counts.
+* Top window titles by tracked time, including minutes and event counts.
+
+Recommended interpretation:
+
+* Estimate whether context switching was low, moderate, or high.
+* Note whether non-project apps consumed meaningful time.
+* Note whether distraction risk came from absence from the task, frequent switching, or external interruption.
+* Keep the interpretation separate from the raw metrics.
+
+### ActivityWatch Extraction Notes
+
+ActivityWatch's local API usually runs at:
+
+```text
+http://localhost:5600/api/0
+```
+
+Useful endpoints:
+
+```text
+/info
+/buckets/
+/buckets/<bucket-id>/events?limit=10000
+```
+
+Important gotchas observed on Windows/PowerShell:
+
+* `/api/0/buckets` may return HTTP 308. Use the trailing slash:
+
+  ```text
+  /api/0/buckets/
+  ```
+
+* `Invoke-RestMethod` may wrap ActivityWatch event payloads in a `value` property for some responses.
+* PowerShell timestamp parsing may fail or return null-looking timestamp fields on ActivityWatch event responses. If this happens, use Python's standard `urllib.request` and `json` modules to query and summarize the data.
+* Use local-day boundaries converted to UTC. For Eastern time on 2026-06-24, the query range was:
+
+  ```text
+  2026-06-24T04:00:00Z to 2026-06-25T04:00:00Z
+  ```
+
+Minimal Python approach:
+
+```python
+import json
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+base = "http://localhost:5600/api/0"
+host = "J-BRAIN"
+local_tz = ZoneInfo("America/New_York")
+local_start = datetime(2026, 6, 24, 0, 0, 0, tzinfo=local_tz)
+local_end = local_start + timedelta(days=1)
+start = local_start.astimezone(timezone.utc)
+end = local_end.astimezone(timezone.utc)
+
+def get_events(bucket):
+    url = f"{base}/buckets/{bucket}/events?limit=10000"
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        return json.load(resp)
+```
+
+Compute event overlap with the UTC range rather than trusting that all events lie wholly inside the target day.
+
+---
+
 ## Drift Indicators
 
 * Mismatch between TARGET_STATE.md and implementation
