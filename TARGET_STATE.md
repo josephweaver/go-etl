@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-06-02
+Last updated: 2026-06-24
 
 ## Application Target
 
@@ -51,6 +51,18 @@ The worker should stay relatively dumb. It receives one work item, validates its
 
 The controller owns broader workflow state. It decides what work exists, which work is ready, which work is complete, and which work failed.
 
+## Development Governance Target
+
+The project should continue using explicit HCI/epistemic-control audits for AI-assisted development. The audit target is durable ownership, not immediate recall.
+
+Audits should score:
+
+- Strategic Understanding (SU): architectural and causal understanding.
+- Operational Control (OC): ability to navigate, debug, and safely modify the codebase using ordinary references.
+- Implementation Recall (IR): short- or medium-term memory of implementation details.
+
+Retention reviews should be part of the normal process for significant slices. Immediate reviews measure comprehension, delayed reviews measure retention, and long-term reviews measure ownership. Low Implementation Recall should not automatically count against long-term ownership when Strategic Understanding and Operational Control remain strong.
+
 ## Runtime Target
 
 The Go worker should be packaged as a Docker container.
@@ -69,7 +81,25 @@ The Go controller should be able to bootstrap worker jobs on the HPCC. After sta
 
 Before any institutional HPCC integration, the HPCC backend should be proven against a locally controlled Dockerized Slurm environment. This preserves the same boundary the real backend needs -- generated worker scripts submitted through `sbatch`, workers pulling from the Go controller, and shared mounted storage -- without relying on external institutional infrastructure or site-specific configuration.
 
-For local execution, the same ownership boundary applies. The controller owns the compiled queue and decides when worker capacity is needed. When the controller detects pending work, it should attempt to start a worker using the configured worker target location, such as `localhost`. Workers still pull work from the controller after startup.
+Backend execution should be configured as an execution environment composed from a small set of roles:
+
+- Transport: copies files into and executes commands inside a target environment.
+- Dialect: describes the target shell/OS command dialect, including paths, newlines, and quoting.
+- Scheduler: submits jobs and represents backend capacity acquisition.
+- Runtime: prepares the process or system that actually runs work, initially the Go worker.
+
+The current target chain for the local fake-HPCC backend is:
+
+```text
+transport = DockerTransport / DockerContainerTransport
+dialect   = BashShellPlatform
+scheduler = SlurmScheduler
+runtime   = WorkerRuntime
+```
+
+Docker is the current transport into the Dockerized Slurm control container. Slurm is the scheduler. Bash is the initial Linux shell dialect. WorkerRuntime prepares the worker-side directories, config, script location, and worker artifact. Later environments may use a chain of transports, such as SSH into an HPCC login node followed by scheduler submission.
+
+For local execution, the same ownership boundary applies. The controller owns the compiled queue and decides when worker capacity is needed. When the controller detects pending work, it should attempt to start worker capacity through configured execution-environment components. Workers still pull work from the controller after startup.
 
 Over time, the controller should scale worker startup one worker at a time based on queue pressure and configured limits. The controller should not blindly start unlimited workers. It should consider at least:
 
@@ -151,6 +181,29 @@ Backend configuration should include the controller contact point and worker lau
 - Worker count per start decision.
 - Minimum elapsed time between worker start decisions.
 - Worker runtime config path or values to pass when starting each worker.
+
+Backend configuration should also include an `execution_environment` definition. This should be deserialized into concrete controller components rather than handled through backend-specific conditionals. A minimal configured environment should identify:
+
+- One or more transports.
+- One shell or platform dialect.
+- One scheduler.
+- One runtime.
+- Component-specific settings such as container name, runtime root, controller URL as seen by workers, and local worker artifact path.
+
+For example, the Dockerized Slurm fake-HPCC backend should be expressible as:
+
+```text
+execution_environment.name = dockerized-slurm
+transport.type = docker
+transport.container = slurmctld
+dialect.type = bash
+scheduler.type = slurm
+runtime.type = worker
+runtime.root = /data/goetl
+runtime.controller_url = http://host.docker.internal:8080
+```
+
+The controller should load a default controller config when no explicit config path is supplied. Client APIs may still provide a different config path or override variables when a specific backend or run needs different settings.
 
 The worker runtime configuration must still define:
 
@@ -539,17 +592,20 @@ The first end-to-end local workflow path should be:
 1. A client reads backend configuration.
 2. The client checks whether the configured controller URL is reachable.
 3. If the controller is not reachable and local auto-start is enabled, the client starts a local controller.
-4. The client submits a workflow to the controller.
-5. The controller compiles the workflow into concrete work items and places them in the pending queue.
-6. The controller observes pending work and starts one local worker using the configured worker target.
-7. The worker pulls work from the controller, processes it, and reports completion or failure.
-8. The controller may start additional workers one by one when pending work remains and configured worker limits allow it.
-9. The client polls controller status every configured interval.
-10. When the client observes no pending or assigned work, it calls the controller shutdown API if it started that controller.
+4. The controller loads controller config and constructs the configured execution environment.
+5. The client submits a workflow to the controller.
+6. The controller compiles the workflow into concrete work items and places them in the pending queue.
+7. The controller observes pending work and uses scaling policy to decide whether to start worker capacity.
+8. The controller prepares the configured execution environment.
+9. The controller submits a worker job through the configured scheduler.
+10. The worker pulls work from the controller, processes it, and reports completion or failure.
+11. The controller may start additional workers one by one when pending work remains and configured worker limits allow it.
+12. The client polls controller status every configured interval.
+13. When the client observes no pending or assigned work, it calls the controller shutdown API if it started that controller.
 
 This local path should be built before HPCC orchestration. The HPCC backend should reuse the same control-plane responsibilities, but replace local process startup with HPCC job submission.
 
-All local bootstrap behavior should be driven by resolved variables. The local client may provide defaults and overrides, but runtime decisions should come from variables such as `controller_url`, `worker_target_environment`, `max_worker_count`, and `client_status_poll_interval`, not from a separate hidden configuration channel.
+All local bootstrap behavior should be driven by resolved variables and explicit execution-environment config. The local client may provide defaults and overrides, but runtime decisions should come from variables such as `controller_url`, `worker_target_environment`, `max_worker_count`, and `client_status_poll_interval`, plus the selected transport/dialect/scheduler/runtime components, not from a separate hidden configuration channel.
 
 ## Near-Term Build Direction
 
@@ -568,4 +624,6 @@ The near-term implementation can still build from the worker inward, but each st
 11. Add controller-side local worker startup when pending work exists.
 12. Add client polling and controller shutdown API use.
 13. Move remaining workflow-variable resolution out of workers by expanding work items to carry resolved worker-local parameters.
-14. Add sequential dependency tracking and sub-workflow invocation incrementally.
+14. Continue replacing hard-coded worker startup with configured execution-environment components.
+15. Prove the Dockerized Slurm backend end to end with a real worker artifact.
+16. Add sequential dependency tracking and sub-workflow invocation incrementally.

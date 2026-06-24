@@ -1,16 +1,50 @@
 # Project State
 
-Last updated: 2026-06-20
+Last updated: 2026-06-24
 
 ## Current Focus
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
-The current HPCC-facing work is a locally controlled fake-HPCC bootstrap. The repository has a command-backed `hpcc` worker target, a generated Slurm worker script, a small fake `sbatch` smoke-test command, and a repeatable fake-HPCC demo runner. A Dockerized Slurm cluster from `giovtorres/slurm-docker-cluster` is also installed outside this repository in WSL and verified with a real `sbatch` job. That Dockerized Slurm stack is now the preferred fake-HPCC backend for future integration experiments; the repository's fake `sbatch` should remain a minimal smoke-test fallback rather than grow into a full scheduler.
+The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller can now load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The current configured chain is:
+
+```text
+transport = DockerContainerTransport backed by DockerTransport
+dialect   = BashShellPlatform
+scheduler = SlurmScheduler
+runtime   = WorkerRuntime
+```
+
+This represents the locally controlled Dockerized Slurm fake-HPCC backend. Docker provides the current transport into the Slurm control container, Bash describes the command/path/string dialect inside that environment, Slurm schedules worker jobs, and WorkerRuntime prepares the worker-side filesystem/config/artifact locations. The repository still has a tiny fake `sbatch` smoke-test command and fake-HPCC demo runner, but those should remain fallback fixtures rather than grow into the main scheduler path.
 
 The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
+
+## Development Governance
+
+`EPI_CTL.md` now uses a three-category epistemic-control model:
+
+```text
+Strategic Understanding (SU) /20
+Operational Control (OC) /10
+Implementation Recall (IR) /5
+Surprise Penalty -/5
+Total EC /35
+```
+
+The protocol distinguishes architectural and causal understanding from practical codebase control and from short- or medium-term recall of implementation details. Low implementation recall is explicitly acceptable when Strategic Understanding and Operational Control remain strong.
+
+`EPI_CTL.md` also now defines longitudinal retention reviews. Same-day audits are `T`; follow-up retention-chain reviews are `T+3`, `T+14`, and `T+180`, named with the original session date, such as:
+
+```text
+epi_ctl/20260624.md
+epi_ctl/20260624_T3.md
+epi_ctl/20260624_T14.md
+epi_ctl/20260624_T180.md
+```
+
+Retention reviews are first-class audits and are treated as the primary evidence for durable ownership. The protocol also records Codex usage indicators and ActivityWatch distraction/context-switch metrics when available.
 
 ## Current Layout
 
@@ -71,16 +105,38 @@ cmd/
   demo-client/
     main.go
   controller/
+    bash_shell_platform.go
+    bash_shell_platform_test.go
     main.go
     main_test.go
     config.go
     config_test.go
+    controller-default-config.json
+    docker_slurm_submit.go
+    docker_slurm_submit_test.go
+    docker_slurm_worker.go
+    docker_slurm_worker_test.go
+    docker_transport.go
+    docker_transport_test.go
+    execution_environment.go
+    execution_environment_test.go
     local_worker.go
     local_worker_test.go
+    preparer.go
+    preparer_test.go
+    runtime.go
+    runtime_test.go
+    scheduler.go
+    shell_dialect.go
+    slurm_scheduler.go
+    slurm_scheduler_test.go
     slurm_worker_script.go
     slurm_worker_script_test.go
+    transport.go
     worker_scaler.go
     worker_scaler_test.go
+    worker_starter.go
+    README.md
     demo-config.json
   worker/
     main.go
@@ -152,7 +208,15 @@ GET  /status         return queue counts
 
 Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
 
-If started with a config path, the controller loads a variable document and normalizes all variables into `controller_config`. The demo client starts the controller with:
+If started with a config path, the controller loads a variable document and normalizes all variables into `controller_config`. If no config path is supplied, the controller now attempts to load:
+
+```text
+cmd/controller/controller-default-config.json
+```
+
+falling back to `controller-default-config.json` relative to the current working directory.
+
+The demo client starts the controller with:
 
 ```powershell
 go run ./cmd/controller ./cmd/controller/demo-config.json
@@ -165,13 +229,35 @@ controller_config.controller_url
 controller_config.ledger_db_path
 ```
 
+`cmd/controller/controller-default-config.json` currently defines those same controller variables plus an `execution_environment` block for the Dockerized Slurm backend:
+
+```text
+name = dockerized-slurm
+transport = docker container slurmctld
+dialect = bash
+scheduler = slurm
+runtime = worker rooted at /data/goetl
+worker controller_url = http://host.docker.internal:8080
+```
+
 When `controller_config.ledger_db_path` is present, the controller opens or creates the SQLite ledger, initializes the version 1 schema, and stores the DB handle on the `Controller`. The controller remains the only process that talks directly to SQLite. Clients and workers interact through HTTP APIs.
+
+When `execution_environment` is present, the controller builds an `ExecutionEnvironment` and stores it on `Controller.env`. The current environment is assembled from four role interfaces:
+
+- `Transport` copies files into and executes commands inside a target environment.
+- `ShellDialect` localizes paths, newlines, and shell quoting for the target command dialect.
+- `Scheduler` submits prepared jobs.
+- `Runtime` prepares the worker process environment that the scheduler will start.
+
+The current concrete implementations are `DockerContainerTransport`, `BashShellPlatform`, `SlurmScheduler`, and `WorkerRuntime`.
 
 `POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
 
 `POST /workflow` currently accepts JSON containing a workflow and optional submitted variables. Workflow-scope variables live inside the workflow object. Top-level submitted variables are reserved for overrides and runtime/config variables. The controller builds variable scopes from workflow variables and submitted variables, compiles the workflow through `internal/workflow`, checks generated work-item IDs against the existing queue state, and appends generated work items to the pending queue.
 
-After workflow submission creates pending work, the controller resolves `worker_target_environment` through the same variable resolver. If that variable is present and a `WorkerStarter` is configured, the controller asks the starter to launch one worker for that target environment. The current `LocalWorkerStarter` supports only `local` and starts a background worker process from typed `worker_start_executable` and `worker_start_args` variables.
+After workflow submission creates pending work, the controller uses worker-scaling state to decide how many workers to start. If `Controller.env` is configured, `submitWorkflowHandler` prepares the execution environment and asks `env.Scheduler` to submit worker jobs. The Slurm path generates a worker Slurm script using the configured shell dialect, copies the generated script through the transport, and submits it through `sbatch` inside the Dockerized Slurm control container.
+
+The older `LocalWorkerStarter` remains in the repository for the local process path and tests, but the current target path is the configured execution-environment model rather than hard-coded worker target strings.
 
 `GET /status` currently reports pending, assigned, failed, pending reuse-candidate, attempt, and attempt-variable counts. Attempt and reuse-candidate counts are zero when the controller has no configured ledger.
 
@@ -526,9 +612,14 @@ Current repository pieces:
 
 - `scripts/fake-hpcc/sbatch` is a deliberately tiny fake `sbatch` command. It accepts a script path, records fake scheduler state under `.run/fake-slurm`, prints a Slurm-like submitted-job line, and runs the script in background or foreground test mode.
 - `cmd/controller/slurm_worker_script.go` generates a small Slurm-style worker script.
+- `cmd/controller/docker_transport.go` implements Docker CLI-backed copy and exec operations, with a `DockerContainerTransport` adapter for a specific container such as `slurmctld`.
+- `cmd/controller/slurm_scheduler.go` writes generated Slurm scripts to local temp files, copies them through a `Transport`, and submits them through `sbatch`.
+- `cmd/controller/bash_shell_platform.go` implements the current Bash shell dialect for newline handling, argument quoting, path localization, and simple command builders.
+- `cmd/controller/runtime.go` defines `WorkerRuntime`, which prepares remote worker directories, writes worker config, and can upload a local worker artifact when configured.
+- `cmd/controller/execution_environment.go` builds a configured environment from transport, dialect, scheduler, and runtime component config.
 - `WriteFakeHPCCWorkerScript` prepares `.run/fake-hpcc/worker.slurm` for the current fake-HPCC fixture.
 - `demo-fake-hpcc-workflow.json` submits a one-year `write_demo_output` workflow with `worker_target_environment = "hpcc"`.
-- The controller currently treats `local` and `hpcc` as command-backed worker targets. For `hpcc`, workflow submission prepares `.run/fake-hpcc/worker.slurm` before starting workers.
+- The controller now treats a configured execution environment as the preferred worker-start path. For the Dockerized Slurm backend, workflow submission prepares the worker runtime, generates a Slurm worker script, copies it into the Slurm control container, and submits it with `sbatch`.
 - `scripts/fake-hpcc/run-demo` builds and starts a Bash-side controller, submits the fake-HPCC fixture, and shuts the controller down when idle.
 
 The repository fake `sbatch` is now a smoke-test fallback, not the preferred long-term fake scheduler. The preferred locally controlled fake-HPCC backend is a Dockerized Slurm cluster installed outside this repository:
@@ -579,6 +670,8 @@ sacct -> job 1 COMPLETED 0:0
 ```
 
 Future fake-HPCC work should adapt the controller/runtime boundary to submit generated worker scripts to this Dockerized Slurm stack. Avoid expanding the homegrown fake `sbatch` beyond the minimum smoke-test role unless the Dockerized Slurm stack is unavailable.
+
+The current Docker transport assumes a Docker-compatible command-line executable is available on the controller host. `FUTURE.md` records the deferred idea of detecting the Docker environment on first use and, after a user prompt, installing or guiding installation when Docker is missing.
 
 ## Demo Work
 
@@ -645,6 +738,14 @@ Current coverage includes:
 - Controller shutdown endpoint behavior.
 - Controller rejection of invalid methods and payloads.
 - Controller config loading and namespace normalization.
+- Controller default config loading when no config path is supplied.
+- Controller execution-environment config validation and construction.
+- Docker transport command construction for `exec` and `cp` behavior.
+- Bash shell dialect newline, quoting, path localization, copy command, and remove command behavior.
+- Slurm scheduler script writing, copy, and submit behavior.
+- WorkerRuntime path derivation, remote directory preparation, worker config upload, and optional worker artifact upload.
+- Optional `Preparer` helper behavior for components that need setup hooks.
+- Controller workflow submission using `Controller.env` to prepare the runtime and submit scheduled worker jobs.
 - Controller SQLite ledger initialization from `controller_config.ledger_db_path`.
 - SQLite schema creation, parent-directory creation, and attempt snapshot insertion.
 - Controller-owned attempt recording adapter.
@@ -779,8 +880,8 @@ The controller now owns queue semantics. The worker stays relatively dumb: pull,
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
 
-For HPCC work, use the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller.
+For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings.
 
 ## Likely Next Step
 
-Connect the fake-HPCC `hpcc` worker target to the Dockerized Slurm cluster by submitting generated worker scripts to real `sbatch` inside the Slurm container stack. Keep the repository fake `sbatch` only as a smoke-test fallback.
+Build and pass a real worker artifact into `WorkerRuntime`, then run an end-to-end Dockerized Slurm submission where the scheduled worker starts inside the Slurm environment and pulls work from the controller. Keep the repository fake `sbatch` only as a smoke-test fallback.
