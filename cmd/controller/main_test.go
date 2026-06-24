@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -1334,10 +1333,31 @@ func TestBuildSetting(t *testing.T) {
 	}
 }
 
+const testSlurmWorkerVariables = `
+			{
+				"Name": {"Namespace": "worker_config", "Key": "docker_slurm_script_path"},
+				"Type": {"Kind": "path"},
+				"Expression": "/data/goetl/scripts/worker.slurm"
+			},
+			{
+				"Name": {"Namespace": "worker_config", "Key": "worker_start_executable"},
+				"Type": {"Kind": "string"},
+				"Expression": "/data/goetl/artifacts/goetl-worker"
+			},
+			{
+				"Name": {"Namespace": "worker_config", "Key": "worker_config_path"},
+				"Type": {"Kind": "path"},
+				"Expression": "/data/goetl/config/worker.json"
+			},
+			{
+				"Name": {"Namespace": "worker_config", "Key": "worker_log_dir"},
+				"Type": {"Kind": "path"},
+				"Expression": "/data/goetl/logs"
+			}`
+
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
-	starter := &testWorkerStarter{}
-	controller := newController(nil)
-	controller.worker = starter
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -1363,11 +1383,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 			]
 		},
 		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "local"
-			}
+`+testSlurmWorkerVariables+`
 		]
 	}`))
 	response := httptest.NewRecorder()
@@ -1378,27 +1394,20 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if starter.calls != 1 {
-		t.Fatalf("unexpected worker starter calls: %d", starter.calls)
+	if scheduler.calls != 1 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
-
-	if starter.target != "local" {
-		t.Fatalf("unexpected worker target: %s", starter.target)
+	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
+		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
+	}
+	if scheduler.jobs[0].WorkerScript.WorkerExecutable != "/data/goetl/artifacts/goetl-worker" {
+		t.Fatalf("worker executable = %q, want configured executable", scheduler.jobs[0].WorkerScript.WorkerExecutable)
 	}
 }
 
-func TestSubmitWorkflowHandlerPreparesFakeHPCCWorkerScript(t *testing.T) {
-	scriptRoot := filepath.Join(".run", "fake-hpcc")
-	if err := os.RemoveAll(scriptRoot); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(scriptRoot)
-	})
-
-	starter := &testWorkerStarter{}
-	controller := newController(nil)
-	controller.worker = starter
+func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -1424,11 +1433,7 @@ func TestSubmitWorkflowHandlerPreparesFakeHPCCWorkerScript(t *testing.T) {
 			]
 		},
 		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "hpcc"
-			}
+`+testSlurmWorkerVariables+`
 		]
 	}`))
 	response := httptest.NewRecorder()
@@ -1438,26 +1443,17 @@ func TestSubmitWorkflowHandlerPreparesFakeHPCCWorkerScript(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
-	if starter.calls != 1 {
-		t.Fatalf("unexpected worker starter calls: %d", starter.calls)
+	if scheduler.calls != 1 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
-	if starter.target != "hpcc" {
-		t.Fatalf("unexpected worker target: %s", starter.target)
-	}
-
-	script, err := os.ReadFile(filepath.Join(scriptRoot, "worker.slurm"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(script), "'go' 'run' './cmd/worker' './cmd/worker/demo-config.json'") {
-		t.Fatalf("script missing fake HPCC worker command:\n%s", script)
+	if scheduler.jobs[0].WorkerScript.WorkerConfigPath != "/data/goetl/config/worker.json" {
+		t.Fatalf("worker config path = %q, want configured path", scheduler.jobs[0].WorkerScript.WorkerConfigPath)
 	}
 }
 
 func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
-	starter := &testWorkerStarter{}
-	controller := newController(nil)
-	controller.worker = starter
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
 	controller.scaleCfg = WorkerScaleConfig{MinCount: 2, MaxCount: 2, CountPerStart: 2}
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
@@ -1484,11 +1480,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 			]
 		},
 		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "local"
-			}
+`+testSlurmWorkerVariables+`
 		]
 	}`))
 	response := httptest.NewRecorder()
@@ -1499,15 +1491,14 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if starter.calls != 2 {
-		t.Fatalf("unexpected worker starter calls: %d", starter.calls)
+	if scheduler.calls != 2 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
 
 func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
-	starter := &testWorkerStarter{}
-	controller := newController(nil)
-	controller.worker = starter
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -1533,11 +1524,7 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 			]
 		},
 		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "local"
-			},
+`+testSlurmWorkerVariables+`,
 			{
 				"Name": {"Namespace": "worker_config", "Key": "worker_min_count"},
 				"Type": {"Kind": "int"},
@@ -1568,8 +1555,8 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if starter.calls != 2 {
-		t.Fatalf("unexpected worker starter calls: %d", starter.calls)
+	if scheduler.calls != 2 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
 
@@ -1622,66 +1609,22 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing.T) {
-	starter := &testWorkerStarter{}
-	controller := newController(nil)
-	controller.worker = starter
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
 	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
 
 	submitWorkflowYears(t, controller, `[2024]`)
 	submitWorkflowYears(t, controller, `[2025]`)
 
-	if starter.calls != 1 {
-		t.Fatalf("unexpected worker starter calls before claim: %d", starter.calls)
+	if scheduler.calls != 1 {
+		t.Fatalf("unexpected scheduler calls before claim: %d", scheduler.calls)
 	}
 
 	assignNextWork(t, controller)
 	submitWorkflowYears(t, controller, `[2026]`)
 
-	if starter.calls != 2 {
-		t.Fatalf("unexpected worker starter calls after claim: %d", starter.calls)
-	}
-}
-
-func TestSubmitWorkflowHandlerRejectsInvalidWorkerTargetType(t *testing.T) {
-	controller := newController(nil)
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "int"},
-				"Expression": "1"
-			}
-		]
-	}`))
-	response := httptest.NewRecorder()
-
-	controller.submitWorkflowHandler(response, request)
-
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("unexpected status code: %d", response.Code)
+	if scheduler.calls != 2 {
+		t.Fatalf("unexpected scheduler calls after claim: %d", scheduler.calls)
 	}
 }
 
@@ -1750,11 +1693,7 @@ func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
 			]
 		},
 		"variables": [
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "local"
-			}
+`+testSlurmWorkerVariables+`
 		]
 	}`))
 	response := httptest.NewRecorder()
@@ -1766,15 +1705,24 @@ func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
 	}
 }
 
-type testWorkerStarter struct {
-	calls  int
-	target string
+type testScheduler struct {
+	calls int
+	jobs  []JobSpec
 }
 
-func (s *testWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
+func (s *testScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, error) {
 	s.calls++
-	s.target = targetEnvironment
-	return nil
+	s.jobs = append(s.jobs, job)
+	return JobHandle{ID: strconv.Itoa(s.calls)}, nil
+}
+
+func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
+	controller := newController(nil)
+	controller.env = &ExecutionEnvironment{
+		Dialect:   BashShellPlatform{},
+		Scheduler: scheduler,
+	}
+	return controller
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidPayload(t *testing.T) {

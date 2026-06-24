@@ -67,6 +67,8 @@ Before submitting a workflow, the client should check whether the controller is 
 
 The Go controller should be able to bootstrap worker jobs on the HPCC. After startup, those workers should pull work from the controller rather than receiving all work details through the HPCC job submission itself.
 
+Before any institutional HPCC integration, the HPCC backend should be proven against a locally controlled Dockerized Slurm environment. This preserves the same boundary the real backend needs -- generated worker scripts submitted through `sbatch`, workers pulling from the Go controller, and shared mounted storage -- without relying on external institutional infrastructure or site-specific configuration.
+
 For local execution, the same ownership boundary applies. The controller owns the compiled queue and decides when worker capacity is needed. When the controller detects pending work, it should attempt to start a worker using the configured worker target location, such as `localhost`. Workers still pull work from the controller after startup.
 
 Over time, the controller should scale worker startup one worker at a time based on queue pressure and configured limits. The controller should not blindly start unlimited workers. It should consider at least:

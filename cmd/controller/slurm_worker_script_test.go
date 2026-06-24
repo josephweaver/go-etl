@@ -1,12 +1,31 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type recordingShellPlatform struct {
+	BashShellPlatform
+	paths []string
+}
+
+func (p *recordingShellPlatform) LocalizePath(value string) (string, error) {
+	p.paths = append(p.paths, value)
+	return p.BashShellPlatform.LocalizePath(value)
+}
+
+type failingShellPlatform struct {
+	BashShellPlatform
+}
+
+func (failingShellPlatform) LocalizePath(value string) (string, error) {
+	return "", fmt.Errorf("platform rejected path")
+}
 
 func TestGenerateSlurmWorkerScript(t *testing.T) {
 	script, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
@@ -49,6 +68,46 @@ func TestGenerateSlurmWorkerScriptQuotesShellValues(t *testing.T) {
 	want := "'/fake path/goetl-worker' '--mode' 'worker mode' '/fake path/worker'\"'\"'s config.json'"
 	if !strings.Contains(script, want) {
 		t.Fatalf("script missing quoted command %q:\n%s", want, script)
+	}
+}
+
+func TestGenerateSlurmWorkerScriptUsesConfiguredPlatform(t *testing.T) {
+	platform := &recordingShellPlatform{}
+
+	_, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/data/goetl/config/worker.json",
+		LogDir:           "/data/goetl/logs",
+		Platform:         platform,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{
+		"/data/goetl/artifacts/goetl-worker",
+		"/data/goetl/config/worker.json",
+		"/data/goetl/logs",
+	}
+	if !stringSlicesEqual(platform.paths, want) {
+		t.Fatalf("localized paths = %#v, want %#v", platform.paths, want)
+	}
+}
+
+func TestGenerateSlurmWorkerScriptReportsPlatformPathError(t *testing.T) {
+	_, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/data/goetl/config/worker.json",
+		LogDir:           "/data/goetl/logs",
+		Platform:         failingShellPlatform{},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(fmt.Sprint(err), "worker executable") {
+		t.Fatalf("error = %v, want worker executable context", err)
 	}
 }
 

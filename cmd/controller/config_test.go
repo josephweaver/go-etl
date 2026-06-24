@@ -25,7 +25,16 @@ func TestLoadControllerConfig(t *testing.T) {
 				"Type": {"Kind": "path"},
 				"Expression": ".run/controller/ledger.sqlite"
 			}
-		]
+		],
+		"execution_environment": {
+			"name": "dockerized-slurm",
+			"transports": [
+				{"name": "control", "type": "docker"}
+			],
+			"dialect": {"type": "bash"},
+			"scheduler": {"type": "slurm"},
+			"runtime": {"type": "worker"}
+		}
 	}`)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
@@ -45,6 +54,9 @@ func TestLoadControllerConfig(t *testing.T) {
 		if item.Name.Namespace != variable.NamespaceControllerConfig {
 			t.Fatalf("namespace = %q, want %q", item.Name.Namespace, variable.NamespaceControllerConfig)
 		}
+	}
+	if config.ExecutionEnvironment.Name != "dockerized-slurm" {
+		t.Fatalf("execution environment = %q, want dockerized-slurm", config.ExecutionEnvironment.Name)
 	}
 }
 
@@ -76,14 +88,17 @@ func TestControllerConfigRejectsNoVariables(t *testing.T) {
 	}
 }
 
-func TestControllerConfigFromArgsReturnsEmptyWithoutPath(t *testing.T) {
+func TestControllerConfigFromArgsLoadsDefaultWithoutPath(t *testing.T) {
 	config, err := controllerConfigFromArgs([]string{"controller"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(config.Variables) != 0 {
-		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	if len(config.Variables) == 0 {
+		t.Fatal("expected default variables")
+	}
+	if config.ExecutionEnvironment.Name != "dockerized-slurm" {
+		t.Fatalf("execution environment = %q, want dockerized-slurm", config.ExecutionEnvironment.Name)
 	}
 }
 
@@ -120,6 +135,57 @@ func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	}
 	if db != nil {
 		t.Fatal("expected no database")
+	}
+}
+
+func TestInitConfiguredExecutionEnvironmentReturnsNilWhenMissing(t *testing.T) {
+	env, err := initConfiguredExecutionEnvironment(ControllerConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env != nil {
+		t.Fatal("expected no execution environment")
+	}
+}
+
+func TestInitConfiguredExecutionEnvironmentBuildsConfiguredEnvironment(t *testing.T) {
+	env, err := initConfiguredExecutionEnvironment(ControllerConfig{
+		ExecutionEnvironment: ExecutionEnvironmentConfig{
+			Name: "dockerized-slurm",
+			Transports: []ExecutionComponentConfig{
+				{Type: "docker", Settings: map[string]string{"container": "slurmctld"}},
+			},
+			Dialect:   ExecutionComponentConfig{Type: "bash"},
+			Scheduler: ExecutionComponentConfig{Type: "slurm"},
+			Runtime:   ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env == nil {
+		t.Fatal("expected execution environment")
+	}
+	if env.Config.Name != "dockerized-slurm" {
+		t.Fatalf("environment name = %q, want dockerized-slurm", env.Config.Name)
+	}
+	if _, ok := env.Scheduler.(SlurmScheduler); !ok {
+		t.Fatalf("scheduler type = %T, want SlurmScheduler", env.Scheduler)
+	}
+}
+
+func TestInitConfiguredExecutionEnvironmentRejectsInvalidEnvironment(t *testing.T) {
+	_, err := initConfiguredExecutionEnvironment(ControllerConfig{
+		ExecutionEnvironment: ExecutionEnvironmentConfig{
+			Name:       "bad-env",
+			Transports: []ExecutionComponentConfig{{Type: "docker"}},
+			Dialect:    ExecutionComponentConfig{Type: "bash"},
+			Scheduler:  ExecutionComponentConfig{Type: "slurm"},
+			Runtime:    ExecutionComponentConfig{Type: "worker"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
 	}
 }
 
