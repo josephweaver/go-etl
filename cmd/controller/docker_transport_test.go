@@ -47,6 +47,26 @@ func TestDockerTransportCopyToContainerCommand(t *testing.T) {
 	}
 }
 
+func TestDockerContainerTransportPrepareCommand(t *testing.T) {
+	transport := DockerContainerTransport{
+		Docker:    DockerTransport{Executable: "podman"},
+		Container: "slurmctld",
+	}
+
+	executable, args, err := transport.Docker.execCommand(transport.Container, "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if executable != "podman" {
+		t.Fatalf("executable = %q, want podman", executable)
+	}
+	want := []string{"exec", "slurmctld", "true"}
+	if !stringSlicesEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
 func TestDockerTransportCommandsRejectNewlines(t *testing.T) {
 	if _, _, err := (DockerTransport{}).execCommand("slurmctld\n", "hostname"); err == nil {
 		t.Fatal("expected exec command to reject newline")

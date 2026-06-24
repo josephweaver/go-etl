@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 type ExecutionEnvironment struct {
 	Config     ExecutionEnvironmentConfig
@@ -92,6 +95,27 @@ func NewExecutionEnvironment(cfg ExecutionEnvironmentConfig) (ExecutionEnvironme
 		Scheduler:  scheduler,
 		Runtime:    runtime,
 	}, nil
+}
+
+func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
+	for index, transport := range e.Transports {
+		if err := prepareIfSupported(ctx, transport); err != nil {
+			return fmt.Errorf("prepare transport[%d]: %w", index, err)
+		}
+	}
+	if err := prepareIfSupported(ctx, e.Scheduler); err != nil {
+		return fmt.Errorf("prepare scheduler: %w", err)
+	}
+	if e.Runtime != nil {
+		var transport Transport
+		if len(e.Transports) > 0 {
+			transport = e.Transports[0]
+		}
+		if err := e.Runtime.Prepare(ctx, transport, e.Dialect); err != nil {
+			return fmt.Errorf("prepare runtime: %w", err)
+		}
+	}
+	return nil
 }
 
 func (cfg ExecutionComponentConfig) validate(role string) error {

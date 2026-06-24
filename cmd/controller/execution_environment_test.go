@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestExecutionEnvironmentConfigValidate(t *testing.T) {
 	cfg := ExecutionEnvironmentConfig{
@@ -96,5 +101,54 @@ func TestNewExecutionEnvironmentRejectsUnsupportedComponentType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+type prepareTransport struct {
+	calls int
+	err   error
+}
+
+func (t *prepareTransport) Prepare(ctx context.Context) error {
+	t.calls++
+	return t.err
+}
+
+func (t *prepareTransport) Copy(ctx context.Context, localPath string, remotePath string) error {
+	return nil
+}
+
+func (t *prepareTransport) Exec(ctx context.Context, args ...string) ([]byte, error) {
+	return nil, nil
+}
+
+func TestExecutionEnvironmentPrepareCallsSupportedComponents(t *testing.T) {
+	transport := &prepareTransport{}
+	env := ExecutionEnvironment{
+		Transports: []Transport{transport},
+		Dialect:    BashShellPlatform{},
+		Runtime:    SharedFilesystemWorkerRuntime{},
+	}
+
+	if err := env.Prepare(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if transport.calls != 1 {
+		t.Fatalf("transport prepare calls = %d, want 1", transport.calls)
+	}
+}
+
+func TestExecutionEnvironmentPrepareReportsTransportError(t *testing.T) {
+	env := ExecutionEnvironment{
+		Transports: []Transport{&prepareTransport{err: fmt.Errorf("docker unavailable")}},
+	}
+
+	err := env.Prepare(context.Background())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "prepare transport[0]") {
+		t.Fatalf("error = %v, want transport context", err)
 	}
 }

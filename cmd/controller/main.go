@@ -427,14 +427,8 @@ func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variab
 	}
 	workerCfg.slurm.Platform = c.env.Dialect
 
-	var transport Transport
-	if len(c.env.Transports) > 0 {
-		transport = c.env.Transports[0]
-	}
-	if c.env.Runtime != nil {
-		if err := c.env.Runtime.Prepare(ctx, transport, c.env.Dialect); err != nil {
-			return err
-		}
+	if err := c.env.Prepare(ctx); err != nil {
+		return err
 	}
 
 	for range count {

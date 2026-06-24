@@ -16,6 +16,11 @@ type DockerContainerTransport struct {
 	Container string
 }
 
+func (t DockerContainerTransport) Prepare(ctx context.Context) error {
+	_, err := t.Exec(ctx, "true")
+	return err
+}
+
 func (t DockerContainerTransport) Copy(ctx context.Context, localPath string, remotePath string) error {
 	_, err := t.Docker.CopyToContainer(ctx, localPath, t.Container, remotePath)
 	return err
