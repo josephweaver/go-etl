@@ -47,7 +47,19 @@ The standard is:
 
 # Audit Procedure
 
-1. Review:
+1. Before creating a new audit, check whether previous audits contain pending retention reviews.
+
+   Inspect recent `epi_ctl/*.md` files for:
+
+   ```text
+   Retention Follow-Up Required: Yes
+   ```
+
+   If the current date is near a scheduled review window, perform the retention review before or alongside the new immediate audit.
+
+   Retention reviews are first-class audits and should not be skipped merely because a new coding session occurred.
+
+2. Review:
 
    * TARGET_STATE.md
    * relevant git diff
@@ -55,15 +67,15 @@ The standard is:
    * architectural discussions if available
    * coding-session metrics where available
 
-2. Generate a focused epistemic audit.
+3. Generate a focused epistemic audit.
 
-3. Ask questions interactively.
+4. Ask questions interactively.
 
-4. Force prediction before explanation.
+5. Force prediction before explanation.
 
-5. Evaluate answers strictly.
+6. Evaluate answers strictly.
 
-6. Produce:
+7. Produce:
 
    * rubric scores
    * session metrics
@@ -71,11 +83,38 @@ The standard is:
    * epistemic drift indicators
    * recommendations
 
-7. Save the completed audit into:
+8. For same-day audits, determine whether the development slice is significant enough to justify longitudinal follow-up.
+
+   If follow-up is recommended, record:
+
+   ```text
+   Retention Follow-Up Required: Yes
+   ```
+
+   and include:
+
+   ```text
+   Scheduled Reviews:
+   - T+3
+   - T+14
+   - T+180
+   ```
+
+   Otherwise record:
+
+   ```text
+   Retention Follow-Up Required: No
+   ```
+
+9. Save the completed audit.
+
+   Same-day audits use:
 
    ```text
    epi_ctl/YYYYMMDD.md
    ```
+
+   Retention reviews use the retention-chain file naming rules below.
 
 ---
 
@@ -95,6 +134,159 @@ It IS measuring:
 * debugging capability
 * reconstruction ability
 * operational control
+
+---
+
+# Longitudinal Review Schedule
+
+Epistemic control should be measured at multiple time horizons because immediate understanding and retained understanding are different phenomena.
+
+Use these review checkpoints:
+
+```text
+T      = Immediate review (same day)
+T+3    = Consolidation review (~3 days later)
+T+14   = Retention review (~14 days later)
+T+180  = Long-term ownership review (~6 months later)
+```
+
+T measures immediate comprehension after development.
+
+T+3 measures consolidation after sleep, reflection, and normal work.
+
+T+14 measures medium-term retention after implementation details begin to decay.
+
+T+180 measures long-term ownership and maintainability.
+
+Retention reviews are the primary evidence for durable ownership.
+
+Immediate reviews measure comprehension.
+
+Delayed reviews measure retention.
+
+Long-term reviews measure ownership.
+
+## Review Philosophy
+
+* Immediate scores are not sufficient evidence of ownership.
+* Strong ownership should remain visible after implementation details fade.
+* Strategic Understanding and Operational Control are expected to decay more slowly than Implementation Recall.
+* Long-term ownership is primarily demonstrated through navigation, modification planning, debugging, and architectural reasoning.
+
+The ultimate goal is not immediate recall.
+
+The ultimate goal is durable ownership.
+
+A human who cannot remember exact implementation details but can successfully navigate, debug, and extend the system months later may still possess strong epistemic control.
+
+## Retention Chain
+
+A retention chain is the linked set of audits that measure the same original development session across time.
+
+When a T audit is created, the auditor must determine whether the development slice is significant enough to justify longitudinal follow-up.
+
+Criteria may include:
+
+* large architectural changes
+* new abstractions
+* substantial AI-generated implementation
+* major refactors
+* high surprise penalty
+* low Operational Control score
+* low Strategic Understanding score
+* novel workflows or experiments
+
+If follow-up is recommended, the original audit must record:
+
+```text
+Retention Follow-Up Required: Yes
+```
+
+and:
+
+```text
+Scheduled Reviews:
+- T+3
+- T+14
+- T+180
+```
+
+Otherwise record:
+
+```text
+Retention Follow-Up Required: No
+```
+
+## Retention Review File Names
+
+Original audit:
+
+```text
+epi_ctl/20260624.md
+```
+
+Follow-up reviews:
+
+```text
+epi_ctl/20260624_T3.md
+epi_ctl/20260624_T14.md
+epi_ctl/20260624_T180.md
+```
+
+The date portion always refers to the original development session being measured.
+
+The suffix indicates the retention horizon.
+
+Do not create:
+
+```text
+epi_ctl/20260627.md
+```
+
+for a T+3 review.
+
+Use:
+
+```text
+epi_ctl/20260624_T3.md
+```
+
+so all retention reviews remain grouped with the original session.
+
+## Retention Review Behavior
+
+A T+3, T+14, or T+180 review should:
+
+* reference the original audit
+* compare scores against prior checkpoints
+* explain score changes
+* identify what knowledge persisted
+* identify what knowledge decayed
+* identify whether decay occurred in Strategic Understanding, Operational Control, or Implementation Recall
+
+The goal is not to penalize forgetting.
+
+The goal is to measure which forms of understanding remain durable.
+
+Each retention review should include:
+
+```text
+Original Session:
+20260624
+
+Current Review:
+T+14
+```
+
+and a retention trend table:
+
+| Review | SU | OC | IR | E  |
+| ------ | -- | -- | -- | -- |
+| T      | 17 | 8  | 5  | 28 |
+| T+3    | 17 | 8  | 4  | 27 |
+| T+14   | 16 | 8  | 2  | 25 |
+
+Interpret changes rather than merely reporting them.
 
 ---
 
@@ -512,6 +704,56 @@ Use SU, OC, and IR for diagnosis and intervention planning.
 
 ---
 
+# Longitudinal Metrics
+
+For each review checkpoint, record:
+
+```text
+SU = Strategic Understanding
+OC = Operational Control
+IR = Implementation Recall
+E  = Epistemic Control Score
+```
+
+Use this table for retention chains:
+
+| Review | SU | OC | IR | E |
+| ------ | -- | -- | -- | - |
+| T      |    |    |    |   |
+| T+3    |    |    |    |   |
+| T+14   |    |    |    |   |
+| T+180  |    |    |    |   |
+
+Different decay patterns are meaningful.
+
+## High SU + High OC + Falling IR
+
+Interpretation:
+
+Implementation details faded but ownership remains intact.
+
+## High SU + Falling OC
+
+Interpretation:
+
+Architecture remains understood but practical maintainability may be degrading.
+
+## Falling SU + Falling OC
+
+Interpretation:
+
+Potential epistemic drift.
+
+The human may no longer be capable of safely evolving the system.
+
+## Stable SU + Stable OC across long delays
+
+Interpretation:
+
+Evidence of durable ownership.
+
+---
+
 # Additional Required Observations
 
 The audit MUST also record:
@@ -694,6 +936,26 @@ Provide concrete recommendations such as:
 * refactor overly opaque logic
 
 Recommendations should prioritize restoring epistemic control over maximizing coding speed.
+
+---
+
+# Retention Experiments
+
+Longitudinal audits are intended to evaluate which interventions improve retention.
+
+Suggested interventions:
+
+* README creation
+* WHY_STATE.md documents
+* architecture diagrams
+* smaller implementation slices
+* active recall exercises
+* delayed self-quizzing
+* manual modification tasks
+
+Use T+3, T+14, and T+180 reviews to determine whether an intervention preserved Strategic Understanding, Operational Control, or Implementation Recall.
+
+Do not treat better immediate recall as sufficient evidence that the intervention improved durable ownership.
 
 ---
 
