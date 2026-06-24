@@ -25,7 +25,16 @@ func TestLoadControllerConfig(t *testing.T) {
 				"Type": {"Kind": "path"},
 				"Expression": ".run/controller/ledger.sqlite"
 			}
-		]
+		],
+		"execution_environment": {
+			"name": "dockerized-slurm",
+			"transports": [
+				{"name": "control", "type": "docker"}
+			],
+			"dialect": {"type": "bash"},
+			"scheduler": {"type": "slurm"},
+			"runtime": {"type": "shared_filesystem_worker"}
+		}
 	}`)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
@@ -45,6 +54,9 @@ func TestLoadControllerConfig(t *testing.T) {
 		if item.Name.Namespace != variable.NamespaceControllerConfig {
 			t.Fatalf("namespace = %q, want %q", item.Name.Namespace, variable.NamespaceControllerConfig)
 		}
+	}
+	if config.ExecutionEnvironment.Name != "dockerized-slurm" {
+		t.Fatalf("execution environment = %q, want dockerized-slurm", config.ExecutionEnvironment.Name)
 	}
 }
 
@@ -76,14 +88,17 @@ func TestControllerConfigRejectsNoVariables(t *testing.T) {
 	}
 }
 
-func TestControllerConfigFromArgsReturnsEmptyWithoutPath(t *testing.T) {
+func TestControllerConfigFromArgsLoadsDefaultWithoutPath(t *testing.T) {
 	config, err := controllerConfigFromArgs([]string{"controller"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(config.Variables) != 0 {
-		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	if len(config.Variables) == 0 {
+		t.Fatal("expected default variables")
+	}
+	if config.ExecutionEnvironment.Name != "dockerized-slurm" {
+		t.Fatalf("execution environment = %q, want dockerized-slurm", config.ExecutionEnvironment.Name)
 	}
 }
 

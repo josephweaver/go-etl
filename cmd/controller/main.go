@@ -20,6 +20,8 @@ import (
 	"goetl/internal/workflow"
 )
 
+const defaultControllerConfigPath = "cmd/controller/controller-default-config.json"
+
 type Controller struct {
 	mu       sync.Mutex
 	pending  []model.WorkItem
@@ -100,10 +102,18 @@ func main() {
 
 func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
 	if len(args) < 2 {
-		return ControllerConfig{}, nil
+		return loadDefaultControllerConfig()
 	}
 
 	return loadControllerConfig(args[1])
+}
+
+func loadDefaultControllerConfig() (ControllerConfig, error) {
+	if _, err := os.Stat(defaultControllerConfigPath); err == nil {
+		return loadControllerConfig(defaultControllerConfigPath)
+	}
+
+	return loadControllerConfig("controller-default-config.json")
 }
 
 func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {

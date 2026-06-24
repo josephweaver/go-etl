@@ -13,21 +13,36 @@ type SlurmWorkerScriptConfig struct {
 	WorkerArgs       []string
 	WorkerConfigPath string
 	LogDir           string
+	Platform         ShellDialect
 }
 
 func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	if err := cfg.validate(); err != nil {
 		return "", err
 	}
+	platform := slurmScriptPlatform(cfg)
+	workerExecutable, err := platform.LocalizePath(cfg.WorkerExecutable)
+	if err != nil {
+		return "", fmt.Errorf("worker executable: %w", err)
+	}
+	workerConfigPath, err := platform.LocalizePath(cfg.WorkerConfigPath)
+	if err != nil {
+		return "", fmt.Errorf("worker config path: %w", err)
+	}
+	logDir, err := platform.LocalizePath(cfg.LogDir)
+	if err != nil {
+		return "", fmt.Errorf("log dir: %w", err)
+	}
 
 	var script strings.Builder
-	script.WriteString("#!/usr/bin/env bash\n")
-	script.WriteString("#SBATCH --job-name=" + cfg.JobName + "\n")
-	script.WriteString("#SBATCH --output=" + cfg.LogDir + "/%x-%j.out\n")
-	script.WriteString("#SBATCH --error=" + cfg.LogDir + "/%x-%j.err\n")
-	script.WriteString("set -euo pipefail\n")
-	script.WriteString("mkdir -p " + shellQuote(cfg.LogDir) + "\n")
-	script.WriteString(shellCommand(append([]string{cfg.WorkerExecutable}, append(cfg.WorkerArgs, cfg.WorkerConfigPath)...)) + "\n")
+	newline := platform.Newline()
+	script.WriteString("#!/usr/bin/env bash" + newline)
+	script.WriteString("#SBATCH --job-name=" + cfg.JobName + newline)
+	script.WriteString("#SBATCH --output=" + logDir + "/%x-%j.out" + newline)
+	script.WriteString("#SBATCH --error=" + logDir + "/%x-%j.err" + newline)
+	script.WriteString("set -euo pipefail" + newline)
+	script.WriteString("mkdir -p " + platform.QuoteArg(logDir) + newline)
+	script.WriteString(shellCommandWithPlatform(platform, append([]string{workerExecutable}, append(cfg.WorkerArgs, workerConfigPath)...)) + newline)
 	return script.String(), nil
 }
 
@@ -86,6 +101,13 @@ func (cfg SlurmWorkerScriptConfig) validate() error {
 	return nil
 }
 
+func slurmScriptPlatform(cfg SlurmWorkerScriptConfig) ShellDialect {
+	if cfg.Platform != nil {
+		return cfg.Platform
+	}
+	return BashShellPlatform{}
+}
+
 func containsNewline(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
 }
@@ -100,9 +122,13 @@ func containsNewlineInList(values []string) bool {
 }
 
 func shellCommand(args []string) string {
+	return shellCommandWithPlatform(BashShellPlatform{}, args)
+}
+
+func shellCommandWithPlatform(platform ShellDialect, args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		quoted = append(quoted, shellQuote(arg))
+		quoted = append(quoted, platform.QuoteArg(arg))
 	}
 	return strings.Join(quoted, " ")
 }
