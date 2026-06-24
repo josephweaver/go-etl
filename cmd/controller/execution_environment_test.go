@@ -21,7 +21,7 @@ func TestExecutionEnvironmentConfigValidate(t *testing.T) {
 		},
 		Dialect:   ExecutionComponentConfig{Type: "bash"},
 		Scheduler: ExecutionComponentConfig{Type: "slurm"},
-		Runtime:   ExecutionComponentConfig{Type: "shared_filesystem_worker"},
+		Runtime:   ExecutionComponentConfig{Type: "worker"},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -34,7 +34,7 @@ func TestExecutionEnvironmentConfigValidateRejectsMissingTransport(t *testing.T)
 		Name:      "dockerized-slurm",
 		Dialect:   ExecutionComponentConfig{Type: "bash"},
 		Scheduler: ExecutionComponentConfig{Type: "slurm"},
-		Runtime:   ExecutionComponentConfig{Type: "shared_filesystem_worker"},
+		Runtime:   ExecutionComponentConfig{Type: "worker"},
 	}
 
 	if err := cfg.Validate(); err == nil {
@@ -54,7 +54,7 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 		}},
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
-		Runtime:    ExecutionComponentConfig{Type: "shared_filesystem_worker", Settings: map[string]string{"root": "/data/goetl"}},
+		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -82,9 +82,9 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 	if _, ok := env.Scheduler.(SlurmScheduler); !ok {
 		t.Fatalf("scheduler type = %T, want SlurmScheduler", env.Scheduler)
 	}
-	runtime, ok := env.Runtime.(SharedFilesystemWorkerRuntime)
+	runtime, ok := env.Runtime.(WorkerRuntime)
 	if !ok {
-		t.Fatalf("runtime type = %T, want SharedFilesystemWorkerRuntime", env.Runtime)
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
 	}
 	if runtime.Root != "/data/goetl" {
 		t.Fatalf("runtime root = %q, want /data/goetl", runtime.Root)
@@ -97,7 +97,7 @@ func TestNewExecutionEnvironmentRejectsUnsupportedComponentType(t *testing.T) {
 		Transports: []ExecutionComponentConfig{{Type: "ssh"}},
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
-		Runtime:    ExecutionComponentConfig{Type: "shared_filesystem_worker"},
+		Runtime:    ExecutionComponentConfig{Type: "worker"},
 	})
 	if err == nil {
 		t.Fatal("expected an error")
@@ -127,7 +127,7 @@ func TestExecutionEnvironmentPrepareCallsSupportedComponents(t *testing.T) {
 	env := ExecutionEnvironment{
 		Transports: []Transport{transport},
 		Dialect:    BashShellPlatform{},
-		Runtime:    SharedFilesystemWorkerRuntime{},
+		Runtime:    WorkerRuntime{},
 	}
 
 	if err := env.Prepare(context.Background()); err != nil {

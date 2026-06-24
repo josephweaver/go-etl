@@ -13,13 +13,13 @@ type Runtime interface {
 	Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error
 }
 
-type SharedFilesystemWorkerRuntime struct {
+type WorkerRuntime struct {
 	Root                string
 	ControllerURL       string
 	LocalWorkerArtifact string
 }
 
-func (r SharedFilesystemWorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
+func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
 	if transport == nil {
 		return fmt.Errorf("runtime transport is required")
 	}
@@ -66,7 +66,7 @@ func (r SharedFilesystemWorkerRuntime) Prepare(ctx context.Context, transport Tr
 	return nil
 }
 
-type SharedFilesystemWorkerRuntimePaths struct {
+type WorkerRuntimePaths struct {
 	Root             string
 	WorkerExecutable string
 	WorkerConfigPath string
@@ -76,23 +76,23 @@ type SharedFilesystemWorkerRuntimePaths struct {
 	DataDir          string
 }
 
-type SharedFilesystemWorkerConfig struct {
+type WorkerConfig struct {
 	LogDir        string `json:"log_dir"`
 	TmpDir        string `json:"tmp_dir"`
 	DataDir       string `json:"data_dir"`
 	ControllerURL string `json:"controller_url"`
 }
 
-func (r SharedFilesystemWorkerRuntime) paths() (SharedFilesystemWorkerRuntimePaths, error) {
+func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
 	root := strings.TrimRight(r.Root, "/")
 	if root == "" {
 		root = "/data/goetl"
 	}
 	if containsNewline(root) {
-		return SharedFilesystemWorkerRuntimePaths{}, fmt.Errorf("runtime root must not contain newlines")
+		return WorkerRuntimePaths{}, fmt.Errorf("runtime root must not contain newlines")
 	}
 
-	return SharedFilesystemWorkerRuntimePaths{
+	return WorkerRuntimePaths{
 		Root:             root,
 		WorkerExecutable: path.Join(root, "artifacts", "goetl-worker"),
 		WorkerConfigPath: path.Join(root, "config", "worker.json"),
@@ -103,8 +103,8 @@ func (r SharedFilesystemWorkerRuntime) paths() (SharedFilesystemWorkerRuntimePat
 	}, nil
 }
 
-func (r SharedFilesystemWorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transport, paths SharedFilesystemWorkerRuntimePaths) error {
-	data, err := json.MarshalIndent(SharedFilesystemWorkerConfig{
+func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transport, paths WorkerRuntimePaths) error {
+	data, err := json.MarshalIndent(WorkerConfig{
 		LogDir:        paths.LogDir,
 		TmpDir:        paths.TmpDir,
 		DataDir:       paths.DataDir,
@@ -136,7 +136,7 @@ func (r SharedFilesystemWorkerRuntime) writeWorkerConfig(ctx context.Context, tr
 	return nil
 }
 
-func (r SharedFilesystemWorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Transport, dialect ShellDialect, paths SharedFilesystemWorkerRuntimePaths) error {
+func (r WorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Transport, dialect ShellDialect, paths WorkerRuntimePaths) error {
 	if err := transport.Copy(ctx, r.LocalWorkerArtifact, paths.WorkerExecutable); err != nil {
 		return fmt.Errorf("copy worker artifact: %w", err)
 	}

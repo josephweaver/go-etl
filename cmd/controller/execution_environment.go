@@ -163,8 +163,8 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 
 func newRuntimeFromConfig(cfg ExecutionComponentConfig) (Runtime, error) {
 	switch cfg.Type {
-	case "shared_filesystem_worker":
-		return SharedFilesystemWorkerRuntime{
+	case "worker":
+		return WorkerRuntime{
 			Root:                cfg.Settings["root"],
 			ControllerURL:       cfg.Settings["controller_url"],
 			LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],

@@ -83,7 +83,9 @@ The current shared-path convention is:
 /data/goetl/data
 ```
 
-`PrepareDockerSlurmRuntime` creates those shared directories through the `slurmctld` container and writes the generated worker config to `/data/goetl/config/worker.json`.
+`WorkerRuntime.Prepare` creates those shared directories through the configured transport and writes the generated worker config to `/data/goetl/config/worker.json` when the runtime has a controller URL.
+
+When `local_worker_artifact` is configured, `WorkerRuntime.Prepare` also copies that local worker artifact into `/data/goetl/artifacts/goetl-worker` and marks it executable. The artifact path is on the shared `/data` volume, so worker containers can execute it after Slurm schedules the job.
 
 When Dockerized Slurm is running, verify the real submission boundary from WSL with:
 

@@ -39,7 +39,7 @@
       "type": "slurm"
     },
     "runtime": {
-      "type": "shared_filesystem_worker",
+      "type": "worker",
       "settings": {
         "root": "/data/goetl",
         "controller_url": "http://host.docker.internal:8080"

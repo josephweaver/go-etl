@@ -33,7 +33,7 @@ func TestLoadControllerConfig(t *testing.T) {
 			],
 			"dialect": {"type": "bash"},
 			"scheduler": {"type": "slurm"},
-			"runtime": {"type": "shared_filesystem_worker"}
+			"runtime": {"type": "worker"}
 		}
 	}`)
 
@@ -157,7 +157,7 @@ func TestInitConfiguredExecutionEnvironmentBuildsConfiguredEnvironment(t *testin
 			},
 			Dialect:   ExecutionComponentConfig{Type: "bash"},
 			Scheduler: ExecutionComponentConfig{Type: "slurm"},
-			Runtime:   ExecutionComponentConfig{Type: "shared_filesystem_worker", Settings: map[string]string{"root": "/data/goetl"}},
+			Runtime:   ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
 		},
 	})
 	if err != nil {
@@ -181,7 +181,7 @@ func TestInitConfiguredExecutionEnvironmentRejectsInvalidEnvironment(t *testing.
 			Transports: []ExecutionComponentConfig{{Type: "docker"}},
 			Dialect:    ExecutionComponentConfig{Type: "bash"},
 			Scheduler:  ExecutionComponentConfig{Type: "slurm"},
-			Runtime:    ExecutionComponentConfig{Type: "shared_filesystem_worker"},
+			Runtime:    ExecutionComponentConfig{Type: "worker"},
 		},
 	})
 	if err == nil {

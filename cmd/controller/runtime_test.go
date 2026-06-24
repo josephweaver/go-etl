@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -29,8 +31,8 @@ func (t *recordingTransport) Exec(ctx context.Context, args ...string) ([]byte, 
 	return nil, nil
 }
 
-func TestSharedFilesystemWorkerRuntimePathsDefaultRoot(t *testing.T) {
-	paths, err := (SharedFilesystemWorkerRuntime{}).paths()
+func TestWorkerRuntimePathsDefaultRoot(t *testing.T) {
+	paths, err := (WorkerRuntime{}).paths()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,9 +48,9 @@ func TestSharedFilesystemWorkerRuntimePathsDefaultRoot(t *testing.T) {
 	}
 }
 
-func TestSharedFilesystemWorkerRuntimePrepareCreatesDirectories(t *testing.T) {
+func TestWorkerRuntimePrepareCreatesDirectories(t *testing.T) {
 	transport := &recordingTransport{}
-	runtime := SharedFilesystemWorkerRuntime{Root: "/data/goetl-test"}
+	runtime := WorkerRuntime{Root: "/data/goetl-test"}
 
 	if err := runtime.Prepare(context.Background(), transport, BashShellPlatform{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -68,9 +70,9 @@ func TestSharedFilesystemWorkerRuntimePrepareCreatesDirectories(t *testing.T) {
 	}
 }
 
-func TestSharedFilesystemWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
+func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	transport := &recordingTransport{}
-	runtime := SharedFilesystemWorkerRuntime{
+	runtime := WorkerRuntime{
 		Root:          "/data/goetl-test",
 		ControllerURL: "http://host.docker.internal:8080",
 	}
@@ -86,7 +88,7 @@ func TestSharedFilesystemWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 		t.Fatalf("remote worker config = %q, want config path", transport.copies[0].remotePath)
 	}
 
-	var cfg SharedFilesystemWorkerConfig
+	var cfg WorkerConfig
 	if err := json.Unmarshal(transport.copies[0].content, &cfg); err != nil {
 		t.Fatalf("decode copied worker config: %v", err)
 	}
@@ -101,9 +103,9 @@ func TestSharedFilesystemWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	}
 }
 
-func TestSharedFilesystemWorkerRuntimePrepareUploadsArtifact(t *testing.T) {
+func TestWorkerRuntimePrepareUploadsArtifact(t *testing.T) {
 	transport := &recordingTransport{}
-	runtime := SharedFilesystemWorkerRuntime{
+	runtime := WorkerRuntime{
 		Root:                "/data/goetl-test",
 		LocalWorkerArtifact: "goetl-worker.exe",
 	}
@@ -121,5 +123,66 @@ func TestSharedFilesystemWorkerRuntimePrepareUploadsArtifact(t *testing.T) {
 	want := []string{"chmod", "0755", "/data/goetl-test/artifacts/goetl-worker"}
 	if !stringSlicesEqual(transport.execArgs, want) {
 		t.Fatalf("exec args = %#v, want chmod command", transport.execArgs)
+	}
+}
+
+func TestWorkerRuntimePrepareIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-d", "/data"); err != nil {
+		t.Skipf("slurmctld container with /data is required: %v", err)
+	}
+
+	runtime := WorkerRuntime{
+		Root:          "/data/goetl-test-runtime",
+		ControllerURL: "http://host.docker.internal:8080",
+	}
+	transport := DockerContainerTransport{Container: "slurmctld"}
+	if err := runtime.Prepare(ctx, transport, BashShellPlatform{}); err != nil {
+		t.Fatalf("prepare runtime: %v", err)
+	}
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-f", "/data/goetl-test-runtime/config/worker.json"); err != nil {
+		t.Fatalf("worker config was not written: %v", err)
+	}
+	if err := dockerExec(ctx, "slurm-cpu-worker-1", "test", "-d", "/data/goetl-test-runtime/logs"); err != nil {
+		t.Fatalf("runtime logs dir is not visible on worker: %v", err)
+	}
+}
+
+func TestWorkerRuntimePrepareUploadsArtifactIntegration(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is required for Dockerized Slurm integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dockerSlurmIntegrationTimeout)
+	defer cancel()
+
+	if err := dockerExec(ctx, "slurmctld", "test", "-d", "/data"); err != nil {
+		t.Skipf("slurmctld container with /data is required: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "goetl-worker")
+	if err := os.WriteFile(localPath, []byte("#!/usr/bin/env bash\necho goetl-artifact\n"), 0o644); err != nil {
+		t.Fatalf("write local artifact: %v", err)
+	}
+
+	runtime := WorkerRuntime{
+		Root:                "/data/goetl-test-artifact",
+		ControllerURL:       "http://host.docker.internal:8080",
+		LocalWorkerArtifact: localPath,
+	}
+	transport := DockerContainerTransport{Container: "slurmctld"}
+	if err := runtime.Prepare(ctx, transport, BashShellPlatform{}); err != nil {
+		t.Fatalf("prepare runtime: %v", err)
+	}
+
+	if err := dockerExec(ctx, "slurm-cpu-worker-1", "test", "-x", "/data/goetl-test-artifact/artifacts/goetl-worker"); err != nil {
+		t.Fatalf("artifact is not executable on worker: %v", err)
 	}
 }
