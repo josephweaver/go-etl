@@ -41,7 +41,7 @@ Do not substitute implementation success for comprehension.
 
 The standard is:
 
-> Could the human meaningfully reason about, modify, debug, and reconstruct this system without AI assistance?
+> Could the human meaningfully reason about, modify, debug, navigate, and partially reconstruct this system with ordinary reference to the codebase, but without depending on AI to explain the architecture?
 
 ---
 
@@ -113,6 +113,9 @@ Examples:
 Goal:
 Determine whether the human maintains a coherent system-level mental model.
 
+Score category:
+Strategic Understanding (SU)
+
 ---
 
 ## 2. Data Flow Tracing
@@ -125,6 +128,9 @@ Examples:
 
 Goal:
 Determine whether the human can causally trace information through the system.
+
+Score category:
+Strategic Understanding (SU)
 
 ---
 
@@ -139,6 +145,9 @@ Examples:
 Goal:
 Measure predictive debugging capability.
 
+Score category:
+Strategic Understanding (SU)
+
 ---
 
 ## 4. Invariant Recognition
@@ -152,18 +161,55 @@ Examples:
 Goal:
 Measure understanding of system correctness conditions.
 
+Score category:
+Strategic Understanding (SU)
+
 ---
 
 ## 5. Reconstruction Ability
 
 Examples:
 
-* Sketch the controller-worker protocol without opening the code.
+* Reconstruct the system at the abstraction level needed to modify/debug it.
 * Describe the queue lifecycle from memory.
 * Approximate the worker execution loop.
 
 Goal:
 Measure retained internal compression of the system.
+
+Score category:
+Implementation Recall (IR)
+
+---
+
+## 6. Defect Localization / Navigation
+
+Example questions:
+
+* If Slurm job submission behaves strangely, where would you look first, second, and third?
+* Which files/components are probably irrelevant?
+* What evidence would distinguish scheduler failure from transport failure?
+
+This captures your actual working understanding: knowing the radius of the problem.
+
+Score category:
+Operational Control (OC)
+
+---
+
+## 7. Modification Planning
+
+Example questions:
+
+* How would you add KubernetesScheduler?
+* What interfaces would need to change?
+* Which invariants are at risk?
+* What tests would you write first?
+
+This is different from debugging.
+
+Score category:
+Operational Control (OC)
 
 ---
 
@@ -204,19 +250,31 @@ Can reconstruct, debug, and reason about edge cases confidently.
 
 # Rubric Categories
 
-| Category                   | Score |
+| Strategic Understanding    | Score |
 | -------------------------- | ----- |
 | Architecture Comprehension | /5    |
 | Data Flow Tracing          | /5    |
 | Failure Prediction         | /5    |
 | Invariant Recognition      | /5    |
-| Reconstruction Ability     | /5    |
 
-Total:
+| Operational Control              | Score |
+| -------------------------------- | ----- |
+| Defect Localization / Navigation | /5    |
+| Modification Planning            | /5    |
 
-```text
-/25
-```
+| Implementation Recall    | Score |
+| ------------------------ | ----- |
+| Reconstruction Ability   | /5    |
+
+Strategic Understanding: /20
+
+Operational Control: /10
+
+Implementation Recall: /5
+
+Surprise Penalty: -/5
+
+Total EC: /35
 
 ---
 
@@ -238,62 +296,219 @@ This is a penalty term because surprise indicates epistemic gaps.
 
 ---
 
-# Epistemic Control Score
+# Interpretation
 
-Compute:
+The primary outputs of this audit are:
 
 ```text
-E = (A + D + F + I + R) - S
+SU = Strategic Understanding
+OC = Operational Control
+IR = Implementation Recall
 ```
 
-Where:
+The overall Epistemic Control Score (E) is a useful summary, but should not be interpreted in isolation.
 
-* A = Architecture
-* D = Data Flow
-* F = Failure Prediction
-* I = Invariant Recognition
-* R = Reconstruction
-* S = Surprise Penalty
+A high overall score can mask important imbalances between strategic understanding, operational control, and implementation recall.
+
+---
+
+# Strategic Understanding (SU)
+
+Measures:
+
+* Architecture Comprehension
+* Data Flow Tracing
+* Failure Prediction
+* Invariant Recognition
+
+Maximum E:
+
+```text
+20
+```
+
+Interpretation:
+
+## 16-20
+
+Strong strategic understanding.
+
+The human can explain why the system is structured as it is, predict consequences of changes, identify correctness conditions, and reason about failures.
+
+## 11-15
+
+Moderate strategic understanding.
+
+Major architectural concepts are understood, though some causal reasoning gaps remain.
+
+## 6-10
+
+Weak strategic understanding.
+
+Reasoning is increasingly reactive and localized.
+
+The human may understand individual components without understanding the system as a whole.
+
+## 0-5
+
+Architectural understanding is minimal.
+
+The human cannot reliably explain system behavior or predict consequences of changes.
+
+---
+
+# Operational Control (OC)
+
+Measures:
+
+* Defect Localization / Navigation
+* Modification Planning
 
 Maximum:
 
 ```text
-25
+10
 ```
 
-Minimum:
+Interpretation:
+
+Operational Control measures the ability to navigate, debug, and safely change the system using ordinary reference to the codebase.
+
+## 8-10
+
+Strong operational control.
+
+The human can navigate the codebase, localize defects, plan modifications, and operate independently using normal code references.
+
+## 5-7
+
+Moderate operational control.
+
+The human can generally work within the system but may require additional review to safely modify unfamiliar areas.
+
+## 2-4
+
+Weak operational control.
+
+The human knows portions of the system but struggles to navigate, localize, or extend it without significant assistance.
+
+## 0-1
+
+Operational control is minimal.
+
+The human cannot reliably maintain or evolve the system independently.
+
+---
+
+# Implementation Recall (IR)
+
+Measures:
+
+* Reconstruction Ability
+
+Maximum:
+
+```text
+5
+```
+
+Implementation Recall measures short-term or medium-term recall of implementation details. It is measured because recall affects speed and confidence, but it should not automatically be treated as required for long-term ownership.
+
+Principle:
+
+```text
+Low implementation recall may be acceptable when strategic understanding and operational control remain strong.
+```
+
+Interpretation:
+
+## 4-5
+
+Strong implementation recall.
+
+The human can reconstruct important implementation details without opening the code and can predict where details live.
+
+## 2-3
+
+Partial implementation recall.
+
+The human remembers the broad shape but must inspect code to recover exact fields, functions, or call paths.
+
+## 0-1
+
+Weak implementation recall.
+
+The human cannot reconstruct implementation details from memory, even when the strategic model may be sound.
+
+---
+
+# Combined Interpretation
+
+The relationship between SU, OC, and IR is often more informative than E.
+
+## High SU, High OC, Low IR
+
+Healthy practical ownership with weak implementation recall.
+
+The human understands the architecture and can operate in the codebase using ordinary references, but does not retain many implementation details from memory. This may be acceptable, especially for boilerplate or generated code.
+
+## High SU, Low OC
+
+Architectural understanding exists, but the human may struggle to operate in the codebase.
+
+The human can reason about design consequences but may need additional navigation practice, debugging exercises, or hands-on implementation experience.
+
+## Low SU, High OC
+
+The human can navigate and patch the system, but may not understand larger design consequences.
+
+This creates risk that local changes violate higher-level invariants.
+
+## Low SU, Low OC
+
+Epistemic drift.
+
+AI-assisted development is likely proceeding faster than understanding can be integrated.
+
+---
+
+# Overall Epistemic Control Score
+
+```text
+SU = A + D + F + I
+OC = DL + M
+IR = R
+E = SU + OC + IR - S
+```
+
+Where:
+
+```text
+A  = Architecture Comprehension
+D  = Data Flow Tracing
+F  = Failure Prediction
+I  = Invariant Recognition
+DL = Defect Localization / Navigation
+M  = Modification Planning
+R  = Reconstruction Ability
+S  = Surprise Penalty
+```
+
+Maximum:
+
+```text
+35
+```
+
+Minimum E:
 
 ```text
 -5
 ```
 
----
+Use E for trend analysis over time.
 
-# Interpretation
-
-## 20-25
-
-Strong epistemic control.
-
-Human retains meaningful architectural ownership despite AI assistance.
-
-## 15-19
-
-Moderate control.
-
-System remains understandable but drift risk exists.
-
-## 10-14
-
-Weakening control.
-
-Understanding becoming localized and reactive.
-
-## Below 10
-
-Epistemic instability.
-
-AI acceleration is likely exceeding human integration capacity.
+Use SU, OC, and IR for diagnosis and intervention planning.
 
 ---
 
