@@ -165,7 +165,9 @@ func newRuntimeFromConfig(cfg ExecutionComponentConfig) (Runtime, error) {
 	switch cfg.Type {
 	case "shared_filesystem_worker":
 		return SharedFilesystemWorkerRuntime{
-			Root: cfg.Settings["root"],
+			Root:                cfg.Settings["root"],
+			ControllerURL:       cfg.Settings["controller_url"],
+			LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime type %q", cfg.Type)

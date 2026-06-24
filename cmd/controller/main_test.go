@@ -1719,10 +1719,8 @@ func (s *testScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, err
 func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
 	controller := newController(nil)
 	controller.env = &ExecutionEnvironment{
-		Transports: []Transport{nil},
-		Dialect:    BashShellPlatform{},
-		Scheduler:  scheduler,
-		Runtime:    SharedFilesystemWorkerRuntime{},
+		Dialect:   BashShellPlatform{},
+		Scheduler: scheduler,
 	}
 	return controller
 }
