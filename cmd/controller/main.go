@@ -29,7 +29,6 @@ type Controller struct {
 	failed   map[string]model.WorkFailure
 	ledger   *sql.DB
 	shutdown func(context.Context) error
-	worker   WorkerStarter
 	env      *ExecutionEnvironment
 	scaler   WorkerScaleState
 	scaleCfg WorkerScaleConfig
@@ -38,10 +37,6 @@ type Controller struct {
 type WorkflowSubmission struct {
 	Workflow  workflow.Workflow   `json:"workflow"`
 	Variables []variable.Variable `json:"variables"`
-}
-
-type WorkerStarter interface {
-	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
 type WorkReuseDecision struct {
@@ -88,7 +83,6 @@ func main() {
 	controller := newController(nil)
 	controller.ledger = ledgerDB
 	controller.env = executionEnvironment
-	controller.worker = DefaultWorkerStarter{}
 
 	mux := http.NewServeMux()
 	server := &http.Server{Addr: ":8080", Handler: mux}
@@ -385,12 +379,6 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
 
-	workerTarget, err := workerTargetEnvironment(resolver)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -410,32 +398,53 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	startCount := 0
 	assignedCount := len(c.assigned)
 	c.pending = append(c.pending, items...)
-	if workerTarget != "" && c.worker != nil {
+	if c.env != nil {
 		now := time.Now()
 		startCount = c.scaler.PlanStarts(now, len(c.pending), assignedCount, scaleCfg)
 		c.scaler.RecordStart(now, startCount, assignedCount)
 	}
 	c.mu.Unlock()
 
-	if workerTarget != "" && c.worker != nil {
-		if err := prepareWorkerTarget(workerTarget); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		for range startCount {
-			if err := c.worker.StartWorker(workerTarget, resolver); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+	if err := c.startConfiguredWorkers(r.Context(), resolver, startCount); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func prepareWorkerTarget(targetEnvironment string) error {
-	if targetEnvironment == "hpcc" {
-		return WriteFakeHPCCWorkerScript()
+func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {
+	if count == 0 {
+		return nil
+	}
+	if c.env == nil {
+		return fmt.Errorf("execution environment is required")
+	}
+
+	workerCfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	if err != nil {
+		return err
+	}
+	workerCfg.slurm.Platform = c.env.Dialect
+
+	var transport Transport
+	if len(c.env.Transports) > 0 {
+		transport = c.env.Transports[0]
+	}
+	if c.env.Runtime != nil {
+		if err := c.env.Runtime.Prepare(ctx, transport, c.env.Dialect); err != nil {
+			return err
+		}
+	}
+
+	for range count {
+		if _, err := c.env.Scheduler.Submit(ctx, JobSpec{
+			Name:             workerCfg.slurm.JobName,
+			RemoteScriptPath: workerCfg.scriptPath,
+			WorkerScript:     workerCfg.slurm,
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
