@@ -138,6 +138,57 @@ func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	}
 }
 
+func TestInitConfiguredExecutionEnvironmentReturnsNilWhenMissing(t *testing.T) {
+	env, err := initConfiguredExecutionEnvironment(ControllerConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env != nil {
+		t.Fatal("expected no execution environment")
+	}
+}
+
+func TestInitConfiguredExecutionEnvironmentBuildsConfiguredEnvironment(t *testing.T) {
+	env, err := initConfiguredExecutionEnvironment(ControllerConfig{
+		ExecutionEnvironment: ExecutionEnvironmentConfig{
+			Name: "dockerized-slurm",
+			Transports: []ExecutionComponentConfig{
+				{Type: "docker", Settings: map[string]string{"container": "slurmctld"}},
+			},
+			Dialect:   ExecutionComponentConfig{Type: "bash"},
+			Scheduler: ExecutionComponentConfig{Type: "slurm"},
+			Runtime:   ExecutionComponentConfig{Type: "shared_filesystem_worker", Settings: map[string]string{"root": "/data/goetl"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env == nil {
+		t.Fatal("expected execution environment")
+	}
+	if env.Config.Name != "dockerized-slurm" {
+		t.Fatalf("environment name = %q, want dockerized-slurm", env.Config.Name)
+	}
+	if _, ok := env.Scheduler.(SlurmScheduler); !ok {
+		t.Fatalf("scheduler type = %T, want SlurmScheduler", env.Scheduler)
+	}
+}
+
+func TestInitConfiguredExecutionEnvironmentRejectsInvalidEnvironment(t *testing.T) {
+	_, err := initConfiguredExecutionEnvironment(ControllerConfig{
+		ExecutionEnvironment: ExecutionEnvironmentConfig{
+			Name:       "bad-env",
+			Transports: []ExecutionComponentConfig{{Type: "docker"}},
+			Dialect:    ExecutionComponentConfig{Type: "bash"},
+			Scheduler:  ExecutionComponentConfig{Type: "slurm"},
+			Runtime:    ExecutionComponentConfig{Type: "shared_filesystem_worker"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
 	config := ControllerConfig{Variables: []variable.Variable{

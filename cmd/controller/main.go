@@ -30,6 +30,7 @@ type Controller struct {
 	ledger   *sql.DB
 	shutdown func(context.Context) error
 	worker   WorkerStarter
+	env      *ExecutionEnvironment
 	scaler   WorkerScaleState
 	scaleCfg WorkerScaleConfig
 }
@@ -78,8 +79,15 @@ func main() {
 		defer ledgerDB.Close()
 	}
 
+	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
+	if err != nil {
+		fmt.Println("controller execution environment failed:", err)
+		return
+	}
+
 	controller := newController(nil)
 	controller.ledger = ledgerDB
+	controller.env = executionEnvironment
 	controller.worker = DefaultWorkerStarter{}
 
 	mux := http.NewServeMux()
@@ -114,6 +122,18 @@ func loadDefaultControllerConfig() (ControllerConfig, error) {
 	}
 
 	return loadControllerConfig("controller-default-config.json")
+}
+
+func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
+	if config.ExecutionEnvironment.IsZero() {
+		return nil, nil
+	}
+
+	env, err := NewExecutionEnvironment(config.ExecutionEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	return &env, nil
 }
 
 func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
