@@ -9,7 +9,8 @@ import (
 )
 
 type ControllerConfig struct {
-	Variables []variable.Variable `json:"variables"`
+	Variables            []variable.Variable        `json:"variables"`
+	ExecutionEnvironment ExecutionEnvironmentConfig `json:"execution_environment"`
 }
 
 func loadControllerConfig(path string) (ControllerConfig, error) {
@@ -44,6 +45,12 @@ func (c ControllerConfig) Validate() error {
 
 	if _, err := variable.NewScope(c.Variables...); err != nil {
 		return err
+	}
+
+	if !c.ExecutionEnvironment.IsZero() {
+		if err := c.ExecutionEnvironment.Validate(); err != nil {
+			return err
+		}
 	}
 
 	return nil

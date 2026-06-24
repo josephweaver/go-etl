@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 
 	"goetl/internal/variable"
@@ -37,10 +39,18 @@ func TestLocalWorkerStarterResolvesCommand(t *testing.T) {
 	}
 }
 
+func TestLocalWorkerStarterSupportsCommandBackedTargets(t *testing.T) {
+	for _, target := range []string{"local", "hpcc"} {
+		if !isCommandBackedWorkerTarget(target) {
+			t.Fatalf("expected target %q to be supported", target)
+		}
+	}
+}
+
 func TestLocalWorkerStarterRejectsUnsupportedTarget(t *testing.T) {
 	starter := LocalWorkerStarter{}
 
-	err := starter.StartWorker("hpcc", variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
+	err := starter.StartWorker("unknown", variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -51,6 +61,44 @@ func TestLocalWorkerStarterRejectsMissingExecutable(t *testing.T) {
 
 	if _, _, err := starter.command(variable.NewResolver(variable.NewSet(), variable.ResolverConfig{})); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestFakeHPCCWorkflowFixtureResolvesWorkerCommand(t *testing.T) {
+	data, err := os.ReadFile("../../demo-fake-hpcc-workflow.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var submission WorkflowSubmission
+	if err := json.Unmarshal(data, &submission); err != nil {
+		t.Fatal(err)
+	}
+
+	scope, err := variable.NewScope(submission.Variables...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	target, err := workerTargetEnvironment(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "hpcc" {
+		t.Fatalf("unexpected target: %s", target)
+	}
+
+	starter := LocalWorkerStarter{}
+	executable, args, err := starter.command(resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executable != "bash" {
+		t.Fatalf("unexpected executable: %s", executable)
+	}
+	if len(args) != 2 || args[0] != "-lc" || args[1] != "FAKE_SLURM_FOREGROUND=1 scripts/fake-hpcc/sbatch .run/fake-hpcc/worker.slurm" {
+		t.Fatalf("unexpected args: %#v", args)
 	}
 }
 

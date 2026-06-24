@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+run_root=".run/fake-hpcc"
+controller_bin="$run_root/controller"
+controller_out="$run_root/controller.out"
+controller_err="$run_root/controller.err"
+controller_pid=""
+
+cleanup() {
+  if [[ -n "$controller_pid" ]] && kill -0 "$controller_pid" 2>/dev/null; then
+    curl -fsS -X POST http://localhost:8080/shutdown >/dev/null 2>&1 || true
+    wait "$controller_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+mkdir -p "$run_root"
+go build -o "$controller_bin" ./cmd/controller
+
+"$controller_bin" ./cmd/controller/demo-config.json > "$controller_out" 2> "$controller_err" &
+controller_pid="$!"
+
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if curl -fsS http://localhost:8080/status >/dev/null 2>&1; then
+    go run ./cmd/demo-client demo-fake-hpcc-workflow.json
+    exit 0
+  fi
+  sleep 0.5
+done
+
+echo "controller did not become reachable" >&2
+echo "controller stdout:" >&2
+cat "$controller_out" >&2 || true
+echo "controller stderr:" >&2
+cat "$controller_err" >&2 || true
+exit 1

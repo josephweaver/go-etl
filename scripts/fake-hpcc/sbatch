@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script="${1:-}"
+
+if [[ -z "$script" ]]; then
+  echo "usage: sbatch <script>" >&2
+  exit 2
+fi
+
+if [[ ! -f "$script" ]]; then
+  echo "sbatch: error: unable to open file $script" >&2
+  exit 1
+fi
+
+run_root="${FAKE_SLURM_RUN_ROOT:-.run/fake-slurm}"
+mkdir -p "$run_root"
+
+counter_file="$run_root/job-counter"
+if [[ -f "$counter_file" ]]; then
+  job_id="$(($(<"$counter_file") + 1))"
+else
+  job_id="1000"
+fi
+printf '%s\n' "$job_id" > "$counter_file"
+
+stdout_path="$run_root/job-$job_id.out"
+stderr_path="$run_root/job-$job_id.err"
+submission_log="$run_root/submissions.log"
+
+{
+  printf 'job_id=%s\n' "$job_id"
+  printf 'script=%s\n' "$script"
+  printf 'stdout=%s\n' "$stdout_path"
+  printf 'stderr=%s\n' "$stderr_path"
+} >> "$submission_log"
+
+echo "Submitted batch job $job_id"
+
+if [[ "${FAKE_SLURM_FOREGROUND:-}" == "1" ]]; then
+  bash "$script" > "$stdout_path" 2> "$stderr_path"
+else
+  nohup bash "$script" > "$stdout_path" 2> "$stderr_path" < /dev/null &
+fi

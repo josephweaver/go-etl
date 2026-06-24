@@ -20,6 +20,8 @@ import (
 	"goetl/internal/workflow"
 )
 
+const defaultControllerConfigPath = "cmd/controller/controller-default-config.json"
+
 type Controller struct {
 	mu       sync.Mutex
 	pending  []model.WorkItem
@@ -27,7 +29,7 @@ type Controller struct {
 	failed   map[string]model.WorkFailure
 	ledger   *sql.DB
 	shutdown func(context.Context) error
-	worker   WorkerStarter
+	env      *ExecutionEnvironment
 	scaler   WorkerScaleState
 	scaleCfg WorkerScaleConfig
 }
@@ -35,10 +37,6 @@ type Controller struct {
 type WorkflowSubmission struct {
 	Workflow  workflow.Workflow   `json:"workflow"`
 	Variables []variable.Variable `json:"variables"`
-}
-
-type WorkerStarter interface {
-	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
 type WorkReuseDecision struct {
@@ -76,9 +74,15 @@ func main() {
 		defer ledgerDB.Close()
 	}
 
+	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
+	if err != nil {
+		fmt.Println("controller execution environment failed:", err)
+		return
+	}
+
 	controller := newController(nil)
 	controller.ledger = ledgerDB
-	controller.worker = LocalWorkerStarter{}
+	controller.env = executionEnvironment
 
 	mux := http.NewServeMux()
 	server := &http.Server{Addr: ":8080", Handler: mux}
@@ -100,10 +104,30 @@ func main() {
 
 func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
 	if len(args) < 2 {
-		return ControllerConfig{}, nil
+		return loadDefaultControllerConfig()
 	}
 
 	return loadControllerConfig(args[1])
+}
+
+func loadDefaultControllerConfig() (ControllerConfig, error) {
+	if _, err := os.Stat(defaultControllerConfigPath); err == nil {
+		return loadControllerConfig(defaultControllerConfigPath)
+	}
+
+	return loadControllerConfig("controller-default-config.json")
+}
+
+func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
+	if config.ExecutionEnvironment.IsZero() {
+		return nil, nil
+	}
+
+	env, err := NewExecutionEnvironment(config.ExecutionEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	return &env, nil
 }
 
 func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
@@ -355,12 +379,6 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
 
-	workerTarget, err := workerTargetEnvironment(resolver)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -380,23 +398,49 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	startCount := 0
 	assignedCount := len(c.assigned)
 	c.pending = append(c.pending, items...)
-	if workerTarget != "" && c.worker != nil {
+	if c.env != nil {
 		now := time.Now()
 		startCount = c.scaler.PlanStarts(now, len(c.pending), assignedCount, scaleCfg)
 		c.scaler.RecordStart(now, startCount, assignedCount)
 	}
 	c.mu.Unlock()
 
-	if workerTarget != "" && c.worker != nil {
-		for range startCount {
-			if err := c.worker.StartWorker(workerTarget, resolver); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+	if err := c.startConfiguredWorkers(r.Context(), resolver, startCount); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {
+	if count == 0 {
+		return nil
+	}
+	if c.env == nil {
+		return fmt.Errorf("execution environment is required")
+	}
+
+	workerCfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	if err != nil {
+		return err
+	}
+	workerCfg.slurm.Platform = c.env.Dialect
+
+	if err := c.env.Prepare(ctx); err != nil {
+		return err
+	}
+
+	for range count {
+		if _, err := c.env.Scheduler.Submit(ctx, JobSpec{
+			Name:             workerCfg.slurm.JobName,
+			RemoteScriptPath: workerCfg.scriptPath,
+			WorkerScript:     workerCfg.slurm,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
