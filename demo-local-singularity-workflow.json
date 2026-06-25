@@ -34,42 +34,22 @@
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_script_path"
+        "Key": "scheduler"
       },
       "Type": {
-        "Kind": "path"
+        "Kind": "object"
       },
-      "Expression": "/tmp/goetl-local-singularity/scripts/worker.slurm"
+      "Expression": "{\"type\":\"direct_process\",\"settings\":{\"script_path\":\"/tmp/goetl-local-singularity/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
     },
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_start_executable"
+        "Key": "runtime"
       },
       "Type": {
-        "Kind": "string"
+        "Kind": "object"
       },
-      "Expression": "/tmp/goetl-local-singularity/artifacts/goetl-worker"
-    },
-    {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_config_path"
-      },
-      "Type": {
-        "Kind": "path"
-      },
-      "Expression": "/tmp/goetl-local-singularity/config/worker.json"
-    },
-    {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_log_dir"
-      },
-      "Type": {
-        "Kind": "path"
-      },
-      "Expression": "/tmp/goetl-local-singularity/logs"
+      "Expression": "{\"type\":\"singularity_worker\",\"settings\":{\"executable\":\"/tmp/goetl-local-singularity/artifacts/goetl-worker\",\"config_path\":\"/tmp/goetl-local-singularity/config/worker.json\",\"log_dir\":\"/tmp/goetl-local-singularity/logs\"}}"
     },
     {
       "Name": {

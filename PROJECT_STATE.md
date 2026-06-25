@@ -478,8 +478,10 @@ controller_config.controller_start_lock_path
 controller_config.ledger_db_path
 controller_config.code_version
 worker_config.worker_target_environment
-worker_config.worker_start_executable
-worker_config.worker_start_args
+worker_config.transport
+worker_config.dialect
+worker_config.scheduler
+worker_config.runtime
 worker_config.worker_min_count
 worker_config.worker_max_count
 worker_config.worker_count_per_start
@@ -501,7 +503,7 @@ override.client_status_poll_interval
 override.code_version
 ```
 
-The local Go client currently uses `controller_config` variables to start the local controller. `demo-workflow.json` uses `worker_config` variables to request local worker startup and scaling behavior. Future client/API arguments may still submit `override` variables when the caller intentionally overrides config.
+The local Go client currently uses `controller_config` variables to start the local controller. Worker launch settings are moving toward structured layer-owned `worker_config` object variables. The current launch resolver prefers `worker_config.transport`, `worker_config.scheduler`, and `worker_config.runtime` object settings, while still accepting older flat variables such as `worker_config.worker_script_path`, `worker_config.worker_start_executable`, `worker_config.worker_config_path`, and `worker_config.worker_log_dir` as compatibility fallbacks. Future client/API arguments may still submit `override` variables when the caller intentionally overrides config.
 
 Workflow identity, step identity, work-item identity, attempt identity, code version, and fingerprints must flow through the variable subsystem. Future durable storage, likely SQLite for local execution, should persist typed variable snapshots rather than create a separate identity/configuration model.
 
@@ -672,6 +674,8 @@ sacct -> job 1 COMPLETED 0:0
 Future fake-HPCC work should adapt the controller/runtime boundary to submit generated worker scripts to this Dockerized Slurm stack. Avoid expanding the homegrown fake `sbatch` beyond the minimum smoke-test role unless the Dockerized Slurm stack is unavailable.
 
 The current Docker transport assumes a Docker-compatible command-line executable is available on the controller host. `FUTURE.md` records the deferred idea of detecting the Docker environment on first use and, after a user prompt, installing or guiding installation when Docker is missing.
+
+The current local Singularity path has also been verified in WSL. `cmd/controller/local-singularity-config.json` configures `LocalTransport`, `DirectProcessScheduler`, and `SingularityWorkerRuntime`. `demo-local-singularity-workflow.json` now submits structured `worker_config.scheduler` and `worker_config.runtime` objects, and `scripts/local-singularity/run-demo` exports the Docker worker image to `/tmp/goetl-worker-dev.tar`, starts the controller, submits one demo work item, and verifies the Singularity-started worker writes `completed write-demo-2024`.
 
 ## Demo Work
 

@@ -44,42 +44,32 @@
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_script_path"
+        "Key": "transport"
       },
       "Type": {
-        "Kind": "path"
+        "Kind": "object"
       },
-      "Expression": "/data/goetl/scripts/worker.slurm"
+      "Expression": "{\"type\":\"docker\",\"settings\":{\"container\":\"slurmctld\"}}"
     },
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_start_executable"
+        "Key": "scheduler"
       },
       "Type": {
-        "Kind": "string"
+        "Kind": "object"
       },
-      "Expression": "/data/goetl/artifacts/goetl-worker"
+      "Expression": "{\"type\":\"slurm\",\"settings\":{\"script_path\":\"/data/goetl/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
     },
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_config_path"
+        "Key": "runtime"
       },
       "Type": {
-        "Kind": "path"
+        "Kind": "object"
       },
-      "Expression": "/data/goetl/config/worker.json"
-    },
-    {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_log_dir"
-      },
-      "Type": {
-        "Kind": "path"
-      },
-      "Expression": "/data/goetl/logs"
+      "Expression": "{\"type\":\"worker\",\"settings\":{\"executable\":\"/data/goetl/artifacts/goetl-worker\",\"config_path\":\"/data/goetl/config/worker.json\",\"log_dir\":\"/data/goetl/logs\"}}"
     },
     {
       "Name": {

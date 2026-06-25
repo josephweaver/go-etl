@@ -1335,24 +1335,14 @@ func TestBuildSetting(t *testing.T) {
 
 const testSlurmWorkerVariables = `
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_script_path"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/scripts/worker.slurm"
+				"Name": {"Namespace": "worker_config", "Key": "scheduler"},
+				"Type": {"Kind": "object"},
+				"Expression": "{\"type\":\"slurm\",\"settings\":{\"script_path\":\"/data/goetl/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_start_executable"},
-				"Type": {"Kind": "string"},
-				"Expression": "/data/goetl/artifacts/goetl-worker"
-			},
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_config_path"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/config/worker.json"
-			},
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_log_dir"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/logs"
+				"Name": {"Namespace": "worker_config", "Key": "runtime"},
+				"Type": {"Kind": "object"},
+				"Expression": "{\"type\":\"worker\",\"settings\":{\"executable\":\"/data/goetl/artifacts/goetl-worker\",\"config_path\":\"/data/goetl/config/worker.json\",\"log_dir\":\"/data/goetl/logs\"}}"
 			}`
 
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {

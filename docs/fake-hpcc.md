@@ -91,19 +91,28 @@ and parses the submitted Slurm job ID from `sbatch` output. It is not wired into
 
 The controller can now route `worker_target_environment = "docker_slurm"` through a Dockerized Slurm starter. That target still uses Docker locally, not SSH. It resolves typed worker variables, generates a Slurm script, writes it into the `slurmctld` container, and submits it with `sbatch`.
 
-Required worker variables for the `docker_slurm` target:
+Preferred worker launch variables are structured layer objects:
+
+```text
+worker_config.transport
+worker_config.scheduler
+worker_config.runtime
+```
+
+For Dockerized Slurm, the transport object owns Docker settings such as the
+container name. The scheduler object owns Slurm settings such as the generated
+script path and job name. The runtime object owns the worker process settings
+such as executable path, worker config path, log directory, and optional worker
+arguments.
+
+The older flat variables remain supported as compatibility fallbacks:
 
 ```text
 worker_config.worker_script_path
 worker_config.worker_start_executable
+worker_config.worker_start_args
 worker_config.worker_config_path
 worker_config.worker_log_dir
-```
-
-Optional worker variables:
-
-```text
-worker_config.worker_start_args
 worker_config.worker_slurm_job_name
 worker_config.docker_executable
 worker_config.docker_slurm_container

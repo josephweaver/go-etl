@@ -21,6 +21,47 @@ func TestDockerSlurmWorkerStarterBuildsAndSubmitsScript(t *testing.T) {
 
 	err := starter.StartWorker("docker_slurm", testControllerResolver(t,
 		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "transport"},
+			Type:       variable.TypeObject,
+			Expression: `{"type":"docker","settings":{"executable":"docker","container":"slurmctld"}}`,
+		},
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "scheduler"},
+			Type:       variable.TypeObject,
+			Expression: `{"type":"slurm","settings":{"script_path":"/tmp/goetl-worker.slurm","job_name":"goetl-worker"}}`,
+		},
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "runtime"},
+			Type:       variable.TypeObject,
+			Expression: `{"type":"worker","settings":{"executable":"/opt/goetl/worker","args":["--mode","worker"],"config_path":"/shared/goetl/config/worker.json","log_dir":"/shared/goetl/logs"}}`,
+		},
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if submitted.ScriptPath != "/tmp/goetl-worker.slurm" {
+		t.Fatalf("script path = %q, want /tmp/goetl-worker.slurm", submitted.ScriptPath)
+	}
+	if !strings.Contains(submitted.Script, "#SBATCH --job-name=goetl-worker") {
+		t.Fatalf("script missing default job name:\n%s", submitted.Script)
+	}
+	if !strings.Contains(submitted.Script, "'/opt/goetl/worker' '--mode' 'worker' '/shared/goetl/config/worker.json'") {
+		t.Fatalf("script missing worker command:\n%s", submitted.Script)
+	}
+}
+
+func TestDockerSlurmWorkerStarterSupportsFlatWorkerConfig(t *testing.T) {
+	var submitted DockerSlurmScriptConfig
+	starter := DockerSlurmWorkerStarter{
+		Submit: func(ctx context.Context, cfg DockerSlurmScriptConfig) (string, error) {
+			submitted = cfg
+			return "42", nil
+		},
+	}
+
+	err := starter.StartWorker("docker_slurm", testControllerResolver(t,
+		variable.Variable{
 			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_script_path"},
 			Type:       variable.TypePath,
 			Expression: "/tmp/goetl-worker.slurm",
@@ -29,11 +70,6 @@ func TestDockerSlurmWorkerStarterBuildsAndSubmitsScript(t *testing.T) {
 			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
 			Type:       variable.TypeString,
 			Expression: "/opt/goetl/worker",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_args"},
-			Type:       variable.TypeList(variable.TypeString),
-			Expression: `["--mode", "worker"]`,
 		},
 		variable.Variable{
 			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"},
@@ -52,12 +88,6 @@ func TestDockerSlurmWorkerStarterBuildsAndSubmitsScript(t *testing.T) {
 
 	if submitted.ScriptPath != "/tmp/goetl-worker.slurm" {
 		t.Fatalf("script path = %q, want /tmp/goetl-worker.slurm", submitted.ScriptPath)
-	}
-	if !strings.Contains(submitted.Script, "#SBATCH --job-name=goetl-worker") {
-		t.Fatalf("script missing default job name:\n%s", submitted.Script)
-	}
-	if !strings.Contains(submitted.Script, "'/opt/goetl/worker' '--mode' 'worker' '/shared/goetl/config/worker.json'") {
-		t.Fatalf("script missing worker command:\n%s", submitted.Script)
 	}
 }
 
