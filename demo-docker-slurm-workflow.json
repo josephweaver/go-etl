@@ -44,7 +44,7 @@
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "docker_slurm_script_path"
+        "Key": "worker_script_path"
       },
       "Type": {
         "Kind": "path"

@@ -21,7 +21,7 @@ func TestDockerSlurmWorkerStarterBuildsAndSubmitsScript(t *testing.T) {
 
 	err := starter.StartWorker("docker_slurm", testControllerResolver(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "docker_slurm_script_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_script_path"},
 			Type:       variable.TypePath,
 			Expression: "/tmp/goetl-worker.slurm",
 		},
@@ -58,6 +58,46 @@ func TestDockerSlurmWorkerStarterBuildsAndSubmitsScript(t *testing.T) {
 	}
 	if !strings.Contains(submitted.Script, "'/opt/goetl/worker' '--mode' 'worker' '/shared/goetl/config/worker.json'") {
 		t.Fatalf("script missing worker command:\n%s", submitted.Script)
+	}
+}
+
+func TestDockerSlurmWorkerStarterSupportsLegacyScriptPath(t *testing.T) {
+	var submitted DockerSlurmScriptConfig
+	starter := DockerSlurmWorkerStarter{
+		Submit: func(ctx context.Context, cfg DockerSlurmScriptConfig) (string, error) {
+			submitted = cfg
+			return "42", nil
+		},
+	}
+
+	err := starter.StartWorker("docker_slurm", testControllerResolver(t,
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "docker_slurm_script_path"},
+			Type:       variable.TypePath,
+			Expression: "/tmp/legacy-goetl-worker.slurm",
+		},
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
+			Type:       variable.TypeString,
+			Expression: "/opt/goetl/worker",
+		},
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"},
+			Type:       variable.TypePath,
+			Expression: "/shared/goetl/config/worker.json",
+		},
+		variable.Variable{
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"},
+			Type:       variable.TypePath,
+			Expression: "/shared/goetl/logs",
+		},
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if submitted.ScriptPath != "/tmp/legacy-goetl-worker.slurm" {
+		t.Fatalf("script path = %q, want legacy path", submitted.ScriptPath)
 	}
 }
 
@@ -104,7 +144,7 @@ func TestDefaultWorkerStarterRoutesDockerSlurmTarget(t *testing.T) {
 
 	err := starter.StartWorker("docker_slurm", testControllerResolver(t,
 		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "docker_slurm_script_path"},
+			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_script_path"},
 			Type:       variable.TypePath,
 			Expression: "/tmp/goetl-worker.slurm",
 		},

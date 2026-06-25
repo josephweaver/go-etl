@@ -94,7 +94,7 @@ The controller can now route `worker_target_environment = "docker_slurm"` throug
 Required worker variables for the `docker_slurm` target:
 
 ```text
-worker_config.docker_slurm_script_path
+worker_config.worker_script_path
 worker_config.worker_start_executable
 worker_config.worker_config_path
 worker_config.worker_log_dir

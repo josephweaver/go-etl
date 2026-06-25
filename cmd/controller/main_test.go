@@ -1335,7 +1335,7 @@ func TestBuildSetting(t *testing.T) {
 
 const testSlurmWorkerVariables = `
 			{
-				"Name": {"Namespace": "worker_config", "Key": "docker_slurm_script_path"},
+				"Name": {"Namespace": "worker_config", "Key": "worker_script_path"},
 				"Type": {"Kind": "path"},
 				"Expression": "/data/goetl/scripts/worker.slurm"
 			},

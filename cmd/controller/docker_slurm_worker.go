@@ -79,7 +79,7 @@ func dockerSlurmWorkerScriptConfig(resolver variable.Resolver) (dockerSlurmWorke
 		},
 	}
 
-	if cfg.scriptPath, err = controllerPathOrStringVariable(resolver, "docker_slurm_script_path"); err != nil {
+	if cfg.scriptPath, err = workerScriptPath(resolver); err != nil {
 		return dockerSlurmWorkerConfig{}, err
 	}
 	if cfg.slurm.WorkerExecutable, err = controllerStringVariable(resolver, "worker_start_executable"); err != nil {
@@ -93,6 +93,15 @@ func dockerSlurmWorkerScriptConfig(resolver variable.Resolver) (dockerSlurmWorke
 	}
 
 	return cfg, nil
+}
+
+func workerScriptPath(resolver variable.Resolver) (string, error) {
+	path, err := controllerPathOrStringVariable(resolver, "worker_script_path")
+	if err == nil {
+		return path, nil
+	}
+
+	return controllerPathOrStringVariable(resolver, "docker_slurm_script_path")
 }
 
 func optionalControllerStringVariable(resolver variable.Resolver, name string, fallback string) (string, bool, error) {
