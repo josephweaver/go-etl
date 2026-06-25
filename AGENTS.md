@@ -261,6 +261,11 @@ NEXT
 Recommended next slice.
 ```
 
+At the end of every prompt that changes project behavior, update
+`PROJECT_STATE.md` and `TARGET_STATE.md` as needed so the current implementation
+state and target direction remain accurate. If no state or target documentation
+change is needed, say so in the slice report.
+
 ### Epistemic Review
 
 At the end of a coding session:
