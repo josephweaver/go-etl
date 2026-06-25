@@ -9,7 +9,7 @@ Non-goals:
 - Credential management UI
 
 Slices:
-- [ ] [001 Test strategy](001-test-strategy.md)
+- [ ] [001 Test fixture](001-test-strategy.md)
 - [ ] 002 Command runner boundary
 - [ ] 003 Execute
 - [ ] 004 CopyInto

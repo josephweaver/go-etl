@@ -1,21 +1,21 @@
-# 001 SSHTransport Test Strategy
+# 001 SSHTransport Test Fixture
 
 Status: proposed
 
 EC Mode:
-EC-4 / file(0)+test+doc
+EC-4 / file(1)+test+doc
 
 Slice:
-docs/epics/ssh-transport / test strategy / define test layers before implementation
+cmd/controller / SSH transport test fixture / creates in-process SSH server helpers
 
 Objective:
-Define the test strategy for SSH transport support before adding production SSH code.
+Create a reusable Go test fixture for SSH transport work before adding production SSH transport code.
 
 Allowed Production Files:
 - none
 
 Tests:
-- none in this slice
+- cmd/controller/ssh_transport_test.go
 
 Out Of Scope:
 - SSHTransport implementation
@@ -23,81 +23,77 @@ Out Of Scope:
 - controller config wiring
 - real HPCC connection
 - OpenSSH server dependency
+- retry logic
+- copy implementation
 - Singularity or Slurm execution
 
 Acceptance:
-- Separates unit tests from integration tests.
-- Prefers Go-native test fixtures over external system installs.
-- Defines how host-key, auth, execute, copy, timeout, and retry behavior should be tested.
-- Records which behaviors are not part of the first implementation slice.
+- Adds a reusable in-process SSH server fixture in `cmd/controller/ssh_transport_test.go`.
+- Adds helpers to create test host keys and client keys in memory.
+- Adds a helper to start a temporary SSH server without OpenSSH, Docker, HPCC credentials, or local key generation.
+- Adds a helper to create a matching test SSH client config.
+- Adds one self-test proving the fixture can accept a connection and handle a minimal command/session path.
+- Does not add production SSH transport code.
 
-## Test Layers
+## Artifact
 
-### Unit Tests
-
-Unit tests should not require OpenSSH, Docker, HPCC credentials, local key generation, or network access outside the test process.
-
-Use these tests for:
-
-- SSH transport config validation.
-- Command timeout and context cancellation behavior.
-- Error classification for connection failure, authentication failure, host-key failure, remote nonzero exit, and missing remote command.
-- Retry policy decisions.
-- Copy-to-temp-then-promote planning.
-
-### In-Process SSH Server Tests
-
-Use a Go-native in-process SSH server, likely based on `golang.org/x/crypto/ssh`, for the first real transport behavior tests.
-
-Use these tests for:
-
-- Establishing a client connection.
-- Authenticating with test-generated keys.
-- Verifying pinned host-key behavior.
-- Executing simple remote commands.
-- Returning stdout, stderr, and exit status.
-- Simulating connection loss before command execution.
-
-The in-process server should generate keys inside the test and should not require a user's `~/.ssh` directory.
-
-### Copy Tests
-
-Prefer a Go-native server-side fixture for copy behavior if practical.
-
-Copy behavior should preserve this invariant:
+This feature should produce:
 
 ```text
-CopyInto must not expose a partial final destination file.
+cmd/controller/ssh_transport_test.go
 ```
 
-The expected shape is:
+The file should contain test-only helpers. Because it is a `_test.go` file, these helpers do not become production API.
 
-1. Transfer bytes to a unique remote temp path.
-2. Promote the temp path to the final destination.
-3. Remove the temp path on failure when possible.
+## Required Helpers
 
-The shell dialect should own remote command syntax for parent-directory creation, promotion, and cleanup.
+The exact helper names may change during implementation, but the fixture should provide these capabilities:
 
-### Preflight Tests
+- Generate a host private key in memory.
+- Generate a client private key in memory.
+- Start a temporary in-process SSH server bound to localhost on an ephemeral port.
+- Accept authentication from the generated client key.
+- Return the server address to the test.
+- Build a client config that pins or trusts the generated host key for the test server.
+- Shut down cleanly at test cleanup.
 
-Preflight should report structured issues while the client is still waiting for controller startup or workflow submission.
+## Self-Test
 
-Preflight should be able to report:
+The feature should include one test that verifies the fixture itself.
 
-- unknown host key
-- authentication failure
-- connection timeout
-- remote runtime root not writable
-- missing `singularity`
-- missing `sbatch`
+Expected behavior:
 
-The controller should not ask interactive SSH questions. It should return actionable issues to the client.
+- Start the temporary SSH server.
+- Connect with the generated client config.
+- Open one session or minimal command path.
+- Verify the server responds in a predictable way.
+- Close the connection and server without leaking goroutines where practical.
 
-### Integration Tests
+This self-test is not an SSHTransport test. It proves the test harness is usable for later features.
 
-Integration tests may use an external SSH server only after the unit and in-process server tests define the behavior.
+## Test Dependency
 
-External integration tests should be opt-in and skipped by default unless required environment variables are present.
+Prefer:
+
+```text
+golang.org/x/crypto/ssh
+```
+
+This is acceptable because it is a Go module dependency, not an external system install. The test fixture should not require `ssh`, `scp`, `ssh-keygen`, Docker, or a running remote service.
+
+## Later Features Enabled
+
+This fixture should support later feature tests for:
+
+- SSHTransport config validation.
+- SSHTransport connection setup.
+- Remote execute behavior.
+- stdout, stderr, and exit status semantics.
+- Host-key rejection and pinned host-key acceptance.
+- Authentication failure.
+- Connection timeout and context cancellation.
+- Connection loss before command execution.
+- Copy-to-temp-then-promote behavior.
 
 ## Deferred Behaviors
 
@@ -109,16 +105,3 @@ These are not first-slice requirements:
 - Full known-hosts file management.
 - Real HPCC submission.
 - Slurm or Singularity execution over SSH.
-
-## First Implementation Candidate
-
-Recommended next slice:
-
-```text
-EC-4 / file(1)+test+doc
-Slice: cmd/controller / SSHTransportConfig / Validate / rejects incomplete SSH transport config
-```
-
-Rationale:
-
-Config validation is the smallest production slice that can be tested without choosing the full SSH client implementation shape.
