@@ -40,6 +40,26 @@ The expected HPCC/Singularity command shape is:
 singularity exec goetl-worker.sif /goetl/goetl-worker /data/goetl/config/worker.json
 ```
 
+For local WSL testing with SingularityCE installed, export the Docker image to a
+Docker archive:
+
+```bash
+docker tag goetl/worker:dev goetl-worker:dev
+docker save -o /tmp/goetl-worker-dev.tar goetl-worker:dev
+```
+
+The local Singularity controller fixture uses that archive through:
+
+```text
+docker-archive:/tmp/goetl-worker-dev.tar
+```
+
+Run the local controller-to-Singularity worker demo from WSL:
+
+```bash
+scripts/local-singularity/run-demo
+```
+
 ## Fake HPCC Slurm plus SingularityCE
 
 `fake-hpcc-slurm-singularity/` builds a local Slurm-derived image with

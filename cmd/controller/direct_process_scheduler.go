@@ -17,7 +17,11 @@ func (s DirectProcessScheduler) Submit(ctx context.Context, job JobSpec) (JobHan
 	args := append([]string{}, worker.WorkerArgs...)
 	args = append(args, worker.WorkerConfigPath)
 
-	command := exec.CommandContext(ctx, worker.WorkerExecutable, args...)
+	if err := ctx.Err(); err != nil {
+		return JobHandle{}, err
+	}
+
+	command := exec.Command(worker.WorkerExecutable, args...)
 	if err := command.Start(); err != nil {
 		return JobHandle{}, fmt.Errorf("start direct worker process: %w", err)
 	}

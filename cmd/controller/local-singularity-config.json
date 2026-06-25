@@ -1,0 +1,50 @@
+{
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "controller_config",
+        "Key": "controller_url"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "http://localhost:8080"
+    },
+    {
+      "Name": {
+        "Namespace": "controller_config",
+        "Key": "ledger_db_path"
+      },
+      "Type": {
+        "Kind": "path"
+      },
+      "Expression": ".run/controller/local-singularity-ledger.sqlite"
+    }
+  ],
+  "execution_environment": {
+    "name": "local-singularity",
+    "transports": [
+      {
+        "name": "local",
+        "type": "local"
+      }
+    ],
+    "dialect": {
+      "type": "bash"
+    },
+    "scheduler": {
+      "type": "direct_process"
+    },
+    "runtime": {
+      "type": "singularity_worker",
+      "settings": {
+        "root": "/tmp/goetl-local-singularity",
+        "controller_url": "http://localhost:8080",
+        "singularity_executable": "singularity",
+        "image_path": "docker-archive:/tmp/goetl-worker-dev.tar",
+        "container_worker_executable": "/goetl/goetl-worker",
+        "bind": "/tmp/goetl-local-singularity:/tmp/goetl-local-singularity"
+      }
+    }
+  }
+}
