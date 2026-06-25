@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-06-24
+Last updated: 2026-06-25
 
 ## Application Target
 
@@ -306,8 +306,10 @@ controller_config.controller_start_args
 controller_config.controller_start_lock_path
 controller_config.ledger_db_path
 worker_config.worker_target_environment
-worker_config.worker_start_executable
-worker_config.worker_start_args
+worker_config.transport
+worker_config.dialect
+worker_config.scheduler
+worker_config.runtime
 worker_config.worker_min_count
 worker_config.worker_max_count
 worker_config.worker_count_per_start
@@ -327,6 +329,8 @@ override.worker_count_per_start
 override.worker_min_elapsed_time_between_starts
 override.client_status_poll_interval
 ```
+
+Layer-specific worker launch configuration should live in structured `worker_config` object variables. `worker_config.transport` describes how the controller reaches the execution environment, `worker_config.dialect` describes command/path rendering rules, `worker_config.scheduler` describes capacity acquisition and scheduler script settings, and `worker_config.runtime` describes how the worker process starts once capacity exists. `worker_env` should remain reserved for configured or captured system environment variables that the controller injects into or expects inside workers.
 
 For example, a local Go client may submit `override.worker_target_environment = "local"` and `override.client_status_poll_interval = "5s"`. The controller should resolve worker-related variables through the variable subsystem before deciding how to launch workers. Avoid adding separate controller-specific or worker-specific flag/config paths that bypass variable resolution.
 
@@ -562,6 +566,8 @@ The worker receives a finalized work assignment with concrete parameters. For th
 A dedicated `Variable` model and resolver package should be introduced before building a broad workflow compiler. Start with typed literals, precedence merging, and a small path expression capability; add expression features incrementally with tests.
 
 Resolver configuration should include the recursive-resolution maximum depth. Choose a conservative default and allow deployments or controller configuration to override it.
+
+The resolver should expose typed required and optional lookup helpers so controller, client, scheduler, and runtime code do not duplicate missing-variable and wrong-type handling. Structured object-field access should likewise live with the variable package rather than in backend-specific launch code.
 
 ## Workflow Compilation Direction
 

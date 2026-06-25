@@ -127,6 +127,8 @@ func (cfg ExecutionComponentConfig) validate(role string) error {
 
 func newTransportFromConfig(cfg ExecutionComponentConfig) (Transport, error) {
 	switch cfg.Type {
+	case "local":
+		return LocalTransport{}, nil
 	case "docker":
 		container := cfg.Settings["container"]
 		if container == "" {
@@ -154,6 +156,8 @@ func newShellDialectFromConfig(cfg ExecutionComponentConfig) (ShellDialect, erro
 
 func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (Scheduler, error) {
 	switch cfg.Type {
+	case "direct_process":
+		return DirectProcessScheduler{}, nil
 	case "slurm":
 		return SlurmScheduler{Transport: transport}, nil
 	default:
@@ -168,6 +172,18 @@ func newRuntimeFromConfig(cfg ExecutionComponentConfig) (Runtime, error) {
 			Root:                cfg.Settings["root"],
 			ControllerURL:       cfg.Settings["controller_url"],
 			LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
+		}, nil
+	case "singularity_worker":
+		return SingularityWorkerRuntime{
+			WorkerRuntime: WorkerRuntime{
+				Root:                cfg.Settings["root"],
+				ControllerURL:       cfg.Settings["controller_url"],
+				LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
+			},
+			SingularityExecutable:     cfg.Settings["singularity_executable"],
+			ImagePath:                 cfg.Settings["image_path"],
+			ContainerWorkerExecutable: cfg.Settings["container_worker_executable"],
+			Bind:                      cfg.Settings["bind"],
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime type %q", cfg.Type)

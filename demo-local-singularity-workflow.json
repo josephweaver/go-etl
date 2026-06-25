@@ -1,6 +1,6 @@
 {
   "workflow": {
-    "ID": "docker-slurm-submit-demo",
+    "ID": "local-singularity-demo",
     "Variables": [
       {
         "Name": {
@@ -23,7 +23,7 @@
           "WorkItem": {
             "FanOutExpression": "${years[*]}",
             "Type": "write_demo_output",
-            "OutputPrefix": "docker-slurm-submit-demo",
+            "OutputPrefix": "local-singularity-demo",
             "OutputExtension": ".txt"
           }
         }
@@ -34,32 +34,12 @@
     {
       "Name": {
         "Namespace": "worker_config",
-        "Key": "worker_target_environment"
-      },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "docker_slurm"
-    },
-    {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "transport"
-      },
-      "Type": {
-        "Kind": "object"
-      },
-      "Expression": "{\"type\":\"docker\",\"settings\":{\"container\":\"slurmctld\"}}"
-    },
-    {
-      "Name": {
-        "Namespace": "worker_config",
         "Key": "scheduler"
       },
       "Type": {
         "Kind": "object"
       },
-      "Expression": "{\"type\":\"slurm\",\"settings\":{\"script_path\":\"/data/goetl/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
+      "Expression": "{\"type\":\"direct_process\",\"settings\":{\"script_path\":\"/tmp/goetl-local-singularity/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
     },
     {
       "Name": {
@@ -69,7 +49,7 @@
       "Type": {
         "Kind": "object"
       },
-      "Expression": "{\"type\":\"worker\",\"settings\":{\"executable\":\"/data/goetl/artifacts/goetl-worker\",\"config_path\":\"/data/goetl/config/worker.json\",\"log_dir\":\"/data/goetl/logs\"}}"
+      "Expression": "{\"type\":\"singularity_worker\",\"settings\":{\"executable\":\"/tmp/goetl-local-singularity/artifacts/goetl-worker\",\"config_path\":\"/tmp/goetl-local-singularity/config/worker.json\",\"log_dir\":\"/tmp/goetl-local-singularity/logs\"}}"
     },
     {
       "Name": {

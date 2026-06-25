@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v singularity >/dev/null 2>&1; then
+  echo "singularity is required on PATH" >&2
+  exit 1
+fi
+
+if ! docker image inspect goetl/worker:dev >/dev/null 2>&1; then
+  containers/goetl-worker/test >/tmp/goetl-worker-build.log
+fi
+
+docker tag goetl/worker:dev goetl-worker:dev
+docker save -o /tmp/goetl-worker-dev.tar goetl-worker:dev
+
+rm -rf /tmp/goetl-local-singularity
+rm -f .run/controller/local-singularity-ledger.sqlite*
+mkdir -p .run/local-singularity
+rm -f .run/local-singularity/controller.out .run/local-singularity/controller.err
+
+go run ./cmd/controller ./cmd/controller/local-singularity-config.json \
+  >.run/local-singularity/controller.out \
+  2>.run/local-singularity/controller.err &
+controller_pid=$!
+
+cleanup() {
+  curl -fsS -X POST http://localhost:8080/shutdown >/dev/null 2>&1 || true
+  wait "$controller_pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for _ in $(seq 1 60); do
+  if curl -fsS http://localhost:8080/status >/tmp/goetl-status.json 2>/dev/null; then
+    break
+  fi
+  sleep 1
+  if ! kill -0 "$controller_pid" 2>/dev/null; then
+    cat .run/local-singularity/controller.out || true
+    cat .run/local-singularity/controller.err >&2 || true
+    exit 1
+  fi
+done
+
+curl -fsS -X POST -H "Content-Type: application/json" \
+  --data-binary @demo-local-singularity-workflow.json \
+  http://localhost:8080/workflow >/tmp/goetl-submit.out
+
+for i in $(seq 1 90); do
+  status=$(curl -fsS http://localhost:8080/status)
+  echo "$status" >/tmp/goetl-status.json
+  pending=$(python3 -c "import json;print(json.load(open('/tmp/goetl-status.json'))['pending'])")
+  assigned=$(python3 -c "import json;print(json.load(open('/tmp/goetl-status.json'))['assigned'])")
+  failed=$(python3 -c "import json;print(json.load(open('/tmp/goetl-status.json'))['failed'])")
+  if [ "$pending" = "0" ] && [ "$assigned" = "0" ]; then
+    echo "$status"
+    if [ "$failed" != "0" ]; then
+      cat .run/local-singularity/controller.out || true
+      cat .run/local-singularity/controller.err >&2 || true
+      find /tmp/goetl-local-singularity -maxdepth 3 -type f -print || true
+      exit 1
+    fi
+    break
+  fi
+  sleep 1
+  if [ "$i" = "90" ]; then
+    echo "timed out waiting for worker" >&2
+    cat .run/local-singularity/controller.out || true
+    cat .run/local-singularity/controller.err >&2 || true
+    find /tmp/goetl-local-singularity -maxdepth 3 -type f -print || true
+    exit 1
+  fi
+done
+
+find /tmp/goetl-local-singularity -maxdepth 3 -type f -print
+cat /tmp/goetl-local-singularity/data/local-singularity-demo-2024.txt

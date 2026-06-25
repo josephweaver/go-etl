@@ -221,6 +221,13 @@ When the user replies `next`, first commit the current completed slice to the ac
 
 ### Slice Boundary Git Flow
 
+At the start of a new user prompt that asks for new changes, first commit any
+completed uncommitted work from the prior prompt to the active local branch with
+a clear commit message. A new change prompt implies the user accepted the
+previous uncommitted work. Do not commit immediately after making changes;
+leave the current prompt's work uncommitted for review. If nothing is modified,
+no commit is necessary.
+
 Before starting a new implementation slice after a completed feature slice:
 
 1. Commit the completed slice changes.
@@ -253,6 +260,11 @@ pass/fail
 NEXT
 Recommended next slice.
 ```
+
+At the end of every prompt that changes project behavior, update
+`PROJECT_STATE.md` and `TARGET_STATE.md` as needed so the current implementation
+state and target direction remain accurate. If no state or target documentation
+change is needed, say so in the slice report.
 
 ### Epistemic Review
 

@@ -44,7 +44,7 @@ func TestExecutionEnvironmentConfigValidateRejectsMissingTransport(t *testing.T)
 
 func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
-		Name:       "dockerized-slurm",
+		Name: "dockerized-slurm",
 		Transports: []ExecutionComponentConfig{{
 			Type: "docker",
 			Settings: map[string]string{
@@ -52,9 +52,9 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 				"executable": "podman",
 			},
 		}},
-		Dialect:    ExecutionComponentConfig{Type: "bash"},
-		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
-		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
+		Dialect:   ExecutionComponentConfig{Type: "bash"},
+		Scheduler: ExecutionComponentConfig{Type: "slurm"},
+		Runtime:   ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -88,6 +88,60 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 	}
 	if runtime.Root != "/data/goetl" {
 		t.Fatalf("runtime root = %q, want /data/goetl", runtime.Root)
+	}
+}
+
+func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-direct",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/tmp/goetl"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := env.Transports[0].(LocalTransport); !ok {
+		t.Fatalf("transport type = %T, want LocalTransport", env.Transports[0])
+	}
+	if _, ok := env.Scheduler.(DirectProcessScheduler); !ok {
+		t.Fatalf("scheduler type = %T, want DirectProcessScheduler", env.Scheduler)
+	}
+}
+
+func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-singularity",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{
+			Type: "singularity_worker",
+			Settings: map[string]string{
+				"root":                        "/tmp/goetl",
+				"controller_url":              "http://localhost:8080",
+				"image_path":                  "/tmp/goetl/images/goetl-worker.sif",
+				"container_worker_executable": "/goetl/goetl-worker",
+				"singularity_executable":      "singularity",
+				"bind":                        "/tmp/goetl:/data/goetl",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runtime, ok := env.Runtime.(SingularityWorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want SingularityWorkerRuntime", env.Runtime)
+	}
+	if runtime.Root != "/tmp/goetl" {
+		t.Fatalf("runtime root = %q, want /tmp/goetl", runtime.Root)
+	}
+	if runtime.ImagePath != "/tmp/goetl/images/goetl-worker.sif" {
+		t.Fatalf("image path = %q, want configured image path", runtime.ImagePath)
 	}
 }
 

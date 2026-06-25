@@ -28,6 +28,107 @@ func (r Resolver) Resolve(reference Reference) (ResolvedValue, error) {
 	return r.resolve(reference, 0)
 }
 
+func (r Resolver) Optional(referenceText string) (ResolvedValue, bool, error) {
+	reference, err := ParseReference(referenceText)
+	if err != nil {
+		return ResolvedValue{}, false, err
+	}
+
+	if _, ok := r.set.LookupReference(reference); !ok {
+		return ResolvedValue{}, false, nil
+	}
+
+	value, err := r.resolve(reference, 0)
+	if err != nil {
+		return ResolvedValue{}, false, err
+	}
+	return value, true, nil
+}
+
+func (r Resolver) String(referenceText string) (string, error) {
+	value, err := r.requiredType(referenceText, TypeString)
+	if err != nil {
+		return "", err
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", fmt.Errorf("%s is required", referenceText)
+	}
+	return text, nil
+}
+
+func (r Resolver) OptionalString(referenceText string) (string, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypeString)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", false, fmt.Errorf("%s is required", referenceText)
+	}
+	return text, true, nil
+}
+
+func (r Resolver) PathOrString(referenceText string) (string, error) {
+	value, err := r.requiredPathOrString(referenceText)
+	if err != nil {
+		return "", err
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", fmt.Errorf("%s is required", referenceText)
+	}
+	return text, nil
+}
+
+func (r Resolver) OptionalPathOrString(referenceText string) (string, bool, error) {
+	value, ok, err := r.optionalPathOrString(referenceText)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", false, fmt.Errorf("%s is required", referenceText)
+	}
+	return text, true, nil
+}
+
+func (r Resolver) Object(referenceText string) (map[string]ResolvedValue, error) {
+	value, err := r.requiredType(referenceText, TypeObject)
+	if err != nil {
+		return nil, err
+	}
+	return value.Object, nil
+}
+
+func (r Resolver) OptionalObject(referenceText string) (map[string]ResolvedValue, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypeObject)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return value.Object, true, nil
+}
+
+func (r Resolver) StringList(referenceText string) ([]string, error) {
+	value, err := r.requiredType(referenceText, TypeList(TypeString))
+	if err != nil {
+		return nil, err
+	}
+	return stringListValue(referenceText, value.List)
+}
+
+func (r Resolver) OptionalStringList(referenceText string) ([]string, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypeList(TypeString))
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	values, err := stringListValue(referenceText, value.List)
+	if err != nil {
+		return nil, false, err
+	}
+	return values, true, nil
+}
+
 func (r Resolver) ResolveFanOutExpression(expression string) ([]ResolvedValue, error) {
 	refText, ok := referenceExpression(expression)
 	if !ok {
@@ -49,6 +150,70 @@ func (r Resolver) ResolveFanOutExpression(expression string) ([]ResolvedValue, e
 	}
 
 	return ApplyFanOutAccessor(resolved, accessor)
+}
+
+func (r Resolver) requiredType(referenceText string, valueType Type) (ResolvedValue, error) {
+	reference, err := ParseReference(referenceText)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+	value, err := r.Resolve(reference)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+	if value.Type.String() != valueType.String() {
+		return ResolvedValue{}, fmt.Errorf("%s has type %s, want %s", referenceText, value.Type, valueType)
+	}
+	return value, nil
+}
+
+func (r Resolver) optionalType(referenceText string, valueType Type) (ResolvedValue, bool, error) {
+	value, ok, err := r.Optional(referenceText)
+	if err != nil || !ok {
+		return ResolvedValue{}, ok, err
+	}
+	if value.Type.String() != valueType.String() {
+		return ResolvedValue{}, false, fmt.Errorf("%s has type %s, want %s", referenceText, value.Type, valueType)
+	}
+	return value, true, nil
+}
+
+func (r Resolver) requiredPathOrString(referenceText string) (ResolvedValue, error) {
+	reference, err := ParseReference(referenceText)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+	value, err := r.Resolve(reference)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+	if value.Type != TypePath && value.Type != TypeString {
+		return ResolvedValue{}, fmt.Errorf("%s has type %s, want path or string", referenceText, value.Type)
+	}
+	return value, nil
+}
+
+func (r Resolver) optionalPathOrString(referenceText string) (ResolvedValue, bool, error) {
+	value, ok, err := r.Optional(referenceText)
+	if err != nil || !ok {
+		return ResolvedValue{}, ok, err
+	}
+	if value.Type != TypePath && value.Type != TypeString {
+		return ResolvedValue{}, false, fmt.Errorf("%s has type %s, want path or string", referenceText, value.Type)
+	}
+	return value, true, nil
+}
+
+func stringListValue(referenceText string, list []ResolvedValue) ([]string, error) {
+	values := make([]string, 0, len(list))
+	for index, item := range list {
+		text, ok := item.Value.(string)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("%s[%d] is required", referenceText, index)
+		}
+		values = append(values, text)
+	}
+	return values, nil
 }
 
 func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error) {

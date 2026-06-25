@@ -1335,24 +1335,14 @@ func TestBuildSetting(t *testing.T) {
 
 const testSlurmWorkerVariables = `
 			{
-				"Name": {"Namespace": "worker_config", "Key": "docker_slurm_script_path"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/scripts/worker.slurm"
+				"Name": {"Namespace": "worker_config", "Key": "scheduler"},
+				"Type": {"Kind": "object"},
+				"Expression": "{\"type\":\"slurm\",\"settings\":{\"script_path\":\"/data/goetl/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_start_executable"},
-				"Type": {"Kind": "string"},
-				"Expression": "/data/goetl/artifacts/goetl-worker"
-			},
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_config_path"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/config/worker.json"
-			},
-			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_log_dir"},
-				"Type": {"Kind": "path"},
-				"Expression": "/data/goetl/logs"
+				"Name": {"Namespace": "worker_config", "Key": "runtime"},
+				"Type": {"Kind": "object"},
+				"Expression": "{\"type\":\"worker\",\"settings\":{\"executable\":\"/data/goetl/artifacts/goetl-worker\",\"config_path\":\"/data/goetl/config/worker.json\",\"log_dir\":\"/data/goetl/logs\"}}"
 			}`
 
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
@@ -1448,6 +1438,73 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 	}
 	if scheduler.jobs[0].WorkerScript.WorkerConfigPath != "/data/goetl/config/worker.json" {
 		t.Fatalf("worker config path = %q, want configured path", scheduler.jobs[0].WorkerScript.WorkerConfigPath)
+	}
+}
+
+func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
+	controller.env.Transports = []Transport{&recordingTransport{}}
+	controller.env.Runtime = SingularityWorkerRuntime{
+		SingularityExecutable:     "singularity",
+		ImagePath:                 "/data/goetl/images/goetl-worker.sif",
+		ContainerWorkerExecutable: "/goetl/goetl-worker",
+		Bind:                      "/data/goetl:/data/goetl",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"Name": {"Namespace": "workflow", "Key": "years"},
+					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
+					"Expression": "[2024]"
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+`+testSlurmWorkerVariables+`
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if scheduler.calls != 1 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	script := scheduler.jobs[0].WorkerScript
+	if script.WorkerExecutable != "singularity" {
+		t.Fatalf("worker executable = %q, want singularity", script.WorkerExecutable)
+	}
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/data/goetl:/data/goetl",
+		"/data/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
+	}
+	if script.WorkerConfigPath != "/data/goetl/config/worker.json" {
+		t.Fatalf("worker config path = %q, want original worker config path", script.WorkerConfigPath)
 	}
 }
 

@@ -421,11 +421,17 @@ func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variab
 		return fmt.Errorf("execution environment is required")
 	}
 
-	workerCfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	workerCfg, err := workerLaunchConfig(resolver)
 	if err != nil {
 		return err
 	}
 	workerCfg.slurm.Platform = c.env.Dialect
+	if runtime, ok := c.env.Runtime.(WorkerScriptRuntime); ok {
+		workerCfg.slurm, err = runtime.WorkerScript(workerCfg.slurm)
+		if err != nil {
+			return err
+		}
+	}
 
 	if err := c.env.Prepare(ctx); err != nil {
 		return err

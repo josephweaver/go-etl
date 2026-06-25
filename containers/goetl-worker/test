@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
+image="${GOETL_WORKER_IMAGE:-goetl/worker:dev}"
+
+docker build \
+  -t "${image}" \
+  -f "${script_dir}/Dockerfile" \
+  "${repo_root}"
+
+output="$(docker run --rm "${image}" /missing-worker-config.json)"
+printf '%s\n' "${output}"
+
+case "${output}" in
+  *"invalid config:"*"missing-worker-config.json"*) ;;
+  *)
+    printf 'expected worker to start and report missing config, got: %s\n' "${output}" >&2
+    exit 1
+    ;;
+esac
