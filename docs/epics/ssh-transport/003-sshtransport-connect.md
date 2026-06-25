@@ -1,6 +1,6 @@
 # 003 SSHTransport Connect
 
-Status: proposed
+Status: implemented
 
 EC Mode:
 EC-4 / file(1)+test+doc

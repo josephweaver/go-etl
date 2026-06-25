@@ -1,14 +1,23 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"os"
+	"strconv"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
 	SSHHostKeyPolicyKnownHosts     = "known_hosts"
 	SSHHostKeyPolicyPinned         = "pinned"
 	SSHHostKeyPolicyInsecureIgnore = "insecure_ignore"
+
+	defaultSSHPort           = 22
+	defaultSSHConnectTimeout = 10 * time.Second
 )
 
 type SSHTransportConfig struct {
@@ -23,6 +32,52 @@ type SSHTransportConfig struct {
 	ConnectTimeout string `json:"connect_timeout,omitempty"`
 	CommandTimeout string `json:"command_timeout,omitempty"`
 	KeepAlive      bool   `json:"keep_alive,omitempty"`
+}
+
+type SSHTransport struct {
+	Config SSHTransportConfig
+	client *ssh.Client
+}
+
+func (t *SSHTransport) Connect(ctx context.Context) error {
+	if err := t.Config.Validate(); err != nil {
+		return err
+	}
+
+	clientConfig, err := t.sshClientConfig()
+	if err != nil {
+		return err
+	}
+
+	dialCtx, cancel, err := t.connectContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", t.address())
+	if err != nil {
+		return fmt.Errorf("ssh connect to %s: %w", t.address(), err)
+	}
+
+	sshConn, channels, requests, err := ssh.NewClientConn(conn, t.address(), clientConfig)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("ssh handshake with %s: %w", t.address(), err)
+	}
+
+	t.client = ssh.NewClient(sshConn, channels, requests)
+	return nil
+}
+
+func (t *SSHTransport) Close() error {
+	if t.client == nil {
+		return nil
+	}
+
+	err := t.client.Close()
+	t.client = nil
+	return err
 }
 
 func (cfg SSHTransportConfig) Validate() error {
@@ -51,6 +106,102 @@ func (cfg SSHTransportConfig) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func (t SSHTransport) sshClientConfig() (*ssh.ClientConfig, error) {
+	signer, err := t.identitySigner()
+	if err != nil {
+		return nil, err
+	}
+
+	hostKeyCallback, err := t.hostKeyCallback()
+	if err != nil {
+		return nil, err
+	}
+
+	return &ssh.ClientConfig{
+		User: t.Config.User,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: hostKeyCallback,
+	}, nil
+}
+
+func (t SSHTransport) identitySigner() (ssh.Signer, error) {
+	var key []byte
+	var err error
+
+	switch {
+	case t.Config.IdentityFile != "":
+		key, err = os.ReadFile(t.Config.IdentityFile)
+		if err != nil {
+			return nil, fmt.Errorf("read ssh identity_file: %w", err)
+		}
+	case t.Config.IdentityEnv != "":
+		value := os.Getenv(t.Config.IdentityEnv)
+		if value == "" {
+			return nil, fmt.Errorf("ssh identity_env %s is empty or unset", t.Config.IdentityEnv)
+		}
+		key = []byte(value)
+	default:
+		return nil, fmt.Errorf("ssh identity_file or identity_env is required")
+	}
+
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("parse ssh identity: %w", err)
+	}
+	return signer, nil
+}
+
+func (t SSHTransport) hostKeyCallback() (ssh.HostKeyCallback, error) {
+	switch t.hostKeyPolicy() {
+	case SSHHostKeyPolicyPinned:
+		key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(t.Config.PinnedHostKey))
+		if err != nil {
+			return nil, fmt.Errorf("parse ssh pinned_host_key: %w", err)
+		}
+		return ssh.FixedHostKey(key), nil
+	case SSHHostKeyPolicyInsecureIgnore:
+		return ssh.InsecureIgnoreHostKey(), nil
+	case SSHHostKeyPolicyKnownHosts:
+		return nil, fmt.Errorf("ssh known_hosts host-key verification is not implemented yet")
+	default:
+		return nil, fmt.Errorf("unsupported ssh host_key_policy %q", t.Config.HostKeyPolicy)
+	}
+}
+
+func (t SSHTransport) connectContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	timeout := defaultSSHConnectTimeout
+	if t.Config.ConnectTimeout != "" {
+		duration, err := time.ParseDuration(t.Config.ConnectTimeout)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ssh connect_timeout must be a Go duration: %w", err)
+		}
+		timeout = duration
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	return dialCtx, cancel, nil
+}
+
+func (t SSHTransport) address() string {
+	return net.JoinHostPort(t.Config.Host, strconv.Itoa(t.port()))
+}
+
+func (t SSHTransport) port() int {
+	if t.Config.Port == 0 {
+		return defaultSSHPort
+	}
+	return t.Config.Port
+}
+
+func (t SSHTransport) hostKeyPolicy() string {
+	if t.Config.HostKeyPolicy == "" {
+		return SSHHostKeyPolicyKnownHosts
+	}
+	return t.Config.HostKeyPolicy
 }
 
 func (cfg SSHTransportConfig) validateHostKeyPolicy() error {
