@@ -55,3 +55,60 @@ func ResolvedList(element Type, values []ResolvedValue) (ResolvedValue, error) {
 		List: values,
 	}, nil
 }
+
+func OptionalObjectFieldObject(fields map[string]ResolvedValue, name string) (map[string]ResolvedValue, bool, error) {
+	value, ok, err := optionalObjectFieldType(fields, name, TypeObject)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return value.Object, true, nil
+}
+
+func OptionalObjectFieldString(fields map[string]ResolvedValue, name string) (string, bool, error) {
+	if fields == nil {
+		return "", false, nil
+	}
+	value, ok := fields[name]
+	if !ok {
+		return "", false, nil
+	}
+	if value.Type != TypeString && value.Type != TypePath {
+		return "", false, fmt.Errorf("%s has type %s, want string or path", name, value.Type)
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", false, fmt.Errorf("%s is required", name)
+	}
+	return text, true, nil
+}
+
+func OptionalObjectFieldStringList(fields map[string]ResolvedValue, name string) ([]string, bool, error) {
+	value, ok, err := optionalObjectFieldType(fields, name, TypeList(TypeString))
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+
+	values := make([]string, 0, len(value.List))
+	for index, item := range value.List {
+		text, ok := item.Value.(string)
+		if !ok || text == "" {
+			return nil, false, fmt.Errorf("%s[%d] is required", name, index)
+		}
+		values = append(values, text)
+	}
+	return values, true, nil
+}
+
+func optionalObjectFieldType(fields map[string]ResolvedValue, name string, valueType Type) (ResolvedValue, bool, error) {
+	if fields == nil {
+		return ResolvedValue{}, false, nil
+	}
+	value, ok := fields[name]
+	if !ok {
+		return ResolvedValue{}, false, nil
+	}
+	if value.Type.String() != valueType.String() {
+		return ResolvedValue{}, false, fmt.Errorf("%s has type %s, want %s", name, value.Type, valueType)
+	}
+	return value, true, nil
+}

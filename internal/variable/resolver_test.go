@@ -42,6 +42,110 @@ func TestResolverResolveReference(t *testing.T) {
 	}
 }
 
+func TestResolverOptional(t *testing.T) {
+	scope, err := NewScope(Variable{
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
+		Type:       TypeInt,
+		Expression: "2025",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(NewSet(scope), ResolverConfig{})
+
+	value, ok, err := resolver.Optional("year")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected value")
+	}
+	if value.Value != 2025 {
+		t.Fatalf("value = %#v, want 2025", value.Value)
+	}
+
+	if _, ok, err := resolver.Optional("missing"); err != nil || ok {
+		t.Fatalf("missing optional = ok %v err %v, want false nil", ok, err)
+	}
+}
+
+func TestResolverTypedAccessors(t *testing.T) {
+	scope, err := NewScope(
+		Variable{
+			Name:       Name{Namespace: NamespaceWorkflow, Key: "name"},
+			Type:       TypeString,
+			Expression: "goetl",
+		},
+		Variable{
+			Name:       Name{Namespace: NamespaceWorkflow, Key: "root"},
+			Type:       TypePath,
+			Expression: "/data/goetl",
+		},
+		Variable{
+			Name:       Name{Namespace: NamespaceWorkflow, Key: "settings"},
+			Type:       TypeObject,
+			Expression: `{"script_path":"/tmp/worker.slurm","args":["--once"]}`,
+		},
+		Variable{
+			Name:       Name{Namespace: NamespaceWorkflow, Key: "args"},
+			Type:       TypeList(TypeString),
+			Expression: `["--once"]`,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(NewSet(scope), ResolverConfig{})
+
+	if got, err := resolver.String("name"); err != nil || got != "goetl" {
+		t.Fatalf("String = %q err %v, want goetl nil", got, err)
+	}
+	if got, err := resolver.PathOrString("root"); err != nil || got != "/data/goetl" {
+		t.Fatalf("PathOrString = %q err %v, want path nil", got, err)
+	}
+	if got, ok, err := resolver.OptionalString("missing"); err != nil || ok || got != "" {
+		t.Fatalf("OptionalString missing = %q ok %v err %v, want empty false nil", got, ok, err)
+	}
+	args, err := resolver.StringList("args")
+	if err != nil {
+		t.Fatalf("StringList: %v", err)
+	}
+	if len(args) != 1 || args[0] != "--once" {
+		t.Fatalf("args = %#v, want --once", args)
+	}
+
+	settings, err := resolver.Object("settings")
+	if err != nil {
+		t.Fatalf("Object: %v", err)
+	}
+	if got, ok, err := OptionalObjectFieldString(settings, "script_path"); err != nil || !ok || got != "/tmp/worker.slurm" {
+		t.Fatalf("ObjectFieldString = %q ok %v err %v, want script path", got, ok, err)
+	}
+	fieldArgs, ok, err := OptionalObjectFieldStringList(settings, "args")
+	if err != nil || !ok {
+		t.Fatalf("ObjectFieldStringList ok %v err %v, want true nil", ok, err)
+	}
+	if len(fieldArgs) != 1 || fieldArgs[0] != "--once" {
+		t.Fatalf("field args = %#v, want --once", fieldArgs)
+	}
+}
+
+func TestResolverTypedAccessorsRejectWrongType(t *testing.T) {
+	scope, err := NewScope(Variable{
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
+		Type:       TypeInt,
+		Expression: "2025",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewResolver(NewSet(scope), ResolverConfig{})
+
+	if _, err := resolver.String("year"); err == nil {
+		t.Fatal("expected wrong-type error")
+	}
+}
+
 func TestResolverResolveReferenceUsesQualifiedNamespace(t *testing.T) {
 	global, err := NewScope(Variable{
 		Name:       Name{Namespace: NamespaceGlobal, Key: "year"},

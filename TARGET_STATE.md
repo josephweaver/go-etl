@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-06-24
+Last updated: 2026-06-25
 
 ## Application Target
 
@@ -566,6 +566,8 @@ The worker receives a finalized work assignment with concrete parameters. For th
 A dedicated `Variable` model and resolver package should be introduced before building a broad workflow compiler. Start with typed literals, precedence merging, and a small path expression capability; add expression features incrementally with tests.
 
 Resolver configuration should include the recursive-resolution maximum depth. Choose a conservative default and allow deployments or controller configuration to override it.
+
+The resolver should expose typed required and optional lookup helpers so controller, client, scheduler, and runtime code do not duplicate missing-variable and wrong-type handling. Structured object-field access should likewise live with the variable package rather than in backend-specific launch code.
 
 ## Workflow Compilation Direction
 

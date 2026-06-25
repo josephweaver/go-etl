@@ -1,10 +1,6 @@
 package main
 
-import (
-	"fmt"
-
-	"goetl/internal/variable"
-)
+import "goetl/internal/variable"
 
 type workerLaunchConfigSpec struct {
 	dockerExecutable string
@@ -27,47 +23,52 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 		return workerLaunchConfigSpec{}, err
 	}
 
-	jobName, ok, err := optionalObjectString(schedulerSettings, "job_name")
+	jobName, ok, err := variable.OptionalObjectFieldString(schedulerSettings, "job_name")
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		jobName, _, err = optionalControllerStringVariable(resolver, "worker_slurm_job_name", "goetl-worker")
-	}
-	if err != nil {
-		return workerLaunchConfigSpec{}, err
+		jobName = "goetl-worker"
+		if configured, found, findErr := resolver.OptionalString("worker_slurm_job_name"); findErr != nil {
+			return workerLaunchConfigSpec{}, findErr
+		} else if found {
+			jobName = configured
+		}
 	}
 
-	workerArgs, ok, err := optionalObjectStringList(runtimeSettings, "args")
+	workerArgs, ok, err := variable.OptionalObjectFieldStringList(runtimeSettings, "args")
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		workerArgs, err = optionalControllerStringListVariable(resolver, "worker_start_args")
-	}
-	if err != nil {
-		return workerLaunchConfigSpec{}, err
+		if configured, found, findErr := resolver.OptionalStringList("worker_start_args"); findErr != nil {
+			return workerLaunchConfigSpec{}, findErr
+		} else if found {
+			workerArgs = configured
+		}
 	}
 
-	dockerExecutable, ok, err := optionalObjectString(transportSettings, "executable")
+	dockerExecutable, ok, err := variable.OptionalObjectFieldString(transportSettings, "executable")
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		dockerExecutable, _, err = optionalControllerStringVariable(resolver, "docker_executable", "")
+		if configured, found, findErr := resolver.OptionalString("docker_executable"); findErr != nil {
+			return workerLaunchConfigSpec{}, findErr
+		} else if found {
+			dockerExecutable = configured
+		}
 	}
-	if err != nil {
-		return workerLaunchConfigSpec{}, err
-	}
-	slurmContainer, ok, err := optionalObjectString(transportSettings, "container")
+	slurmContainer, ok, err := variable.OptionalObjectFieldString(transportSettings, "container")
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		slurmContainer, _, err = optionalControllerStringVariable(resolver, "docker_slurm_container", "")
-	}
-	if err != nil {
-		return workerLaunchConfigSpec{}, err
+		if configured, found, findErr := resolver.OptionalString("docker_slurm_container"); findErr != nil {
+			return workerLaunchConfigSpec{}, findErr
+		} else if found {
+			slurmContainer = configured
+		}
 	}
 
 	cfg := workerLaunchConfigSpec{
@@ -83,7 +84,7 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 		},
 	}
 
-	if cfg.scriptPath, ok, err = optionalObjectString(schedulerSettings, "script_path"); err != nil {
+	if cfg.scriptPath, ok, err = variable.OptionalObjectFieldString(schedulerSettings, "script_path"); err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
@@ -92,29 +93,29 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
-	if cfg.slurm.WorkerExecutable, ok, err = optionalObjectString(runtimeSettings, "executable"); err != nil {
+	if cfg.slurm.WorkerExecutable, ok, err = variable.OptionalObjectFieldString(runtimeSettings, "executable"); err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		cfg.slurm.WorkerExecutable, err = controllerStringVariable(resolver, "worker_start_executable")
+		cfg.slurm.WorkerExecutable, err = resolver.String("worker_start_executable")
 	}
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
-	if cfg.slurm.WorkerConfigPath, ok, err = optionalObjectString(runtimeSettings, "config_path"); err != nil {
+	if cfg.slurm.WorkerConfigPath, ok, err = variable.OptionalObjectFieldString(runtimeSettings, "config_path"); err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		cfg.slurm.WorkerConfigPath, err = controllerPathOrStringVariable(resolver, "worker_config_path")
+		cfg.slurm.WorkerConfigPath, err = resolver.PathOrString("worker_config_path")
 	}
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
-	if cfg.slurm.LogDir, ok, err = optionalObjectString(runtimeSettings, "log_dir"); err != nil {
+	if cfg.slurm.LogDir, ok, err = variable.OptionalObjectFieldString(runtimeSettings, "log_dir"); err != nil {
 		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
-		cfg.slurm.LogDir, err = controllerPathOrStringVariable(resolver, "worker_log_dir")
+		cfg.slurm.LogDir, err = resolver.PathOrString("worker_log_dir")
 	}
 	if err != nil {
 		return workerLaunchConfigSpec{}, err
@@ -124,155 +125,24 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 }
 
 func optionalWorkerConfigSettings(resolver variable.Resolver, name string) (map[string]variable.ResolvedValue, error) {
-	object, ok, err := optionalObjectVariable(resolver, name)
+	object, ok, err := resolver.OptionalObject(name)
 	if err != nil || !ok {
 		return nil, err
 	}
 
-	settings, ok := object["settings"]
-	if !ok {
-		return object, nil
+	settings, ok, err := variable.OptionalObjectFieldObject(object, "settings")
+	if err != nil || !ok {
+		return object, err
 	}
-	if settings.Type != variable.TypeObject {
-		return nil, fmt.Errorf("%s.settings has type %s, want object", name, settings.Type)
-	}
-	return settings.Object, nil
-}
-
-func optionalObjectVariable(resolver variable.Resolver, name string) (map[string]variable.ResolvedValue, bool, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return nil, false, err
-	}
-
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return nil, false, nil
-	}
-	if value.Type != variable.TypeObject {
-		return nil, false, fmt.Errorf("%s has type %s, want object", name, value.Type)
-	}
-	return value.Object, true, nil
-}
-
-func optionalObjectString(fields map[string]variable.ResolvedValue, name string) (string, bool, error) {
-	if fields == nil {
-		return "", false, nil
-	}
-	value, ok := fields[name]
-	if !ok {
-		return "", false, nil
-	}
-	if value.Type != variable.TypeString && value.Type != variable.TypePath {
-		return "", false, fmt.Errorf("%s has type %s, want string or path", name, value.Type)
-	}
-	text, ok := value.Value.(string)
-	if !ok || text == "" {
-		return "", false, fmt.Errorf("%s is required", name)
-	}
-	return text, true, nil
-}
-
-func optionalObjectStringList(fields map[string]variable.ResolvedValue, name string) ([]string, bool, error) {
-	if fields == nil {
-		return nil, false, nil
-	}
-	value, ok := fields[name]
-	if !ok {
-		return nil, false, nil
-	}
-	if value.Type.String() != variable.TypeList(variable.TypeString).String() {
-		return nil, false, fmt.Errorf("%s has type %s, want list[string]", name, value.Type)
-	}
-	values := make([]string, 0, len(value.List))
-	for index, item := range value.List {
-		text, ok := item.Value.(string)
-		if !ok || text == "" {
-			return nil, false, fmt.Errorf("%s[%d] is required", name, index)
-		}
-		values = append(values, text)
-	}
-	return values, true, nil
+	return settings, nil
 }
 
 func workerScriptPath(resolver variable.Resolver) (string, error) {
-	path, err := controllerPathOrStringVariable(resolver, "worker_script_path")
-	if err == nil {
+	if path, ok, err := resolver.OptionalPathOrString("worker_script_path"); err != nil {
+		return "", err
+	} else if ok {
 		return path, nil
 	}
 
-	return controllerPathOrStringVariable(resolver, "docker_slurm_script_path")
-}
-
-func optionalControllerStringVariable(resolver variable.Resolver, name string, fallback string) (string, bool, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return "", false, err
-	}
-
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return fallback, false, nil
-	}
-
-	if value.Type != variable.TypeString {
-		return "", false, fmt.Errorf("%s has type %s, want string", name, value.Type)
-	}
-
-	text, ok := value.Value.(string)
-	if !ok || text == "" {
-		return "", false, fmt.Errorf("%s is required", name)
-	}
-
-	return text, true, nil
-}
-
-func optionalControllerStringListVariable(resolver variable.Resolver, name string) ([]string, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return nil, err
-	}
-
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return nil, nil
-	}
-
-	if value.Type.String() != variable.TypeList(variable.TypeString).String() {
-		return nil, fmt.Errorf("%s has type %s, want list[string]", name, value.Type)
-	}
-
-	args := make([]string, 0, len(value.List))
-	for index, item := range value.List {
-		text, ok := item.Value.(string)
-		if !ok || text == "" {
-			return nil, fmt.Errorf("%s[%d] is required", name, index)
-		}
-		args = append(args, text)
-	}
-
-	return args, nil
-}
-
-func controllerPathOrStringVariable(resolver variable.Resolver, name string) (string, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return "", err
-	}
-
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return "", err
-	}
-
-	if value.Type != variable.TypePath && value.Type != variable.TypeString {
-		return "", fmt.Errorf("%s has type %s, want path or string", name, value.Type)
-	}
-
-	text, ok := value.Value.(string)
-	if !ok || text == "" {
-		return "", fmt.Errorf("%s is required", name)
-	}
-
-	return text, nil
+	return resolver.PathOrString("docker_slurm_script_path")
 }

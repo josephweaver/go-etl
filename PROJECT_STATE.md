@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-06-24
+Last updated: 2026-06-25
 
 ## Current Focus
 
@@ -462,6 +462,8 @@ Current resolver behavior supports:
 - Escaped variable references such as `\${year}`.
 - Scalar structured access in reference expressions, such as `${record.year}` and `${years[0]}`.
 - Fan-out list access through `Resolver.ResolveFanOutExpression("${years[*]}")`.
+- Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
+- Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
 
 Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. List literals use their declared `list[T]` element type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
 
