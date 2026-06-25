@@ -223,7 +223,10 @@ When the user replies `next`, first commit the current completed slice to the ac
 
 At the start of a new user prompt that asks for new changes, first commit any
 completed uncommitted work from the prior prompt to the active local branch with
-a clear commit message. If nothing is modified, no commit is necessary.
+a clear commit message. A new change prompt implies the user accepted the
+previous uncommitted work. Do not commit immediately after making changes;
+leave the current prompt's work uncommitted for review. If nothing is modified,
+no commit is necessary.
 
 Before starting a new implementation slice after a completed feature slice:
 
