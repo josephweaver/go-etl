@@ -1,6 +1,6 @@
 # 002 SSHTransport Config
 
-Status: proposed
+Status: implemented
 
 EC Mode:
 EC-4 / file(1)+test+doc

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 
@@ -178,5 +179,146 @@ func TestSSHTransportFixtureAcceptsCommandSession(t *testing.T) {
 
 	if string(output) != "test ssh fixture\n" {
 		t.Fatalf("output = %q, want %q", string(output), "test ssh fixture\n")
+	}
+}
+
+func TestSSHTransportConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     SSHTransportConfig
+		wantErr string
+	}{
+		{
+			name: "valid minimal identity file known hosts",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityFile:  "~/.ssh/id_ed25519",
+				HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+			},
+		},
+		{
+			name: "valid minimal identity env pinned",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATESTKEY",
+			},
+		},
+		{
+			name: "missing host",
+			cfg: SSHTransportConfig{
+				User:         "researcher",
+				IdentityFile: "~/.ssh/id_ed25519",
+			},
+			wantErr: "host is required",
+		},
+		{
+			name: "missing user",
+			cfg: SSHTransportConfig{
+				Host:         "hpcc.example.edu",
+				IdentityFile: "~/.ssh/id_ed25519",
+			},
+			wantErr: "user is required",
+		},
+		{
+			name: "missing auth source",
+			cfg: SSHTransportConfig{
+				Host: "hpcc.example.edu",
+				User: "researcher",
+			},
+			wantErr: "identity_file or identity_env is required",
+		},
+		{
+			name: "both identity sources set",
+			cfg: SSHTransportConfig{
+				Host:         "hpcc.example.edu",
+				User:         "researcher",
+				IdentityFile: "~/.ssh/id_ed25519",
+				IdentityEnv:  "GOETL_SSH_KEY",
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name: "invalid host key policy",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityFile:  "~/.ssh/id_ed25519",
+				HostKeyPolicy: "trust_me",
+			},
+			wantErr: "unsupported ssh host_key_policy",
+		},
+		{
+			name: "pinned policy without pinned key",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityFile:  "~/.ssh/id_ed25519",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+			},
+			wantErr: "pinned_host_key is required",
+		},
+		{
+			name: "invalid connect timeout",
+			cfg: SSHTransportConfig{
+				Host:           "hpcc.example.edu",
+				User:           "researcher",
+				IdentityFile:   "~/.ssh/id_ed25519",
+				ConnectTimeout: "five seconds",
+			},
+			wantErr: "connect_timeout must be a Go duration",
+		},
+		{
+			name: "invalid command timeout",
+			cfg: SSHTransportConfig{
+				Host:           "hpcc.example.edu",
+				User:           "researcher",
+				IdentityFile:   "~/.ssh/id_ed25519",
+				CommandTimeout: "-1s",
+			},
+			wantErr: "command_timeout must be greater than zero",
+		},
+		{
+			name: "invalid negative port",
+			cfg: SSHTransportConfig{
+				Host:         "hpcc.example.edu",
+				Port:         -1,
+				User:         "researcher",
+				IdentityFile: "~/.ssh/id_ed25519",
+			},
+			wantErr: "port must be between 1 and 65535",
+		},
+		{
+			name: "invalid high port",
+			cfg: SSHTransportConfig{
+				Host:         "hpcc.example.edu",
+				Port:         65536,
+				User:         "researcher",
+				IdentityFile: "~/.ssh/id_ed25519",
+			},
+			wantErr: "port must be between 1 and 65535",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
 	}
 }
