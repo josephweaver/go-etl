@@ -1451,6 +1451,73 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
+	controller.env.Transports = []Transport{&recordingTransport{}}
+	controller.env.Runtime = SingularityWorkerRuntime{
+		SingularityExecutable:     "singularity",
+		ImagePath:                 "/data/goetl/images/goetl-worker.sif",
+		ContainerWorkerExecutable: "/goetl/goetl-worker",
+		Bind:                      "/data/goetl:/data/goetl",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"Name": {"Namespace": "workflow", "Key": "years"},
+					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
+					"Expression": "[2024]"
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+`+testSlurmWorkerVariables+`
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if scheduler.calls != 1 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	script := scheduler.jobs[0].WorkerScript
+	if script.WorkerExecutable != "singularity" {
+		t.Fatalf("worker executable = %q, want singularity", script.WorkerExecutable)
+	}
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/data/goetl:/data/goetl",
+		"/data/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
+	}
+	if script.WorkerConfigPath != "/data/goetl/config/worker.json" {
+		t.Fatalf("worker config path = %q, want original worker config path", script.WorkerConfigPath)
+	}
+}
+
 func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)

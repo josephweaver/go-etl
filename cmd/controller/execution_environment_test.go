@@ -111,6 +111,40 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-singularity",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{
+			Type: "singularity_worker",
+			Settings: map[string]string{
+				"root":                        "/tmp/goetl",
+				"controller_url":              "http://localhost:8080",
+				"image_path":                  "/tmp/goetl/images/goetl-worker.sif",
+				"container_worker_executable": "/goetl/goetl-worker",
+				"singularity_executable":      "singularity",
+				"bind":                        "/tmp/goetl:/data/goetl",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runtime, ok := env.Runtime.(SingularityWorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want SingularityWorkerRuntime", env.Runtime)
+	}
+	if runtime.Root != "/tmp/goetl" {
+		t.Fatalf("runtime root = %q, want /tmp/goetl", runtime.Root)
+	}
+	if runtime.ImagePath != "/tmp/goetl/images/goetl-worker.sif" {
+		t.Fatalf("image path = %q, want configured image path", runtime.ImagePath)
+	}
+}
+
 func TestNewExecutionEnvironmentRejectsUnsupportedComponentType(t *testing.T) {
 	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "bad-env",

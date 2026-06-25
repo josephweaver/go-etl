@@ -13,6 +13,11 @@ type Runtime interface {
 	Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error
 }
 
+type WorkerScriptRuntime interface {
+	Runtime
+	WorkerScript(cfg SlurmWorkerScriptConfig) (SlurmWorkerScriptConfig, error)
+}
+
 type WorkerRuntime struct {
 	Root                string
 	ControllerURL       string
@@ -148,4 +153,42 @@ func (r WorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Trans
 		return fmt.Errorf("chmod worker artifact: %w", err)
 	}
 	return nil
+}
+
+type SingularityWorkerRuntime struct {
+	WorkerRuntime
+	SingularityExecutable     string
+	ImagePath                 string
+	ContainerWorkerExecutable string
+	Bind                      string
+}
+
+func (r SingularityWorkerRuntime) WorkerScript(cfg SlurmWorkerScriptConfig) (SlurmWorkerScriptConfig, error) {
+	executable := r.SingularityExecutable
+	if executable == "" {
+		executable = "singularity"
+	}
+	if containsNewline(executable) {
+		return SlurmWorkerScriptConfig{}, fmt.Errorf("singularity executable must not contain newlines")
+	}
+	if r.ImagePath == "" {
+		return SlurmWorkerScriptConfig{}, fmt.Errorf("singularity image path is required")
+	}
+	if r.ContainerWorkerExecutable == "" {
+		return SlurmWorkerScriptConfig{}, fmt.Errorf("container worker executable is required")
+	}
+	if containsNewline(r.ImagePath) || containsNewline(r.ContainerWorkerExecutable) || containsNewline(r.Bind) {
+		return SlurmWorkerScriptConfig{}, fmt.Errorf("singularity runtime values must not contain newlines")
+	}
+
+	args := []string{"exec"}
+	if r.Bind != "" {
+		args = append(args, "--bind", r.Bind)
+	}
+	args = append(args, r.ImagePath, r.ContainerWorkerExecutable)
+	args = append(args, cfg.WorkerArgs...)
+
+	cfg.WorkerExecutable = executable
+	cfg.WorkerArgs = args
+	return cfg, nil
 }

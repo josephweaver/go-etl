@@ -173,6 +173,18 @@ func newRuntimeFromConfig(cfg ExecutionComponentConfig) (Runtime, error) {
 			ControllerURL:       cfg.Settings["controller_url"],
 			LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
 		}, nil
+	case "singularity_worker":
+		return SingularityWorkerRuntime{
+			WorkerRuntime: WorkerRuntime{
+				Root:                cfg.Settings["root"],
+				ControllerURL:       cfg.Settings["controller_url"],
+				LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
+			},
+			SingularityExecutable:     cfg.Settings["singularity_executable"],
+			ImagePath:                 cfg.Settings["image_path"],
+			ContainerWorkerExecutable: cfg.Settings["container_worker_executable"],
+			Bind:                      cfg.Settings["bind"],
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime type %q", cfg.Type)
 	}
