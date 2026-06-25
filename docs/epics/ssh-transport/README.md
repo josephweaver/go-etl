@@ -10,7 +10,7 @@ Non-goals:
 
 Slices:
 - [ ] [001 Test fixture](001-test-strategy.md)
-- [ ] 002 Command runner boundary
+- [ ] [002 SSHTransport config](002-sshtransport-config.md)
 - [ ] 003 Execute
 - [ ] 004 CopyInto
 - [ ] 005 Config wiring
