@@ -227,7 +227,7 @@ func TestDockerSlurmWorkflowFixtureResolvesWorkerConfig(t *testing.T) {
 		t.Fatalf("target = %q, want docker_slurm", target)
 	}
 
-	cfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	cfg, err := workerLaunchConfig(resolver)
 	if err != nil {
 		t.Fatal(err)
 	}

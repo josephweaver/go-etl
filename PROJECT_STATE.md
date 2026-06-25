@@ -114,8 +114,8 @@ cmd/
     controller-default-config.json
     docker_slurm_submit.go
     docker_slurm_submit_test.go
-    docker_slurm_worker.go
-    docker_slurm_worker_test.go
+    worker_launch_config.go
+    worker_launch_config_test.go
     docker_transport.go
     docker_transport_test.go
     execution_environment.go

@@ -16,7 +16,7 @@ func (s DockerSlurmWorkerStarter) StartWorker(targetEnvironment string, resolver
 		return fmt.Errorf("unsupported worker target environment: %s", targetEnvironment)
 	}
 
-	cfg, err := dockerSlurmWorkerScriptConfig(resolver)
+	cfg, err := workerLaunchConfig(resolver)
 	if err != nil {
 		return err
 	}
@@ -39,71 +39,71 @@ func (s DockerSlurmWorkerStarter) StartWorker(targetEnvironment string, resolver
 	return err
 }
 
-type dockerSlurmWorkerConfig struct {
+type workerLaunchConfigSpec struct {
 	dockerExecutable string
 	slurmContainer   string
 	scriptPath       string
 	slurm            SlurmWorkerScriptConfig
 }
 
-func dockerSlurmWorkerScriptConfig(resolver variable.Resolver) (dockerSlurmWorkerConfig, error) {
+func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, error) {
 	transportSettings, err := optionalWorkerConfigSettings(resolver, "transport")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	schedulerSettings, err := optionalWorkerConfigSettings(resolver, "scheduler")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	runtimeSettings, err := optionalWorkerConfigSettings(resolver, "runtime")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 
 	jobName, ok, err := optionalObjectString(schedulerSettings, "job_name")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		jobName, _, err = optionalControllerStringVariable(resolver, "worker_slurm_job_name", "goetl-worker")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 
 	workerArgs, ok, err := optionalObjectStringList(runtimeSettings, "args")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		workerArgs, err = optionalControllerStringListVariable(resolver, "worker_start_args")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 
 	dockerExecutable, ok, err := optionalObjectString(transportSettings, "executable")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		dockerExecutable, _, err = optionalControllerStringVariable(resolver, "docker_executable", "")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	slurmContainer, ok, err := optionalObjectString(transportSettings, "container")
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		slurmContainer, _, err = optionalControllerStringVariable(resolver, "docker_slurm_container", "")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 
-	cfg := dockerSlurmWorkerConfig{
+	cfg := workerLaunchConfigSpec{
 		dockerExecutable: dockerExecutable,
 		slurmContainer:   slurmContainer,
 		scriptPath:       "",
@@ -117,40 +117,40 @@ func dockerSlurmWorkerScriptConfig(resolver variable.Resolver) (dockerSlurmWorke
 	}
 
 	if cfg.scriptPath, ok, err = optionalObjectString(schedulerSettings, "script_path"); err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		cfg.scriptPath, err = workerScriptPath(resolver)
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if cfg.slurm.WorkerExecutable, ok, err = optionalObjectString(runtimeSettings, "executable"); err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		cfg.slurm.WorkerExecutable, err = controllerStringVariable(resolver, "worker_start_executable")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if cfg.slurm.WorkerConfigPath, ok, err = optionalObjectString(runtimeSettings, "config_path"); err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		cfg.slurm.WorkerConfigPath, err = controllerPathOrStringVariable(resolver, "worker_config_path")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if cfg.slurm.LogDir, ok, err = optionalObjectString(runtimeSettings, "log_dir"); err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 	if !ok {
 		cfg.slurm.LogDir, err = controllerPathOrStringVariable(resolver, "worker_log_dir")
 	}
 	if err != nil {
-		return dockerSlurmWorkerConfig{}, err
+		return workerLaunchConfigSpec{}, err
 	}
 
 	return cfg, nil
