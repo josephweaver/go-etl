@@ -221,6 +221,10 @@ When the user replies `next`, first commit the current completed slice to the ac
 
 ### Slice Boundary Git Flow
 
+At the start of a new user prompt that asks for new changes, first commit any
+completed uncommitted work from the prior prompt to the active local branch with
+a clear commit message. If nothing is modified, no commit is necessary.
+
 Before starting a new implementation slice after a completed feature slice:
 
 1. Commit the completed slice changes.
