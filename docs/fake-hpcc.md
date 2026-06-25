@@ -28,6 +28,51 @@ https://github.com/giovtorres/slurm-docker-cluster
 
 The repository's `scripts/fake-hpcc/sbatch` remains a minimal smoke-test fallback for testing the command boundary without the Dockerized Slurm stack.
 
+## SingularityCE Slurm Image
+
+The institutional HPCC target currently uses SingularityCE 4.1.2 on Ubuntu
+Jammy. The local Dockerized Slurm image currently used for fake-HPCC testing is
+Rocky Linux 9, so the first local image installs the matching SingularityCE
+4.1.2 EL9 RPM into the existing Slurm base image rather than installing the
+Jammy `.deb`.
+
+This keeps the local scheduler image close to the current Dockerized Slurm
+stack while proving the SingularityCE command boundary. An exact Jammy package
+match would require a later Slurm base image built on Ubuntu 22.04.
+
+Build and verify the local Slurm plus SingularityCE image from WSL or another
+shell with Docker available:
+
+```bash
+containers/fake-hpcc-slurm-singularity/test
+```
+
+The script builds:
+
+```text
+goetl/fake-hpcc-slurm-singularity:4.1.2
+```
+
+from:
+
+```text
+slurm-docker-cluster:25.11.4
+```
+
+and verifies:
+
+```bash
+singularity --version
+```
+
+Override the base image or output image when needed:
+
+```bash
+GOETL_SLURM_BASE_IMAGE=slurm-docker-cluster:25.11.4 \
+GOETL_FAKE_HPCC_SINGULARITY_IMAGE=goetl/fake-hpcc-slurm-singularity:4.1.2 \
+containers/fake-hpcc-slurm-singularity/test
+```
+
 The first Go helper for the Dockerized Slurm boundary is:
 
 ```text

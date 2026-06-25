@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
+image="${GOETL_FAKE_HPCC_SINGULARITY_IMAGE:-goetl/fake-hpcc-slurm-singularity:4.1.2}"
+base_image="${GOETL_SLURM_BASE_IMAGE:-slurm-docker-cluster:25.11.4}"
+
+docker build \
+  --build-arg "SLURM_BASE_IMAGE=${base_image}" \
+  -t "${image}" \
+  -f "${script_dir}/Dockerfile" \
+  "${repo_root}"
+
+version="$(docker run --rm "${image}" singularity --version)"
+printf '%s\n' "${version}"
+
+case "${version}" in
+  *"singularity-ce version 4.1.2"*) ;;
+  *)
+    printf 'expected SingularityCE 4.1.2, got: %s\n' "${version}" >&2
+    exit 1
+    ;;
+esac

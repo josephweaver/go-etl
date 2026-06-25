@@ -127,6 +127,8 @@ func (cfg ExecutionComponentConfig) validate(role string) error {
 
 func newTransportFromConfig(cfg ExecutionComponentConfig) (Transport, error) {
 	switch cfg.Type {
+	case "local":
+		return LocalTransport{}, nil
 	case "docker":
 		container := cfg.Settings["container"]
 		if container == "" {
@@ -154,6 +156,8 @@ func newShellDialectFromConfig(cfg ExecutionComponentConfig) (ShellDialect, erro
 
 func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (Scheduler, error) {
 	switch cfg.Type {
+	case "direct_process":
+		return DirectProcessScheduler{}, nil
 	case "slurm":
 		return SlurmScheduler{Transport: transport}, nil
 	default:
