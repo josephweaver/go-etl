@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +25,18 @@ type testSSHServer struct {
 	close   func() error
 }
 
+type testSSHIdentity struct {
+	signer     ssh.Signer
+	privatePEM string
+}
+
 func generateTestSSHSigner(t *testing.T) ssh.Signer {
+	t.Helper()
+
+	return generateTestSSHIdentity(t).signer
+}
+
+func generateTestSSHIdentity(t *testing.T) testSSHIdentity {
 	t.Helper()
 
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -33,7 +49,19 @@ func generateTestSSHSigner(t *testing.T) ssh.Signer {
 		t.Fatalf("build test signer: %v", err)
 	}
 
-	return signer
+	privateKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal test key: %v", err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: privateKeyBytes,
+	})
+
+	return testSSHIdentity{
+		signer:     signer,
+		privatePEM: string(privatePEM),
+	}
 }
 
 func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh.PublicKey) testSSHServer {
@@ -321,4 +349,174 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSSHTransportConnectAcceptsPinnedHostKey(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_PINNED"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	transport := SSHTransport{Config: testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyPinned, hostSigner.PublicKey())}
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if transport.client == nil {
+		t.Fatal("expected connected SSH client")
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+	if transport.client != nil {
+		t.Fatal("expected close to clear SSH client")
+	}
+}
+
+func TestSSHTransportConnectRejectsPinnedHostKeyMismatch(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	wrongHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_HOST"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	transport := SSHTransport{Config: testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyPinned, wrongHostSigner.PublicKey())}
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected host key mismatch error")
+	}
+	if !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectAcceptsInsecureIgnoreHostKey(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_INSECURE"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	transport := SSHTransport{Config: testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyInsecureIgnore, nil)}
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsWrongClientKey(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	allowedClient := generateTestSSHIdentity(t)
+	wrongClient := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, allowedClient.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_CLIENT"
+	t.Setenv(envName, wrongClient.privatePEM)
+
+	transport := SSHTransport{Config: testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyPinned, hostSigner.PublicKey())}
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected authentication error")
+	}
+	if !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsMissingIdentityEnv(t *testing.T) {
+	transport := SSHTransport{Config: SSHTransportConfig{
+		Host:          "127.0.0.1",
+		User:          "test-user",
+		IdentityEnv:   "GOETL_TEST_SSH_KEY_MISSING",
+		HostKeyPolicy: SSHHostKeyPolicyInsecureIgnore,
+	}}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected missing identity env error")
+	}
+	if !strings.Contains(err.Error(), "empty or unset") {
+		t.Fatalf("error = %v, want missing identity context", err)
+	}
+}
+
+func TestSSHTransportConnectUsesIdentityFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	keyFile := t.TempDir() + "/id_ed25519"
+	if err := os.WriteFile(keyFile, []byte(clientIdentity.privatePEM), 0600); err != nil {
+		t.Fatalf("write test identity file: %v", err)
+	}
+
+	cfg := testSSHTransportConfig(t, server.address, "", SSHHostKeyPolicyPinned, hostSigner.PublicKey())
+	cfg.IdentityEnv = ""
+	cfg.IdentityFile = keyFile
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectHonorsCanceledContext(t *testing.T) {
+	clientIdentity := generateTestSSHIdentity(t)
+	envName := "GOETL_TEST_SSH_KEY_CANCELED"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	transport := SSHTransport{Config: SSHTransportConfig{
+		Host:           "192.0.2.1",
+		Port:           22,
+		User:           "test-user",
+		IdentityEnv:    envName,
+		HostKeyPolicy:  SSHHostKeyPolicyInsecureIgnore,
+		ConnectTimeout: "5s",
+	}}
+
+	err := transport.Connect(ctx)
+	if err == nil {
+		t.Fatal("expected canceled context error")
+	}
+	if !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "operation was canceled") {
+		t.Fatalf("error = %v, want canceled context", err)
+	}
+}
+
+func testSSHTransportConfig(t *testing.T, address string, identityEnv string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHTransportConfig {
+	t.Helper()
+
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split test SSH address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test SSH port: %v", err)
+	}
+
+	cfg := SSHTransportConfig{
+		Host:           host,
+		Port:           port,
+		User:           "test-user",
+		IdentityEnv:    identityEnv,
+		HostKeyPolicy:  hostKeyPolicy,
+		ConnectTimeout: "2s",
+	}
+	if pinnedHostKey != nil {
+		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
+	}
+	return cfg
 }
