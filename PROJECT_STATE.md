@@ -135,7 +135,6 @@ cmd/
     transport.go
     worker_scaler.go
     worker_scaler_test.go
-    worker_starter.go
     README.md
     demo-config.json
   worker/

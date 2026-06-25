@@ -1,43 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 
 	"goetl/internal/variable"
 )
-
-type DockerSlurmWorkerStarter struct {
-	Submit func(context.Context, DockerSlurmScriptConfig) (string, error)
-}
-
-func (s DockerSlurmWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
-	if targetEnvironment != "docker_slurm" {
-		return fmt.Errorf("unsupported worker target environment: %s", targetEnvironment)
-	}
-
-	cfg, err := workerLaunchConfig(resolver)
-	if err != nil {
-		return err
-	}
-
-	script, err := GenerateSlurmWorkerScript(cfg.slurm)
-	if err != nil {
-		return err
-	}
-
-	submit := s.Submit
-	if submit == nil {
-		submit = WriteAndSubmitDockerSlurmScript
-	}
-	_, err = submit(context.Background(), DockerSlurmScriptConfig{
-		DockerExecutable: cfg.dockerExecutable,
-		SlurmContainer:   cfg.slurmContainer,
-		ScriptPath:       cfg.scriptPath,
-		Script:           script,
-	})
-	return err
-}
 
 type workerLaunchConfigSpec struct {
 	dockerExecutable string
