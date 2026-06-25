@@ -14,6 +14,28 @@
 - Keep examples short enough to read in one pass.
 - Avoid multi-file edits unless explicitly requested.
 
+## Interaction Modes
+
+### Design Mode
+
+Design mode is for planning, architecture discussion, epic decomposition, slice
+charters, and documentation-only planning artifacts.
+
+- Do not write production code in design mode.
+- Do not write test code in design mode.
+- EC level declarations are not required in design mode.
+- Documentation and planning files may be edited directly on `main`.
+- Prompt-start commits are not required while staying in design mode.
+- Epic and feature planning files may be updated across prompts without
+  committing after every prompt.
+- If the user asks to leave design mode and begin implementation, first agree on
+  the implementation slice charter and then apply the normal slice-boundary git
+  flow.
+
+Design mode feature files should describe the expected artifact of a future
+implementation slice. A feature file is stronger when it names the concrete
+production, test, or documentation artifact that will prove the feature exists.
+
 ## Initial Project Direction
 
 - Start at `main.go`.
