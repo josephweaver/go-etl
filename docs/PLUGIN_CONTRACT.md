@@ -1,4 +1,4 @@
-_# PLUGIN_CONTRACT
+# PLUGIN_CONTRACT
 
 Last updated: 2026-06-26
 
