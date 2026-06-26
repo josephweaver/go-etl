@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -204,5 +205,169 @@ func TestExecutionEnvironmentPrepareReportsTransportError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "prepare transport[0]") {
 		t.Fatalf("error = %v, want transport context", err)
+	}
+}
+
+type preflightTransport struct {
+	prepareTransport
+	issues []PreflightIssue
+}
+
+func (t *preflightTransport) Preflight(ctx context.Context) []PreflightIssue {
+	return t.issues
+}
+
+type preflightScheduler struct {
+	issues []PreflightIssue
+}
+
+func (s preflightScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, error) {
+	return JobHandle{}, nil
+}
+
+func (s preflightScheduler) Preflight(ctx context.Context) []PreflightIssue {
+	return s.issues
+}
+
+type preflightRuntime struct {
+	issues []PreflightIssue
+}
+
+func (r preflightRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
+	return nil
+}
+
+func (r preflightRuntime) Preflight(ctx context.Context) []PreflightIssue {
+	return r.issues
+}
+
+func TestExecutionEnvironmentPreflightNoComponentsReturnsNoIssues(t *testing.T) {
+	env := ExecutionEnvironment{
+		Transports: []Transport{LocalTransport{}},
+		Scheduler:  DirectProcessScheduler{},
+		Runtime:    WorkerRuntime{},
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+}
+
+func TestExecutionEnvironmentPreflightReturnsBlockingIssue(t *testing.T) {
+	env := ExecutionEnvironment{
+		Transports: []Transport{&preflightTransport{issues: []PreflightIssue{{
+			Type:        "ssh",
+			Severity:    PreflightSeverityError,
+			Code:        "ssh_auth_failed",
+			Message:     "SSH authentication failed.",
+			Remediation: "Check the configured identity file.",
+		}}}},
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+	if issues[0].Component != "transport[0]" {
+		t.Fatalf("component = %q, want transport[0]", issues[0].Component)
+	}
+	if issues[0].Severity != PreflightSeverityError {
+		t.Fatalf("severity = %q, want error", issues[0].Severity)
+	}
+}
+
+func TestExecutionEnvironmentPreflightAggregatesMultipleComponents(t *testing.T) {
+	env := ExecutionEnvironment{
+		Transports: []Transport{
+			&preflightTransport{issues: []PreflightIssue{{Component: "control transport", Severity: PreflightSeverityWarning, Code: "slow_connect"}}},
+			&preflightTransport{issues: []PreflightIssue{{Severity: PreflightSeverityError, Code: "missing_route"}}},
+		},
+		Scheduler: preflightScheduler{issues: []PreflightIssue{{Severity: PreflightSeverityError, Code: "missing_sbatch"}}},
+		Runtime:   preflightRuntime{issues: []PreflightIssue{{Severity: PreflightSeverityWarning, Code: "artifact_missing"}}},
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 4 {
+		t.Fatalf("issue count = %d, want 4", len(issues))
+	}
+	if issues[0].Component != "control transport" {
+		t.Fatalf("component[0] = %q, want preserved component", issues[0].Component)
+	}
+	if issues[1].Component != "transport[1]" {
+		t.Fatalf("component[1] = %q, want transport[1]", issues[1].Component)
+	}
+	if issues[2].Component != "scheduler" {
+		t.Fatalf("component[2] = %q, want scheduler", issues[2].Component)
+	}
+	if issues[3].Component != "runtime" {
+		t.Fatalf("component[3] = %q, want runtime", issues[3].Component)
+	}
+}
+
+func TestBlockingPreflightIssuesExcludesWarnings(t *testing.T) {
+	issues := []PreflightIssue{
+		{Severity: PreflightSeverityWarning, Code: "slow_connect"},
+		{Severity: PreflightSeverityError, Code: "missing_sbatch"},
+	}
+
+	blocking := blockingPreflightIssues(issues)
+	if len(blocking) != 1 {
+		t.Fatalf("blocking count = %d, want 1", len(blocking))
+	}
+	if blocking[0].Code != "missing_sbatch" {
+		t.Fatalf("blocking code = %q, want missing_sbatch", blocking[0].Code)
+	}
+}
+
+func TestPreflightIssueJSONShape(t *testing.T) {
+	issue := PreflightIssue{
+		Component:   "transport[0]",
+		Type:        "ssh",
+		Severity:    PreflightSeverityError,
+		Code:        "ssh_unknown_host_key",
+		Message:     "Host is not trusted.",
+		Remediation: "Configure a pinned host key.",
+	}
+
+	data, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatalf("marshal preflight issue: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`"component":"transport[0]"`,
+		`"type":"ssh"`,
+		`"severity":"error"`,
+		`"code":"ssh_unknown_host_key"`,
+		`"message":"Host is not trusted."`,
+		`"remediation":"Configure a pinned host key."`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("json = %s, want field %s", got, want)
+		}
+	}
+}
+
+func TestExecutionEnvironmentPrepareRemainsDistinctFromPreflight(t *testing.T) {
+	transport := &preflightTransport{
+		prepareTransport: prepareTransport{err: fmt.Errorf("prepare failed")},
+		issues:           []PreflightIssue{{Severity: PreflightSeverityError, Code: "preflight_failed"}},
+	}
+	env := ExecutionEnvironment{
+		Transports: []Transport{transport},
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+
+	err := env.Prepare(context.Background())
+	if err == nil {
+		t.Fatal("expected prepare error")
+	}
+	if !strings.Contains(err.Error(), "prepare transport[0]") {
+		t.Fatalf("error = %v, want prepare context", err)
 	}
 }
