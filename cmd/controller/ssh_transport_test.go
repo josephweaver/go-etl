@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -162,8 +164,8 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 			if request.WantReply {
 				_ = request.Reply(true, nil)
 			}
-			_, _ = io.WriteString(channel, "test ssh fixture\n")
-			_, _ = channel.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
+			command := testSSHExecCommand(t, request.Payload)
+			handleTestSSHExecCommand(channel, command)
 			return
 		default:
 			if request.WantReply {
@@ -171,6 +173,48 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 			}
 		}
 	}
+}
+
+func testSSHExecCommand(t *testing.T, payload []byte) string {
+	t.Helper()
+
+	var request struct {
+		Command string
+	}
+	if err := ssh.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("parse test SSH exec payload: %v", err)
+	}
+	return request.Command
+}
+
+func handleTestSSHExecCommand(channel ssh.Channel, command string) {
+	switch command {
+	case "'stdout-ok'":
+		_, _ = io.WriteString(channel, "stdout from ssh\n")
+		sendTestSSHExitStatus(channel, 0)
+	case "'stderr-ok'":
+		_, _ = io.WriteString(channel, "stdout despite stderr\n")
+		_, _ = io.WriteString(channel.Stderr(), "warning from ssh\n")
+		sendTestSSHExitStatus(channel, 0)
+	case "'fail-command'":
+		_, _ = io.WriteString(channel.Stderr(), "remote command failed\n")
+		sendTestSSHExitStatus(channel, 7)
+	case "'arg check' 'two words'":
+		_, _ = io.WriteString(channel, "args preserved\n")
+		sendTestSSHExitStatus(channel, 0)
+	case "'wait-for-cancel'":
+		time.Sleep(2 * time.Second)
+		sendTestSSHExitStatus(channel, 0)
+	default:
+		_, _ = io.WriteString(channel, "test ssh fixture\n")
+		sendTestSSHExitStatus(channel, 0)
+	}
+}
+
+func sendTestSSHExitStatus(channel ssh.Channel, status uint32) {
+	var payload [4]byte
+	binary.BigEndian.PutUint32(payload[:], status)
+	_, _ = channel.SendRequest("exit-status", false, payload[:])
 }
 
 func testSSHClientConfig(hostPublicKey ssh.PublicKey, clientSigner ssh.Signer) *ssh.ClientConfig {
@@ -493,6 +537,108 @@ func TestSSHTransportConnectHonorsCanceledContext(t *testing.T) {
 	if !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "operation was canceled") {
 		t.Fatalf("error = %v, want canceled context", err)
 	}
+}
+
+func TestSSHTransportExecReturnsStdout(t *testing.T) {
+	transport := connectTestSSHTransport(t, "GOETL_TEST_SSH_KEY_EXEC_STDOUT")
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "stdout-ok")
+	if err != nil {
+		t.Fatalf("exec test SSH command: %v", err)
+	}
+
+	if string(output) != "stdout from ssh\n" {
+		t.Fatalf("output = %q, want stdout", string(output))
+	}
+}
+
+func TestSSHTransportExecSucceedsWhenCommandWritesStderr(t *testing.T) {
+	transport := connectTestSSHTransport(t, "GOETL_TEST_SSH_KEY_EXEC_STDERR")
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "stderr-ok")
+	if err != nil {
+		t.Fatalf("exec test SSH command: %v", err)
+	}
+
+	if string(output) != "stdout despite stderr\n" {
+		t.Fatalf("output = %q, want stdout", string(output))
+	}
+}
+
+func TestSSHTransportExecReportsNonzeroExit(t *testing.T) {
+	transport := connectTestSSHTransport(t, "GOETL_TEST_SSH_KEY_EXEC_FAIL")
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "fail-command")
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if len(output) != 0 {
+		t.Fatalf("output = %q, want empty stdout", string(output))
+	}
+	if !strings.Contains(err.Error(), "Exit status 7") && !strings.Contains(err.Error(), "Process exited with status 7") {
+		t.Fatalf("error = %v, want exit status", err)
+	}
+	if !strings.Contains(err.Error(), "remote command failed") {
+		t.Fatalf("error = %v, want stderr", err)
+	}
+}
+
+func TestSSHTransportExecRequiresConnection(t *testing.T) {
+	transport := SSHTransport{}
+
+	_, err := transport.Exec(context.Background(), "stdout-ok")
+	if err == nil {
+		t.Fatal("expected connection error")
+	}
+	if !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("error = %v, want not connected", err)
+	}
+}
+
+func TestSSHTransportExecHonorsCommandTimeout(t *testing.T) {
+	transport := connectTestSSHTransport(t, "GOETL_TEST_SSH_KEY_EXEC_TIMEOUT")
+	defer transport.Close()
+	transport.Config.CommandTimeout = "20ms"
+
+	_, err := transport.Exec(context.Background(), "wait-for-cancel")
+	if err == nil {
+		t.Fatal("expected command timeout")
+	}
+	if !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestSSHTransportExecPreservesArgumentBoundaries(t *testing.T) {
+	transport := connectTestSSHTransport(t, "GOETL_TEST_SSH_KEY_EXEC_ARGS")
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "arg check", "two words")
+	if err != nil {
+		t.Fatalf("exec test SSH command: %v", err)
+	}
+
+	if string(output) != "args preserved\n" {
+		t.Fatalf("output = %q, want args preserved", string(output))
+	}
+}
+
+func connectTestSSHTransport(t *testing.T, envName string) *SSHTransport {
+	t.Helper()
+
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	transport := &SSHTransport{Config: testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyPinned, hostSigner.PublicKey())}
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	return transport
 }
 
 func testSSHTransportConfig(t *testing.T, address string, identityEnv string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHTransportConfig {

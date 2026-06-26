@@ -1,6 +1,6 @@
 # 004 SSHTransport Execute
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / Exec / runs one remote command over an established SSH connection
