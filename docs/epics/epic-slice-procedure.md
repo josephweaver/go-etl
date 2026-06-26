@@ -248,6 +248,20 @@ When asked to create a slice, the agent should:
 6. Revise until agreed.
 7. Commit the slice only after agreement.
 
+## Completion Check
+
+Before creating a new slice, the AI should compare the completed slices with the epic's Proposed Slices.
+
+If the goals of the epic appear to have been achieved, the AI should suggest that no additional slices are necessary and recommend reviewing the epic for completion instead of automatically creating another slice.
+
+## Open Questions
+
+The following architectural questions should be resolved before implementation or during early slices.
+
+- Should SSH sessions be persistent?
+- Should retries belong to Transport or Controller?
+- Should CopyInto use SFTP or SCP?
+
 ## Summary
 
 Epic READMEs describe broad capability.
@@ -255,3 +269,4 @@ Epic READMEs describe broad capability.
 Slices describe bounded implementation actions.
 
 A good slice lets Codex perform a surgical change without loading the whole project into context.
+

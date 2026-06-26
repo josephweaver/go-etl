@@ -46,6 +46,32 @@ The resulting README should capture the agreed design.
 
 ---
 
+## Epic Lifecycle
+
+Every implementation capability follows the same lifecycle.
+
+```text
+Idea
+    ↓
+Epic (Proposed)
+    ↓
+Collaborative Planning
+    ↓
+Epic (Ready)
+    ↓
+Slice Creation
+    ↓
+Implementation
+    ↓
+Epic Review
+    ↓
+Epic (Implemented)
+```
+
+The AI should help move an epic through these stages but should never advance an epic to **Ready** or **Implemented** without explicit agreement from the human.
+
+---
+
 # Epic Status
 
 Every epic has one of three states.
@@ -234,3 +260,12 @@ Each slice exists to answer:
 > **What is the next concrete implementation step?**
 
 The epic is complete when both the human and AI agree that the capability has been decomposed into a coherent set of implementation slices ready for execution.
+
+## Epic Review
+
+When implementation of all agreed slices is complete, the AI should:
+
+1. Compare implemented slices against the Proposed Slices.
+2. Identify missing or incomplete work.
+3. Recommend additional slices if implementation revealed new requirements.
+4. Recommend changing the epic status to **Implemented** if both the human and AI agree the goals have been satisfied.
