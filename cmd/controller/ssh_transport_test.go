@@ -13,18 +13,21 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
 type testSSHServer struct {
-	address string
-	close   func() error
+	address    string
+	remoteRoot string
+	close      func() error
 }
 
 type testSSHIdentity struct {
@@ -83,6 +86,7 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 		},
 	}
 	config.AddHostKey(hostSigner)
+	remoteRoot := t.TempDir()
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -105,7 +109,7 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 			wg.Add(1)
 			go func(conn net.Conn) {
 				defer wg.Done()
-				handleTestSSHConnection(t, conn, config)
+				handleTestSSHConnection(t, conn, config, remoteRoot)
 			}(conn)
 		}
 	}()
@@ -123,12 +127,13 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 	})
 
 	return testSSHServer{
-		address: listener.Addr().String(),
-		close:   closeServer,
+		address:    listener.Addr().String(),
+		remoteRoot: remoteRoot,
+		close:      closeServer,
 	}
 }
 
-func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig) {
+func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig, remoteRoot string) {
 	t.Helper()
 
 	_, channels, requests, err := ssh.NewServerConn(conn, config)
@@ -150,11 +155,11 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 			continue
 		}
 
-		go handleTestSSHSession(t, channel, requests)
+		go handleTestSSHSession(t, channel, requests, remoteRoot)
 	}
 }
 
-func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request) {
+func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request, remoteRoot string) {
 	t.Helper()
 	defer channel.Close()
 
@@ -166,6 +171,26 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 			}
 			command := testSSHExecCommand(t, request.Payload)
 			handleTestSSHExecCommand(channel, command)
+			return
+		case "subsystem":
+			subsystem := testSSHSubsystem(t, request.Payload)
+			if subsystem != "sftp" {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				return
+			}
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+			server, err := sftp.NewServer(channel, sftp.WithServerWorkingDirectory(remoteRoot))
+			if err != nil {
+				t.Logf("create test SFTP server: %v", err)
+				return
+			}
+			if err := server.Serve(); err != nil && err != io.EOF {
+				t.Logf("serve test SFTP: %v", err)
+			}
 			return
 		default:
 			if request.WantReply {
@@ -185,6 +210,18 @@ func testSSHExecCommand(t *testing.T, payload []byte) string {
 		t.Fatalf("parse test SSH exec payload: %v", err)
 	}
 	return request.Command
+}
+
+func testSSHSubsystem(t *testing.T, payload []byte) string {
+	t.Helper()
+
+	var request struct {
+		Name string
+	}
+	if err := ssh.Unmarshal(payload, &request); err != nil {
+		t.Fatalf("parse test SSH subsystem payload: %v", err)
+	}
+	return request.Name
 }
 
 func handleTestSSHExecCommand(channel ssh.Channel, command string) {
@@ -626,7 +663,131 @@ func TestSSHTransportExecPreservesArgumentBoundaries(t *testing.T) {
 	}
 }
 
+func TestSSHTransportCopyWritesFileContent(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_CONTENT")
+	defer transport.Close()
+
+	localPath := writeTestLocalFile(t, "copy-source.txt", "copied content\n")
+	if err := transport.Copy(context.Background(), localPath, "remote/output.txt"); err != nil {
+		t.Fatalf("copy test file: %v", err)
+	}
+
+	got := readTestRemoteFile(t, server, "remote/output.txt")
+	if got != "copied content\n" {
+		t.Fatalf("remote content = %q, want copied content", got)
+	}
+}
+
+func TestSSHTransportCopyCreatesNestedParentDirectory(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_NESTED")
+	defer transport.Close()
+
+	localPath := writeTestLocalFile(t, "nested-source.txt", "nested content\n")
+	if err := transport.Copy(context.Background(), localPath, "a/b/c/output.txt"); err != nil {
+		t.Fatalf("copy test file: %v", err)
+	}
+
+	got := readTestRemoteFile(t, server, "a/b/c/output.txt")
+	if got != "nested content\n" {
+		t.Fatalf("remote content = %q, want nested content", got)
+	}
+}
+
+func TestSSHTransportCopyReplacesExistingRemoteFile(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_REPLACE")
+	defer transport.Close()
+
+	remotePath := filepath.Join(server.remoteRoot, "replace/output.txt")
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0755); err != nil {
+		t.Fatalf("create remote parent: %v", err)
+	}
+	if err := os.WriteFile(remotePath, []byte("old content\n"), 0644); err != nil {
+		t.Fatalf("write old remote file: %v", err)
+	}
+
+	localPath := writeTestLocalFile(t, "replace-source.txt", "new content\n")
+	if err := transport.Copy(context.Background(), localPath, "replace/output.txt"); err != nil {
+		t.Fatalf("copy test file: %v", err)
+	}
+
+	got := readTestRemoteFile(t, server, "replace/output.txt")
+	if got != "new content\n" {
+		t.Fatalf("remote content = %q, want new content", got)
+	}
+}
+
+func TestSSHTransportCopyCanceledBeforeTransferLeavesFinalUnchanged(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_CANCEL")
+	defer transport.Close()
+
+	remotePath := filepath.Join(server.remoteRoot, "cancel/output.txt")
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0755); err != nil {
+		t.Fatalf("create remote parent: %v", err)
+	}
+	if err := os.WriteFile(remotePath, []byte("old content\n"), 0644); err != nil {
+		t.Fatalf("write old remote file: %v", err)
+	}
+
+	localPath := writeTestLocalFile(t, "cancel-source.txt", "new content\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := transport.Copy(ctx, localPath, "cancel/output.txt")
+	if err == nil {
+		t.Fatal("expected canceled copy error")
+	}
+
+	got := readTestRemoteFile(t, server, "cancel/output.txt")
+	if got != "old content\n" {
+		t.Fatalf("remote content = %q, want old content", got)
+	}
+}
+
+func TestSSHTransportCopyRemovesTempFileOnPromoteFailure(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_CLEANUP")
+	defer transport.Close()
+
+	finalDir := filepath.Join(server.remoteRoot, "cleanup/output.txt")
+	if err := os.MkdirAll(finalDir, 0755); err != nil {
+		t.Fatalf("create remote final directory: %v", err)
+	}
+
+	localPath := writeTestLocalFile(t, "cleanup-source.txt", "cleanup content\n")
+	err := transport.Copy(context.Background(), localPath, "cleanup/output.txt")
+	if err == nil {
+		t.Fatal("expected promote failure")
+	}
+
+	matches, err := filepath.Glob(filepath.Join(server.remoteRoot, "cleanup/.output.txt.goetl-tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("left temp files: %#v", matches)
+	}
+}
+
+func TestSSHTransportCopyRejectsMissingLocalSource(t *testing.T) {
+	transport, _ := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_MISSING")
+	defer transport.Close()
+
+	err := transport.Copy(context.Background(), filepath.Join(t.TempDir(), "missing.txt"), "missing/output.txt")
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !strings.Contains(err.Error(), "open local copy source") {
+		t.Fatalf("error = %v, want local source context", err)
+	}
+}
+
 func connectTestSSHTransport(t *testing.T, envName string) *SSHTransport {
+	t.Helper()
+
+	transport, _ := connectTestSSHTransportWithServer(t, envName)
+	return transport
+}
+
+func connectTestSSHTransportWithServer(t *testing.T, envName string) (*SSHTransport, testSSHServer) {
 	t.Helper()
 
 	hostSigner := generateTestSSHSigner(t)
@@ -638,7 +799,27 @@ func connectTestSSHTransport(t *testing.T, envName string) *SSHTransport {
 	if err := transport.Connect(context.Background()); err != nil {
 		t.Fatalf("connect test SSH transport: %v", err)
 	}
-	return transport
+	return transport, server
+}
+
+func writeTestLocalFile(t *testing.T, name string, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write local test file: %v", err)
+	}
+	return path
+}
+
+func readTestRemoteFile(t *testing.T, server testSSHServer, remotePath string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(server.remoteRoot, filepath.FromSlash(remotePath)))
+	if err != nil {
+		t.Fatalf("read remote test file: %v", err)
+	}
+	return string(data)
 }
 
 func testSSHTransportConfig(t *testing.T, address string, identityEnv string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHTransportConfig {

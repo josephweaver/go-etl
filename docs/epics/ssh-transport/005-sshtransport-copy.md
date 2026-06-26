@@ -1,6 +1,6 @@
 # 005 SSHTransport Copy
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / Copy / transfers one local file to a remote path without exposing partial output
