@@ -1,0 +1,1 @@
+GOET should provide orchestration primitives rather than reimplementing operating system capabilities.
