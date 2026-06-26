@@ -1,12 +1,12 @@
 # Project State
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26
 
 ## Current Focus
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
-The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller can now load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The current configured chain is:
+The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller can now load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The default configured chain is:
 
 ```text
 transport = DockerContainerTransport backed by DockerTransport
@@ -15,7 +15,9 @@ scheduler = SlurmScheduler
 runtime   = WorkerRuntime
 ```
 
-This represents the locally controlled Dockerized Slurm fake-HPCC backend. Docker provides the current transport into the Slurm control container, Bash describes the command/path/string dialect inside that environment, Slurm schedules worker jobs, and WorkerRuntime prepares the worker-side filesystem/config/artifact locations. The repository still has a tiny fake `sbatch` smoke-test command and fake-HPCC demo runner, but those should remain fallback fixtures rather than grow into the main scheduler path.
+This represents the locally controlled Dockerized Slurm fake-HPCC backend. Docker provides the default transport into the Slurm control container, Bash describes the command/path/string dialect inside that environment, Slurm schedules worker jobs, and WorkerRuntime prepares the worker-side filesystem/config/artifact locations. The repository now also has an SSH transport path that can connect to a target host with key-based authentication, copy files, list remote directories, run commands, perform basic filesystem operations, and reconnect conservatively after session/client-open failures. `cmd/controller/fake-hpcc-ssh-config.json` is the first controller config for reaching Fake HPCC through SSH instead of Docker. The repository still has a tiny fake `sbatch` smoke-test command and fake-HPCC demo runner, but those should remain fallback fixtures rather than grow into the main scheduler path.
+
+The first client-side SSH setup engine now lives in `internal/clientsetup`. It can run a questionnaire through an injected prompter, generate local Ed25519 key material under `.run/goetl/ssh`, and write a generated controller config under `.run/goetl/generated`. It does not yet install the public key into the target user's `authorized_keys`, write an OpenSSH `known_hosts` file, or expose the questionnaire through `cmd/demo-client`.
 
 The target product still has a reusable Python interface that submits external pipeline/config files to a Go controller on backends such as HPCC. The current implementation is a local runtime foundation, not the intended user-facing API.
 
@@ -72,6 +74,9 @@ internal/
     local_controller_test.go
     workflow.go
     workflow_test.go
+  clientsetup/
+    ssh_setup.go
+    ssh_setup_test.go
   model/
     work_item.go
     work_item_test.go
@@ -118,6 +123,7 @@ cmd/
     worker_launch_config_test.go
     docker_transport.go
     docker_transport_test.go
+    fake-hpcc-ssh-config.json
     execution_environment.go
     execution_environment_test.go
     local_worker.go
@@ -128,6 +134,9 @@ cmd/
     runtime_test.go
     scheduler.go
     shell_dialect.go
+    ssh_transport.go
+    ssh_transport_test.go
+    ssh_transport_integration_test.go
     slurm_scheduler.go
     slurm_scheduler_test.go
     slurm_worker_script.go
@@ -248,7 +257,7 @@ When `execution_environment` is present, the controller builds an `ExecutionEnvi
 - `Scheduler` submits prepared jobs.
 - `Runtime` prepares the worker process environment that the scheduler will start.
 
-The current concrete implementations are `DockerContainerTransport`, `BashShellPlatform`, `SlurmScheduler`, and `WorkerRuntime`.
+The current concrete implementations are `DockerContainerTransport`, `SSHTransport`, `BashShellPlatform`, `SlurmScheduler`, and `WorkerRuntime`.
 
 `POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
 
@@ -410,7 +419,7 @@ Workflow-generated assignments set `code_version` from the resolved variable `co
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
 
-`WorkSkip` is a shared marker shape for future skip behavior. It is not sent over HTTP or recorded by the controller yet.
+`WorkSkip` is a shared marker shape for skip behavior. It is currently used inside the controller to build skipped attempt snapshots when `/work/next` determines that a pending item can reuse a prior completed attempt.
 
 ## Variable Model
 
@@ -607,6 +616,8 @@ The demo client currently starts the controller with:
 controller_config.controller_start_args = ["run", "./cmd/controller", "./cmd/controller/demo-config.json"]
 ```
 
+`internal/clientsetup` contains the first client-side SSH setup engine. `SSHSetup` is intentionally decoupled from terminal I/O through a `Prompter` interface and from filesystem writes through a `FileStore` interface. The current setup flow can ask for transport choice, SSH host, port, user, key creation or existing key path, and host public key confirmation. For SSH it can generate a project-local Ed25519 key pair and write a generated controller config that selects `transport.type = "ssh"`. This package is not yet wired into `cmd/demo-client`; remote public-key installation and durable `known_hosts` management remain future slices.
+
 ## Fake HPCC And Dockerized Slurm
 
 The repository now has a first fake-HPCC bootstrap path documented in `docs/fake-hpcc.md`.
@@ -616,10 +627,12 @@ Current repository pieces:
 - `scripts/fake-hpcc/sbatch` is a deliberately tiny fake `sbatch` command. It accepts a script path, records fake scheduler state under `.run/fake-slurm`, prints a Slurm-like submitted-job line, and runs the script in background or foreground test mode.
 - `cmd/controller/slurm_worker_script.go` generates a small Slurm-style worker script.
 - `cmd/controller/docker_transport.go` implements Docker CLI-backed copy and exec operations, with a `DockerContainerTransport` adapter for a specific container such as `slurmctld`.
+- `cmd/controller/ssh_transport.go` implements SSH-backed connect, exec, copy, list, and filesystem helper behavior with key-based auth and host-key checking.
 - `cmd/controller/slurm_scheduler.go` writes generated Slurm scripts to local temp files, copies them through a `Transport`, and submits them through `sbatch`.
 - `cmd/controller/bash_shell_platform.go` implements the current Bash shell dialect for newline handling, argument quoting, path localization, and simple command builders.
 - `cmd/controller/runtime.go` defines `WorkerRuntime`, which prepares remote worker directories, writes worker config, and can upload a local worker artifact when configured.
 - `cmd/controller/execution_environment.go` builds a configured environment from transport, dialect, scheduler, and runtime component config.
+- `cmd/controller/fake-hpcc-ssh-config.json` defines a first Fake HPCC controller config that uses SSH transport placeholders for host, port, user, identity file, and pinned host key.
 - `WriteFakeHPCCWorkerScript` prepares `.run/fake-hpcc/worker.slurm` for the current fake-HPCC fixture.
 - `demo-fake-hpcc-workflow.json` submits a one-year `write_demo_output` workflow with `worker_target_environment = "hpcc"`.
 - The controller now treats a configured execution environment as the preferred worker-start path. For the Dockerized Slurm backend, workflow submission prepares the worker runtime, generates a Slurm worker script, copies it into the Slurm control container, and submits it with `sbatch`.
@@ -673,6 +686,8 @@ sacct -> job 1 COMPLETED 0:0
 ```
 
 Future fake-HPCC work should adapt the controller/runtime boundary to submit generated worker scripts to this Dockerized Slurm stack. Avoid expanding the homegrown fake `sbatch` beyond the minimum smoke-test role unless the Dockerized Slurm stack is unavailable.
+
+The repository-local Fake HPCC Slurm/Singularity container definition now installs OpenSSH client/server packages, creates a `goetl` user, prepares `/home/goetl/.ssh`, prepares `/data/goetl`, generates host keys at container startup, validates `sshd` configuration in its container test script, and exposes port 22. The image is ready for an SSH-accessible fake HPCC path, but caller-side key installation is not automated yet.
 
 The current Docker transport assumes a Docker-compatible command-line executable is available on the controller host. `FUTURE.md` records the deferred idea of detecting the Docker environment on first use and, after a user prompt, installing or guiding installation when Docker is missing.
 
@@ -746,6 +761,9 @@ Current coverage includes:
 - Controller default config loading when no config path is supplied.
 - Controller execution-environment config validation and construction.
 - Docker transport command construction for `exec` and `cp` behavior.
+- SSH transport config validation, key loading, host-key checking, connect/close behavior, command execution, copy/list behavior, filesystem helpers, reconnect behavior, and end-to-end in-process SSH/SFTP fixture coverage.
+- Fake HPCC SSH controller config construction.
+- Client SSH setup key generation, existing-key config generation, and required host-key confirmation behavior.
 - Bash shell dialect newline, quoting, path localization, copy command, and remove command behavior.
 - Slurm scheduler script writing, copy, and submit behavior.
 - WorkerRuntime path derivation, remote directory preparation, worker config upload, and optional worker artifact upload.
@@ -780,6 +798,14 @@ scripts/fake-hpcc/run-demo
 ```
 
 This uses the repository's tiny fake `sbatch` command and should remain a smoke test.
+
+Validate the repository Fake HPCC Slurm/Singularity container, including SSH server setup, from WSL/Bash:
+
+```bash
+containers/fake-hpcc-slurm-singularity/test
+```
+
+This builds the image and checks Singularity, `sshd -t`, the `goetl` user, SSH directories, and selected `sshd -T` settings.
 
 Start and inspect the preferred Dockerized Slurm fake-HPCC backend from WSL:
 
@@ -885,8 +911,8 @@ The controller now owns queue semantics. The worker stays relatively dumb: pull,
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
 
-For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings.
+For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 
 ## Likely Next Step
 
-Build and pass a real worker artifact into `WorkerRuntime`, then run an end-to-end Dockerized Slurm submission where the scheduled worker starts inside the Slurm environment and pulls work from the controller. Keep the repository fake `sbatch` only as a smoke-test fallback.
+Wire `internal/clientsetup.SSHSetup` into `cmd/demo-client` behind an explicit setup flag or subcommand so the questionnaire can create local key material and a generated controller config from the demo client. Keep remote `authorized_keys` installation and durable `known_hosts` file management as separate, explicit follow-up slices.

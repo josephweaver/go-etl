@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26
 
 ## Application Target
 
@@ -88,7 +88,7 @@ Backend execution should be configured as an execution environment composed from
 - Scheduler: submits jobs and represents backend capacity acquisition.
 - Runtime: prepares the process or system that actually runs work, initially the Go worker.
 
-The current target chain for the local fake-HPCC backend is:
+The current target chain for the Docker-backed local fake-HPCC backend is:
 
 ```text
 transport = DockerTransport / DockerContainerTransport
@@ -97,7 +97,17 @@ scheduler = SlurmScheduler
 runtime   = WorkerRuntime
 ```
 
-Docker is the current transport into the Dockerized Slurm control container. Slurm is the scheduler. Bash is the initial Linux shell dialect. WorkerRuntime prepares the worker-side directories, config, script location, and worker artifact. Later environments may use a chain of transports, such as SSH into an HPCC login node followed by scheduler submission.
+Docker is one current transport into the Dockerized Slurm control container. SSH is also a target transport for fake HPCC and later institutional HPCC access. Slurm is the scheduler. Bash is the initial Linux shell dialect. WorkerRuntime prepares the worker-side directories, config, script location, and worker artifact. Later environments may use a chain of transports, such as SSH into an HPCC login node followed by scheduler submission.
+
+SSH transport should remain controller-side execution plumbing. It should connect, copy/list files, perform basic remote filesystem operations, execute commands, and surface authentication or host-key failures clearly. It should not own user interaction, key enrollment policy, or backend selection. Those setup concerns belong in the client/backend setup layer.
+
+The client/backend setup layer should reduce the operational pain of first-time SSH configuration. A setup command should be able to ask for transport, host, port, user, whether to generate a key pair, and whether the presented host identity is trusted. The setup output should make the three SSH trust artifacts explicit:
+
+- a local private/public key pair or an existing private key path;
+- target-side authorization, usually the public key in the target account's `authorized_keys`;
+- host identity pinning, either in the generated controller config or in an OpenSSH-compatible `known_hosts` file.
+
+Automatic SSH setup must not silently trust arbitrary hosts or mutate remote accounts without an explicit user decision. Fake HPCC may support a controlled local convenience path for installing the generated public key, but real HPCC setup should respect site policy and may require manual instructions or institution-approved enrollment instead of password-based automation.
 
 For local execution, the same ownership boundary applies. The controller owns the compiled queue and decides when worker capacity is needed. When the controller detects pending work, it should attempt to start worker capacity through configured execution-environment components. Workers still pull work from the controller after startup.
 
@@ -202,6 +212,25 @@ runtime.type = worker
 runtime.root = /data/goetl
 runtime.controller_url = http://host.docker.internal:8080
 ```
+
+For the SSH-accessible Fake HPCC backend, the same execution-environment shape should be expressible with a different transport:
+
+```text
+execution_environment.name = fake-hpcc-ssh
+transport.type = ssh
+transport.host = 127.0.0.1
+transport.port = 2222
+transport.user = goetl
+transport.identity_file = .run/goetl/ssh/id_ed25519
+transport.host_public_key = <pinned-host-public-key>
+dialect.type = bash
+scheduler.type = slurm
+runtime.type = worker
+runtime.root = /data/goetl
+runtime.controller_url = http://host.docker.internal:8080
+```
+
+The config file is the controller's transport surface. It may contain a pinned host public key or a path to key material, but the interactive collection and generation of those values should live in client setup code.
 
 The controller should load a default controller config when no explicit config path is supplied. Client APIs may still provide a different config path or override variables when a specific backend or run needs different settings.
 
