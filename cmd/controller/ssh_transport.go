@@ -47,6 +47,13 @@ type SSHTransport struct {
 	client  *ssh.Client
 }
 
+type RemoteFileInfo struct {
+	Path  string
+	Name  string
+	IsDir bool
+	Size  int64
+}
+
 func (t *SSHTransport) Connect(ctx context.Context) error {
 	if err := t.Config.Validate(); err != nil {
 		return err
@@ -214,6 +221,50 @@ func (t *SSHTransport) Copy(ctx context.Context, localPath string, remotePath st
 	return nil
 }
 
+func (t *SSHTransport) List(ctx context.Context, remotePath string) ([]RemoteFileInfo, error) {
+	if t.client == nil {
+		return nil, fmt.Errorf("ssh transport is not connected")
+	}
+	if err := validateSSHRemotePath("list path", remotePath); err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel, err := t.commandContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	if err := runCtx.Err(); err != nil {
+		return nil, fmt.Errorf("ssh list canceled before request: %w", err)
+	}
+
+	client, err := sftp.NewClient(t.client)
+	if err != nil {
+		return nil, fmt.Errorf("open ssh sftp client: %w", err)
+	}
+	defer client.Close()
+
+	entries, err := client.ReadDir(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("list remote path %q: %w", remotePath, err)
+	}
+	if err := runCtx.Err(); err != nil {
+		return nil, fmt.Errorf("ssh list canceled after request: %w", err)
+	}
+
+	infos := make([]RemoteFileInfo, 0, len(entries))
+	for _, entry := range entries {
+		infos = append(infos, RemoteFileInfo{
+			Path:  path.Join(remotePath, entry.Name()),
+			Name:  entry.Name(),
+			IsDir: entry.IsDir(),
+			Size:  entry.Size(),
+		})
+	}
+	return infos, nil
+}
+
 func (cfg SSHTransportConfig) Validate() error {
 	if cfg.Host == "" {
 		return fmt.Errorf("ssh host is required")
@@ -243,11 +294,15 @@ func (cfg SSHTransportConfig) Validate() error {
 }
 
 func validateSSHCopyPath(name string, value string) error {
+	return validateSSHRemotePath(name, value)
+}
+
+func validateSSHRemotePath(name string, value string) error {
 	if value == "" {
-		return fmt.Errorf("ssh copy %s is required", name)
+		return fmt.Errorf("ssh %s is required", name)
 	}
 	if containsNewline(value) {
-		return fmt.Errorf("ssh copy %s must not contain newlines", name)
+		return fmt.Errorf("ssh %s must not contain newlines", name)
 	}
 	return nil
 }

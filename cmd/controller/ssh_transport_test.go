@@ -780,6 +780,102 @@ func TestSSHTransportCopyRejectsMissingLocalSource(t *testing.T) {
 	}
 }
 
+func TestSSHTransportListReturnsDirectoryEntries(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_LIST_ENTRIES")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "list/file.txt", "file content")
+	mkdirTestRemote(t, server, "list/child")
+
+	entries, err := transport.List(context.Background(), "list")
+	if err != nil {
+		t.Fatalf("list remote directory: %v", err)
+	}
+
+	byName := remoteEntriesByName(entries)
+	fileEntry, ok := byName["file.txt"]
+	if !ok {
+		t.Fatalf("missing file entry in %#v", entries)
+	}
+	if fileEntry.IsDir {
+		t.Fatal("file entry reported as directory")
+	}
+	if fileEntry.Size != int64(len("file content")) {
+		t.Fatalf("file size = %d, want %d", fileEntry.Size, len("file content"))
+	}
+	if fileEntry.Path != "list/file.txt" {
+		t.Fatalf("file path = %q, want list/file.txt", fileEntry.Path)
+	}
+
+	dirEntry, ok := byName["child"]
+	if !ok {
+		t.Fatalf("missing directory entry in %#v", entries)
+	}
+	if !dirEntry.IsDir {
+		t.Fatal("directory entry reported as file")
+	}
+	if dirEntry.Path != "list/child" {
+		t.Fatalf("directory path = %q, want list/child", dirEntry.Path)
+	}
+}
+
+func TestSSHTransportListReturnsEmptyDirectory(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_LIST_EMPTY")
+	defer transport.Close()
+	mkdirTestRemote(t, server, "empty")
+
+	entries, err := transport.List(context.Background(), "empty")
+	if err != nil {
+		t.Fatalf("list empty remote directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %#v, want empty", entries)
+	}
+}
+
+func TestSSHTransportListReportsMissingPath(t *testing.T) {
+	transport, _ := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_LIST_MISSING")
+	defer transport.Close()
+
+	_, err := transport.List(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected missing path error")
+	}
+	if !strings.Contains(err.Error(), "list remote path") {
+		t.Fatalf("error = %v, want path context", err)
+	}
+}
+
+func TestSSHTransportListReportsRegularFile(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_LIST_FILE")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "file.txt", "content")
+
+	_, err := transport.List(context.Background(), "file.txt")
+	if err == nil {
+		t.Fatal("expected regular file listing error")
+	}
+	if !strings.Contains(err.Error(), "list remote path") {
+		t.Fatalf("error = %v, want path context", err)
+	}
+}
+
+func TestSSHTransportListHonorsCanceledContext(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_LIST_CANCEL")
+	defer transport.Close()
+	mkdirTestRemote(t, server, "cancel-list")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := transport.List(ctx, "cancel-list")
+	if err == nil {
+		t.Fatal("expected canceled list error")
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("error = %v, want canceled context", err)
+	}
+}
+
 func connectTestSSHTransport(t *testing.T, envName string) *SSHTransport {
 	t.Helper()
 
@@ -820,6 +916,34 @@ func readTestRemoteFile(t *testing.T, server testSSHServer, remotePath string) s
 		t.Fatalf("read remote test file: %v", err)
 	}
 	return string(data)
+}
+
+func writeTestRemoteFile(t *testing.T, server testSSHServer, remotePath string, content string) {
+	t.Helper()
+
+	path := filepath.Join(server.remoteRoot, filepath.FromSlash(remotePath))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create remote parent: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write remote test file: %v", err)
+	}
+}
+
+func mkdirTestRemote(t *testing.T, server testSSHServer, remotePath string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Join(server.remoteRoot, filepath.FromSlash(remotePath)), 0755); err != nil {
+		t.Fatalf("create remote test directory: %v", err)
+	}
+}
+
+func remoteEntriesByName(entries []RemoteFileInfo) map[string]RemoteFileInfo {
+	byName := make(map[string]RemoteFileInfo, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	return byName
 }
 
 func testSSHTransportConfig(t *testing.T, address string, identityEnv string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHTransportConfig {
