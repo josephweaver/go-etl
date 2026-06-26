@@ -1,6 +1,6 @@
 # 011 SSHTransport End-To-End Integration
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / integration / runs a controller worker-start path through SSH transport
