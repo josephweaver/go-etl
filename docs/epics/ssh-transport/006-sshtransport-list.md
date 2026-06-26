@@ -1,6 +1,6 @@
 # 006 SSHTransport List
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / List / lists one remote directory or path for preflight and diagnostics
