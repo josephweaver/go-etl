@@ -1,6 +1,6 @@
 # 014 Client SSH Setup Wizard
 
-Status: proposed
+Status: implemented
 
 Slice:
 client setup / execution environment wizard / creates SSH-backed controller config without making SSHTransport interactive
@@ -159,3 +159,14 @@ This feature enables:
 - guided SSH config generation for non-Go users
 - safer host-key pinning workflows
 - future real-cluster setup guidance without mixing interactivity into runtime transport code
+
+## First Implementation Artifact
+
+The first implementation slice adds:
+
+```text
+internal/clientsetup/ssh_setup.go
+internal/clientsetup/ssh_setup_test.go
+```
+
+This is the testable setup engine. It is not yet wired to a public CLI command.
