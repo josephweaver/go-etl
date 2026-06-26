@@ -96,13 +96,16 @@ func (t *SSHTransport) Close() error {
 }
 
 func (t *SSHTransport) Exec(ctx context.Context, args ...string) ([]byte, error) {
-	if t.client == nil {
-		return nil, fmt.Errorf("ssh transport is not connected")
-	}
-
 	command, err := t.commandString(args...)
 	if err != nil {
 		return nil, err
+	}
+	return t.execCommand(ctx, command)
+}
+
+func (t *SSHTransport) execCommand(ctx context.Context, command string) ([]byte, error) {
+	if t.client == nil {
+		return nil, fmt.Errorf("ssh transport is not connected")
 	}
 
 	session, err := t.client.NewSession()
@@ -265,6 +268,60 @@ func (t *SSHTransport) List(ctx context.Context, remotePath string) ([]RemoteFil
 	return infos, nil
 }
 
+func (t *SSHTransport) MakeDirectory(ctx context.Context, remotePath string) error {
+	command, err := t.filesystemDialect().MakeDirectoryCommand(remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
+func (t *SSHTransport) Move(ctx context.Context, sourcePath string, destinationPath string) error {
+	command, err := t.filesystemDialect().MoveCommand(sourcePath, destinationPath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
+func (t *SSHTransport) RemoveFile(ctx context.Context, remotePath string) error {
+	command, err := t.filesystemDialect().RemoveFileCommand(remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
+func (t *SSHTransport) RemoveTree(ctx context.Context, remotePath string) error {
+	command, err := t.filesystemDialect().RemoveTreeCommand(remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
+func (t *SSHTransport) Chmod(ctx context.Context, mode string, remotePath string) error {
+	command, err := t.filesystemDialect().ChmodCommand(mode, remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
+func (t *SSHTransport) Chown(ctx context.Context, owner string, remotePath string) error {
+	command, err := t.filesystemDialect().ChownCommand(owner, remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = t.runShellCommand(ctx, command)
+	return err
+}
+
 func (cfg SSHTransportConfig) Validate() error {
 	if cfg.Host == "" {
 		return fmt.Errorf("ssh host is required")
@@ -291,6 +348,26 @@ func (cfg SSHTransportConfig) Validate() error {
 		return err
 	}
 	return nil
+}
+
+type filesystemCommandDialect interface {
+	MakeDirectoryCommand(path string) (string, error)
+	MoveCommand(src string, dest string) (string, error)
+	RemoveFileCommand(path string) (string, error)
+	RemoveTreeCommand(path string) (string, error)
+	ChmodCommand(mode string, path string) (string, error)
+	ChownCommand(owner string, path string) (string, error)
+}
+
+func (t SSHTransport) filesystemDialect() filesystemCommandDialect {
+	if dialect, ok := t.Dialect.(filesystemCommandDialect); ok {
+		return dialect
+	}
+	return BashShellPlatform{}
+}
+
+func (t *SSHTransport) runShellCommand(ctx context.Context, command string) ([]byte, error) {
+	return t.execCommand(ctx, command)
 }
 
 func validateSSHCopyPath(name string, value string) error {

@@ -1,6 +1,6 @@
 # 007 SSHTransport Filesystem Commands
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / filesystem commands / supports mkdir, move, remove, chmod, and chown helpers
