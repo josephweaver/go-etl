@@ -1,6 +1,6 @@
 # 013 Controller Config Fake-HPCC Via SSH
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller config / fake-HPCC SSH config / selects SSHTransport instead of DockerTransport

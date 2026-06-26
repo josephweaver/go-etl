@@ -114,6 +114,45 @@ func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
 	}
 }
 
+func TestFakeHPCCSSHConfigBuildsSSHTransport(t *testing.T) {
+	config, err := loadControllerConfig("fake-hpcc-ssh-config.json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env, err := NewExecutionEnvironment(config.ExecutionEnvironment)
+	if err != nil {
+		t.Fatalf("unexpected environment error: %v", err)
+	}
+
+	if env.Config.Name != "fake-hpcc-ssh" {
+		t.Fatalf("environment name = %q, want fake-hpcc-ssh", env.Config.Name)
+	}
+	transport, ok := env.Transports[0].(*SSHTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *SSHTransport", env.Transports[0])
+	}
+	if transport.Config.Host != "127.0.0.1" {
+		t.Fatalf("host = %q, want 127.0.0.1", transport.Config.Host)
+	}
+	if transport.Config.Port != 2222 {
+		t.Fatalf("port = %d, want 2222", transport.Config.Port)
+	}
+	if transport.Config.IdentityFile != ".run/fake-hpcc-ssh/id_ed25519" {
+		t.Fatalf("identity file = %q, want fake key path", transport.Config.IdentityFile)
+	}
+	if _, ok := env.Scheduler.(SlurmScheduler); !ok {
+		t.Fatalf("scheduler type = %T, want SlurmScheduler", env.Scheduler)
+	}
+	runtime, ok := env.Runtime.(WorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
+	}
+	if runtime.Root != "/data/goetl" {
+		t.Fatalf("runtime root = %q, want /data/goetl", runtime.Root)
+	}
+}
+
 func TestLoadControllerConfigRejectsMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 

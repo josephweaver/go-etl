@@ -135,6 +135,19 @@ The next fake-HPCC SSH milestone should be an opt-in runbook or test that starts
 a local SSH-accessible fake login node, points it at shared fake storage, and
 submits a generated Slurm worker script through `sbatch`.
 
+The first tracked controller config fixture for this path is:
+
+```text
+cmd/controller/fake-hpcc-ssh-config.json
+```
+
+It selects `transport.type = "ssh"`, keeps `scheduler.type = "slurm"`, and
+uses `runtime.type = "worker"` rooted at `/data/goetl`. The fixture intentionally
+uses generic local placeholder values such as `127.0.0.1:2222`, user `goetl`,
+`.run/fake-hpcc-ssh/id_ed25519`, and a placeholder pinned host key. Developers
+must provide local generated keys and host-key values outside source control
+before using it against a running fake SSH login service.
+
 ## SingularityCE Slurm Image
 
 The institutional HPCC target currently uses SingularityCE 4.1.2 on Ubuntu
