@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -35,8 +37,9 @@ type SSHTransportConfig struct {
 }
 
 type SSHTransport struct {
-	Config SSHTransportConfig
-	client *ssh.Client
+	Config  SSHTransportConfig
+	Dialect ShellDialect
+	client  *ssh.Client
 }
 
 func (t *SSHTransport) Connect(ctx context.Context) error {
@@ -80,6 +83,54 @@ func (t *SSHTransport) Close() error {
 	return err
 }
 
+func (t *SSHTransport) Exec(ctx context.Context, args ...string) ([]byte, error) {
+	if t.client == nil {
+		return nil, fmt.Errorf("ssh transport is not connected")
+	}
+
+	command, err := t.commandString(args...)
+	if err != nil {
+		return nil, err
+	}
+
+	session, err := t.client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("ssh open session: %w", err)
+	}
+	defer session.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	runCtx, cancel, err := t.commandContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	if err := session.Start(command); err != nil {
+		return nil, fmt.Errorf("ssh start command %q: %w", command, err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return stdout.Bytes(), sshCommandError(command, stderr.String(), err)
+		}
+		return stdout.Bytes(), nil
+	case <-runCtx.Done():
+		_ = session.Close()
+		return stdout.Bytes(), fmt.Errorf("ssh command %q canceled: %w", command, runCtx.Err())
+	}
+}
+
 func (cfg SSHTransportConfig) Validate() error {
 	if cfg.Host == "" {
 		return fmt.Errorf("ssh host is required")
@@ -106,6 +157,52 @@ func (cfg SSHTransportConfig) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func (t SSHTransport) commandString(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("ssh command is required")
+	}
+
+	dialect := t.Dialect
+	if dialect == nil {
+		dialect = BashShellPlatform{}
+	}
+
+	quoted := make([]string, 0, len(args))
+	for index, arg := range args {
+		if arg == "" {
+			return "", fmt.Errorf("ssh command arg[%d] is required", index)
+		}
+		if containsNewline(arg) {
+			return "", fmt.Errorf("ssh command arg[%d] must not contain newlines", index)
+		}
+		quoted = append(quoted, dialect.QuoteArg(arg))
+	}
+	return strings.Join(quoted, " "), nil
+}
+
+func (t SSHTransport) commandContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if t.Config.CommandTimeout == "" {
+		runCtx, cancel := context.WithCancel(ctx)
+		return runCtx, cancel, nil
+	}
+
+	timeout, err := time.ParseDuration(t.Config.CommandTimeout)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ssh command_timeout must be a Go duration: %w", err)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	return runCtx, cancel, nil
+}
+
+func sshCommandError(command string, stderr string, err error) error {
+	message := fmt.Sprintf("ssh command %q failed: %v", command, err)
+	stderr = strings.TrimSpace(stderr)
+	if stderr != "" {
+		message += ": " + stderr
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func (t SSHTransport) sshClientConfig() (*ssh.ClientConfig, error) {
