@@ -154,6 +154,43 @@ shell with Docker available:
 containers/fake-hpcc-slurm-singularity/test
 ```
 
+The image also installs and configures OpenSSH server for the fake login-node
+boundary. It creates a generic local-only user:
+
+```text
+goetl
+```
+
+and prepares:
+
+```text
+/home/goetl/.ssh
+/data/goetl
+/run/sshd
+```
+
+OpenSSH is configured with password login and root login disabled:
+
+```text
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+AllowUsers goetl
+AuthorizedKeysFile .ssh/authorized_keys
+UsePAM no
+```
+
+The image generates host keys during the image build with `ssh-keygen -A`. It
+does not include private client keys or authorized user keys. A later local run
+script or developer setup step must mount or write an authorized public key for
+the `goetl` user before a real SSH login succeeds.
+
+The narrow image verification checks `singularity --version`, `/usr/sbin/sshd
+-t`, the `goetl` user, `ssh -V`, and effective `sshd -T` settings. This proves
+the image contains the SSH server pieces needed for a fake login-node boundary.
+It does not yet start a full Docker Compose SSH-accessible fake-HPCC service or
+publish a host SSH port.
+
 The script builds:
 
 ```text

@@ -23,3 +23,15 @@ case "${version}" in
     exit 1
     ;;
 esac
+
+docker run --rm "${image}" bash -lc '
+  set -euo pipefail
+  /usr/sbin/sshd -t
+  id goetl
+  test -d /home/goetl/.ssh
+  test -d /data/goetl
+  ssh -V
+  /usr/sbin/sshd -T | grep -q "^passwordauthentication no$"
+  /usr/sbin/sshd -T | grep -q "^pubkeyauthentication yes$"
+  /usr/sbin/sshd -T | grep -q "^permitrootlogin no$"
+'

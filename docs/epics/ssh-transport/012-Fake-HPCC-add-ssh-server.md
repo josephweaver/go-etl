@@ -1,6 +1,6 @@
 # 012 Fake-HPCC Add SSH Server
 
-Status: proposed
+Status: implemented
 
 Slice:
 fake-HPCC container / SSH server / exposes the Slurm plus Singularity fake backend through SSH
