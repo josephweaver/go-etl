@@ -146,10 +146,57 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 	}
 }
 
-func TestNewExecutionEnvironmentRejectsUnsupportedComponentType(t *testing.T) {
+func TestNewExecutionEnvironmentSupportsSSHTransport(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name: "ssh-slurm",
+		Transports: []ExecutionComponentConfig{{
+			Type: "ssh",
+			Settings: map[string]string{
+				"host":            "hpcc.example.edu",
+				"port":            "2222",
+				"user":            "researcher",
+				"identity_file":   "/home/researcher/.ssh/id_ed25519",
+				"host_key_policy": "pinned",
+				"pinned_host_key": "ssh-ed25519 AAAATESTKEY",
+			},
+		}},
+		Dialect:   ExecutionComponentConfig{Type: "bash"},
+		Scheduler: ExecutionComponentConfig{Type: "slurm"},
+		Runtime:   ExecutionComponentConfig{Type: "worker"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	transport, ok := env.Transports[0].(*SSHTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *SSHTransport", env.Transports[0])
+	}
+	if transport.Config.Host != "hpcc.example.edu" {
+		t.Fatalf("ssh host = %q, want hpcc.example.edu", transport.Config.Host)
+	}
+	if transport.Config.Port != 2222 {
+		t.Fatalf("ssh port = %d, want 2222", transport.Config.Port)
+	}
+}
+
+func TestNewExecutionEnvironmentRejectsInvalidSSHTransportConfig(t *testing.T) {
 	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "bad-env",
 		Transports: []ExecutionComponentConfig{{Type: "ssh"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
+		Runtime:    ExecutionComponentConfig{Type: "worker"},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestNewExecutionEnvironmentRejectsUnsupportedComponentType(t *testing.T) {
+	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "bad-env",
+		Transports: []ExecutionComponentConfig{{Type: "telepathy"}},
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
 		Runtime:    ExecutionComponentConfig{Type: "worker"},

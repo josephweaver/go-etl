@@ -60,6 +60,60 @@ func TestLoadControllerConfig(t *testing.T) {
 	}
 }
 
+func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "controller-config.json")
+	content := []byte(`{
+		"variables": [
+			{
+				"Name": {"Namespace": "controller_config", "Key": "controller_url"},
+				"Type": {"Kind": "string"},
+				"Expression": "http://localhost:8080"
+			}
+		],
+		"execution_environment": {
+			"name": "ssh-slurm",
+			"transports": [
+				{
+					"name": "login",
+					"type": "ssh",
+					"settings": {
+						"host": "hpcc.example.edu",
+						"port": "2222",
+						"user": "researcher",
+						"identity_file": "/home/researcher/.ssh/id_ed25519",
+						"host_key_policy": "pinned",
+						"pinned_host_key": "ssh-ed25519 AAAATESTKEY"
+					}
+				}
+			],
+			"dialect": {"type": "bash"},
+			"scheduler": {"type": "slurm"},
+			"runtime": {"type": "worker"}
+		}
+	}`)
+
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadControllerConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env, err := NewExecutionEnvironment(config.ExecutionEnvironment)
+	if err != nil {
+		t.Fatalf("unexpected environment error: %v", err)
+	}
+	transport, ok := env.Transports[0].(*SSHTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *SSHTransport", env.Transports[0])
+	}
+	if transport.Config.IdentityFile != "/home/researcher/.ssh/id_ed25519" {
+		t.Fatalf("identity file = %q, want configured path", transport.Config.IdentityFile)
+	}
+}
+
 func TestLoadControllerConfigRejectsMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 

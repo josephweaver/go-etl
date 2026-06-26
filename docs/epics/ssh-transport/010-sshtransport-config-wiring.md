@@ -1,6 +1,6 @@
 # 010 SSHTransport Config Wiring
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / ExecutionEnvironment config / SSHTransport factory / builds SSHTransport from worker_config.transport.settings

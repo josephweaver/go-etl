@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
 
 type ExecutionEnvironment struct {
@@ -160,9 +161,40 @@ func newTransportFromConfig(cfg ExecutionComponentConfig) (Transport, error) {
 			},
 			Container: container,
 		}, nil
+	case "ssh":
+		sshConfig, err := sshTransportConfigFromSettings(cfg.Settings)
+		if err != nil {
+			return nil, err
+		}
+		return &SSHTransport{Config: sshConfig}, nil
 	default:
 		return nil, fmt.Errorf("unsupported transport type %q", cfg.Type)
 	}
+}
+
+func sshTransportConfigFromSettings(settings map[string]string) (SSHTransportConfig, error) {
+	cfg := SSHTransportConfig{
+		Host:           settings["host"],
+		User:           settings["user"],
+		IdentityFile:   settings["identity_file"],
+		IdentityEnv:    settings["identity_env"],
+		KnownHostsFile: settings["known_hosts_file"],
+		HostKeyPolicy:  settings["host_key_policy"],
+		PinnedHostKey:  settings["pinned_host_key"],
+		ConnectTimeout: settings["connect_timeout"],
+		CommandTimeout: settings["command_timeout"],
+	}
+	if port := settings["port"]; port != "" {
+		parsed, err := strconv.Atoi(port)
+		if err != nil {
+			return SSHTransportConfig{}, fmt.Errorf("ssh transport setting port must be an integer: %w", err)
+		}
+		cfg.Port = parsed
+	}
+	if err := cfg.Validate(); err != nil {
+		return SSHTransportConfig{}, err
+	}
+	return cfg, nil
 }
 
 func newShellDialectFromConfig(cfg ExecutionComponentConfig) (ShellDialect, error) {
