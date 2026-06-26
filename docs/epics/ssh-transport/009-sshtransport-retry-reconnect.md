@@ -1,6 +1,6 @@
 # 009 SSHTransport Retry And Reconnect
 
-Status: proposed
+Status: implemented
 
 Slice:
 cmd/controller / SSHTransport / retry and reconnect / retries connection-level failures without repeating known side effects
