@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -170,7 +171,7 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 				_ = request.Reply(true, nil)
 			}
 			command := testSSHExecCommand(t, request.Payload)
-			handleTestSSHExecCommand(channel, command)
+			handleTestSSHExecCommand(channel, command, remoteRoot)
 			return
 		case "subsystem":
 			subsystem := testSSHSubsystem(t, request.Payload)
@@ -224,7 +225,7 @@ func testSSHSubsystem(t *testing.T, payload []byte) string {
 	return request.Name
 }
 
-func handleTestSSHExecCommand(channel ssh.Channel, command string) {
+func handleTestSSHExecCommand(channel ssh.Channel, command string, remoteRoot string) {
 	switch command {
 	case "'stdout-ok'":
 		_, _ = io.WriteString(channel, "stdout from ssh\n")
@@ -243,9 +244,119 @@ func handleTestSSHExecCommand(channel ssh.Channel, command string) {
 		time.Sleep(2 * time.Second)
 		sendTestSSHExitStatus(channel, 0)
 	default:
+		if handleTestSSHFilesystemCommand(channel, command, remoteRoot) {
+			return
+		}
 		_, _ = io.WriteString(channel, "test ssh fixture\n")
 		sendTestSSHExitStatus(channel, 0)
 	}
+}
+
+func handleTestSSHFilesystemCommand(channel ssh.Channel, command string, remoteRoot string) bool {
+	fields, err := testShellFields(command)
+	if err != nil || len(fields) == 0 {
+		return false
+	}
+
+	fail := func(message string) {
+		_, _ = io.WriteString(channel.Stderr(), message+"\n")
+		sendTestSSHExitStatus(channel, 1)
+	}
+
+	switch fields[0] {
+	case "mkdir":
+		if len(fields) == 3 && fields[1] == "-p" {
+			if err := os.MkdirAll(testRemoteDiskPath(remoteRoot, fields[2]), 0755); err != nil {
+				fail(err.Error())
+				return true
+			}
+			sendTestSSHExitStatus(channel, 0)
+			return true
+		}
+	case "mv":
+		if len(fields) == 3 {
+			if err := os.Rename(testRemoteDiskPath(remoteRoot, fields[1]), testRemoteDiskPath(remoteRoot, fields[2])); err != nil {
+				fail(err.Error())
+				return true
+			}
+			sendTestSSHExitStatus(channel, 0)
+			return true
+		}
+	case "rm":
+		if len(fields) == 3 && fields[1] == "-f" {
+			if err := os.Remove(testRemoteDiskPath(remoteRoot, fields[2])); err != nil && !os.IsNotExist(err) {
+				fail(err.Error())
+				return true
+			}
+			sendTestSSHExitStatus(channel, 0)
+			return true
+		}
+		if len(fields) == 3 && fields[1] == "-rf" {
+			if err := os.RemoveAll(testRemoteDiskPath(remoteRoot, fields[2])); err != nil {
+				fail(err.Error())
+				return true
+			}
+			sendTestSSHExitStatus(channel, 0)
+			return true
+		}
+	case "chmod":
+		if len(fields) == 3 {
+			mode, err := strconv.ParseUint(fields[1], 8, 32)
+			if err != nil {
+				fail(err.Error())
+				return true
+			}
+			if err := os.Chmod(testRemoteDiskPath(remoteRoot, fields[2]), os.FileMode(mode)); err != nil {
+				fail(err.Error())
+				return true
+			}
+			sendTestSSHExitStatus(channel, 0)
+			return true
+		}
+	case "chown":
+		if len(fields) == 3 {
+			fail("operation not permitted")
+			return true
+		}
+	}
+	return false
+}
+
+func testShellFields(command string) ([]string, error) {
+	var fields []string
+	var current strings.Builder
+	inQuote := false
+
+	for index := 0; index < len(command); index++ {
+		ch := command[index]
+		switch ch {
+		case '\'':
+			inQuote = !inQuote
+		case ' ', '\t':
+			if inQuote {
+				current.WriteByte(ch)
+				continue
+			}
+			if current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if inQuote {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields, nil
+}
+
+func testRemoteDiskPath(remoteRoot string, remotePath string) string {
+	remotePath = strings.TrimPrefix(remotePath, "/")
+	return filepath.Join(remoteRoot, filepath.FromSlash(remotePath))
 }
 
 func sendTestSSHExitStatus(channel ssh.Channel, status uint32) {
@@ -870,6 +981,146 @@ func TestSSHTransportListHonorsCanceledContext(t *testing.T) {
 	_, err := transport.List(ctx, "cancel-list")
 	if err == nil {
 		t.Fatal("expected canceled list error")
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("error = %v, want canceled context", err)
+	}
+}
+
+func TestSSHTransportMakeDirectoryCreatesNestedDirectory(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_MKDIR")
+	defer transport.Close()
+
+	if err := transport.MakeDirectory(context.Background(), "fs/a/b"); err != nil {
+		t.Fatalf("make remote directory: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(server.remoteRoot, "fs/a/b")); err != nil || !info.IsDir() {
+		t.Fatalf("remote directory not created, info=%v err=%v", info, err)
+	}
+}
+
+func TestSSHTransportMovePromotesFile(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_MOVE")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "move/temp file.txt", "move content")
+
+	if err := transport.Move(context.Background(), "move/temp file.txt", "move/final file.txt"); err != nil {
+		t.Fatalf("move remote file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(server.remoteRoot, "move/temp file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists or unexpected err: %v", err)
+	}
+	got := readTestRemoteFile(t, server, "move/final file.txt")
+	if got != "move content" {
+		t.Fatalf("remote content = %q, want move content", got)
+	}
+}
+
+func TestSSHTransportRemoveFileRemovesOneFile(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_RM")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "remove/file.txt", "remove")
+
+	if err := transport.RemoveFile(context.Background(), "remove/file.txt"); err != nil {
+		t.Fatalf("remove remote file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(server.remoteRoot, "remove/file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("file still exists or unexpected err: %v", err)
+	}
+}
+
+func TestSSHTransportRemoveTreeRequiresExplicitRecursiveHelper(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_RMRF")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "tree/child/file.txt", "tree")
+
+	if err := transport.RemoveTree(context.Background(), "tree"); err != nil {
+		t.Fatalf("remove remote tree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(server.remoteRoot, "tree")); !os.IsNotExist(err) {
+		t.Fatalf("tree still exists or unexpected err: %v", err)
+	}
+}
+
+func TestSSHTransportRemoveTreeRejectsRoot(t *testing.T) {
+	transport, _ := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_ROOT")
+	defer transport.Close()
+
+	if err := transport.RemoveTree(context.Background(), "/"); err == nil {
+		t.Fatal("expected root remove rejection")
+	}
+}
+
+func TestSSHTransportChmodAppliesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows test filesystem does not preserve POSIX chmod bits")
+	}
+
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_CHMOD")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "chmod/file.txt", "chmod")
+
+	if err := transport.Chmod(context.Background(), "0600", "chmod/file.txt"); err != nil {
+		t.Fatalf("chmod remote file: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(server.remoteRoot, "chmod/file.txt"))
+	if err != nil {
+		t.Fatalf("stat chmod file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Fatalf("mode = %v, want 0600", got)
+	}
+}
+
+func TestSSHTransportChownReportsPermissionFailure(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_CHOWN")
+	defer transport.Close()
+	writeTestRemoteFile(t, server, "chown/file.txt", "chown")
+
+	err := transport.Chown(context.Background(), "nobody:nogroup", "chown/file.txt")
+	if err == nil {
+		t.Fatal("expected chown failure")
+	}
+	if !strings.Contains(err.Error(), "operation not permitted") {
+		t.Fatalf("error = %v, want permission context", err)
+	}
+}
+
+func TestSSHTransportFilesystemHelpersQuoteSpaces(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_SPACES")
+	defer transport.Close()
+
+	if err := transport.MakeDirectory(context.Background(), "space dir/nested dir"); err != nil {
+		t.Fatalf("make directory with spaces: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(server.remoteRoot, "space dir/nested dir")); err != nil || !info.IsDir() {
+		t.Fatalf("remote spaced directory not created, info=%v err=%v", info, err)
+	}
+}
+
+func TestSSHTransportMoveReportsMissingSource(t *testing.T) {
+	transport, _ := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_MISSING_MOVE")
+	defer transport.Close()
+
+	err := transport.Move(context.Background(), "missing/source.txt", "missing/dest.txt")
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "cannot find") {
+		t.Fatalf("error = %v, want missing source context", err)
+	}
+}
+
+func TestSSHTransportFilesystemHelperHonorsCanceledContext(t *testing.T) {
+	transport, _ := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_FS_CANCEL")
+	defer transport.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := transport.MakeDirectory(ctx, "canceled")
+	if err == nil {
+		t.Fatal("expected canceled command error")
 	}
 	if !strings.Contains(err.Error(), "canceled") {
 		t.Fatalf("error = %v, want canceled context", err)
