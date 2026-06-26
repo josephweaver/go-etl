@@ -1,0 +1,56 @@
+{
+  "variables": [
+    {
+      "Name": {
+        "Namespace": "controller_config",
+        "Key": "controller_url"
+      },
+      "Type": {
+        "Kind": "string"
+      },
+      "Expression": "http://localhost:8080"
+    },
+    {
+      "Name": {
+        "Namespace": "controller_config",
+        "Key": "ledger_db_path"
+      },
+      "Type": {
+        "Kind": "path"
+      },
+      "Expression": ".run/controller/fake-hpcc-ssh-ledger.sqlite"
+    }
+  ],
+  "execution_environment": {
+    "name": "fake-hpcc-ssh",
+    "transports": [
+      {
+        "name": "login",
+        "type": "ssh",
+        "settings": {
+          "host": "127.0.0.1",
+          "port": "2222",
+          "user": "goetl",
+          "identity_file": ".run/fake-hpcc-ssh/id_ed25519",
+          "host_key_policy": "pinned",
+          "pinned_host_key": "ssh-ed25519 AAAAFAKEHPCCPLACEHOLDER",
+          "connect_timeout": "5s",
+          "command_timeout": "30s"
+        }
+      }
+    ],
+    "dialect": {
+      "type": "bash"
+    },
+    "scheduler": {
+      "type": "slurm"
+    },
+    "runtime": {
+      "type": "worker",
+      "settings": {
+        "root": "/data/goetl",
+        "controller_url": "http://host.docker.internal:8080"
+      }
+    }
+  }
+}
