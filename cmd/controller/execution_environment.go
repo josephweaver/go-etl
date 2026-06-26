@@ -118,6 +118,26 @@ func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
 	return nil
 }
 
+func (e ExecutionEnvironment) Preflight(ctx context.Context) []PreflightIssue {
+	var issues []PreflightIssue
+	for index, transport := range e.Transports {
+		issues = append(issues, componentPreflightIssues(ctx, fmt.Sprintf("transport[%d]", index), transport)...)
+	}
+	issues = append(issues, componentPreflightIssues(ctx, "scheduler", e.Scheduler)...)
+	issues = append(issues, componentPreflightIssues(ctx, "runtime", e.Runtime)...)
+	return issues
+}
+
+func componentPreflightIssues(ctx context.Context, componentName string, component any) []PreflightIssue {
+	issues := preflightIfSupported(ctx, component)
+	for index := range issues {
+		if issues[index].Component == "" {
+			issues[index].Component = componentName
+		}
+	}
+	return issues
+}
+
 func (cfg ExecutionComponentConfig) validate(role string) error {
 	if cfg.Type == "" {
 		return fmt.Errorf("%s type is required", role)
