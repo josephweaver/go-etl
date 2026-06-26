@@ -110,7 +110,13 @@ func (t *SSHTransport) execCommand(ctx context.Context, command string) ([]byte,
 
 	session, err := t.client.NewSession()
 	if err != nil {
-		return nil, fmt.Errorf("ssh open session: %w", err)
+		if reconnectErr := t.reconnect(ctx); reconnectErr != nil {
+			return nil, fmt.Errorf("ssh open session: %w; reconnect failed: %v", err, reconnectErr)
+		}
+		session, err = t.client.NewSession()
+		if err != nil {
+			return nil, fmt.Errorf("ssh open session after reconnect: %w", err)
+		}
 	}
 	defer session.Close()
 
@@ -169,9 +175,9 @@ func (t *SSHTransport) Copy(ctx context.Context, localPath string, remotePath st
 	}
 	defer source.Close()
 
-	client, err := sftp.NewClient(t.client)
+	client, err := t.sftpClient(ctx)
 	if err != nil {
-		return fmt.Errorf("open ssh sftp client: %w", err)
+		return err
 	}
 	defer client.Close()
 
@@ -242,9 +248,9 @@ func (t *SSHTransport) List(ctx context.Context, remotePath string) ([]RemoteFil
 		return nil, fmt.Errorf("ssh list canceled before request: %w", err)
 	}
 
-	client, err := sftp.NewClient(t.client)
+	client, err := t.sftpClient(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("open ssh sftp client: %w", err)
+		return nil, err
 	}
 	defer client.Close()
 
@@ -322,6 +328,21 @@ func (t *SSHTransport) Chown(ctx context.Context, owner string, remotePath strin
 	return err
 }
 
+func (t *SSHTransport) sftpClient(ctx context.Context) (*sftp.Client, error) {
+	client, err := sftp.NewClient(t.client)
+	if err == nil {
+		return client, nil
+	}
+	if reconnectErr := t.reconnect(ctx); reconnectErr != nil {
+		return nil, fmt.Errorf("open ssh sftp client: %w; reconnect failed: %v", err, reconnectErr)
+	}
+	client, err = sftp.NewClient(t.client)
+	if err != nil {
+		return nil, fmt.Errorf("open ssh sftp client after reconnect: %w", err)
+	}
+	return client, nil
+}
+
 func (cfg SSHTransportConfig) Validate() error {
 	if cfg.Host == "" {
 		return fmt.Errorf("ssh host is required")
@@ -368,6 +389,14 @@ func (t SSHTransport) filesystemDialect() filesystemCommandDialect {
 
 func (t *SSHTransport) runShellCommand(ctx context.Context, command string) ([]byte, error) {
 	return t.execCommand(ctx, command)
+}
+
+func (t *SSHTransport) reconnect(ctx context.Context) error {
+	if t.client != nil {
+		_ = t.client.Close()
+		t.client = nil
+	}
+	return t.Connect(ctx)
 }
 
 func validateSSHCopyPath(name string, value string) error {

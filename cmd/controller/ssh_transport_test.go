@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 type testSSHServer struct {
 	address    string
 	remoteRoot string
+	execCounts *sync.Map
 	close      func() error
 }
 
@@ -88,6 +90,7 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 	}
 	config.AddHostKey(hostSigner)
 	remoteRoot := t.TempDir()
+	execCounts := &sync.Map{}
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
@@ -110,7 +113,7 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 			wg.Add(1)
 			go func(conn net.Conn) {
 				defer wg.Done()
-				handleTestSSHConnection(t, conn, config, remoteRoot)
+				handleTestSSHConnection(t, conn, config, remoteRoot, execCounts)
 			}(conn)
 		}
 	}()
@@ -130,11 +133,12 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 	return testSSHServer{
 		address:    listener.Addr().String(),
 		remoteRoot: remoteRoot,
+		execCounts: execCounts,
 		close:      closeServer,
 	}
 }
 
-func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig, remoteRoot string) {
+func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig, remoteRoot string, execCounts *sync.Map) {
 	t.Helper()
 
 	_, channels, requests, err := ssh.NewServerConn(conn, config)
@@ -156,11 +160,11 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 			continue
 		}
 
-		go handleTestSSHSession(t, channel, requests, remoteRoot)
+		go handleTestSSHSession(t, channel, requests, remoteRoot, execCounts)
 	}
 }
 
-func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request, remoteRoot string) {
+func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request, remoteRoot string, execCounts *sync.Map) {
 	t.Helper()
 	defer channel.Close()
 
@@ -171,6 +175,7 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 				_ = request.Reply(true, nil)
 			}
 			command := testSSHExecCommand(t, request.Payload)
+			incrementTestSSHExecCount(execCounts, command)
 			handleTestSSHExecCommand(channel, command, remoteRoot)
 			return
 		case "subsystem":
@@ -199,6 +204,12 @@ func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ss
 			}
 		}
 	}
+}
+
+func incrementTestSSHExecCount(execCounts *sync.Map, command string) {
+	value, _ := execCounts.LoadOrStore(command, new(int64))
+	counter := value.(*int64)
+	atomic.AddInt64(counter, 1)
 }
 
 func testSSHExecCommand(t *testing.T, payload []byte) string {
@@ -774,6 +785,39 @@ func TestSSHTransportExecPreservesArgumentBoundaries(t *testing.T) {
 	}
 }
 
+func TestSSHTransportExecReconnectsAfterClosedIdleConnection(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_RECONNECT_EXEC")
+	defer transport.Close()
+	if err := transport.client.Close(); err != nil {
+		t.Fatalf("close idle SSH client: %v", err)
+	}
+
+	output, err := transport.Exec(context.Background(), "stdout-ok")
+	if err != nil {
+		t.Fatalf("exec after closed idle connection: %v", err)
+	}
+
+	if string(output) != "stdout from ssh\n" {
+		t.Fatalf("output = %q, want stdout", string(output))
+	}
+	if got := testSSHExecCount(server, "'stdout-ok'"); got != 1 {
+		t.Fatalf("exec count = %d, want 1", got)
+	}
+}
+
+func TestSSHTransportExecDoesNotRetryRemoteNonzeroExit(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_NO_RETRY_NONZERO")
+	defer transport.Close()
+
+	_, err := transport.Exec(context.Background(), "fail-command")
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	if got := testSSHExecCount(server, "'fail-command'"); got != 1 {
+		t.Fatalf("exec count = %d, want 1", got)
+	}
+}
+
 func TestSSHTransportCopyWritesFileContent(t *testing.T) {
 	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_CONTENT")
 	defer transport.Close()
@@ -1195,6 +1239,14 @@ func remoteEntriesByName(entries []RemoteFileInfo) map[string]RemoteFileInfo {
 		byName[entry.Name] = entry
 	}
 	return byName
+}
+
+func testSSHExecCount(server testSSHServer, command string) int64 {
+	value, ok := server.execCounts.Load(command)
+	if !ok {
+		return 0
+	}
+	return atomic.LoadInt64(value.(*int64))
 }
 
 func testSSHTransportConfig(t *testing.T, address string, identityEnv string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHTransportConfig {
