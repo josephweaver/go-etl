@@ -28,6 +28,113 @@ https://github.com/giovtorres/slurm-docker-cluster
 
 The repository's `scripts/fake-hpcc/sbatch` remains a minimal smoke-test fallback for testing the command boundary without the Dockerized Slurm stack.
 
+## SSH Transport Status
+
+SSH is now a first-class transport implementation for controller-side backend
+work, but it is not yet the default fake-HPCC run path.
+
+The current SSH transport supports:
+
+- loading validated SSH transport config from execution-environment settings
+- key-based authentication from an identity file or identity environment variable
+- pinned host-key verification or explicit development-only insecure host-key mode
+- reconnecting after a closed idle connection before an operation starts
+- remote command execution
+- SFTP copy through a temporary remote path before promotion
+- SFTP directory listing
+- narrow filesystem helpers for mkdir, move, remove, chmod, and chown
+
+The controller execution-environment config can now select SSH with a transport
+component shaped like:
+
+```json
+{
+  "name": "login",
+  "type": "ssh",
+  "settings": {
+    "host": "fake-hpcc-login",
+    "port": "22",
+    "user": "goetl",
+    "identity_file": "/home/goetl/.ssh/id_ed25519",
+    "host_key_policy": "pinned",
+    "pinned_host_key": "ssh-ed25519 AAAA..."
+  }
+}
+```
+
+This transport object owns only connection and file/command transport details.
+Scheduler settings such as Slurm job names, partitions, or script paths belong
+to the scheduler component. Runtime settings such as worker artifact paths,
+worker config paths, Singularity image paths, and bind mounts belong to the
+runtime component.
+
+Do not commit real hostnames, usernames, private key paths, known-hosts data, or
+site-specific cluster values. Fake-HPCC examples should use generic names such
+as `fake-hpcc-login`, `goetl`, `/data/goetl`, and pinned placeholder host keys.
+
+### Current Verification
+
+The repository currently verifies the SSH transport without external SSH
+services through an in-process SSH/SFTP test fixture:
+
+```powershell
+go test ./cmd/controller -run TestSSHTransport
+go test ./cmd/controller -run TestSSHTransportIntegrationPreparesRuntimeOverSSH
+```
+
+The integration-style test builds an SSH transport from execution-environment
+config, connects to the in-process SSH server, prepares `WorkerRuntime` over
+SSH/SFTP, verifies the uploaded worker config, runs one remote command, and
+cleans up the remote runtime root.
+
+This proves the controller-side SSH transport boundary. It does not yet prove
+real Dockerized Slurm submission over SSH.
+
+### Intended Fake-HPCC SSH Path
+
+The intended SSH-backed fake-HPCC path is:
+
+```text
+host controller
+  |
+  | SSH exec/copy/list
+  v
+fake HPCC login node
+  |
+  | sbatch worker.slurm
+  v
+Dockerized Slurm controller
+  |
+  v
+Dockerized Slurm compute node
+  |
+  v
+goetl worker process
+```
+
+For local development, the SSH login node may be a container or other local
+service that exposes an SSH server and shares storage with the Dockerized Slurm
+stack. The shared root should continue to use fake-environment paths such as:
+
+```text
+/data/goetl/artifacts/goetl-worker
+/data/goetl/config/worker.json
+/data/goetl/scripts/worker.slurm
+/data/goetl/logs
+/data/goetl/tmp
+/data/goetl/data
+```
+
+When SSH is paired with Slurm, the expected component split is:
+
+- `transport.type = "ssh"` for login-node connectivity and remote file/command operations
+- `scheduler.type = "slurm"` for `sbatch` submission
+- `runtime.type = "worker"` or `runtime.type = "singularity_worker"` for worker filesystem and process setup
+
+The next fake-HPCC SSH milestone should be an opt-in runbook or test that starts
+a local SSH-accessible fake login node, points it at shared fake storage, and
+submits a generated Slurm worker script through `sbatch`.
+
 ## SingularityCE Slurm Image
 
 The institutional HPCC target currently uses SingularityCE 4.1.2 on Ubuntu
