@@ -3,13 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -131,6 +136,84 @@ func (t *SSHTransport) Exec(ctx context.Context, args ...string) ([]byte, error)
 	}
 }
 
+func (t *SSHTransport) Copy(ctx context.Context, localPath string, remotePath string) error {
+	if t.client == nil {
+		return fmt.Errorf("ssh transport is not connected")
+	}
+	if err := validateSSHCopyPath("local path", localPath); err != nil {
+		return err
+	}
+	if err := validateSSHCopyPath("remote path", remotePath); err != nil {
+		return err
+	}
+
+	runCtx, cancel, err := t.commandContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+
+	source, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("open local copy source: %w", err)
+	}
+	defer source.Close()
+
+	client, err := sftp.NewClient(t.client)
+	if err != nil {
+		return fmt.Errorf("open ssh sftp client: %w", err)
+	}
+	defer client.Close()
+
+	remoteDir := path.Dir(remotePath)
+	if remoteDir != "." && remoteDir != "/" {
+		if err := client.MkdirAll(remoteDir); err != nil {
+			return fmt.Errorf("create remote parent directory %q: %w", remoteDir, err)
+		}
+	}
+
+	tempPath, err := remoteTempPath(remotePath)
+	if err != nil {
+		return err
+	}
+
+	if err := runCtx.Err(); err != nil {
+		return fmt.Errorf("ssh copy canceled before transfer: %w", err)
+	}
+
+	target, err := client.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("create remote temp file %q: %w", tempPath, err)
+	}
+	tempCreated := true
+	cleanupTemp := func() {
+		if tempCreated {
+			_ = client.Remove(tempPath)
+		}
+	}
+
+	if _, err := copyWithContext(runCtx, target, source); err != nil {
+		_ = target.Close()
+		cleanupTemp()
+		return fmt.Errorf("copy local file to remote temp file %q: %w", tempPath, err)
+	}
+	if err := target.Close(); err != nil {
+		cleanupTemp()
+		return fmt.Errorf("close remote temp file %q: %w", tempPath, err)
+	}
+
+	if err := runCtx.Err(); err != nil {
+		cleanupTemp()
+		return fmt.Errorf("ssh copy canceled before promote: %w", err)
+	}
+	if err := client.PosixRename(tempPath, remotePath); err != nil {
+		cleanupTemp()
+		return fmt.Errorf("promote remote temp file %q to %q: %w", tempPath, remotePath, err)
+	}
+	tempCreated = false
+	return nil
+}
+
 func (cfg SSHTransportConfig) Validate() error {
 	if cfg.Host == "" {
 		return fmt.Errorf("ssh host is required")
@@ -157,6 +240,56 @@ func (cfg SSHTransportConfig) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func validateSSHCopyPath(name string, value string) error {
+	if value == "" {
+		return fmt.Errorf("ssh copy %s is required", name)
+	}
+	if containsNewline(value) {
+		return fmt.Errorf("ssh copy %s must not contain newlines", name)
+	}
+	return nil
+}
+
+func remoteTempPath(remotePath string) (string, error) {
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("generate remote temp path: %w", err)
+	}
+
+	dir := path.Dir(remotePath)
+	base := path.Base(remotePath)
+	return path.Join(dir, "."+base+".goetl-tmp-"+hex.EncodeToString(suffix)), nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buffer := make([]byte, 32*1024)
+	var written int64
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+
+		nr, er := src.Read(buffer)
+		if nr > 0 {
+			nw, ew := dst.Write(buffer[:nr])
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nw != nr {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
 }
 
 func (t SSHTransport) commandString(args ...string) (string, error) {
