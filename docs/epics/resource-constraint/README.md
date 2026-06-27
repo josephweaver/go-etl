@@ -107,13 +107,15 @@ workflow configuration. The work item carries the resolved resource key rather
 than performing variable resolution in the worker.
 
 Resource constraints use the existing object variable type. No new variable
-kind is required. The controller recognizes the resolved object structurally
-by the fields required by the resource-constraint contract.
+kind is required. The user may choose the variable name. The controller
+recognizes the resolved object through its `kind` discriminator and validates
+the remaining fields structurally.
 
-The candidate convention is one object variable per resource:
+The candidate convention is:
 
 ```text
-resource_constraint/<logical-name> = {
+<variable-name> = {
+    "kind": "resource_constraint",
     "key": <resolved resource key>,
     "capacity": <positive integer>
 }
@@ -122,7 +124,8 @@ resource_constraint/<logical-name> = {
 For example, a project-scoped declaration could have the qualified name:
 
 ```text
-project_config.resource_constraint/python-env/torch = {
+project_config.python-env-torch = {
+    "kind": "resource_constraint",
     "key": "${project_config.name}/python-env/torch",
     "capacity": 1
 }
@@ -131,13 +134,24 @@ project_config.resource_constraint/python-env/torch = {
 Using a separate variable for each resource allows normal variable precedence
 to replace the complete object without replacing other resource declarations.
 A single `resource_constraints` object would require new object-field merge
-semantics and is therefore not preferred.
+semantics and is therefore not preferred. The object's `kind` field is the one
+reserved resource-contract discriminator; the GOET variable itself still has
+the normal `object` variable type. Other broadly useful field names, including
+`type`, remain available to domain-specific objects.
 
 Duplicate variable keys within one scope remain an error. Across namespaces,
 normal variable precedence selects the complete object; for example, a workflow
 declaration can override the matching controller declaration. Resource
 constraint objects are interpreted by their fields at the controller boundary,
 following the existing structurally typed object pattern.
+
+Resource-key uniqueness is validated after variable precedence and expression
+resolution. The controller collects the effective objects whose `kind` is
+`resource_constraint`, resolves each `key`, and indexes them by that resolved
+key. If two different effective variables resolve to the same resource key,
+submission fails with a configuration error even when their capacities match.
+This makes dynamic project- or workflow-derived keys safe without requiring
+their final values to be known while individual configuration files are read.
 
 The current lifecycle assumption is that restarting the controller abandons
 all compute started by that controller instance. Active resource holders are
@@ -180,14 +194,15 @@ resolved and this epic is explicitly marked Ready.
 
 ## Open Questions
 
-- Should the candidate object fields be named `key` and `capacity`?
-- Should two differently named variables that resolve to the same resource key
-  be rejected when they declare different capacities?
+No unresolved object-field naming questions remain. The agreed fields are
+`kind`, `key`, and `capacity`.
 
 ## Completion Criteria
 
 - A work item can declare one named resource requirement.
 - Each resource has an arbitrary positive capacity.
+- Submission rejects different effective variables that resolve to the same
+  resource key.
 - The controller never assigns more concurrent holders than the configured
   capacity permits.
 - Active consumption is attributable to work-item instance IDs.
