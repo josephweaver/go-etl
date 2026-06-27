@@ -19,8 +19,9 @@ publish it while the other waits and then reuses the result.
 ## Goals
 
 - Allow a work item to declare that it requires a named resource.
-- Allow the controller to enforce a concurrency capacity for that resource
-  across workflow submissions.
+- Allow each named resource to have an arbitrary positive capacity.
+- Allow the controller to enforce arbitrary positive concurrency capacity for
+  that resource across workflow submissions.
 - Keep constrained work pending until its required capacity is available.
 - Associate granted capacity with the assigned work item that holds it.
 - Release capacity when the work item completes or fails.
@@ -75,12 +76,35 @@ The resource key identifies the shared constraint. For environment creation,
 the key should be derived from an immutable environment fingerprint rather than
 from a mutable project alias such as `torch`.
 
+Resource scope is expressed by the resource key rather than by a separate scope
+field. A globally meaningful key can use a global namespace. A project-scoped
+key can include the project identity, for example:
+
+```text
+${project_config.name}/python-env/<environment-fingerprint>
+```
+
+The controller tracks the work-item instance IDs holding each resource. Current
+consumption is derived from the active holder list rather than maintained as an
+independent integer. A holder consumes capacity for as long as its work-item
+instance is running. Completion or failure removes that specific holder.
+
+Constraint ordering follows the controller's pending-work FIFO order; resource
+constraints do not maintain a separate waiter queue. Whether a blocked item at
+the head of the queue prevents unrelated eligible work from being assigned
+remains to be settled before implementation.
+
+The current lifecycle assumption is that restarting the controller abandons
+all compute started by that controller instance. Active resource holders are
+therefore not restored after restart. Rejecting late reports from abandoned
+compute requires a controller instance identity; that broader lifecycle is
+deferred to the controller resilience epic.
+
 ## Proposed Slices
 
 The slice sequence is not yet agreed. Candidate implementation areas are:
 
-1. Define the work-item resource requirement and controller-owned constraint
-   state.
+1. Define the work-item resource requirement and controller-owned holder state.
 2. Gate work assignment on available resource capacity.
 3. Release acquired capacity on work completion and failure.
 4. Recover capacity from abandoned assignments.
@@ -91,22 +115,26 @@ resolved and this epic is explicitly marked Ready.
 
 ## Open Questions
 
-- Is a resource key scoped to one controller, one project, or another explicit
-  namespace?
-- Does the first version support only exclusive capacity of one, or arbitrary
-  positive capacities?
-- How does the controller detect an abandoned assignment: worker heartbeat,
-  assignment timeout, explicit cancellation, or another mechanism?
-- Must active constraint state survive a controller restart?
-- What ordering guarantee, if any, should waiting work receive?
+- Where is a resource's positive capacity declared, and how are conflicting
+  declarations for the same key rejected?
+- Does a work item consume one capacity unit, or may it request multiple units
+  from the named resource?
+- Does FIFO ordering block the entire pending queue when its first work item
+  cannot acquire capacity, or may the controller assign later work that does
+  not compete for that resource?
+- Before a controller restart, does abandoned compute require active
+  cancellation, or is ignoring reports bearing an old controller instance ID
+  sufficient?
 - Should status expose individual holders and waiters, aggregate counts, or
   both?
 
 ## Completion Criteria
 
 - A work item can declare one named resource requirement.
+- Each resource has an arbitrary positive capacity.
 - The controller never assigns more concurrent holders than the configured
   capacity permits.
+- Active consumption is attributable to work-item instance IDs.
 - Independent workflow submissions requesting the same resource are
   coordinated by the controller.
 - Capacity is released after normal completion and reported failure.
