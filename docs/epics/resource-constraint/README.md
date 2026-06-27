@@ -23,6 +23,9 @@ publish it while the other waits and then reuses the result.
 - Allow the controller to enforce arbitrary positive concurrency capacity for
   that resource across workflow submissions.
 - Keep constrained work pending until its required capacity is available.
+- Allow unrelated eligible work to proceed when an earlier queued item is
+  waiting for resource capacity.
+- Preserve workflow dependency ordering independently of resource availability.
 - Associate granted capacity with the assigned work item that holds it.
 - Release capacity when the work item completes or fails.
 - Define recovery behavior for capacity held by a worker that stops reporting.
@@ -87,18 +90,29 @@ ${project_config.name}/python-env/<environment-fingerprint>
 The controller tracks the work-item instance IDs holding each resource. Current
 consumption is derived from the active holder list rather than maintained as an
 independent integer. A holder consumes capacity for as long as its work-item
-instance is running. Completion or failure removes that specific holder.
+instance is running. In the first version, each work item consumes one unit.
+Completion or failure removes that specific holder.
 
-Constraint ordering follows the controller's pending-work FIFO order; resource
-constraints do not maintain a separate waiter queue. Whether a blocked item at
-the head of the queue prevents unrelated eligible work from being assigned
-remains to be settled before implementation.
+Constraint ordering is FIFO among work items that are eligible for assignment.
+An item waiting for resource capacity does not block unrelated eligible work
+later in the pending queue. Workflow dependencies remain authoritative: a later
+workflow step cannot become eligible until its predecessor requirements are
+satisfied.
+
+Resource declarations use GOET's variable system. Capacity may be declared at
+controller, project, or workflow scope and is resolved using the variable
+system's normal precedence rules. Controller and project declarations are the
+expected common cases; workflow scope supports constraints local to reusable
+workflow configuration. The work item carries the resolved resource key rather
+than performing variable resolution in the worker.
 
 The current lifecycle assumption is that restarting the controller abandons
 all compute started by that controller instance. Active resource holders are
 therefore not restored after restart. Rejecting late reports from abandoned
 compute requires a controller instance identity; that broader lifecycle is
-deferred to the controller resilience epic.
+deferred to the controller resilience epic. The first resource-constraint
+implementation does not attempt to reconcile or recover those reporting
+workers.
 
 ## Proposed Slices
 
@@ -108,25 +122,17 @@ The slice sequence is not yet agreed. Candidate implementation areas are:
 2. Gate work assignment on available resource capacity.
 3. Release acquired capacity on work completion and failure.
 4. Recover capacity from abandoned assignments.
-5. Expose constraint state through controller diagnostics.
+5. Expose constraint state in the controller status JSON.
 
 No numbered slice files should be created until the open questions below are
 resolved and this epic is explicitly marked Ready.
 
 ## Open Questions
 
-- Where is a resource's positive capacity declared, and how are conflicting
-  declarations for the same key rejected?
-- Does a work item consume one capacity unit, or may it request multiple units
-  from the named resource?
-- Does FIFO ordering block the entire pending queue when its first work item
-  cannot acquire capacity, or may the controller assign later work that does
-  not compete for that resource?
-- Before a controller restart, does abandoned compute require active
-  cancellation, or is ignoring reports bearing an old controller instance ID
-  sufficient?
-- Should status expose individual holders and waiters, aggregate counts, or
-  both?
+- What variable names and typed structure represent resource declarations?
+- How are conflicting declarations for the same resolved resource key handled
+  across variable scopes?
+- Should status JSON expose individual holder IDs, aggregate counts, or both?
 
 ## Completion Criteria
 
@@ -135,10 +141,15 @@ resolved and this epic is explicitly marked Ready.
 - The controller never assigns more concurrent holders than the configured
   capacity permits.
 - Active consumption is attributable to work-item instance IDs.
+- Each work item consumes one capacity unit.
 - Independent workflow submissions requesting the same resource are
   coordinated by the controller.
+- A capacity-blocked work item does not prevent unrelated eligible work from
+  being assigned.
+- Workflow dependency ordering is preserved.
 - Capacity is released after normal completion and reported failure.
 - Abandoned capacity has an agreed and tested recovery path.
-- Constraint state is observable enough to diagnose waiting work.
+- Constraint state is included in controller status JSON; displaying it in a
+  client UI or formatted client output is not required.
 - Existing unconstrained work continues to be assigned normally.
 - The agreed implementation slices are complete and relevant tests pass.

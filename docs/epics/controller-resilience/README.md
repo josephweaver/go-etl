@@ -41,6 +41,10 @@ the replacement controller recognize and reject reports from that abandoned
 compute. This assumption must be reviewed here before it becomes a stable
 contract.
 
+The initial resource-constraint implementation will ignore reports from agents
+associated with an abandoned controller instance rather than attempting to
+reconcile or recover their work.
+
 ## Proposed Slices
 
 No implementation slices are proposed yet. The restart model and persistence
