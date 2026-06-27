@@ -106,6 +106,39 @@ expected common cases; workflow scope supports constraints local to reusable
 workflow configuration. The work item carries the resolved resource key rather
 than performing variable resolution in the worker.
 
+Resource constraints use the existing object variable type. No new variable
+kind is required. The controller recognizes the resolved object structurally
+by the fields required by the resource-constraint contract.
+
+The candidate convention is one object variable per resource:
+
+```text
+resource_constraint/<logical-name> = {
+    "key": <resolved resource key>,
+    "capacity": <positive integer>
+}
+```
+
+For example, a project-scoped declaration could have the qualified name:
+
+```text
+project_config.resource_constraint/python-env/torch = {
+    "key": "${project_config.name}/python-env/torch",
+    "capacity": 1
+}
+```
+
+Using a separate variable for each resource allows normal variable precedence
+to replace the complete object without replacing other resource declarations.
+A single `resource_constraints` object would require new object-field merge
+semantics and is therefore not preferred.
+
+Duplicate variable keys within one scope remain an error. Across namespaces,
+normal variable precedence selects the complete object; for example, a workflow
+declaration can override the matching controller declaration. Resource
+constraint objects are interpreted by their fields at the controller boundary,
+following the existing structurally typed object pattern.
+
 The current lifecycle assumption is that restarting the controller abandons
 all compute started by that controller instance. Active resource holders are
 therefore not restored after restart. Rejecting late reports from abandoned
@@ -113,6 +146,24 @@ compute requires a controller instance identity; that broader lifecycle is
 deferred to the controller resilience epic. The first resource-constraint
 implementation does not attempt to reconcile or recover those reporting
 workers.
+
+Controller status JSON exposes both aggregate usage and holder identity. Its
+conceptual shape is:
+
+```json
+{
+  "resource_constraints": [
+    {
+      "key": "project-a/python-env/torch",
+      "capacity": 2,
+      "consumed": 1,
+      "holders": ["work-item-instance-123"]
+    }
+  ]
+}
+```
+
+The exact transport field names remain subject to slice-level review.
 
 ## Proposed Slices
 
@@ -129,10 +180,9 @@ resolved and this epic is explicitly marked Ready.
 
 ## Open Questions
 
-- What variable names and typed structure represent resource declarations?
-- How are conflicting declarations for the same resolved resource key handled
-  across variable scopes?
-- Should status JSON expose individual holder IDs, aggregate counts, or both?
+- Should the candidate object fields be named `key` and `capacity`?
+- Should two differently named variables that resolve to the same resource key
+  be rejected when they declare different capacities?
 
 ## Completion Criteria
 
@@ -149,7 +199,9 @@ resolved and this epic is explicitly marked Ready.
 - Workflow dependency ordering is preserved.
 - Capacity is released after normal completion and reported failure.
 - Abandoned capacity has an agreed and tested recovery path.
-- Constraint state is included in controller status JSON; displaying it in a
-  client UI or formatted client output is not required.
+- Constraint state in controller status JSON includes both aggregate capacity
+  and consumption counts and the individual work-item instance IDs holding the
+  resource. Displaying it in a client UI or formatted client output is not
+  required.
 - Existing unconstrained work continues to be assigned normally.
 - The agreed implementation slices are complete and relevant tests pass.
