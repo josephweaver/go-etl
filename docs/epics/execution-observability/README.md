@@ -4,70 +4,38 @@ Status: Proposed
 
 ## Purpose
 
-Define GOET's execution observability model. The Controller is the authoritative collector of execution observations. Workers, runtimes, plugins, and subprocesses emit observations upward rather than creating GOET-owned log files throughout the system.
+Define GOET's logging and execution observation model. This epic focuses on collecting, streaming, routing, and storing execution logs. Structured execution events are covered by a separate Execution Events epic.
 
 ## Goals
-
-- Establish a single architectural model for execution observations.
-- Stream worker and subprocess output to the Controller line-by-line.
-- Keep observation producers independent from observation storage.
-- Support configurable observation sinks.
-- Distinguish execution observations from attempt records and customer artifacts.
-- Support configurable observation verbosity.
+- Stream worker and subprocess logs to the Controller line-by-line.
+- Centralize GOET-owned logging in the Controller.
+- Avoid unmanaged log files.
+- Support configurable log sinks and verbosity.
+- Keep log producers independent from storage.
 
 ## Non-Goals
-
-- Replace the Attempt Ledger.
-- Define metrics or distributed tracing implementations.
-- Define a monitoring UI.
-- Require plugins or customer code to use GOET logging.
+- General lifecycle event system.
+- Attempt Ledger redesign.
+- Metrics, tracing, or monitoring UI.
 
 ## Architectural Context
-
-Execution Observability belongs to the Controller. The Controller owns orchestration state and therefore owns the authoritative execution history. Workers remain lightweight producers of observations.
+The Controller is the authoritative owner of execution observations. Workers, runtimes, plugins, and subprocesses emit log observations upward. The Controller routes those observations to configured sinks.
 
 ## Core Principles
-
-- The Controller is the authority for execution observations.
-- Observations stream upward through the execution hierarchy.
-- GOET should avoid unmanaged log files.
-- Observation producers do not know where observations are stored.
-- Artifacts, attempts, and observations are separate concepts.
-
-## Execution Observation Flow
-
-Client
-→ Controller
-→ Worker
-→ Worker Plugin
-→ Subprocess
-
-Observations propagate upward to the Controller, which forwards them to configured sinks.
-
-## Observation Levels
-
-- ERROR
-- WARN
-- INFO
-- VERBOSE
-- DEBUG
-- TRACE
+- Controller owns GOET logging.
+- Components emit logs rather than managing log files.
+- Logs stream upward.
+- Customer artifacts, attempt records, and logs are distinct.
 
 ## Proposed Slices
-
-001 Observation Model
-002 Controller Observation Endpoint
-003 Worker Observation Client
-004 Worker Log Streaming
-005 Subprocess Stdout/Stderr Streaming
-006 Controller Log Sink
-007 Attempt-linked Observation Metadata
-008 Configurable Observation Levels
+001 Logging Model
+002 Controller Logging Endpoint
+003 Worker Logging Client
+004 Streaming Stdout/Stderr
+005 Controller Log Sinks
+006 Log Levels and Filtering
 
 ## Completion Criteria
-
-- Execution observations stream to the Controller.
-- Components no longer create unmanaged GOET-owned log files.
-- Observations can be routed to configurable sinks.
-- Attempt records, artifacts, and observations remain architecturally distinct.
-- The implementation aligns with GOET's controller-owned orchestration architecture.
+- Streaming logging implemented.
+- GOET avoids unmanaged log files.
+- Controller is the authoritative logging endpoint.
