@@ -263,6 +263,20 @@ The current concrete implementations are `DockerContainerTransport`, `SSHTranspo
 
 `POST /workflow` currently accepts JSON containing a workflow and optional submitted variables. Workflow-scope variables live inside the workflow object. Top-level submitted variables are reserved for overrides and runtime/config variables. The controller builds variable scopes from workflow variables and submitted variables, compiles the workflow through `internal/workflow`, checks generated work-item IDs against the existing queue state, and appends generated work items to the pending queue.
 
+The current workflow compiler eagerly compiles and queues every submitted step;
+it does not retain per-workflow resolver context, track step dependencies, or
+compile downstream steps after predecessor completion. The proposed
+`dependency-aware-workflows` epic records this correctness gap and is a
+prerequisite for the resource-constraint epic's workflow-eligibility gate.
+The proposed `workflow-dependency-resolution` epic separately owns lookup of
+dependent workflow definitions from a GitHub repository and cross-workflow
+readiness after workflow-instance lifecycle and typed outputs exist.
+The proposed `workflow-execution-persistence` epic owns database-backed run,
+step, work-item, attempt, configuration-snapshot, output, and restart state.
+The proposed `attempt-liveness-recovery` epic owns worker heartbeat leases, the
+controller caretaker loop, fencing, and abandoned-attempt recovery. Both are
+prerequisites consumed by dependency-aware workflow execution.
+
 After workflow submission creates pending work, the controller uses worker-scaling state to decide how many workers to start. If `Controller.env` is configured, `submitWorkflowHandler` prepares the execution environment and asks `env.Scheduler` to submit worker jobs. The Slurm path generates a worker Slurm script using the configured shell dialect, copies the generated script through the transport, and submits it through `sbatch` inside the Dockerized Slurm control container.
 
 The older `LocalWorkerStarter` remains in the repository for the local process path and tests, but the current target path is the configured execution-environment model rather than hard-coded worker target strings.
