@@ -1,6 +1,7 @@
 package variable
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -27,7 +28,7 @@ func NewResolver(set Set, config ResolverConfig) Resolver {
 }
 
 func (r Resolver) Resolve(reference Reference) (ResolvedValue, error) {
-	return r.resolve(reference, 0)
+	return r.resolveRoot(reference)
 }
 
 func (r Resolver) Optional(referenceText string) (ResolvedValue, bool, error) {
@@ -40,7 +41,7 @@ func (r Resolver) Optional(referenceText string) (ResolvedValue, bool, error) {
 		return ResolvedValue{}, false, nil
 	}
 
-	value, err := r.resolve(reference, 0)
+	value, err := r.resolveRoot(reference)
 	if err != nil {
 		return ResolvedValue{}, false, err
 	}
@@ -146,7 +147,7 @@ func (r Resolver) ResolveFanOutExpression(expression string) ([]ResolvedValue, e
 		return nil, fmt.Errorf("fan-out expression must end with [*]")
 	}
 
-	resolved, err := r.resolve(reference, 0)
+	resolved, err := r.resolveRoot(reference)
 	if err != nil {
 		return nil, err
 	}
@@ -222,19 +223,60 @@ func stringListValue(referenceText string, list []ResolvedValue) ([]string, erro
 	return values, nil
 }
 
-func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error) {
-	if depth >= r.config.MaxDepth {
-		return ResolvedValue{}, fmt.Errorf("maximum variable resolution depth exceeded at %s", reference.String())
-	}
-
-	variable, ok := r.set.LookupReference(reference)
-	if !ok {
-		return ResolvedValue{}, fmt.Errorf("variable not found: %s", reference.String())
-	}
-	return r.resolveExpression(variable.TypedExpression, depth)
+type resolutionContext struct {
+	root  string
+	path  string
+	chain []Name
 }
 
-func (r Resolver) resolveExpression(expression TypedExpression, depth int) (ResolvedValue, error) {
+func (r Resolver) resolveRoot(reference Reference) (ResolvedValue, error) {
+	variable, ok := r.set.LookupReference(reference)
+	if !ok {
+		return ResolvedValue{}, fmt.Errorf("resolve %s at /: variable not found: %s", reference.String(), reference.String())
+	}
+
+	context := resolutionContext{root: variable.Name.String(), path: "/"}
+	value, err := r.resolveVariable(variable, 0, context)
+	if err != nil {
+		return ResolvedValue{}, fmt.Errorf("resolve %s at %s: %w", context.root, errorPath(err, context.path), err)
+	}
+	return value, nil
+}
+
+func (r Resolver) resolveVariable(variable Variable, depth int, context resolutionContext) (ResolvedValue, error) {
+	for index, name := range context.chain {
+		if name == variable.Name {
+			chain := append(append([]Name{}, context.chain[index:]...), variable.Name)
+			parts := make([]string, len(chain))
+			for i, item := range chain {
+				parts[i] = item.String()
+			}
+			return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("reference cycle: %s", strings.Join(parts, " -> "))}
+		}
+	}
+	if depth >= r.config.MaxDepth {
+		return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("maximum variable resolution depth exceeded at %s", variable.Name.String())}
+	}
+
+	context.chain = append(append([]Name{}, context.chain...), variable.Name)
+	return r.resolveExpression(variable.TypedExpression, depth, context)
+}
+
+func (r Resolver) resolveReference(reference Reference, depth int, context resolutionContext) (ResolvedValue, error) {
+	variable, ok := r.set.LookupReference(reference)
+	if !ok {
+		return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("variable not found: %s", reference.String())}
+	}
+	return r.resolveVariable(variable, depth, context)
+}
+
+func (r Resolver) resolveExpression(expression TypedExpression, depth int, context resolutionContext) (value ResolvedValue, err error) {
+	defer func() {
+		var located locatedError
+		if err != nil && !errors.As(err, &located) {
+			err = locatedError{path: context.path, cause: err}
+		}
+	}()
 	if expressionText, isText := expression.Expression.(string); isText {
 		if refText, ok := wholeValueReferenceExpression(expressionText); ok {
 			next, accessor, err := parseReferenceExpression(refText)
@@ -242,7 +284,7 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int) (Reso
 				return ResolvedValue{}, fmt.Errorf("parse reference expression: %w", err)
 			}
 
-			resolved, err := r.resolve(next, depth+1)
+			resolved, err := r.resolveReference(next, depth+1, context)
 			if err != nil {
 				return ResolvedValue{}, err
 			}
@@ -260,7 +302,7 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int) (Reso
 			return resolved, nil
 		}
 		if expression.Type == TypeString || expression.Type == TypePath {
-			interpolated, err := r.interpolate(expressionText, depth)
+			interpolated, err := r.interpolate(expressionText, depth, context)
 			if err != nil {
 				return ResolvedValue{}, err
 			}
@@ -272,33 +314,47 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int) (Reso
 
 	switch expression.Type {
 	case TypeObject:
-		children := expression.Expression.(map[string]TypedExpression)
+		children, ok := expression.Expression.(map[string]TypedExpression)
+		if !ok {
+			return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("object expression must be a typed-expression map")}
+		}
 		fields := make(map[string]ResolvedValue, len(children))
 		for name, child := range children {
-			resolved, err := r.resolveExpression(child, depth)
+			childContext := context
+			childContext.path = appendJSONPointer(context.path, name)
+			resolved, err := r.resolveExpression(child, depth, childContext)
 			if err != nil {
-				return ResolvedValue{}, fmt.Errorf("resolve object field %s: %w", name, err)
+				return ResolvedValue{}, err
 			}
 			fields[name] = resolved
 		}
 		return ResolvedObject(fields), nil
 	case TypeList:
-		children := expression.Expression.([]TypedExpression)
+		children, ok := expression.Expression.([]TypedExpression)
+		if !ok {
+			return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("list expression must be a typed-expression list")}
+		}
 		values := make([]ResolvedValue, 0, len(children))
 		for index, child := range children {
-			resolved, err := r.resolveExpression(child, depth)
+			childContext := context
+			childContext.path = appendJSONPointer(context.path, strconv.Itoa(index))
+			resolved, err := r.resolveExpression(child, depth, childContext)
 			if err != nil {
-				return ResolvedValue{}, fmt.Errorf("resolve list item %d: %w", index, err)
+				return ResolvedValue{}, err
 			}
 			values = append(values, resolved)
 		}
 		return ResolvedList(values), nil
 	default:
-		return parseLiteralExpression(expression)
+		value, err := parseLiteralExpression(expression)
+		if err != nil {
+			return ResolvedValue{}, locatedError{path: context.path, cause: err}
+		}
+		return value, nil
 	}
 }
 
-func (r Resolver) interpolate(expression string, depth int) (string, error) {
+func (r Resolver) interpolate(expression string, depth int, context resolutionContext) (string, error) {
 	tokens, err := parseInterpolationTokens(expression)
 	if err != nil {
 		return "", err
@@ -313,7 +369,7 @@ func (r Resolver) interpolate(expression string, depth int) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("parse reference expression: %w", err)
 		}
-		resolved, err := r.resolve(reference, depth+1)
+		resolved, err := r.resolveReference(reference, depth+1, context)
 		if err != nil {
 			return "", err
 		}
@@ -333,6 +389,31 @@ func (r Resolver) interpolate(expression string, depth int) (string, error) {
 	}
 	result.WriteString(unescapeExpression(expression[previous:]))
 	return result.String(), nil
+}
+
+type locatedError struct {
+	path  string
+	cause error
+}
+
+func (e locatedError) Error() string { return e.cause.Error() }
+func (e locatedError) Unwrap() error { return e.cause }
+
+func errorPath(err error, fallback string) string {
+	var located locatedError
+	if errors.As(err, &located) {
+		return located.path
+	}
+	return fallback
+}
+
+func appendJSONPointer(path, segment string) string {
+	segment = strings.ReplaceAll(segment, "~", "~0")
+	segment = strings.ReplaceAll(segment, "/", "~1")
+	if path == "/" {
+		return "/" + segment
+	}
+	return path + "/" + segment
 }
 
 func interpolationText(value ResolvedValue) (string, error) {
