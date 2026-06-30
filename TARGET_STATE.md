@@ -495,6 +495,12 @@ Variables should be typed rather than stored as unstructured strings. Initial su
 
 Additional types may be added when a concrete workflow need appears. Dataset-specific values should not be added until their behavior is clear.
 
+Every variable and nested structured value should use the same recursive typed
+expression node with language-neutral `type` and `expression` fields. Object
+expressions map field names to child nodes, while list expressions contain
+ordered child nodes. Nested value types must be declared rather than inferred
+from raw JSON.
+
 The `path` type is intentionally distinct from `string`. It represents filesystem files or directories and should support path-aware operations such as joining path segments, normalization, and validation. Path evaluation must account for where a path is used: controller-local paths and worker-container paths may refer to different filesystems even when they originate from the same workflow expression.
 
 Lists are a first-class workflow type because they are the primary mechanism for fan-out. A list value can drive creation of many parallel work items or many sub-workflow invocations. A list does not declare one element type; each item is an independently typed expression. This permits heterogeneous values and nested lists while allowing consumers to validate narrower requirements such as string-only lists.

@@ -1,6 +1,6 @@
 # 002 Typed Expression JSON Model
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
