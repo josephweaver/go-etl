@@ -1,6 +1,6 @@
 # 003 Expression Definition Validation
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

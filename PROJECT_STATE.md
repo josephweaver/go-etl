@@ -470,6 +470,13 @@ list expressions decode to ordered independently typed child nodes, and scalar
 JSON values retain their serialized shape. `Variable` does not use this model
 yet; that integration remains a later structured-variable slice.
 
+Typed expressions now support context-free definition validation. Validation
+checks scalar literal shapes, datetime syntax, whole-value reference grammar,
+string and path interpolation tokens, scalar accessors, and every recursive
+object or list child. It does not look up variables or require controller,
+project, workflow, or override scopes; those contextual checks remain resolver
+work.
+
 Current resolver behavior supports:
 
 - Typed scalar literal parsing.

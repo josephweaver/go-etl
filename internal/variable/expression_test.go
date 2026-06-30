@@ -104,6 +104,98 @@ func TestTypedExpressionMarshalRejectsInvalidContainer(t *testing.T) {
 	}
 }
 
+func TestTypedExpressionValidateDefinition(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression TypedExpression
+	}{
+		{name: "string literal", expression: TypedExpression{Type: TypeString, Expression: "alpha"}},
+		{name: "string interpolation", expression: TypedExpression{Type: TypeString, Expression: "run-${year}-${region}"}},
+		{name: "string accessor", expression: TypedExpression{Type: TypeString, Expression: "${records[0].name}"}},
+		{name: "escaped interpolation", expression: TypedExpression{Type: TypeString, Expression: `\${year}`}},
+		{name: "path interpolation", expression: TypedExpression{Type: TypePath, Expression: "${project_config.root}/inputs"}},
+		{name: "int literal", expression: TypedExpression{Type: TypeInt, Expression: json.Number("2")}},
+		{name: "int reference", expression: TypedExpression{Type: TypeInt, Expression: "${workflow.year}"}},
+		{name: "bool literal", expression: TypedExpression{Type: TypeBool, Expression: true}},
+		{name: "bool reference", expression: TypedExpression{Type: TypeBool, Expression: "${enabled}"}},
+		{name: "datetime literal", expression: TypedExpression{Type: TypeDatetime, Expression: "2026-06-30T12:00:00Z"}},
+		{name: "datetime reference", expression: TypedExpression{Type: TypeDatetime, Expression: "${start}"}},
+		{
+			name: "recursive object and list",
+			expression: TypedExpression{
+				Type: TypeObject,
+				Expression: map[string]TypedExpression{
+					"items": {
+						Type: TypeList,
+						Expression: []TypedExpression{
+							{Type: TypeString, Expression: "alpha"},
+							{Type: TypeInt, Expression: json.Number("2")},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.expression.ValidateDefinition(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestTypedExpressionValidateDefinitionRejectsInvalidExpression(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression TypedExpression
+	}{
+		{name: "unsupported type", expression: TypedExpression{Type: Type{Kind: "unknown"}, Expression: "alpha"}},
+		{name: "string non-string", expression: TypedExpression{Type: TypeString, Expression: true}},
+		{name: "unterminated interpolation", expression: TypedExpression{Type: TypeString, Expression: "${year"}},
+		{name: "empty interpolation", expression: TypedExpression{Type: TypeString, Expression: "${}"}},
+		{name: "nested interpolation", expression: TypedExpression{Type: TypeString, Expression: "${outer${inner}}"}},
+		{name: "fan-out interpolation", expression: TypedExpression{Type: TypeString, Expression: "${years[*]}"}},
+		{name: "invalid index", expression: TypedExpression{Type: TypeString, Expression: "${years[first]}"}},
+		{name: "fractional int", expression: TypedExpression{Type: TypeInt, Expression: json.Number("2.5")}},
+		{name: "text int literal", expression: TypedExpression{Type: TypeInt, Expression: "2"}},
+		{name: "interpolated int", expression: TypedExpression{Type: TypeInt, Expression: "value-${year}"}},
+		{name: "text bool literal", expression: TypedExpression{Type: TypeBool, Expression: "true"}},
+		{name: "invalid datetime", expression: TypedExpression{Type: TypeDatetime, Expression: "not-a-datetime"}},
+		{name: "object wrong shape", expression: TypedExpression{Type: TypeObject, Expression: []TypedExpression{}}},
+		{name: "list wrong shape", expression: TypedExpression{Type: TypeList, Expression: map[string]TypedExpression{}}},
+		{
+			name: "invalid nested item",
+			expression: TypedExpression{
+				Type: TypeList,
+				Expression: []TypedExpression{
+					{Type: TypeInt, Expression: "2"},
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.expression.ValidateDefinition(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestTypedExpressionValidateDefinitionDoesNotRequireScopes(t *testing.T) {
+	expression := TypedExpression{
+		Type:       TypeString,
+		Expression: "${project_config.name}/inputs/${workflow.year}",
+	}
+
+	if err := expression.ValidateDefinition(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func assertJSONEqual(t *testing.T, got []byte, want []byte) {
 	t.Helper()
 
