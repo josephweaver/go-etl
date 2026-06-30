@@ -463,6 +463,13 @@ list
 type, so empty, heterogeneous, and nested lists are valid. Consumers that need
 a narrower shape, such as a string list, validate every item at their boundary.
 
+`TypedExpression` now defines the recursive language-neutral JSON node used by
+the structured-variable target model. Every node serializes with compact
+`type` and `expression` fields. Object expressions decode to named child nodes,
+list expressions decode to ordered independently typed child nodes, and scalar
+JSON values retain their serialized shape. `Variable` does not use this model
+yet; that integration remains a later structured-variable slice.
+
 Current resolver behavior supports:
 
 - Typed scalar literal parsing.
