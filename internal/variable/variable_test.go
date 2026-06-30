@@ -76,29 +76,41 @@ func TestResolvedObjectCarriesFields(t *testing.T) {
 }
 
 func TestResolvedListCarriesElements(t *testing.T) {
-	value, err := ResolvedList(TypeInt, []ResolvedValue{
+	value := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
-		{Type: TypeInt, Value: 2025},
+		{Type: TypeString, Value: "2025"},
+		ResolvedList([]ResolvedValue{{Type: TypeBool, Value: true}}),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 
-	if value.Type.String() != TypeList(TypeInt).String() {
+	if value.Type != TypeList {
 		t.Fatalf("unexpected type: %s", value.Type)
 	}
 
-	if len(value.List) != 2 {
+	if len(value.List) != 3 {
 		t.Fatalf("unexpected list length: %d", len(value.List))
+	}
+
+	if value.List[2].Type != TypeList {
+		t.Fatalf("unexpected nested type: %s", value.List[2].Type)
 	}
 }
 
-func TestResolvedListRejectsWrongElementType(t *testing.T) {
-	_, err := ResolvedList(TypeInt, []ResolvedValue{
-		{Type: TypeInt, Value: 2024},
-		{Type: TypeString, Value: "2025"},
-	})
-	if err == nil {
+func TestResolvedListAllowsEmptyList(t *testing.T) {
+	value := ResolvedList(nil)
+	if value.Type != TypeList || len(value.List) != 0 {
+		t.Fatalf("unexpected empty list: %#v", value)
+	}
+}
+
+func TestOptionalObjectFieldStringListRejectsNonStringItem(t *testing.T) {
+	fields := map[string]ResolvedValue{
+		"args": ResolvedList([]ResolvedValue{
+			{Type: TypeString, Value: "--once"},
+			{Type: TypeInt, Value: 2},
+		}),
+	}
+
+	if _, _, err := OptionalObjectFieldStringList(fields, "args"); err == nil {
 		t.Fatal("expected an error")
 	}
 }

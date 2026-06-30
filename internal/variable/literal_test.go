@@ -135,30 +135,43 @@ func TestParseLiteralParsesObject(t *testing.T) {
 
 func TestParseLiteralParsesList(t *testing.T) {
 	value, err := ParseLiteral(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-		Type:       TypeList(TypeInt),
-		Expression: `[2024, 2025]`,
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "values"},
+		Type:       TypeList,
+		Expression: `[2024, "ready", true, [2025]]`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if value.Type.String() != TypeList(TypeInt).String() {
+	if value.Type != TypeList {
 		t.Fatalf("unexpected type: %s", value.Type)
 	}
 
-	if value.List[1].Value != 2025 {
+	if value.List[1].Value != "ready" {
 		t.Fatalf("unexpected second value: %#v", value.List[1].Value)
+	}
+
+	if value.List[3].Type != TypeList || value.List[3].List[0].Value != 2025 {
+		t.Fatalf("unexpected nested list: %#v", value.List[3])
+	}
+}
+
+func TestParseLiteralParsesEmptyList(t *testing.T) {
+	value, err := ParseLiteral(Variable{
+		Name:       Name{Namespace: NamespaceWorkflow, Key: "values"},
+		Type:       TypeList,
+		Expression: `[]`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if value.Type != TypeList || len(value.List) != 0 {
+		t.Fatalf("unexpected empty list: %#v", value)
 	}
 }
 
 func TestParseLiteralRejectsInvalidStructuredValue(t *testing.T) {
 	tests := []Variable{
-		{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-			Type:       TypeList(TypeInt),
-			Expression: `[2024, "2025"]`,
-		},
 		{
 			Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
 			Type:       TypeObject,

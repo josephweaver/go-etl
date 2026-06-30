@@ -43,7 +43,7 @@ func TestWorkflowClientSubmitWorkflow(t *testing.T) {
 			Variables: []variable.Variable{
 				{
 					Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-					Type:       variable.TypeList(variable.TypeInt),
+					Type:       variable.TypeList,
 					Expression: "[2024]",
 				},
 			},

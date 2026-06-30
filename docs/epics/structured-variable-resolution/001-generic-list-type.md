@@ -1,6 +1,6 @@
 # 001 Generic List Type
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

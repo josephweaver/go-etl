@@ -110,7 +110,7 @@ func (r Resolver) OptionalObject(referenceText string) (map[string]ResolvedValue
 }
 
 func (r Resolver) StringList(referenceText string) ([]string, error) {
-	value, err := r.requiredType(referenceText, TypeList(TypeString))
+	value, err := r.requiredType(referenceText, TypeList)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func (r Resolver) StringList(referenceText string) ([]string, error) {
 }
 
 func (r Resolver) OptionalStringList(referenceText string) ([]string, bool, error) {
-	value, ok, err := r.optionalType(referenceText, TypeList(TypeString))
+	value, ok, err := r.optionalType(referenceText, TypeList)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -207,6 +207,10 @@ func (r Resolver) optionalPathOrString(referenceText string) (ResolvedValue, boo
 func stringListValue(referenceText string, list []ResolvedValue) ([]string, error) {
 	values := make([]string, 0, len(list))
 	for index, item := range list {
+		if item.Type != TypeString {
+			return nil, fmt.Errorf("%s[%d] has type %s, want string", referenceText, index, item.Type)
+		}
+
 		text, ok := item.Value.(string)
 		if !ok || text == "" {
 			return nil, fmt.Errorf("%s[%d] is required", referenceText, index)

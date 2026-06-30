@@ -38,22 +38,11 @@ func ResolvedObject(fields map[string]ResolvedValue) ResolvedValue {
 	}
 }
 
-func ResolvedList(element Type, values []ResolvedValue) (ResolvedValue, error) {
-	listType := TypeList(element)
-	if !listType.Valid() {
-		return ResolvedValue{}, fmt.Errorf("unsupported list type: %s", listType)
-	}
-
-	for index, value := range values {
-		if value.Type != element {
-			return ResolvedValue{}, fmt.Errorf("list element %d has type %s, want %s", index, value.Type, element)
-		}
-	}
-
+func ResolvedList(values []ResolvedValue) ResolvedValue {
 	return ResolvedValue{
-		Type: listType,
+		Type: TypeList,
 		List: values,
-	}, nil
+	}
 }
 
 func OptionalObjectFieldObject(fields map[string]ResolvedValue, name string) (map[string]ResolvedValue, bool, error) {
@@ -83,13 +72,17 @@ func OptionalObjectFieldString(fields map[string]ResolvedValue, name string) (st
 }
 
 func OptionalObjectFieldStringList(fields map[string]ResolvedValue, name string) ([]string, bool, error) {
-	value, ok, err := optionalObjectFieldType(fields, name, TypeList(TypeString))
+	value, ok, err := optionalObjectFieldType(fields, name, TypeList)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
 
 	values := make([]string, 0, len(value.List))
 	for index, item := range value.List {
+		if item.Type != TypeString {
+			return nil, false, fmt.Errorf("%s[%d] has type %s, want string", name, index, item.Type)
+		}
+
 		text, ok := item.Value.(string)
 		if !ok || text == "" {
 			return nil, false, fmt.Errorf("%s[%d] is required", name, index)
