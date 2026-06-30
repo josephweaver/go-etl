@@ -8,7 +8,7 @@ import (
 )
 
 func TestCompileWorkflow(t *testing.T) {
-	resolver := testWorkflowResolver(t, `[2024, 2025]`)
+	resolver := testWorkflowResolver(t, 2024, 2025)
 
 	items, err := CompileWorkflow(resolver, Workflow{
 		ID: "cdl",
@@ -44,9 +44,11 @@ func TestCompileWorkflowWithWorkflowVariables(t *testing.T) {
 		ID: "cdl",
 		Variables: []variable.Variable{
 			{
-				Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-				Type:       variable.TypeList,
-				Expression: `[2024, 2025]`,
+				Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
+				TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+					{Type: variable.TypeInt, Expression: 2024},
+					{Type: variable.TypeInt, Expression: 2025},
+				}},
 			},
 		},
 		Steps: []Step{
@@ -82,7 +84,7 @@ func TestCompileWorkflowWithWorkflowVariables(t *testing.T) {
 }
 
 func TestCompileWorkflowItemsIncludesTraceMetadata(t *testing.T) {
-	resolver := testWorkflowResolver(t, `[2024]`)
+	resolver := testWorkflowResolver(t, 2024)
 
 	items, err := CompileWorkflowItems(resolver, Workflow{
 		ID: "cdl",
@@ -118,7 +120,7 @@ func TestCompileWorkflowItemsIncludesTraceMetadata(t *testing.T) {
 }
 
 func TestCompileWorkflowResultIncludesSummary(t *testing.T) {
-	resolver := testWorkflowResolver(t, `[2024, 2025]`)
+	resolver := testWorkflowResolver(t, 2024, 2025)
 
 	result, err := CompileWorkflowResult(resolver, Workflow{
 		ID: "cdl",
@@ -163,7 +165,7 @@ func TestCompileWorkflowRejectsMissingID(t *testing.T) {
 }
 
 func TestCompileWorkflowRejectsDuplicateStepID(t *testing.T) {
-	resolver := testWorkflowResolver(t, `[2024]`)
+	resolver := testWorkflowResolver(t, 2024)
 
 	_, err := CompileWorkflow(resolver, Workflow{
 		ID: "cdl",
@@ -198,7 +200,7 @@ func TestCompileWorkflowRejectsDuplicateStepID(t *testing.T) {
 }
 
 func TestCompileWorkflowRejectsDuplicateGeneratedWorkItemID(t *testing.T) {
-	resolver := testWorkflowResolver(t, `[2024]`)
+	resolver := testWorkflowResolver(t, 2024)
 
 	_, err := CompileWorkflow(resolver, Workflow{
 		ID: "cdl",
@@ -234,14 +236,15 @@ func TestCompileWorkflowRejectsDuplicateGeneratedWorkItemID(t *testing.T) {
 	}
 }
 
-func testWorkflowResolver(t *testing.T, years string) variable.Resolver {
+func testWorkflowResolver(t *testing.T, years ...int) variable.Resolver {
 	t.Helper()
 
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList,
-		Expression: years,
-	})
+	items := make([]variable.TypedExpression, 0, len(years))
+	for _, year := range years {
+		items = append(items, variable.TypedExpression{Type: variable.TypeInt, Expression: year})
+	}
+
+	scope, err := variable.NewScope(variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"}, TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: items}})
 	if err != nil {
 		t.Fatal(err)
 	}

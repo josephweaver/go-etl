@@ -1,16 +1,15 @@
 package variable
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestVariableValidate(t *testing.T) {
-	valid := Variable{
-		Name: Name{
-			Namespace: NamespaceProject,
-			Key:       "data_dir",
-		},
-		Type:       TypePath,
-		Expression: "/data/project",
-	}
+	valid := Variable{Name: Name{
+		Namespace: NamespaceProject,
+		Key:       "data_dir",
+	}, TypedExpression: TypedExpression{Type: TypePath, Expression: "/data/project"}}
 
 	tests := []struct {
 		name     string
@@ -21,25 +20,21 @@ func TestVariableValidate(t *testing.T) {
 		{
 			name: "invalid name",
 			variable: Variable{
-				Type:       TypePath,
-				Expression: "/data/project",
+				TypedExpression: TypedExpression{Type: TypePath, Expression: "/data/project"},
 			},
 			wantErr: true,
 		},
 		{
-			name: "unsupported type",
-			variable: Variable{
-				Name:       valid.Name,
-				Type:       Type{Kind: "unknown"},
-				Expression: "/data/project",
-			},
+			name:     "unsupported type",
+			variable: Variable{Name: valid.Name, TypedExpression: TypedExpression{Type: Type{Kind: "unknown"}, Expression: "/data/project"}},
+
 			wantErr: true,
 		},
 		{
 			name: "missing expression",
 			variable: Variable{
-				Name: valid.Name,
-				Type: TypePath,
+				Name:            valid.Name,
+				TypedExpression: TypedExpression{Type: TypePath},
 			},
 			wantErr: true,
 		},
@@ -111,6 +106,44 @@ func TestOptionalObjectFieldStringListRejectsNonStringItem(t *testing.T) {
 	}
 
 	if _, _, err := OptionalObjectFieldStringList(fields, "args"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestVariableJSONRoundTripUsesFlatTypedExpression(t *testing.T) {
+	text := `{
+		"name":{"namespace":"workflow","key":"settings"},
+		"type":"object",
+		"expression":{
+			"enabled":{"type":"bool","expression":true},
+			"values":{"type":"list","expression":[{"type":"int","expression":2}]}
+		}
+	}`
+
+	var value Variable
+	if err := json.Unmarshal([]byte(text), &value); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if value.Name.Key != "settings" || value.Type != TypeObject {
+		t.Fatalf("unexpected variable: %#v", value)
+	}
+
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	assertJSONEqual(t, encoded, []byte(text))
+}
+
+func TestVariableJSONRejectsLegacyStructuredExpression(t *testing.T) {
+	legacy := `{
+		"Name":{"Namespace":"workflow","Key":"settings"},
+		"Type":{"Kind":"object"},
+		"Expression":"{\"enabled\":true}"
+	}`
+
+	var value Variable
+	if err := json.Unmarshal([]byte(legacy), &value); err == nil {
 		t.Fatal("expected an error")
 	}
 }

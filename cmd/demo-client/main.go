@@ -54,31 +54,19 @@ func demoWorkflowPath(args []string) string {
 
 func demoResolver() (variable.Resolver, error) {
 	scope, err := variable.NewScope(
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"},
-			Type:       variable.TypeString,
-			Expression: "http://localhost:8080",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_executable"},
-			Type:       variable.TypeString,
-			Expression: "go",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"},
-			Type:       variable.TypeList,
-			Expression: `["run", "./cmd/controller", "./cmd/controller/demo-config.json"]`,
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"},
-			Type:       variable.TypeString,
-			Expression: "controller-start.lock",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"},
-			Type:       variable.TypeString,
-			Expression: "1s",
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "http://localhost:8080"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "go"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"}, TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+			{Type: variable.TypeString, Expression: "run"},
+			{Type: variable.TypeString, Expression: "./cmd/controller"},
+			{Type: variable.TypeString, Expression: "./cmd/controller/demo-config.json"},
+		}}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "controller-start.lock"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "1s"}},
 	)
 	if err != nil {
 		return variable.Resolver{}, err

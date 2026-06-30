@@ -1,6 +1,6 @@
 # 004 Variable Typed-Expression Integration
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

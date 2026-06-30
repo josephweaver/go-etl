@@ -3,17 +3,12 @@
     "ID": "fake-hpcc-demo",
     "Variables": [
       {
-        "Name": {
-          "Namespace": "workflow",
-          "Key": "years"
+        "name": {
+          "namespace": "workflow",
+          "key": "years"
         },
-        "Type": {
-          "Kind": "list",
-          "Element": {
-            "Kind": "int"
-          }
-        },
-        "Expression": "[2024]"
+        "type": "list",
+        "expression": [{"type": "int", "expression": 2024}]
       }
     ],
     "Steps": [
@@ -32,77 +27,63 @@
   },
   "variables": [
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_target_environment"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_target_environment"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "hpcc"
+      "type": "string",
+      "expression": "hpcc"
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_start_executable"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_start_executable"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "bash"
+      "type": "string",
+      "expression": "bash"
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_start_args"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_start_args"
       },
-      "Type": {
-        "Kind": "list",
-        "Element": {
-          "Kind": "string"
-        }
-      },
-      "Expression": "[\"-lc\", \"FAKE_SLURM_FOREGROUND=1 scripts/fake-hpcc/sbatch .run/fake-hpcc/worker.slurm\"]"
+      "type": "list",
+      "expression": [
+        {"type": "string", "expression": "-lc"},
+        {"type": "string", "expression": "FAKE_SLURM_FOREGROUND=1 scripts/fake-hpcc/sbatch .run/fake-hpcc/worker.slurm"}
+      ]
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_count"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_min_count"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_max_count"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_max_count"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_count_per_start"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_count_per_start"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_elapsed_time_between_starts"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_min_elapsed_time_between_starts"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "0s"
+      "type": "string",
+      "expression": "0s"
     }
   ]
 }

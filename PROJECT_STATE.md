@@ -467,8 +467,10 @@ a narrower shape, such as a string list, validate every item at their boundary.
 the structured-variable target model. Every node serializes with compact
 `type` and `expression` fields. Object expressions decode to named child nodes,
 list expressions decode to ordered independently typed child nodes, and scalar
-JSON values retain their serialized shape. `Variable` does not use this model
-yet; that integration remains a later structured-variable slice.
+JSON values retain their serialized shape. `Variable` is now a name plus an
+embedded root `TypedExpression`, serialized through flat lowercase `name`,
+`type`, and `expression` fields. Repository-owned workflow and controller JSON
+fixtures use this form; legacy raw-JSON structured expressions are rejected.
 
 Typed expressions now support context-free definition validation. Validation
 checks scalar literal shapes, datetime syntax, whole-value reference grammar,
@@ -480,7 +482,8 @@ work.
 Current resolver behavior supports:
 
 - Typed scalar literal parsing.
-- JSON object and list literal parsing into explicit resolved values.
+- Recursive conversion of explicitly typed object and list literal nodes into
+  resolved values without nested type inference.
 - Variable precedence merging.
 - Qualified and unqualified references.
 - Recursive resolution with a configurable maximum depth.
@@ -490,7 +493,7 @@ Current resolver behavior supports:
 - Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
 - Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
 
-Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. During the transition to recursive typed expressions, legacy JSON list literals infer each item's resolved type independently rather than declaring one element type for the list. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
+Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Whole-value references inside structured children and mixed-text interpolation remain later structured-resolution slices.
 
 Runtime configuration must flow through the variable subsystem. Controller settings, worker settings, backend choices, command-line flags, API arguments, and client overrides should be represented as typed variables with clear namespaces and sources. Config structs and HTTP JSON fields are transport surfaces, not a separate configuration authority.
 

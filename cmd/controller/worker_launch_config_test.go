@@ -10,21 +10,20 @@ import (
 
 func TestWorkerLaunchConfigResolvesStructuredWorkerConfig(t *testing.T) {
 	cfg, err := workerLaunchConfig(testControllerResolver(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "transport"},
-			Type:       variable.TypeObject,
-			Expression: `{"type":"docker","settings":{"executable":"docker","container":"slurmctld"}}`,
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "scheduler"},
-			Type:       variable.TypeObject,
-			Expression: `{"type":"slurm","settings":{"script_path":"/tmp/goetl-worker.slurm","job_name":"goetl-worker"}}`,
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "runtime"},
-			Type:       variable.TypeObject,
-			Expression: `{"type":"worker","settings":{"executable":"/opt/goetl/worker","args":["--mode","worker"],"config_path":"/shared/goetl/config/worker.json","log_dir":"/shared/goetl/logs"}}`,
-		},
+		testWorkerConfigVariable("transport", "docker", map[string]variable.TypedExpression{
+			"executable": {Type: variable.TypeString, Expression: "docker"},
+			"container":  {Type: variable.TypeString, Expression: "slurmctld"},
+		}),
+		testWorkerConfigVariable("scheduler", "slurm", map[string]variable.TypedExpression{
+			"script_path": {Type: variable.TypePath, Expression: "/tmp/goetl-worker.slurm"},
+			"job_name":    {Type: variable.TypeString, Expression: "goetl-worker"},
+		}),
+		testWorkerConfigVariable("runtime", "worker", map[string]variable.TypedExpression{
+			"executable":  {Type: variable.TypePath, Expression: "/opt/goetl/worker"},
+			"args":        {Type: variable.TypeList, Expression: []variable.TypedExpression{{Type: variable.TypeString, Expression: "--mode"}, {Type: variable.TypeString, Expression: "worker"}}},
+			"config_path": {Type: variable.TypePath, Expression: "/shared/goetl/config/worker.json"},
+			"log_dir":     {Type: variable.TypePath, Expression: "/shared/goetl/logs"},
+		}),
 	))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -46,26 +45,13 @@ func TestWorkerLaunchConfigResolvesStructuredWorkerConfig(t *testing.T) {
 
 func TestWorkerLaunchConfigSupportsFlatWorkerConfig(t *testing.T) {
 	cfg, err := workerLaunchConfig(testControllerResolver(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_script_path"},
-			Type:       variable.TypePath,
-			Expression: "/tmp/goetl-worker.slurm",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
-			Type:       variable.TypeString,
-			Expression: "/opt/goetl/worker",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/config/worker.json",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/logs",
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_script_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/tmp/goetl-worker.slurm"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "/opt/goetl/worker"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/config/worker.json"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/logs"}},
 	))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -78,26 +64,13 @@ func TestWorkerLaunchConfigSupportsFlatWorkerConfig(t *testing.T) {
 
 func TestWorkerLaunchConfigSupportsLegacyScriptPath(t *testing.T) {
 	cfg, err := workerLaunchConfig(testControllerResolver(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "docker_slurm_script_path"},
-			Type:       variable.TypePath,
-			Expression: "/tmp/legacy-goetl-worker.slurm",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
-			Type:       variable.TypeString,
-			Expression: "/opt/goetl/worker",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/config/worker.json",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/logs",
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "docker_slurm_script_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/tmp/legacy-goetl-worker.slurm"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "/opt/goetl/worker"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/config/worker.json"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/logs"}},
 	))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -110,21 +83,11 @@ func TestWorkerLaunchConfigSupportsLegacyScriptPath(t *testing.T) {
 
 func TestWorkerLaunchConfigRejectsMissingScriptPath(t *testing.T) {
 	_, err := workerLaunchConfig(testControllerResolver(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
-			Type:       variable.TypeString,
-			Expression: "/opt/goetl/worker",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/config/worker.json",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"},
-			Type:       variable.TypePath,
-			Expression: "/shared/goetl/logs",
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "/opt/goetl/worker"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_config_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/config/worker.json"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_log_dir"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: "/shared/goetl/logs"}},
 	))
 	if err == nil {
 		t.Fatal("expected an error")
@@ -171,5 +134,21 @@ func TestDockerSlurmWorkflowFixtureResolvesWorkerConfig(t *testing.T) {
 	}
 	if cfg.slurm.LogDir != "/data/goetl/logs" {
 		t.Fatalf("log dir = %q, want fixture log dir", cfg.slurm.LogDir)
+	}
+}
+
+func testWorkerConfigVariable(key string, kind string, settings map[string]variable.TypedExpression) variable.Variable {
+	return variable.Variable{
+		Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: key},
+		TypedExpression: variable.TypedExpression{
+			Type: variable.TypeObject,
+			Expression: map[string]variable.TypedExpression{
+				"type": {Type: variable.TypeString, Expression: kind},
+				"settings": {
+					Type:       variable.TypeObject,
+					Expression: settings,
+				},
+			},
+		},
 	}
 }

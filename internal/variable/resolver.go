@@ -230,7 +230,8 @@ func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error)
 		return ResolvedValue{}, fmt.Errorf("variable not found: %s", reference.String())
 	}
 
-	if refText, ok := referenceExpression(variable.Expression); ok {
+	expressionText, isText := variable.Expression.(string)
+	if refText, ok := referenceExpression(expressionText); isText && ok {
 		next, accessor, err := parseReferenceExpression(refText)
 		if err != nil {
 			return ResolvedValue{}, fmt.Errorf("parse reference expression for %s: %w", variable.Name.String(), err)
@@ -248,7 +249,9 @@ func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error)
 		return ApplyAccessor(resolved, accessor)
 	}
 
-	variable.Expression = unescapeExpression(variable.Expression)
+	if isText {
+		variable.Expression = unescapeExpression(expressionText)
+	}
 	return ParseLiteral(variable)
 }
 

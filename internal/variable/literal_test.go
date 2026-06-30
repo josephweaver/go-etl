@@ -13,52 +13,37 @@ func TestParseLiteral(t *testing.T) {
 		wantValue any
 	}{
 		{
-			name: "string",
-			variable: Variable{
-				Name:       Name{Namespace: NamespaceWorkflow, Key: "crop"},
-				Type:       TypeString,
-				Expression: "corn",
-			},
+			name:     "string",
+			variable: Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "crop"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "corn"}},
+
 			wantType:  TypeString,
 			wantValue: "corn",
 		},
 		{
-			name: "int",
-			variable: Variable{
-				Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-				Type:       TypeInt,
-				Expression: "2025",
-			},
+			name:     "int",
+			variable: Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}},
+
 			wantType:  TypeInt,
 			wantValue: 2025,
 		},
 		{
-			name: "bool",
-			variable: Variable{
-				Name:       Name{Namespace: NamespaceWorkflow, Key: "enabled"},
-				Type:       TypeBool,
-				Expression: "true",
-			},
+			name:     "bool",
+			variable: Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "enabled"}, TypedExpression: TypedExpression{Type: TypeBool, Expression: true}},
+
 			wantType:  TypeBool,
 			wantValue: true,
 		},
 		{
-			name: "datetime",
-			variable: Variable{
-				Name:       Name{Namespace: NamespaceWorkflow, Key: "start"},
-				Type:       TypeDatetime,
-				Expression: "2026-06-02T12:00:00Z",
-			},
+			name:     "datetime",
+			variable: Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "start"}, TypedExpression: TypedExpression{Type: TypeDatetime, Expression: "2026-06-02T12:00:00Z"}},
+
 			wantType:  TypeDatetime,
 			wantValue: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 		},
 		{
-			name: "path",
-			variable: Variable{
-				Name:       Name{Namespace: NamespaceWorkflow, Key: "data_dir"},
-				Type:       TypePath,
-				Expression: "/data/project",
-			},
+			name:     "path",
+			variable: Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "data_dir"}, TypedExpression: TypedExpression{Type: TypePath, Expression: "/data/project"}},
+
 			wantType:  TypePath,
 			wantValue: "/data/project",
 		},
@@ -85,19 +70,16 @@ func TestParseLiteral(t *testing.T) {
 func TestParseLiteralRejectsInvalidValue(t *testing.T) {
 	tests := []Variable{
 		{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-			Type:       TypeInt,
-			Expression: "not-int",
+			Name:            Name{Namespace: NamespaceWorkflow, Key: "year"},
+			TypedExpression: TypedExpression{Type: TypeInt, Expression: "not-int"},
 		},
 		{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "enabled"},
-			Type:       TypeBool,
-			Expression: "not-bool",
+			Name:            Name{Namespace: NamespaceWorkflow, Key: "enabled"},
+			TypedExpression: TypedExpression{Type: TypeBool, Expression: "not-bool"},
 		},
 		{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "start"},
-			Type:       TypeDatetime,
-			Expression: "not-datetime",
+			Name:            Name{Namespace: NamespaceWorkflow, Key: "start"},
+			TypedExpression: TypedExpression{Type: TypeDatetime, Expression: "not-datetime"},
 		},
 	}
 
@@ -112,9 +94,15 @@ func TestParseLiteralRejectsInvalidValue(t *testing.T) {
 
 func TestParseLiteralParsesObject(t *testing.T) {
 	value, err := ParseLiteral(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
-		Type:       TypeObject,
-		Expression: `{"year": 2025, "path": "/data/cdl/2025.tif", "enabled": true}`,
+		Name: Name{Namespace: NamespaceWorkflow, Key: "record"},
+		TypedExpression: TypedExpression{
+			Type: TypeObject,
+			Expression: map[string]TypedExpression{
+				"year":    {Type: TypeInt, Expression: 2025},
+				"path":    {Type: TypePath, Expression: "/data/cdl/2025.tif"},
+				"enabled": {Type: TypeBool, Expression: true},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -135,9 +123,16 @@ func TestParseLiteralParsesObject(t *testing.T) {
 
 func TestParseLiteralParsesList(t *testing.T) {
 	value, err := ParseLiteral(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "values"},
-		Type:       TypeList,
-		Expression: `[2024, "ready", true, [2025]]`,
+		Name: Name{Namespace: NamespaceWorkflow, Key: "values"},
+		TypedExpression: TypedExpression{
+			Type: TypeList,
+			Expression: []TypedExpression{
+				{Type: TypeInt, Expression: 2024},
+				{Type: TypeString, Expression: "ready"},
+				{Type: TypeBool, Expression: true},
+				{Type: TypeList, Expression: []TypedExpression{{Type: TypeInt, Expression: 2025}}},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -158,9 +153,8 @@ func TestParseLiteralParsesList(t *testing.T) {
 
 func TestParseLiteralParsesEmptyList(t *testing.T) {
 	value, err := ParseLiteral(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "values"},
-		Type:       TypeList,
-		Expression: `[]`,
+		Name:            Name{Namespace: NamespaceWorkflow, Key: "values"},
+		TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -173,9 +167,8 @@ func TestParseLiteralParsesEmptyList(t *testing.T) {
 func TestParseLiteralRejectsInvalidStructuredValue(t *testing.T) {
 	tests := []Variable{
 		{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
-			Type:       TypeObject,
-			Expression: `{"year": 2025`,
+			Name:            Name{Namespace: NamespaceWorkflow, Key: "record"},
+			TypedExpression: TypedExpression{Type: TypeObject, Expression: []TypedExpression{}},
 		},
 	}
 

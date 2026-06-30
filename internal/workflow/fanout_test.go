@@ -8,11 +8,7 @@ import (
 )
 
 func TestCompileFanOutWorkItems(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList,
-		Expression: `[2024, 2025]`,
-	})
+	scope, err := variable.NewScope(testIntListVariable("years", 2024, 2025))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,11 +40,7 @@ func TestCompileFanOutWorkItems(t *testing.T) {
 }
 
 func TestCompileFanOutStep(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList,
-		Expression: `[2024, 2025]`,
-	})
+	scope, err := variable.NewScope(testIntListVariable("years", 2024, 2025))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +71,7 @@ func TestCompileFanOutStep(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList,
-		Expression: `[2024]`,
-	})
+	scope, err := variable.NewScope(testIntListVariable("years", 2024))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +104,16 @@ func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList,
-		Expression: `[{"id": "fixture", "input_path": "demo-summary-input.txt"}, {"id": "fixture-2", "input_path": "demo-summary-input-2.txt"}]`,
-	})
+	scope, err := variable.NewScope(testObjectListVariable("records",
+		map[string]variable.TypedExpression{
+			"id":         {Type: variable.TypeString, Expression: "fixture"},
+			"input_path": {Type: variable.TypeString, Expression: "demo-summary-input.txt"},
+		},
+		map[string]variable.TypedExpression{
+			"id":         {Type: variable.TypeString, Expression: "fixture-2"},
+			"input_path": {Type: variable.TypeString, Expression: "demo-summary-input-2.txt"},
+		},
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +166,16 @@ func TestCompileFanOutStepRejectsMissingID(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsUsesObjectTokenAccessor(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList,
-		Expression: `[{"year": 2024, "path": "/data/2024.tif"}, {"year": 2025, "path": "/data/2025.tif"}]`,
-	})
+	scope, err := variable.NewScope(testObjectListVariable("records",
+		map[string]variable.TypedExpression{
+			"year": {Type: variable.TypeInt, Expression: 2024},
+			"path": {Type: variable.TypePath, Expression: "/data/2024.tif"},
+		},
+		map[string]variable.TypedExpression{
+			"year": {Type: variable.TypeInt, Expression: 2025},
+			"path": {Type: variable.TypePath, Expression: "/data/2025.tif"},
+		},
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,11 +204,16 @@ func TestCompileFanOutWorkItemsUsesObjectTokenAccessor(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsUsesSeparateTokenAccessors(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList,
-		Expression: `[{"year": 2024, "output": "cdl-iowa-2024"}, {"year": 2025, "output": "cdl-iowa-2025"}]`,
-	})
+	scope, err := variable.NewScope(testObjectListVariable("records",
+		map[string]variable.TypedExpression{
+			"year":   {Type: variable.TypeInt, Expression: 2024},
+			"output": {Type: variable.TypeString, Expression: "cdl-iowa-2024"},
+		},
+		map[string]variable.TypedExpression{
+			"year":   {Type: variable.TypeInt, Expression: 2025},
+			"output": {Type: variable.TypeString, Expression: "cdl-iowa-2025"},
+		},
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +243,9 @@ func TestCompileFanOutWorkItemsUsesSeparateTokenAccessors(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsRejectsUnsupportedTokenType(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList,
-		Expression: `[{"year": 2024}]`,
-	})
+	scope, err := variable.NewScope(testObjectListVariable("records", map[string]variable.TypedExpression{
+		"year": {Type: variable.TypeInt, Expression: 2024},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,11 +265,7 @@ func TestCompileFanOutWorkItemsRejectsUnsupportedTokenType(t *testing.T) {
 }
 
 func TestCompileFanOutWorkItemsRejectsInvalidTemplate(t *testing.T) {
-	scope, err := variable.NewScope(variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList,
-		Expression: `[2024]`,
-	})
+	scope, err := variable.NewScope(testIntListVariable("years", 2024))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,5 +281,27 @@ func TestCompileFanOutWorkItemsRejectsInvalidTemplate(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func testIntListVariable(key string, values ...int) variable.Variable {
+	items := make([]variable.TypedExpression, 0, len(values))
+	for _, value := range values {
+		items = append(items, variable.TypedExpression{Type: variable.TypeInt, Expression: value})
+	}
+	return variable.Variable{
+		Name:            variable.Name{Namespace: variable.NamespaceWorkflow, Key: key},
+		TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: items},
+	}
+}
+
+func testObjectListVariable(key string, values ...map[string]variable.TypedExpression) variable.Variable {
+	items := make([]variable.TypedExpression, 0, len(values))
+	for _, value := range values {
+		items = append(items, variable.TypedExpression{Type: variable.TypeObject, Expression: value})
+	}
+	return variable.Variable{
+		Name:            variable.Name{Namespace: variable.NamespaceWorkflow, Key: key},
+		TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: items},
 	}
 }

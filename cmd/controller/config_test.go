@@ -16,14 +16,14 @@ func TestLoadControllerConfig(t *testing.T) {
 	content := []byte(`{
 		"variables": [
 			{
-				"Name": {"Namespace": "backend", "Key": "controller_url"},
-				"Type": {"Kind": "string"},
-				"Expression": "http://localhost:8080"
+				"name": {"namespace": "backend", "key": "controller_url"},
+				"type": "string",
+				"expression": "http://localhost:8080"
 			},
 			{
-				"Name": {"Namespace": "runtime", "Key": "ledger_db_path"},
-				"Type": {"Kind": "path"},
-				"Expression": ".run/controller/ledger.sqlite"
+				"name": {"namespace": "runtime", "key": "ledger_db_path"},
+				"type": "path",
+				"expression": ".run/controller/ledger.sqlite"
 			}
 		],
 		"execution_environment": {
@@ -65,9 +65,9 @@ func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
 	content := []byte(`{
 		"variables": [
 			{
-				"Name": {"Namespace": "controller_config", "Key": "controller_url"},
-				"Type": {"Kind": "string"},
-				"Expression": "http://localhost:8080"
+				"name": {"namespace": "controller_config", "key": "controller_url"},
+				"type": "string",
+				"expression": "http://localhost:8080"
 			}
 		],
 		"execution_environment": {
@@ -200,9 +200,9 @@ func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 	content := []byte(`{
 		"variables": [
 			{
-				"Name": {"Namespace": "controller_config", "Key": "controller_url"},
-				"Type": {"Kind": "string"},
-				"Expression": "http://localhost:8080"
+				"name": {"namespace": "controller_config", "key": "controller_url"},
+				"type": "string",
+				"expression": "http://localhost:8080"
 			}
 		]
 	}`)
@@ -284,13 +284,7 @@ func TestInitConfiguredExecutionEnvironmentRejectsInvalidEnvironment(t *testing.
 
 func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: dbPath,
-		},
-	}}
+	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
 
 	db, err := initConfiguredLedger(context.Background(), config)
 	if err != nil {
@@ -308,13 +302,7 @@ func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
 }
 
 func TestInitConfiguredLedgerRejectsWrongPathType(t *testing.T) {
-	config := ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypeString,
-			Expression: "ledger.sqlite",
-		},
-	}}
+	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "ledger.sqlite"}}}}
 
 	if _, err := initConfiguredLedger(context.Background(), config); err == nil {
 		t.Fatal("expected an error")
@@ -323,13 +311,7 @@ func TestInitConfiguredLedgerRejectsWrongPathType(t *testing.T) {
 
 func TestControllerOwnsConfiguredLedger(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: dbPath,
-		},
-	}}
+	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
 
 	db, err := initConfiguredLedger(context.Background(), config)
 	if err != nil {
@@ -355,13 +337,7 @@ func TestControllerRecordAttemptNoopsWithoutLedger(t *testing.T) {
 
 func TestControllerRecordAttemptWritesConfiguredLedger(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: dbPath,
-		},
-	}}
+	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
 
 	db, err := initConfiguredLedger(context.Background(), config)
 	if err != nil {
