@@ -501,6 +501,12 @@ expressions map field names to child nodes, while list expressions contain
 ordered child nodes. Nested value types must be declared rather than inferred
 from raw JSON.
 
+Definition validation should remain separate from contextual resolution.
+Reusable workflow or project documents can be checked for well-formed types,
+literals, references, accessors, and interpolation syntax before all scopes are
+available. Reference existence, precedence, referenced-type compatibility,
+cycles, and resolution depth require the complete assembled submission context.
+
 The `path` type is intentionally distinct from `string`. It represents filesystem files or directories and should support path-aware operations such as joining path segments, normalization, and validation. Path evaluation must account for where a path is used: controller-local paths and worker-container paths may refer to different filesystems even when they originate from the same workflow expression.
 
 Lists are a first-class workflow type because they are the primary mechanism for fan-out. A list value can drive creation of many parallel work items or many sub-workflow invocations. A list does not declare one element type; each item is an independently typed expression. This permits heterogeneous values and nested lists while allowing consumers to validate narrower requirements such as string-only lists.
