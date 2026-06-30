@@ -18,10 +18,11 @@ node.
   an explicit declared type.
 - Represent object fields as named, typed expressions rather than untyped raw
   JSON fields.
-- Define an explicit type contract for list values and their elements.
+- Treat `list` as a generic collection type whose individual items each
+  declare their own type and expression.
 - Resolve variable references recursively inside object fields and list
   elements.
-- Support string interpolation where a structured string expression combines
+- Support interpolation where a typed string or path expression combines
   references with literal text.
 - Preserve namespace precedence when structured variables reference other
   variables.
@@ -36,7 +37,17 @@ node.
 Type information must be declared at each layer before resolution. Nested JSON
 value inference is not the target model.
 
-The following is illustrative rather than an agreed public JSON schema:
+Every expression node has the same recursive shape:
+
+```text
+type: <declared type>
+expression: <scalar, object-field map, or list of expression nodes>
+```
+
+An object expression is a map keyed by field name. Each map value is another
+typed expression node. Object field order has no semantic meaning.
+
+The following illustrates the agreed shape:
 
 ```text
 name: python-env-torch
@@ -54,11 +65,66 @@ expression:
 ```
 
 Here the outer variable is explicitly an object. Each object field is also a
-typed expression. A nested object would repeat the same pattern, and a list
-would explicitly declare its list and element types.
+typed expression. A nested object repeats the same pattern.
+
+A list declares only that it is a collection. It does not declare one element
+type for the entire collection. Each item is independently typed:
+
+```text
+name: example-values
+type: list
+expression:
+  - type: string
+    expression: alpha
+  - type: int
+    expression: 2
+  - type: object
+    expression:
+      enabled:
+        type: bool
+        expression: true
+  - type: list
+    expression:
+      - type: path
+        expression: /data/input.txt
+```
+
+Lists may therefore contain heterogeneous values and nested lists. A consumer
+that requires a homogeneous list, such as a string-list accessor, validates
+that narrower requirement when it consumes the resolved list.
 
 The final serialized representation must remain language-neutral and usable by
 the CLI, REST API, and future Python and R adapters.
+
+## Expression Grammar
+
+A whole-value reference uses the existing `${reference}` form and preserves
+the referenced value's type. The referenced type must match the expression
+node's declared type.
+
+String and path expressions may contain one or more reference tokens mixed
+with literal text:
+
+```text
+${project_config.name}/python-env/torch
+run-${year}-${region}
+${project.data_root}/inputs/${year}
+```
+
+Qualified and unqualified references, namespace precedence, and supported
+field or index accessors retain their existing meanings. Interpolation accepts
+the supported scalar `string`, `path`, `int`, `bool`, and `datetime` values and
+uses their canonical serialized text. Object and list values cannot be
+interpolated into text.
+
+The sequence `\${` escapes a literal `${`. In JSON source, the backslash is
+itself escaped, for example `"\\${year}"`.
+
+Path interpolation produces a resolved value whose declared type remains
+`path`. Variable resolution does not normalize path separators or translate a
+path for an operating system, container, mount, transport, or execution
+environment. Those transformations require target context and belong to the
+runtime, shell-dialect, or transport boundary.
 
 ## Non-Goals
 
@@ -70,6 +136,8 @@ the CLI, REST API, and future Python and R adapters.
 - Allowing duplicate variable keys within one scope.
 - Defining customer-specific structured object schemas in GOET Core.
 - Treating Go structs or Go package names as the public configuration model.
+- Normalizing or translating paths for a target operating system, mount,
+  container, transport, or execution environment during variable resolution.
 
 ## Architectural Context
 
@@ -95,61 +163,75 @@ inside an object field. The current resolver parses object expressions as raw
 JSON and infers nested types. It does not recursively resolve that embedded
 reference.
 
+The current `TypeList(element)` model and `ResolvedList` constructor require a
+single homogeneous element type and currently reject nested lists. The target
+generic-list model replaces those restrictions. Existing consumers that expose
+typed helpers such as string-list access must continue to validate their own
+required item types.
+
 ## Compatibility and Migration
 
-Existing object variables store a JSON string in `Variable.Expression` and
-infer nested field types during `ParseLiteral`. The target representation will
-change that contract. Before implementation, the epic must decide whether to:
+GOET has not yet produced a production version, so this epic does not preserve
+backward compatibility with the current experimental structured-variable
+forms. Existing raw-JSON object expressions and homogeneous
+`list[element-type]` declarations will be replaced by the recursive typed form.
 
-- reject the old inferred representation after a schema transition,
-- support both representations during a migration period, or
-- provide an explicit legacy form.
-
-Silent reinterpretation of existing object expressions is not acceptable.
+After the transition, the resolver must reject legacy structured forms with a
+clear error. It must not silently reinterpret them or permanently support both
+models. Repository-owned tests, fixtures, and demo JSON may be updated as
+cleanup during the implementation slices that make the old forms invalid.
 
 ## Proposed Slices
 
 The slice sequence is not yet agreed. Candidate implementation areas are:
 
-1. Define the recursive typed-expression data model and serialized shape.
+1. Add the agreed recursive typed-expression structs and JSON serialization.
 2. Parse and validate explicitly typed object fields.
-3. Parse and validate explicitly typed list elements.
+3. Parse and validate independently typed list items.
 4. Recursively resolve whole-value references in structured expressions.
-5. Add bounded string interpolation in typed string expressions.
+5. Add bounded interpolation in typed string and path expressions.
 6. Preserve nested error paths and recursion-depth protection.
-7. Define and implement compatibility behavior for existing raw-JSON objects.
+7. Migrate repository-owned legacy structured expressions and reject the old
+   forms.
 8. Integrate one structured-variable consumer as an end-to-end proof.
 
 No numbered slice files should be created until the data model, expression
 grammar, and compatibility policy are agreed and this epic is explicitly
 marked Ready.
 
-## Open Questions
+## Agreed Design Decisions
 
-- What exact JSON shape represents a recursive typed expression?
-- Does an object expression use a map keyed by field name, a list of named
-  expression nodes, or another language-neutral form?
-- Must every list element repeat its type, or does the list's declared element
-  type govern all elements?
-- What interpolation syntax is supported beyond whole-value `${...}`
-  references?
-- How are literal `${` sequences escaped inside interpolated strings?
-- What compatibility policy applies to current raw-JSON object expressions?
-- Should structured interpolation be implemented for path expressions as well
-  as string expressions?
+- Every value is represented by a recursive node containing `type` and
+  `expression`.
+- An object expression is an unordered map from field names to recursive typed
+  expression nodes.
+- A list expression is an ordered array of independently typed expression
+  nodes and may be heterogeneous or contain nested lists.
+- A whole-value `${...}` reference preserves type; embedded `${...}` tokens
+  interpolate canonical scalar text into string and path expressions.
+- `\${` escapes a literal `${` sequence.
+- Objects and lists cannot be interpolated into text.
+- The new structured form replaces the experimental legacy forms without a
+  backward-compatibility period.
+- A resolved path retains its `path` type, but variable resolution does not
+  perform target-specific path normalization or translation.
 
 ## Completion Criteria
 
 - Structured variables have an agreed language-neutral recursive schema.
 - Every structured layer has explicit type information before resolution.
 - Object field types are no longer inferred from raw JSON in the target form.
+- A list has no single element type; every list item declares its own type and
+  expression.
+- Heterogeneous and nested lists resolve without losing item type information.
 - Nested whole-value references resolve through normal namespace precedence.
-- Supported string interpolation resolves references mixed with literal text.
+- Supported string and path interpolation resolves scalar references mixed
+  with literal text.
 - Nested objects and lists resolve recursively into typed `ResolvedValue`
   trees.
 - Cycles, excessive depth, type mismatches, and missing references produce
   field-specific errors.
 - Duplicate keys within one scope remain errors.
-- Existing object variables follow the agreed compatibility or migration
-  policy.
+- Legacy structured forms are rejected, and repository-owned usages are
+  migrated to the recursive typed form.
 - The agreed implementation slices are complete and relevant tests pass.
