@@ -88,9 +88,14 @@ EC-5
 
 EC-4
 
-* Human designs.
-* AI drafts code.
-* Human applies changes.
+* Human identifies the next subproblem to solve.
+* Human retains planning authority and decides when constraints require changing
+  the plan.
+* AI provides status, identifies constraints, gives technical advice, suggests
+  alternatives, and supports implementation.
+* AI may implement, test, explain, or recommend within the declared objective
+  and change budget.
+* Human decides what the project works on next.
 
 EC-3
 
