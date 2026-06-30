@@ -615,3 +615,106 @@ func TestResolverAppliesMaxDepthToStructuredReference(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestResolverInterpolatesStringAndPathScalars(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "name"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "orders"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "root"}, TypedExpression: TypedExpression{Type: TypePath, Expression: "/data"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2026}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "enabled"}, TypedExpression: TypedExpression{Type: TypeBool, Expression: true}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "started"}, TypedExpression: TypedExpression{Type: TypeDatetime, Expression: "2026-06-30T12:00:00Z"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "record"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"parts": {Type: TypeList, Expression: []TypedExpression{{Type: TypeString, Expression: "raw"}}},
+		}}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "label"}, TypedExpression: TypedExpression{Type: TypeString, Expression: `job-${name}-${year}-${enabled}-${started}-\${literal}`}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "location"}, TypedExpression: TypedExpression{Type: TypePath, Expression: "${root}/${record.parts[0]}/${year}"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"outputs": {Type: TypeList, Expression: []TypedExpression{{Type: TypePath, Expression: "${root}/${name}"}}},
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewResolver(NewSet(scope), ResolverConfig{})
+	label, err := resolver.String("label")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if label != "job-orders-2026-true-2026-06-30T12:00:00Z-${literal}" {
+		t.Fatalf("unexpected label: %q", label)
+	}
+
+	location, err := resolver.Resolve(Reference{Name: Name{Namespace: NamespaceWorkflow, Key: "location"}, Qualified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location.Type != TypePath || location.Value != "/data/raw/2026" {
+		t.Fatalf("unexpected path: %#v", location)
+	}
+
+	settings, err := resolver.Object("settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := settings["outputs"].List[0]
+	if nested.Type != TypePath || nested.Value != "/data/orders" {
+		t.Fatalf("unexpected nested path: %#v", nested)
+	}
+}
+
+func TestResolverDoesNotReinterpolateReferencedText(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "template"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${missing}"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "output"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "value=${template}"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := NewResolver(NewSet(scope), ResolverConfig{}).String("output")
+	if err == nil {
+		t.Fatalf("expected template's whole-value reference to be resolved, got %q", value)
+	}
+
+	literalScope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "template"}, TypedExpression: TypedExpression{Type: TypeString, Expression: `\${missing}`}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "output"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "value=${template}"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err = NewResolver(NewSet(literalScope), ResolverConfig{}).String("output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "value=${missing}" {
+		t.Fatalf("unexpected value: %q", value)
+	}
+}
+
+func TestResolverRejectsStructuredInterpolationValue(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "items"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{{Type: TypeString, Expression: "one"}}}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "label"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "items=${items}"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewResolver(NewSet(scope), ResolverConfig{}).String("label"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestResolverCountsEachInterpolationReferenceTowardMaxDepth(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "name"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "orders"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "label"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "job-${name}"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewResolver(NewSet(scope), ResolverConfig{MaxDepth: 1}).String("label"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
