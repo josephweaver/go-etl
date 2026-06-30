@@ -1,11 +1,75 @@
 package variable
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type Variable struct {
-	Name       Name
-	Type       Type
-	Expression string
+	Name Name
+	TypedExpression
+}
+
+type variableNameJSON struct {
+	Namespace Namespace `json:"namespace"`
+	Key       string    `json:"key"`
+}
+
+type variableJSON struct {
+	Name       variableNameJSON `json:"name"`
+	Type       string           `json:"type"`
+	Expression json.RawMessage  `json:"expression"`
+}
+
+func (v Variable) MarshalJSON() ([]byte, error) {
+	if err := v.Validate(); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(struct {
+		Name       variableNameJSON `json:"name"`
+		Type       string           `json:"type"`
+		Expression any              `json:"expression"`
+	}{
+		Name: variableNameJSON{
+			Namespace: v.Name.Namespace,
+			Key:       v.Name.Key,
+		},
+		Type:       v.Type.String(),
+		Expression: v.Expression,
+	})
+}
+
+func (v *Variable) UnmarshalJSON(data []byte) error {
+	var encoded variableJSON
+	if err := decodeExpressionJSON(data, &encoded); err != nil {
+		return err
+	}
+	if encoded.Type == "" {
+		return fmt.Errorf("variable type is required")
+	}
+	if encoded.Expression == nil {
+		return fmt.Errorf("variable expression is required")
+	}
+
+	expressionType, err := expressionType(encoded.Type)
+	if err != nil {
+		return err
+	}
+	expression, err := decodeExpressionValue(expressionType, encoded.Expression)
+	if err != nil {
+		return err
+	}
+
+	v.Name = Name{
+		Namespace: encoded.Name.Namespace,
+		Key:       encoded.Name.Key,
+	}
+	v.TypedExpression = TypedExpression{
+		Type:       expressionType,
+		Expression: expression,
+	}
+	return v.Validate()
 }
 
 type ResolvedValue struct {
@@ -19,16 +83,7 @@ func (v Variable) Validate() error {
 	if err := v.Name.Validate(); err != nil {
 		return err
 	}
-
-	if !v.Type.Valid() {
-		return fmt.Errorf("unsupported variable type: %s", v.Type)
-	}
-
-	if v.Expression == "" {
-		return fmt.Errorf("variable expression is required")
-	}
-
-	return nil
+	return v.TypedExpression.ValidateDefinition()
 }
 
 func ResolvedObject(fields map[string]ResolvedValue) ResolvedValue {

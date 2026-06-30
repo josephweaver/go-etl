@@ -1,24 +1,20 @@
 {
   "variables": [
     {
-      "Name": {
-        "Namespace": "controller_config",
-        "Key": "controller_url"
+      "name": {
+        "namespace": "controller_config",
+        "key": "controller_url"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "http://localhost:8080"
+      "type": "string",
+      "expression": "http://localhost:8080"
     },
     {
-      "Name": {
-        "Namespace": "controller_config",
-        "Key": "ledger_db_path"
+      "name": {
+        "namespace": "controller_config",
+        "key": "ledger_db_path"
       },
-      "Type": {
-        "Kind": "path"
-      },
-      "Expression": ".run/controller/ledger.sqlite"
+      "type": "path",
+      "expression": ".run/controller/ledger.sqlite"
     }
   ]
 }

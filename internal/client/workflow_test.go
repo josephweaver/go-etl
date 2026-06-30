@@ -42,9 +42,10 @@ func TestWorkflowClientSubmitWorkflow(t *testing.T) {
 			ID: "cdl",
 			Variables: []variable.Variable{
 				{
-					Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-					Type:       variable.TypeList,
-					Expression: "[2024]",
+					Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
+					TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+						{Type: variable.TypeInt, Expression: 2024},
+					}},
 				},
 			},
 			Steps: []workflow.Step{
@@ -113,8 +114,9 @@ func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
 		t.Fatalf("unexpected work item type: %s", template.Type)
 	}
 
-	if submission.Workflow.Variables[0].Expression != `[{"id": "fixture", "input_path": "demo-summary-input.txt"}, {"id": "fixture-2", "input_path": "demo-summary-input-2.txt"}]` {
-		t.Fatalf("unexpected summary items expression: %s", submission.Workflow.Variables[0].Expression)
+	items, ok := submission.Workflow.Variables[0].Expression.([]variable.TypedExpression)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected summary items expression: %#v", submission.Workflow.Variables[0].Expression)
 	}
 
 	if template.Parameters["input_path"].Value != "unset" {
@@ -399,27 +401,16 @@ func (s *testControllerStarter) StartController() error {
 func testResolver(t *testing.T, controllerURL string) variable.Resolver {
 	t.Helper()
 
-	return testResolverWithVariables(t, variable.Variable{
-		Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"},
-		Type:       variable.TypeString,
-		Expression: controllerURL,
-	})
+	return testResolverWithVariables(t, variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: controllerURL}})
 }
 
 func testResolverWithPollInterval(t *testing.T, controllerURL string, interval string) variable.Resolver {
 	t.Helper()
 
 	return testResolverWithVariables(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"},
-			Type:       variable.TypeString,
-			Expression: controllerURL,
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"},
-			Type:       variable.TypeString,
-			Expression: interval,
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: controllerURL}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: interval}},
 	)
 }
 

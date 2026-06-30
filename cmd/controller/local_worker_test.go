@@ -11,16 +11,12 @@ import (
 func TestLocalWorkerStarterResolvesCommand(t *testing.T) {
 	starter := LocalWorkerStarter{}
 	executable, args, err := starter.command(testControllerResolver(t,
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"},
-			Type:       variable.TypeString,
-			Expression: "go",
-		},
-		variable.Variable{
-			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_args"},
-			Type:       variable.TypeList,
-			Expression: `["run", "./cmd/worker"]`,
-		},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "go"}},
+
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_args"}, TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+			{Type: variable.TypeString, Expression: "run"},
+			{Type: variable.TypeString, Expression: "./cmd/worker"},
+		}}},
 	))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

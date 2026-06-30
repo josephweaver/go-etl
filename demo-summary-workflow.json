@@ -3,17 +3,27 @@
     "ID": "summary-demo",
     "Variables": [
       {
-        "Name": {
-          "Namespace": "workflow",
-          "Key": "summary_items"
+        "name": {
+          "namespace": "workflow",
+          "key": "summary_items"
         },
-        "Type": {
-          "Kind": "list",
-          "Element": {
-            "Kind": "object"
+        "type": "list",
+        "expression": [
+          {
+            "type": "object",
+            "expression": {
+              "id": {"type": "string", "expression": "fixture"},
+              "input_path": {"type": "path", "expression": "demo-summary-input.txt"}
+            }
+          },
+          {
+            "type": "object",
+            "expression": {
+              "id": {"type": "string", "expression": "fixture-2"},
+              "input_path": {"type": "path", "expression": "demo-summary-input-2.txt"}
+            }
           }
-        },
-        "Expression": "[{\"id\": \"fixture\", \"input_path\": \"demo-summary-input.txt\"}, {\"id\": \"fixture-2\", \"input_path\": \"demo-summary-input-2.txt\"}]"
+        ]
       }
     ],
     "Steps": [
@@ -43,77 +53,64 @@
   },
   "variables": [
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_target_environment"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_target_environment"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "local"
+      "type": "string",
+      "expression": "local"
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_start_executable"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_start_executable"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "go"
+      "type": "string",
+      "expression": "go"
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_start_args"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_start_args"
       },
-      "Type": {
-        "Kind": "list",
-        "Element": {
-          "Kind": "string"
-        }
-      },
-      "Expression": "[\"run\", \"./cmd/worker\", \"./cmd/worker/demo-config.json\"]"
+      "type": "list",
+      "expression": [
+        {"type": "string", "expression": "run"},
+        {"type": "string", "expression": "./cmd/worker"},
+        {"type": "string", "expression": "./cmd/worker/demo-config.json"}
+      ]
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_count"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_min_count"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_max_count"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_max_count"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_count_per_start"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_count_per_start"
       },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_elapsed_time_between_starts"
+      "name": {
+        "namespace": "worker_config",
+        "key": "worker_min_elapsed_time_between_starts"
       },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "0s"
+      "type": "string",
+      "expression": "0s"
     }
   ]
 }

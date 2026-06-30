@@ -3,20 +3,12 @@ package variable
 import "testing"
 
 func TestResolverResolveReference(t *testing.T) {
-	global, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceGlobal, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2024",
-	})
+	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2024}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	workflow, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2025",
-	})
+	workflow, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +35,7 @@ func TestResolverResolveReference(t *testing.T) {
 }
 
 func TestResolverOptional(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2025",
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,26 +59,16 @@ func TestResolverOptional(t *testing.T) {
 
 func TestResolverTypedAccessors(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "name"},
-			Type:       TypeString,
-			Expression: "goetl",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "root"},
-			Type:       TypePath,
-			Expression: "/data/goetl",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "settings"},
-			Type:       TypeObject,
-			Expression: `{"script_path":"/tmp/worker.slurm","args":["--once"]}`,
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "args"},
-			Type:       TypeList,
-			Expression: `["--once"]`,
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "name"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "goetl"}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "root"}, TypedExpression: TypedExpression{Type: TypePath, Expression: "/data/goetl"}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"script_path": {Type: TypePath, Expression: "/tmp/worker.slurm"},
+			"args":        {Type: TypeList, Expression: []TypedExpression{{Type: TypeString, Expression: "--once"}}},
+		}}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "args"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{{Type: TypeString, Expression: "--once"}}}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -131,11 +109,7 @@ func TestResolverTypedAccessors(t *testing.T) {
 }
 
 func TestResolverTypedAccessorsRejectWrongType(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2025",
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +121,10 @@ func TestResolverTypedAccessorsRejectWrongType(t *testing.T) {
 }
 
 func TestResolverStringListRejectsNonStringItem(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "args"},
-		Type:       TypeList,
-		Expression: `["--once", 2]`,
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "args"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+		{Type: TypeString, Expression: "--once"},
+		{Type: TypeInt, Expression: 2},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,20 +136,12 @@ func TestResolverStringListRejectsNonStringItem(t *testing.T) {
 }
 
 func TestResolverResolveReferenceUsesQualifiedNamespace(t *testing.T) {
-	global, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceGlobal, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2024",
-	})
+	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2024}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	workflow, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2025",
-	})
+	workflow, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,11 +177,10 @@ func TestResolverResolveReferenceRejectsMissingVariable(t *testing.T) {
 }
 
 func TestResolverResolveFanOutExpression(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-		Type:       TypeList,
-		Expression: `[2024, 2025]`,
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "years"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+		{Type: TypeInt, Expression: 2024},
+		{Type: TypeInt, Expression: 2025},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,20 +202,18 @@ func TestResolverResolveFanOutExpression(t *testing.T) {
 }
 
 func TestResolverResolveQualifiedFanOutExpression(t *testing.T) {
-	global, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceGlobal, Key: "years"},
-		Type:       TypeList,
-		Expression: `[2023, 2024]`,
-	})
+	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "years"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+		{Type: TypeInt, Expression: 2023},
+		{Type: TypeInt, Expression: 2024},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	workflow, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-		Type:       TypeList,
-		Expression: `[2025, 2026]`,
-	})
+	workflow, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "years"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+		{Type: TypeInt, Expression: 2025},
+		{Type: TypeInt, Expression: 2026},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,11 +231,7 @@ func TestResolverResolveQualifiedFanOutExpression(t *testing.T) {
 }
 
 func TestResolverRejectsInvalidFanOutExpression(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: `2025`,
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,16 +256,9 @@ func TestResolverRejectsInvalidFanOutExpression(t *testing.T) {
 
 func TestResolverResolveReferenceExpression(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-			Type:       TypeInt,
-			Expression: "2025",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${year}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${year}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -332,21 +283,11 @@ func TestResolverResolveReferenceExpression(t *testing.T) {
 
 func TestResolverResolveReferenceExpressionChain(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-			Type:       TypeInt,
-			Expression: "2025",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${year}",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "final_year"},
-			Type:       TypeInt,
-			Expression: "${target_year}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${year}"}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "final_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${target_year}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -370,26 +311,15 @@ func TestResolverResolveReferenceExpressionChain(t *testing.T) {
 }
 
 func TestResolverResolveQualifiedReferenceExpression(t *testing.T) {
-	global, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceGlobal, Key: "year"},
-		Type:       TypeInt,
-		Expression: "2024",
-	})
+	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2024}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	workflow, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-			Type:       TypeInt,
-			Expression: "2025",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${global.year}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2025}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${global.year}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -414,16 +344,11 @@ func TestResolverResolveQualifiedReferenceExpression(t *testing.T) {
 
 func TestResolverResolveReferenceExpressionWithFieldAccessor(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
-			Type:       TypeObject,
-			Expression: `{"year": 2025}`,
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${record.year}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "record"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"year": {Type: TypeInt, Expression: 2025},
+		}}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${record.year}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -448,16 +373,12 @@ func TestResolverResolveReferenceExpressionWithFieldAccessor(t *testing.T) {
 
 func TestResolverResolveReferenceExpressionWithIndexAccessor(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-			Type:       TypeList,
-			Expression: `[2024, 2025]`,
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${years[1]}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "years"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+			{Type: TypeInt, Expression: 2024},
+			{Type: TypeInt, Expression: 2025},
+		}}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${years[1]}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -481,26 +402,19 @@ func TestResolverResolveReferenceExpressionWithIndexAccessor(t *testing.T) {
 }
 
 func TestResolverResolveQualifiedReferenceExpressionWithAccessor(t *testing.T) {
-	global, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceGlobal, Key: "record"},
-		Type:       TypeObject,
-		Expression: `{"year": 2024}`,
-	})
+	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "record"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+		"year": {Type: TypeInt, Expression: 2024},
+	}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	workflow, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "record"},
-			Type:       TypeObject,
-			Expression: `{"year": 2025}`,
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${global.record.year}",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "record"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"year": {Type: TypeInt, Expression: 2025},
+		}}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${global.record.year}"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -523,41 +437,22 @@ func TestResolverResolveQualifiedReferenceExpressionWithAccessor(t *testing.T) {
 	}
 }
 
-func TestResolverRejectsFanOutReferenceExpression(t *testing.T) {
-	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "years"},
-			Type:       TypeList,
-			Expression: `[2024, 2025]`,
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "target_year"},
-			Type:       TypeInt,
-			Expression: "${years[*]}",
-		},
+func TestNewScopeRejectsFanOutReferenceExpression(t *testing.T) {
+	_, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "years"}, TypedExpression: TypedExpression{Type: TypeList, Expression: []TypedExpression{
+			{Type: TypeInt, Expression: 2024},
+			{Type: TypeInt, Expression: 2025},
+		}}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "target_year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${years[*]}"}},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resolver := NewResolver(NewSet(scope), ResolverConfig{})
-
-	reference, err := ParseReference("target_year")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := resolver.Resolve(reference); err == nil {
+	if err == nil {
 		t.Fatal("expected an error")
 	}
 }
 
 func TestResolverEscapesReferenceExpression(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "template"},
-		Type:       TypeString,
-		Expression: `\${year}`,
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "template"}, TypedExpression: TypedExpression{Type: TypeString, Expression: `\${year}`}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,11 +475,7 @@ func TestResolverEscapesReferenceExpression(t *testing.T) {
 }
 
 func TestResolverEscapesEmbeddedReferenceSyntax(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "template"},
-		Type:       TypeString,
-		Expression: `before \${year} after`,
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "template"}, TypedExpression: TypedExpression{Type: TypeString, Expression: `before \${year} after`}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,21 +499,11 @@ func TestResolverEscapesEmbeddedReferenceSyntax(t *testing.T) {
 
 func TestResolverRejectsMaxDepthExceeded(t *testing.T) {
 	scope, err := NewScope(
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "a"},
-			Type:       TypeString,
-			Expression: "${b}",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "b"},
-			Type:       TypeString,
-			Expression: "${c}",
-		},
-		Variable{
-			Name:       Name{Namespace: NamespaceWorkflow, Key: "c"},
-			Type:       TypeString,
-			Expression: "done",
-		},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "a"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${b}"}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "b"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${c}"}},
+
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "c"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "done"}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -641,11 +522,7 @@ func TestResolverRejectsMaxDepthExceeded(t *testing.T) {
 }
 
 func TestResolverRejectsMissingNestedReference(t *testing.T) {
-	scope, err := NewScope(Variable{
-		Name:       Name{Namespace: NamespaceWorkflow, Key: "year"},
-		Type:       TypeInt,
-		Expression: "${missing}",
-	})
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: "${missing}"}})
 	if err != nil {
 		t.Fatal(err)
 	}

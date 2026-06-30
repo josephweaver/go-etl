@@ -165,13 +165,7 @@ func TestCompleteWorkHandler(t *testing.T) {
 
 func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
-		},
-	}})
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
 	if err != nil {
 		t.Fatalf("initialize ledger: %v", err)
 	}
@@ -256,13 +250,7 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 
 func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
-		},
-	}})
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
 	if err != nil {
 		t.Fatalf("initialize ledger: %v", err)
 	}
@@ -316,13 +304,7 @@ func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testin
 		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
 	}
 
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
-		},
-	}})
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
 	if err != nil {
 		t.Fatalf("initialize ledger: %v", err)
 	}
@@ -892,13 +874,7 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 
 func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
-		},
-	}})
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
 	if err != nil {
 		t.Fatalf("initialize ledger: %v", err)
 	}
@@ -1109,9 +1085,9 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024, 2025]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
 				}
 			],
 			"Steps": [
@@ -1203,9 +1179,9 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
 				}
 			],
 			"Steps": [
@@ -1224,9 +1200,9 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "override", "Key": "code_version"},
-				"Type": {"Kind": "string"},
-				"Expression": "test-version"
+				"name": {"namespace": "override", "key": "code_version"},
+				"type": "string",
+				"expression": "test-version"
 			}
 		]
 	}`))
@@ -1335,14 +1311,27 @@ func TestBuildSetting(t *testing.T) {
 
 const testSlurmWorkerVariables = `
 			{
-				"Name": {"Namespace": "worker_config", "Key": "scheduler"},
-				"Type": {"Kind": "object"},
-				"Expression": "{\"type\":\"slurm\",\"settings\":{\"script_path\":\"/data/goetl/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
+				"name": {"namespace": "worker_config", "key": "scheduler"},
+				"type": "object",
+				"expression": {
+					"type": {"type": "string", "expression": "slurm"},
+					"settings": {"type": "object", "expression": {
+						"script_path": {"type": "path", "expression": "/data/goetl/scripts/worker.slurm"},
+						"job_name": {"type": "string", "expression": "goetl-worker"}
+					}}
+				}
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "runtime"},
-				"Type": {"Kind": "object"},
-				"Expression": "{\"type\":\"worker\",\"settings\":{\"executable\":\"/data/goetl/artifacts/goetl-worker\",\"config_path\":\"/data/goetl/config/worker.json\",\"log_dir\":\"/data/goetl/logs\"}}"
+				"name": {"namespace": "worker_config", "key": "runtime"},
+				"type": "object",
+				"expression": {
+					"type": {"type": "string", "expression": "worker"},
+					"settings": {"type": "object", "expression": {
+						"executable": {"type": "path", "expression": "/data/goetl/artifacts/goetl-worker"},
+						"config_path": {"type": "path", "expression": "/data/goetl/config/worker.json"},
+						"log_dir": {"type": "path", "expression": "/data/goetl/logs"}
+					}}
+				}
 			}`
 
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
@@ -1353,9 +1342,9 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
 				}
 			],
 			"Steps": [
@@ -1403,9 +1392,9 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
 				}
 			],
 			"Steps": [
@@ -1456,9 +1445,9 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
 				}
 			],
 			"Steps": [
@@ -1517,9 +1506,9 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024, 2025]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
 				}
 			],
 			"Steps": [
@@ -1561,9 +1550,9 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024, 2025]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
 				}
 			],
 			"Steps": [
@@ -1583,24 +1572,24 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		"variables": [
 `+testSlurmWorkerVariables+`,
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_min_count"},
-				"Type": {"Kind": "int"},
-				"Expression": "2"
+				"name": {"namespace": "worker_config", "key": "worker_min_count"},
+				"type": "int",
+				"expression": 2
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
-				"Type": {"Kind": "int"},
-				"Expression": "2"
+				"name": {"namespace": "worker_config", "key": "worker_max_count"},
+				"type": "int",
+				"expression": 2
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_count_per_start"},
-				"Type": {"Kind": "int"},
-				"Expression": "2"
+				"name": {"namespace": "worker_config", "key": "worker_count_per_start"},
+				"type": "int",
+				"expression": 2
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_min_elapsed_time_between_starts"},
-				"Type": {"Kind": "string"},
-				"Expression": "0s"
+				"name": {"namespace": "worker_config", "key": "worker_min_elapsed_time_between_starts"},
+				"type": "string",
+				"expression": "0s"
 			}
 		]
 	}`))
@@ -1624,9 +1613,9 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": "[2024]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
 				}
 			],
 			"Steps": [
@@ -1645,14 +1634,14 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 		},
 		"variables": [
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_target_environment"},
-				"Type": {"Kind": "string"},
-				"Expression": "local"
+				"name": {"namespace": "worker_config", "key": "worker_target_environment"},
+				"type": "string",
+				"expression": "local"
 			},
 			{
-				"Name": {"Namespace": "worker_config", "Key": "worker_max_count"},
-				"Type": {"Kind": "string"},
-				"Expression": "two"
+				"name": {"namespace": "worker_config", "key": "worker_max_count"},
+				"type": "string",
+				"expression": "two"
 			}
 		]
 	}`))
@@ -1670,15 +1659,15 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
 
-	submitWorkflowYears(t, controller, `[2024]`)
-	submitWorkflowYears(t, controller, `[2025]`)
+	submitWorkflowYears(t, controller, 2024)
+	submitWorkflowYears(t, controller, 2025)
 
 	if scheduler.calls != 1 {
 		t.Fatalf("unexpected scheduler calls before claim: %d", scheduler.calls)
 	}
 
 	assignNextWork(t, controller)
-	submitWorkflowYears(t, controller, `[2026]`)
+	submitWorkflowYears(t, controller, 2026)
 
 	if scheduler.calls != 2 {
 		t.Fatalf("unexpected scheduler calls after claim: %d", scheduler.calls)
@@ -1692,9 +1681,9 @@ func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "string"}},
-					"Expression": "[\"001\"]"
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "string", "expression": "001"}]
 				}
 			],
 			"Steps": [
@@ -1722,7 +1711,7 @@ func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
 	}
 }
 
-func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
+func submitWorkflowYears(t *testing.T, controller *Controller, year int) {
 	t.Helper()
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
@@ -1730,9 +1719,9 @@ func submitWorkflowYears(t *testing.T, controller *Controller, years string) {
 			"ID": "cdl",
 			"Variables": [
 				{
-					"Name": {"Namespace": "workflow", "Key": "years"},
-					"Type": {"Kind": "list", "Element": {"Kind": "int"}},
-					"Expression": `+strconv.Quote(years)+`
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": `+strconv.Itoa(year)+`}]
 				}
 			],
 			"Steps": [
@@ -1882,13 +1871,7 @@ func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkComple
 	t.Helper()
 
 	controller := newController(nil)
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{
-		{
-			Name:       variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"},
-			Type:       variable.TypePath,
-			Expression: filepath.Join(t.TempDir(), "ledger.sqlite"),
-		},
-	}})
+	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
 	if err != nil {
 		t.Fatalf("initialize ledger: %v", err)
 	}

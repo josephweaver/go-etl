@@ -3,17 +3,9 @@
     "ID": "local-singularity-demo",
     "Variables": [
       {
-        "Name": {
-          "Namespace": "workflow",
-          "Key": "years"
-        },
-        "Type": {
-          "Kind": "list",
-          "Element": {
-            "Kind": "int"
-          }
-        },
-        "Expression": "[2024]"
+        "name": {"namespace": "workflow", "key": "years"},
+        "type": "list",
+        "expression": [{"type": "int", "expression": 2024}]
       }
     ],
     "Steps": [
@@ -32,64 +24,53 @@
   },
   "variables": [
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "scheduler"
-      },
-      "Type": {
-        "Kind": "object"
-      },
-      "Expression": "{\"type\":\"direct_process\",\"settings\":{\"script_path\":\"/tmp/goetl-local-singularity/scripts/worker.slurm\",\"job_name\":\"goetl-worker\"}}"
+      "name": {"namespace": "worker_config", "key": "scheduler"},
+      "type": "object",
+      "expression": {
+        "type": {"type": "string", "expression": "direct_process"},
+        "settings": {
+          "type": "object",
+          "expression": {
+            "script_path": {"type": "path", "expression": "/tmp/goetl-local-singularity/scripts/worker.slurm"},
+            "job_name": {"type": "string", "expression": "goetl-worker"}
+          }
+        }
+      }
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "runtime"
-      },
-      "Type": {
-        "Kind": "object"
-      },
-      "Expression": "{\"type\":\"singularity_worker\",\"settings\":{\"executable\":\"/tmp/goetl-local-singularity/artifacts/goetl-worker\",\"config_path\":\"/tmp/goetl-local-singularity/config/worker.json\",\"log_dir\":\"/tmp/goetl-local-singularity/logs\"}}"
+      "name": {"namespace": "worker_config", "key": "runtime"},
+      "type": "object",
+      "expression": {
+        "type": {"type": "string", "expression": "singularity_worker"},
+        "settings": {
+          "type": "object",
+          "expression": {
+            "executable": {"type": "path", "expression": "/tmp/goetl-local-singularity/artifacts/goetl-worker"},
+            "config_path": {"type": "path", "expression": "/tmp/goetl-local-singularity/config/worker.json"},
+            "log_dir": {"type": "path", "expression": "/tmp/goetl-local-singularity/logs"}
+          }
+        }
+      }
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_count"
-      },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "name": {"namespace": "worker_config", "key": "worker_min_count"},
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_max_count"
-      },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "name": {"namespace": "worker_config", "key": "worker_max_count"},
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_count_per_start"
-      },
-      "Type": {
-        "Kind": "int"
-      },
-      "Expression": "1"
+      "name": {"namespace": "worker_config", "key": "worker_count_per_start"},
+      "type": "int",
+      "expression": 1
     },
     {
-      "Name": {
-        "Namespace": "worker_config",
-        "Key": "worker_min_elapsed_time_between_starts"
-      },
-      "Type": {
-        "Kind": "string"
-      },
-      "Expression": "0s"
+      "name": {"namespace": "worker_config", "key": "worker_min_elapsed_time_between_starts"},
+      "type": "string",
+      "expression": "0s"
     }
   ]
 }
