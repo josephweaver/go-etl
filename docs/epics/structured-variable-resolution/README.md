@@ -1,6 +1,6 @@
 # Structured Variable Resolution Epic
 
-Status: Proposed
+Status: Ready
 
 ## Purpose
 
@@ -183,21 +183,25 @@ cleanup during the implementation slices that make the old forms invalid.
 
 ## Proposed Slices
 
-The slice sequence is not yet agreed. Candidate implementation areas are:
+The agreed implementation sequence is:
 
-1. Add the agreed recursive typed-expression structs and JSON serialization.
-2. Parse and validate explicitly typed object fields.
-3. Parse and validate independently typed list items.
-4. Recursively resolve whole-value references in structured expressions.
-5. Add bounded interpolation in typed string and path expressions.
-6. Preserve nested error paths and recursion-depth protection.
-7. Migrate repository-owned legacy structured expressions and reject the old
-   forms.
-8. Integrate one structured-variable consumer as an end-to-end proof.
-
-No numbered slice files should be created until the data model, expression
-grammar, and compatibility policy are agreed and this epic is explicitly
-marked Ready.
+1. `001-generic-list-type.md` replaces parameterized homogeneous list types
+   with one generic list type and consumer-owned item validation.
+2. `002-typed-expression-json-model.md` adds the recursive language-neutral
+   typed-expression representation.
+3. `003-expression-definition-validation.md` validates reusable expression
+   definitions without requiring assembled variable scopes.
+4. `004-variable-typed-expression-integration.md` makes a variable a named
+   root typed expression, migrates repository-owned usages, and resolves fully
+   literal typed trees.
+5. `005-recursive-whole-value-references.md` resolves whole-value references at
+   any structured node with normal namespace precedence and bounded depth.
+6. `006-string-path-interpolation.md` resolves mixed literal and referenced
+   scalar text in string and path expressions.
+7. `007-resolution-diagnostics.md` adds nested JSON Pointer diagnostics and
+   distinguishes reference cycles from maximum-depth failures.
+8. `008-worker-launch-config-integration.md` proves the complete behavior at an
+   existing controller structured-value consumer.
 
 ## Agreed Design Decisions
 
