@@ -1,6 +1,9 @@
 package variable
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolverResolveReference(t *testing.T) {
 	global, err := NewScope(Variable{Name: Name{Namespace: NamespaceGlobal, Key: "year"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2024}})
@@ -716,5 +719,100 @@ func TestResolverCountsEachInterpolationReferenceTowardMaxDepth(t *testing.T) {
 	}
 	if _, err := NewResolver(NewSet(scope), ResolverConfig{MaxDepth: 1}).String("label"); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestResolverDiagnosticIncludesRootAndEscapedJSONPointer(t *testing.T) {
+	scope, err := NewScope(Variable{
+		Name: Name{Namespace: NamespaceWorkflow, Key: "settings"},
+		TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"gpu/capacity": {Type: TypeList, Expression: []TypedExpression{
+				{Type: TypeInt, Expression: 1},
+				{Type: TypeInt, Expression: 2},
+				{Type: TypeObject, Expression: map[string]TypedExpression{
+					"environment~key": {Type: TypeString, Expression: "${missing}"},
+				}},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewResolver(NewSet(scope), ResolverConfig{}).Object("settings")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	want := "resolve workflow.settings at /gpu~1capacity/2/environment~0key: variable not found: missing"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+}
+
+func TestResolverDiagnosticReportsQualifiedCycleChainAfterPrecedence(t *testing.T) {
+	global, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceGlobal, Key: "a"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${b}"}},
+		Variable{Name: Name{Namespace: NamespaceGlobal, Key: "b"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "done"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "b"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${a}"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewResolver(NewSet(global, workflow), ResolverConfig{}).Resolve(Reference{
+		Name:      Name{Namespace: NamespaceGlobal, Key: "a"},
+		Qualified: true,
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	want := "reference cycle: global.a -> workflow.b -> global.a"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+}
+
+func TestResolverDiagnosticDistinguishesMaximumDepth(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "a"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${b}"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "b"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${c}"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "c"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "done"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewResolver(NewSet(scope), ResolverConfig{MaxDepth: 2}).String("a")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "maximum variable resolution depth exceeded") || strings.Contains(err.Error(), "reference cycle") {
+		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+}
+
+func TestResolverDiagnosticPreservesMalformedExpressionCause(t *testing.T) {
+	scope, err := NewScope(Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{
+		Type: TypeObject, Expression: map[string]TypedExpression{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variable := scope["settings"]
+	variable.Expression = "malformed"
+	scope["settings"] = variable
+
+	_, err = NewResolver(NewSet(scope), ResolverConfig{}).Object("settings")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	want := "resolve workflow.settings at /: object expression must be a typed-expression map"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("unexpected diagnostic: %v", err)
 	}
 }

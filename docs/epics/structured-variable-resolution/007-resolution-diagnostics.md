@@ -1,6 +1,6 @@
 # 007 Resolution Diagnostics
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
