@@ -1,6 +1,6 @@
 # 006 String and Path Interpolation
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

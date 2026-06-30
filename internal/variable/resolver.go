@@ -2,7 +2,9 @@ package variable
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const DefaultMaxDepth = 10
@@ -257,7 +259,15 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int) (Reso
 			}
 			return resolved, nil
 		}
-		expression.Expression = unescapeExpression(expressionText)
+		if expression.Type == TypeString || expression.Type == TypePath {
+			interpolated, err := r.interpolate(expressionText, depth)
+			if err != nil {
+				return ResolvedValue{}, err
+			}
+			expression.Expression = interpolated
+		} else {
+			expression.Expression = unescapeExpression(expressionText)
+		}
 	}
 
 	switch expression.Type {
@@ -285,6 +295,74 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int) (Reso
 		return ResolvedList(values), nil
 	default:
 		return parseLiteralExpression(expression)
+	}
+}
+
+func (r Resolver) interpolate(expression string, depth int) (string, error) {
+	tokens, err := parseInterpolationTokens(expression)
+	if err != nil {
+		return "", err
+	}
+
+	var result strings.Builder
+	previous := 0
+	for _, token := range tokens {
+		result.WriteString(unescapeExpression(expression[previous:token.start]))
+
+		reference, accessor, err := parseReferenceExpression(token.reference)
+		if err != nil {
+			return "", fmt.Errorf("parse reference expression: %w", err)
+		}
+		resolved, err := r.resolve(reference, depth+1)
+		if err != nil {
+			return "", err
+		}
+		if accessor != "" {
+			resolved, err = ApplyAccessor(resolved, accessor)
+			if err != nil {
+				return "", err
+			}
+		}
+
+		text, err := interpolationText(resolved)
+		if err != nil {
+			return "", fmt.Errorf("interpolate %s: %w", token.reference, err)
+		}
+		result.WriteString(text)
+		previous = token.end
+	}
+	result.WriteString(unescapeExpression(expression[previous:]))
+	return result.String(), nil
+}
+
+func interpolationText(value ResolvedValue) (string, error) {
+	switch value.Type {
+	case TypeString, TypePath:
+		text, ok := value.Value.(string)
+		if !ok {
+			return "", fmt.Errorf("invalid %s value", value.Type)
+		}
+		return text, nil
+	case TypeInt:
+		integer, ok := value.Value.(int)
+		if !ok {
+			return "", fmt.Errorf("invalid int value")
+		}
+		return strconv.Itoa(integer), nil
+	case TypeBool:
+		boolean, ok := value.Value.(bool)
+		if !ok {
+			return "", fmt.Errorf("invalid bool value")
+		}
+		return strconv.FormatBool(boolean), nil
+	case TypeDatetime:
+		datetime, ok := value.Value.(time.Time)
+		if !ok {
+			return "", fmt.Errorf("invalid datetime value")
+		}
+		return datetime.Format(time.RFC3339), nil
+	default:
+		return "", fmt.Errorf("value has type %s, want scalar", value.Type)
 	}
 }
 

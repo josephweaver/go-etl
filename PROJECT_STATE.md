@@ -489,13 +489,15 @@ Current resolver behavior supports:
 - Recursive resolution with a configurable maximum depth.
 - Whole-value references at the variable root or inside any object field or
   list item, with declared-type checking after supported accessors.
+- String and path interpolation of canonical scalar text at any structured
+  depth, while preserving the enclosing expression type.
 - Escaped variable references such as `\${year}`.
 - Scalar structured access in reference expressions, such as `${record.year}` and `${years[0]}`.
 - Fan-out list access through `Resolver.ResolveFanOutExpression("${years[*]}")`.
 - Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
 - Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
 
-Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Whole-value references resolve recursively at any structured node through normal namespace precedence while preserving the referencing node's declared type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Mixed-text interpolation remains a later structured-resolution slice.
+Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Whole-value references resolve recursively at any structured node through normal namespace precedence while preserving the referencing node's declared type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Mixed-text interpolation resolves string, path, int, bool, and datetime values into string or path expressions; it rejects object and list values and does not reinterpret reference syntax produced by a resolved value.
 
 Runtime configuration must flow through the variable subsystem. Controller settings, worker settings, backend choices, command-line flags, API arguments, and client overrides should be represented as typed variables with clear namespaces and sources. Config structs and HTTP JSON fields are transport surfaces, not a separate configuration authority.
 
