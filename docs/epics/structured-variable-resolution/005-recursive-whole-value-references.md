@@ -1,6 +1,6 @@
 # 005 Recursive Whole-Value References
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

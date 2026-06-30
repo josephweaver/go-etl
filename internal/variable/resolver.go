@@ -229,30 +229,71 @@ func (r Resolver) resolve(reference Reference, depth int) (ResolvedValue, error)
 	if !ok {
 		return ResolvedValue{}, fmt.Errorf("variable not found: %s", reference.String())
 	}
+	return r.resolveExpression(variable.TypedExpression, depth)
+}
 
-	expressionText, isText := variable.Expression.(string)
-	if refText, ok := referenceExpression(expressionText); isText && ok {
-		next, accessor, err := parseReferenceExpression(refText)
-		if err != nil {
-			return ResolvedValue{}, fmt.Errorf("parse reference expression for %s: %w", variable.Name.String(), err)
-		}
+func (r Resolver) resolveExpression(expression TypedExpression, depth int) (ResolvedValue, error) {
+	if expressionText, isText := expression.Expression.(string); isText {
+		if refText, ok := wholeValueReferenceExpression(expressionText); ok {
+			next, accessor, err := parseReferenceExpression(refText)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("parse reference expression: %w", err)
+			}
 
-		resolved, err := r.resolve(next, depth+1)
-		if err != nil {
-			return ResolvedValue{}, err
-		}
+			resolved, err := r.resolve(next, depth+1)
+			if err != nil {
+				return ResolvedValue{}, err
+			}
 
-		if accessor == "" {
+			if accessor != "" {
+				resolved, err = ApplyAccessor(resolved, accessor)
+				if err != nil {
+					return ResolvedValue{}, err
+				}
+			}
+
+			if resolved.Type != expression.Type {
+				return ResolvedValue{}, fmt.Errorf("reference has type %s, want %s", resolved.Type, expression.Type)
+			}
 			return resolved, nil
 		}
-
-		return ApplyAccessor(resolved, accessor)
+		expression.Expression = unescapeExpression(expressionText)
 	}
 
-	if isText {
-		variable.Expression = unescapeExpression(expressionText)
+	switch expression.Type {
+	case TypeObject:
+		children := expression.Expression.(map[string]TypedExpression)
+		fields := make(map[string]ResolvedValue, len(children))
+		for name, child := range children {
+			resolved, err := r.resolveExpression(child, depth)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("resolve object field %s: %w", name, err)
+			}
+			fields[name] = resolved
+		}
+		return ResolvedObject(fields), nil
+	case TypeList:
+		children := expression.Expression.([]TypedExpression)
+		values := make([]ResolvedValue, 0, len(children))
+		for index, child := range children {
+			resolved, err := r.resolveExpression(child, depth)
+			if err != nil {
+				return ResolvedValue{}, fmt.Errorf("resolve list item %d: %w", index, err)
+			}
+			values = append(values, resolved)
+		}
+		return ResolvedList(values), nil
+	default:
+		return parseLiteralExpression(expression)
 	}
-	return ParseLiteral(variable)
+}
+
+func wholeValueReferenceExpression(expression string) (string, bool) {
+	tokens, err := parseInterpolationTokens(expression)
+	if err != nil || len(tokens) != 1 || tokens[0].start != 0 || tokens[0].end != len(expression) {
+		return "", false
+	}
+	return tokens[0].reference, true
 }
 
 func referenceExpression(expression string) (string, bool) {

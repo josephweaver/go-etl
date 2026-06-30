@@ -538,3 +538,80 @@ func TestResolverRejectsMissingNestedReference(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestResolverResolvesWholeValueReferencesInStructuredExpression(t *testing.T) {
+	project, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceProjectConfig, Key: "name"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "project-a"}},
+		Variable{Name: Name{Namespace: NamespaceProjectConfig, Key: "capacity"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2}},
+		Variable{Name: Name{Namespace: NamespaceProjectConfig, Key: "record"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"year": {Type: TypeInt, Expression: 2025},
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := NewScope(Variable{
+		Name: Name{Namespace: NamespaceWorkflow, Key: "settings"},
+		TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"name":     {Type: TypeString, Expression: "${project_config.name}"},
+			"capacity": {Type: TypeInt, Expression: "${capacity}"},
+			"year":     {Type: TypeInt, Expression: "${project_config.record.year}"},
+			"values": {Type: TypeList, Expression: []TypedExpression{
+				{Type: TypeInt, Expression: "${capacity}"},
+				{Type: TypeObject, Expression: "${project_config.record}"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := NewResolver(NewSet(project, workflow), ResolverConfig{}).Resolve(Reference{
+		Name:      Name{Namespace: NamespaceWorkflow, Key: "settings"},
+		Qualified: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if value.Object["name"].Value != "project-a" || value.Object["year"].Value != 2025 {
+		t.Fatalf("unexpected resolved object: %#v", value.Object)
+	}
+	if value.Object["values"].List[1].Object["year"].Value != 2025 {
+		t.Fatalf("unexpected referenced object: %#v", value.Object["values"].List[1])
+	}
+}
+
+func TestResolverRejectsStructuredReferenceTypeMismatch(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "capacity"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 2}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"capacity": {Type: TypeString, Expression: "${capacity}"},
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewResolver(NewSet(scope), ResolverConfig{})
+	if _, err := resolver.Object("settings"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestResolverAppliesMaxDepthToStructuredReference(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "a"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${b}"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "b"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "done"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
+			"value": {Type: TypeString, Expression: "${a}"},
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewResolver(NewSet(scope), ResolverConfig{MaxDepth: 2})
+	if _, err := resolver.Object("settings"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
