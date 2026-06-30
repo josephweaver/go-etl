@@ -1,6 +1,6 @@
 # 008 Worker Launch Config Integration Proof
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
