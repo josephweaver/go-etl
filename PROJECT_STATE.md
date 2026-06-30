@@ -502,6 +502,11 @@ Current resolver behavior supports:
 
 Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Whole-value references resolve recursively at any structured node through normal namespace precedence while preserving the referencing node's declared type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Mixed-text interpolation resolves string, path, int, bool, and datetime values into string or path expressions; it rejects object and list values and does not reinterpret reference syntax produced by a resolved value. Resolution failures retain their underlying cause while reporting the qualified root variable and an escaped JSON Pointer node path. Active qualified reference chains distinguish cycles from long acyclic chains that exceed the configured depth.
 
+The structured-variable-resolution epic is complete. A controller integration
+test now proves that separately assembled project and worker scopes resolve
+recursive typed expressions into the concrete transport, scheduler, runtime,
+path, and string-list values consumed by `workerLaunchConfig`.
+
 Runtime configuration must flow through the variable subsystem. Controller settings, worker settings, backend choices, command-line flags, API arguments, and client overrides should be represented as typed variables with clear namespaces and sources. Config structs and HTTP JSON fields are transport surfaces, not a separate configuration authority.
 
 Important near-term runtime variables include:
