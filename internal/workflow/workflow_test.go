@@ -45,7 +45,7 @@ func TestCompileWorkflowWithWorkflowVariables(t *testing.T) {
 		Variables: []variable.Variable{
 			{
 				Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-				Type:       variable.TypeList(variable.TypeInt),
+				Type:       variable.TypeList,
 				Expression: `[2024, 2025]`,
 			},
 		},
@@ -239,7 +239,7 @@ func testWorkflowResolver(t *testing.T, years string) variable.Resolver {
 
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList(variable.TypeInt),
+		Type:       variable.TypeList,
 		Expression: years,
 	})
 	if err != nil {

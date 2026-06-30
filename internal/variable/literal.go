@@ -49,10 +49,6 @@ func ParseLiteral(variable Variable) (ResolvedValue, error) {
 
 		return ResolvedObject(fields), nil
 	case KindList:
-		if variable.Type.Element == nil {
-			return ResolvedValue{}, fmt.Errorf("unsupported variable type: %s", variable.Type)
-		}
-
 		var decoded []any
 		if err := json.Unmarshal([]byte(variable.Expression), &decoded); err != nil {
 			return ResolvedValue{}, fmt.Errorf("parse list variable %s: %w", variable.Name.String(), err)
@@ -60,14 +56,14 @@ func ParseLiteral(variable Variable) (ResolvedValue, error) {
 
 		values := make([]ResolvedValue, 0, len(decoded))
 		for index, value := range decoded {
-			resolved, err := resolvedJSONValueAs(*variable.Type.Element, value)
+			resolved, err := resolvedJSONValue(value)
 			if err != nil {
 				return ResolvedValue{}, fmt.Errorf("parse list element %s[%d]: %w", variable.Name.String(), index, err)
 			}
 			values = append(values, resolved)
 		}
 
-		return ResolvedList(*variable.Type.Element, values)
+		return ResolvedList(values), nil
 	default:
 		return ResolvedValue{}, fmt.Errorf("unsupported variable type: %s", variable.Type)
 	}
@@ -102,36 +98,14 @@ func resolvedJSONValue(value any) (ResolvedValue, error) {
 }
 
 func resolvedInferredJSONList(values []any) (ResolvedValue, error) {
-	if len(values) == 0 {
-		return ResolvedValue{}, fmt.Errorf("cannot infer empty list type")
-	}
-
-	first, err := resolvedJSONValue(values[0])
-	if err != nil {
-		return ResolvedValue{}, err
-	}
-
-	resolved := []ResolvedValue{first}
-	for _, value := range values[1:] {
-		next, err := resolvedJSONValueAs(first.Type, value)
+	resolved := make([]ResolvedValue, 0, len(values))
+	for _, value := range values {
+		next, err := resolvedJSONValue(value)
 		if err != nil {
 			return ResolvedValue{}, err
 		}
 		resolved = append(resolved, next)
 	}
 
-	return ResolvedList(first.Type, resolved)
-}
-
-func resolvedJSONValueAs(valueType Type, value any) (ResolvedValue, error) {
-	resolved, err := resolvedJSONValue(value)
-	if err != nil {
-		return ResolvedValue{}, err
-	}
-
-	if resolved.Type.String() != valueType.String() {
-		return ResolvedValue{}, fmt.Errorf("has type %s, want %s", resolved.Type, valueType)
-	}
-
-	return resolved, nil
+	return ResolvedList(resolved), nil
 }

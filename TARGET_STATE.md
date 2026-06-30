@@ -490,18 +490,18 @@ Variables should be typed rather than stored as unstructured strings. Initial su
 - `bool`
 - `datetime`
 - `path`
-- `list[T]`
+- `list`
 - `object`
 
 Additional types may be added when a concrete workflow need appears. Dataset-specific values should not be added until their behavior is clear.
 
 The `path` type is intentionally distinct from `string`. It represents filesystem files or directories and should support path-aware operations such as joining path segments, normalization, and validation. Path evaluation must account for where a path is used: controller-local paths and worker-container paths may refer to different filesystems even when they originate from the same workflow expression.
 
-Lists are a first-class workflow type because they are the primary mechanism for fan-out. A list value can drive creation of many parallel work items or many sub-workflow invocations. Early list support should allow lists of scalar values and lists of objects.
+Lists are a first-class workflow type because they are the primary mechanism for fan-out. A list value can drive creation of many parallel work items or many sub-workflow invocations. A list does not declare one element type; each item is an independently typed expression. This permits heterogeneous values and nested lists while allowing consumers to validate narrower requirements such as string-only lists.
 
 Objects represent JSON-like structured values with named fields. They are needed for step outputs and for fan-out records that carry more than one value per generated work item. For example, one fan-out item might need both a `year` and an `input_path`.
 
-List-of-list support is not an early requirement. If nested grouped data is needed, prefer an object that contains a named list field. That keeps access patterns explicit and avoids adding recursive list behavior before there is a concrete workflow need.
+Nested lists are valid when the data naturally has recursive collection structure. Objects with named list fields remain preferable when field names make the workflow meaning clearer.
 
 ### Expression-Based Resolution
 

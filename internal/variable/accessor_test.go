@@ -3,7 +3,7 @@ package variable
 import "testing"
 
 func TestApplyAccessor(t *testing.T) {
-	list, err := ResolvedList(TypeObject, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		ResolvedObject(map[string]ResolvedValue{
 			"year": {Type: TypeInt, Value: 2024},
 		}),
@@ -11,10 +11,6 @@ func TestApplyAccessor(t *testing.T) {
 			"year": {Type: TypeInt, Value: 2025},
 		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	object := ResolvedObject(map[string]ResolvedValue{
 		"items": list,
 	})
@@ -34,15 +30,11 @@ func TestApplyAccessor(t *testing.T) {
 }
 
 func TestApplyAccessorStartsWithIndex(t *testing.T) {
-	list, err := ResolvedList(TypeObject, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		ResolvedObject(map[string]ResolvedValue{
 			"year": {Type: TypeInt, Value: 2024},
 		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	value, err := ApplyAccessor(list, "[0].year")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -133,14 +125,10 @@ func TestApplyFieldAccessorRejectsMissingField(t *testing.T) {
 }
 
 func TestApplyIndexAccessor(t *testing.T) {
-	list, err := ResolvedList(TypeInt, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
 		{Type: TypeInt, Value: 2025},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	value, err := ApplyIndexAccessor(list, "[1]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -156,13 +144,9 @@ func TestApplyIndexAccessor(t *testing.T) {
 }
 
 func TestApplyIndexAccessorRejectsInvalidAccessor(t *testing.T) {
-	list, err := ResolvedList(TypeInt, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	tests := []string{
 		"0",
 		"[]",
@@ -188,27 +172,19 @@ func TestApplyIndexAccessorRejectsNonList(t *testing.T) {
 }
 
 func TestApplyIndexAccessorRejectsOutOfRange(t *testing.T) {
-	list, err := ResolvedList(TypeInt, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	if _, err := ApplyIndexAccessor(list, "[1]"); err == nil {
 		t.Fatal("expected an error")
 	}
 }
 
 func TestApplyFanOutAccessor(t *testing.T) {
-	list, err := ResolvedList(TypeInt, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
 		{Type: TypeInt, Value: 2025},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	values, err := ApplyFanOutAccessor(list, "[*]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -224,13 +200,9 @@ func TestApplyFanOutAccessor(t *testing.T) {
 }
 
 func TestApplyFanOutAccessorRejectsInvalidAccessor(t *testing.T) {
-	list, err := ResolvedList(TypeInt, []ResolvedValue{
+	list := ResolvedList([]ResolvedValue{
 		{Type: TypeInt, Value: 2024},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	if _, err := ApplyFanOutAccessor(list, "[0]"); err == nil {
 		t.Fatal("expected an error")
 	}

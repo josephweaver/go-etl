@@ -1,7 +1,5 @@
 package variable
 
-import "fmt"
-
 type Kind string
 
 const (
@@ -15,8 +13,7 @@ const (
 )
 
 type Type struct {
-	Kind    Kind
-	Element *Type
+	Kind Kind
 }
 
 var (
@@ -25,12 +22,9 @@ var (
 	TypeBool     = Type{Kind: KindBool}
 	TypeDatetime = Type{Kind: KindDatetime}
 	TypePath     = Type{Kind: KindPath}
+	TypeList     = Type{Kind: KindList}
 	TypeObject   = Type{Kind: KindObject}
 )
-
-func TypeList(element Type) Type {
-	return Type{Kind: KindList, Element: &element}
-}
 
 func (t Type) Valid() bool {
 	switch t.Kind {
@@ -39,26 +33,15 @@ func (t Type) Valid() bool {
 		KindBool,
 		KindDatetime,
 		KindPath,
+		KindList,
 		KindObject:
-		return t.Element == nil
-	case KindList:
-		if t.Element == nil || t.Element.Kind == KindList {
-			return false
-		}
-		return t.Element.Valid()
+		return true
 	default:
 		return false
 	}
 }
 
 func (t Type) String() string {
-	if t.Kind == KindList {
-		if t.Element == nil {
-			return "list[<nil>]"
-		}
-		return fmt.Sprintf("list[%s]", t.Element.String())
-	}
-
 	if t.Kind == "" {
 		return "<empty>"
 	}

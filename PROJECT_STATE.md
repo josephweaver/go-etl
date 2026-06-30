@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-06-26
+Last updated: 2026-06-30
 
 ## Current Focus
 
@@ -456,10 +456,12 @@ bool
 datetime
 path
 object
-list[T]
+list
 ```
 
-`list[T]` currently supports lists of scalar types and lists of `object`. `list[list[T]]` is intentionally rejected for now.
+`list` is now a generic collection type. Each resolved item retains its own
+type, so empty, heterogeneous, and nested lists are valid. Consumers that need
+a narrower shape, such as a string list, validate every item at their boundary.
 
 Current resolver behavior supports:
 
@@ -474,7 +476,7 @@ Current resolver behavior supports:
 - Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
 - Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
 
-Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. List literals use their declared `list[T]` element type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
+Structured value support is intentionally small. Object literals are JSON objects with inferred field value types. During the transition to recursive typed expressions, legacy JSON list literals infer each item's resolved type independently rather than declaring one element type for the list. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation.
 
 Runtime configuration must flow through the variable subsystem. Controller settings, worker settings, backend choices, command-line flags, API arguments, and client overrides should be represented as typed variables with clear namespaces and sources. Config structs and HTTP JSON fields are transport surfaces, not a separate configuration authority.
 

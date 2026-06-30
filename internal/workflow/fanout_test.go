@@ -10,7 +10,7 @@ import (
 func TestCompileFanOutWorkItems(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList(variable.TypeInt),
+		Type:       variable.TypeList,
 		Expression: `[2024, 2025]`,
 	})
 	if err != nil {
@@ -46,7 +46,7 @@ func TestCompileFanOutWorkItems(t *testing.T) {
 func TestCompileFanOutStep(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList(variable.TypeInt),
+		Type:       variable.TypeList,
 		Expression: `[2024, 2025]`,
 	})
 	if err != nil {
@@ -81,7 +81,7 @@ func TestCompileFanOutStep(t *testing.T) {
 func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList(variable.TypeInt),
+		Type:       variable.TypeList,
 		Expression: `[2024]`,
 	})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestCompileFanOutWorkItemsCopiesParameters(t *testing.T) {
 func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList(variable.TypeObject),
+		Type:       variable.TypeList,
 		Expression: `[{"id": "fixture", "input_path": "demo-summary-input.txt"}, {"id": "fixture-2", "input_path": "demo-summary-input-2.txt"}]`,
 	})
 	if err != nil {
@@ -175,7 +175,7 @@ func TestCompileFanOutStepRejectsMissingID(t *testing.T) {
 func TestCompileFanOutWorkItemsUsesObjectTokenAccessor(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList(variable.TypeObject),
+		Type:       variable.TypeList,
 		Expression: `[{"year": 2024, "path": "/data/2024.tif"}, {"year": 2025, "path": "/data/2025.tif"}]`,
 	})
 	if err != nil {
@@ -208,7 +208,7 @@ func TestCompileFanOutWorkItemsUsesObjectTokenAccessor(t *testing.T) {
 func TestCompileFanOutWorkItemsUsesSeparateTokenAccessors(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList(variable.TypeObject),
+		Type:       variable.TypeList,
 		Expression: `[{"year": 2024, "output": "cdl-iowa-2024"}, {"year": 2025, "output": "cdl-iowa-2025"}]`,
 	})
 	if err != nil {
@@ -242,7 +242,7 @@ func TestCompileFanOutWorkItemsUsesSeparateTokenAccessors(t *testing.T) {
 func TestCompileFanOutWorkItemsRejectsUnsupportedTokenType(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "records"},
-		Type:       variable.TypeList(variable.TypeObject),
+		Type:       variable.TypeList,
 		Expression: `[{"year": 2024}]`,
 	})
 	if err != nil {
@@ -266,7 +266,7 @@ func TestCompileFanOutWorkItemsRejectsUnsupportedTokenType(t *testing.T) {
 func TestCompileFanOutWorkItemsRejectsInvalidTemplate(t *testing.T) {
 	scope, err := variable.NewScope(variable.Variable{
 		Name:       variable.Name{Namespace: variable.NamespaceWorkflow, Key: "years"},
-		Type:       variable.TypeList(variable.TypeInt),
+		Type:       variable.TypeList,
 		Expression: `[2024]`,
 	})
 	if err != nil {

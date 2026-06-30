@@ -18,7 +18,7 @@ func TestLocalWorkerStarterResolvesCommand(t *testing.T) {
 		},
 		variable.Variable{
 			Name:       variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_start_args"},
-			Type:       variable.TypeList(variable.TypeString),
+			Type:       variable.TypeList,
 			Expression: `["run", "./cmd/worker"]`,
 		},
 	))
