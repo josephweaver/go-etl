@@ -58,9 +58,28 @@ In one transaction, upsert the project and workflow metadata, then insert the
 workflow instance. Acknowledge the client with `run_id` only after commit
 succeeds.
 
+## `work_items`
+
+One row stores one immutable compiled unit of work.
+
+```sql
+CREATE TABLE work_items (
+    workitem_id   TEXT PRIMARY KEY,
+    run_id        TEXT NOT NULL REFERENCES workflow_instances(run_id),
+    stage_index   INTEGER NOT NULL CHECK (stage_index >= 0),
+    step_index    INTEGER NOT NULL CHECK (step_index >= 0),
+    workitem_index INTEGER NOT NULL CHECK (workitem_index >= 0),
+    workitem_json TEXT NOT NULL CHECK (json_valid(workitem_json)),
+    created_at    TEXT NOT NULL,
+    UNIQUE (run_id, stage_index, step_index, workitem_index)
+);
+```
+
+The composite uniqueness constraint makes repeated stage compilation
+idempotent. `workitem_json` contains the compiled worker input.
+
 ## Assumed Parent Tables
 
-- `work_items(workitem_id)` stores immutable logical work.
 - `attempts(attempt_id, workitem_id)` stores immutable execution attempts.
 
 ## `queued_work`
