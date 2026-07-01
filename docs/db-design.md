@@ -7,9 +7,8 @@ SQLite schema notes for durable workflow execution.
 ```sql
 CREATE TABLE projects (
     project_id TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
     repo_ref   TEXT NOT NULL,
-    version    TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -21,8 +20,8 @@ CREATE TABLE project_variables (
 );
 ```
 
-`repo_ref` identifies the repository; `version` identifies the requested tag,
-branch, or commit.
+`repo_ref` identifies the repository. `commit_sha` records the immutable,
+resolved Git revision used by the submission.
 
 `value_json` preserves the variable's JSON type.
 
