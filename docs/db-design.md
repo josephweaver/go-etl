@@ -8,15 +8,13 @@ SQLite schema notes for durable workflow execution.
 CREATE TABLE projects (
     project_id    TEXT PRIMARY KEY,
     repo_ref      TEXT NOT NULL,
-    commit_sha    TEXT NOT NULL,
     config_sha256 TEXT NOT NULL CHECK (length(config_sha256) = 64),
     created_at    TEXT NOT NULL
 );
 ```
 
-`repo_ref` identifies the repository. `commit_sha` records the immutable,
-resolved Git revision used by the submission. `config_sha256` hashes the
-canonical project-config JSON used by the controller.
+`repo_ref` identifies the repository. `config_sha256` hashes the canonical
+project-config JSON used by the controller.
 
 ## Workflow Definitions
 
@@ -54,6 +52,7 @@ CREATE TABLE workflow_instances (
     run_id                  TEXT PRIMARY KEY,
     project_id              TEXT NOT NULL,
     workflow_id             TEXT NOT NULL,
+    source_commit_sha       TEXT NOT NULL,
     project_snapshot_json   TEXT NOT NULL
         CHECK (json_valid(project_snapshot_json)),
     workflow_snapshot_json  TEXT NOT NULL
@@ -66,6 +65,7 @@ CREATE TABLE workflow_instances (
 
 Snapshots are immutable and include their document schema version. They keep a
 run reproducible if the project or workflow definition later changes.
+`source_commit_sha` records the repository revision used for this submission.
 
 ## Submission Transaction
 
