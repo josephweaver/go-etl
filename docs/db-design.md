@@ -8,13 +8,14 @@ SQLite schema notes for durable workflow execution.
 CREATE TABLE projects (
     project_id    TEXT PRIMARY KEY,
     repo_ref      TEXT NOT NULL,
+    config_path   TEXT NOT NULL,
     config_sha256 TEXT NOT NULL CHECK (length(config_sha256) = 64),
     created_at    TEXT NOT NULL
 );
 ```
 
-`repo_ref` identifies the repository. `config_sha256` hashes the canonical
-project-config JSON used by the controller.
+`repo_ref` identifies the repository. `config_path` is relative to its root.
+`config_sha256` hashes the canonical project-config JSON.
 
 ## Workflow Definitions
 
@@ -22,26 +23,15 @@ project-config JSON used by the controller.
 CREATE TABLE workflows (
     project_id      TEXT NOT NULL REFERENCES projects(project_id),
     workflow_id     TEXT NOT NULL,
+    workflow_path   TEXT NOT NULL,
     workflow_sha256 TEXT NOT NULL CHECK (length(workflow_sha256) = 64),
     created_at      TEXT NOT NULL,
     PRIMARY KEY (project_id, workflow_id)
 );
-
-CREATE TABLE workflow_steps (
-    project_id  TEXT NOT NULL,
-    workflow_id TEXT NOT NULL,
-    step_index  INTEGER NOT NULL CHECK (step_index >= 0),
-    step_json   TEXT NOT NULL CHECK (json_valid(step_json)),
-    PRIMARY KEY (project_id, workflow_id, step_index),
-    FOREIGN KEY (project_id, workflow_id)
-        REFERENCES workflows(project_id, workflow_id)
-);
 ```
 
-`workflow_sha256` hashes the canonical workflow JSON.
-
-`step_index` preserves client-submitted order. `step_json` is the canonical,
-schema-versioned step definition.
+`workflow_path` is relative to the project repository root. `workflow_sha256`
+hashes the canonical workflow JSON.
 
 ## `workflow_instances`
 
@@ -53,25 +43,20 @@ CREATE TABLE workflow_instances (
     project_id              TEXT NOT NULL,
     workflow_id             TEXT NOT NULL,
     source_commit_sha       TEXT NOT NULL,
-    project_snapshot_json   TEXT NOT NULL
-        CHECK (json_valid(project_snapshot_json)),
-    workflow_snapshot_json  TEXT NOT NULL
-        CHECK (json_valid(workflow_snapshot_json)),
     submitted_at            TEXT NOT NULL,
     FOREIGN KEY (project_id, workflow_id)
         REFERENCES workflows(project_id, workflow_id)
 );
 ```
 
-Snapshots are immutable and include their document schema version. They keep a
-run reproducible if the project or workflow definition later changes.
 `source_commit_sha` records the repository revision used for this submission.
+The repository and commit must remain fetchable for restart and audit.
 
 ## Submission Transaction
 
-In one transaction, upsert the project and workflow definition, insert their
-variables and ordered steps, then insert the workflow instance. Acknowledge the
-client with `run_id` only after commit succeeds.
+In one transaction, upsert the project and workflow metadata, then insert the
+workflow instance. Acknowledge the client with `run_id` only after commit
+succeeds.
 
 ## Assumed Parent Tables
 
