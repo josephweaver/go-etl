@@ -22,20 +22,11 @@ canonical project-config JSON used by the controller.
 
 ```sql
 CREATE TABLE workflows (
-    project_id  TEXT NOT NULL REFERENCES projects(project_id),
-    workflow_id TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
+    project_id      TEXT NOT NULL REFERENCES projects(project_id),
+    workflow_id     TEXT NOT NULL,
+    workflow_sha256 TEXT NOT NULL CHECK (length(workflow_sha256) = 64),
+    created_at      TEXT NOT NULL,
     PRIMARY KEY (project_id, workflow_id)
-);
-
-CREATE TABLE workflow_variables (
-    project_id  TEXT NOT NULL,
-    workflow_id TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    value_json  TEXT NOT NULL CHECK (json_valid(value_json)),
-    PRIMARY KEY (project_id, workflow_id, name),
-    FOREIGN KEY (project_id, workflow_id)
-        REFERENCES workflows(project_id, workflow_id)
 );
 
 CREATE TABLE workflow_steps (
@@ -48,6 +39,8 @@ CREATE TABLE workflow_steps (
         REFERENCES workflows(project_id, workflow_id)
 );
 ```
+
+`workflow_sha256` hashes the canonical workflow JSON.
 
 `step_index` preserves client-submitted order. `step_json` is the canonical,
 schema-versioned step definition.
