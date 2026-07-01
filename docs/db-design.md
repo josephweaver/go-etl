@@ -6,24 +6,17 @@ SQLite schema notes for durable workflow execution.
 
 ```sql
 CREATE TABLE projects (
-    project_id TEXT PRIMARY KEY,
-    repo_ref   TEXT NOT NULL,
-    commit_sha TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE project_variables (
-    project_id TEXT NOT NULL REFERENCES projects(project_id),
-    name       TEXT NOT NULL,
-    value_json TEXT NOT NULL CHECK (json_valid(value_json)),
-    PRIMARY KEY (project_id, name)
+    project_id    TEXT PRIMARY KEY,
+    repo_ref      TEXT NOT NULL,
+    commit_sha    TEXT NOT NULL,
+    config_sha256 TEXT NOT NULL CHECK (length(config_sha256) = 64),
+    created_at    TEXT NOT NULL
 );
 ```
 
 `repo_ref` identifies the repository. `commit_sha` records the immutable,
-resolved Git revision used by the submission.
-
-`value_json` preserves the variable's JSON type.
+resolved Git revision used by the submission. `config_sha256` hashes the
+canonical project-config JSON used by the controller.
 
 ## Workflow Definitions
 
