@@ -139,8 +139,10 @@ One row means one attempt currently owns a logical work item.
 
 ```sql
 CREATE TABLE running_work (
-    attempt_id TEXT PRIMARY KEY
-        REFERENCES work_item_attempts(attempt_id)
+    attempt_id   TEXT PRIMARY KEY
+        REFERENCES work_item_attempts(attempt_id),
+    work_item_id TEXT NOT NULL UNIQUE
+        REFERENCES work_items(work_item_id)
 );
 ```
 
@@ -180,11 +182,11 @@ history.
 
 ## Invariants
 
-- Attempt rows derive work item, run, stage, worker, and timing data from their
-  parent records.
+- Attempt rows derive run, stage, worker, and timing data from their parent
+  records.
 - Only `queued_work` and `running_work` represent current placement.
-- Transaction logic prevents two attempts for one work item from occupying
-  `running_work`; `attempt_id` uniqueness alone cannot enforce this rule.
+- `running_work.work_item_id` uniqueness prevents two attempts for one logical
+  work item from running concurrently.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
 - Finishing work appends one attempt outcome and deletes its `running_work` row
