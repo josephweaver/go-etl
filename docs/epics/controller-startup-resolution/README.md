@@ -294,6 +294,17 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   `resolver_max_depth`, with schema default `10` and validation greater than
   zero. Startup first uses the built-in depth limit to resolve and validate this
   setting, then constructs subsequent resolvers with the resolved value.
+- Initial controller logging uses the following non-sensitive,
+  startup-overridable variables:
+
+  | Key | Type | Schema default |
+  |---|---|---|
+  | `controller_log_root_path` | path | `${controller_root_dir}/logs` |
+  | `controller_filesystem_logging_enabled` | bool | `true` |
+  | `controller_log_level` | string | `info` |
+
+- Detailed rendered-line formatting remains owned by the execution-observability
+  epic rather than this startup-resolution epic.
 
 ## Open Questions
 
