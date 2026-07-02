@@ -408,6 +408,12 @@ The controller may delete staging data after publication, but it must retain or
 reconstruct the published artifact for queued work and retries according to
 artifact retention policy.
 
+Relative controller-owned paths are localized against the controller process
+working directory. They are not relative to the executable or selected config
+file. An on-demand client or service launcher must therefore choose the working
+directory intentionally before starting the controller. Absolute paths remain
+unchanged.
+
 ### Bounded decoded-definition cache
 
 After reading documents from the local Git object cache, decoded project and

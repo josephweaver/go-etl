@@ -286,6 +286,10 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - A missed-interval limit of one still permits multiple worker heartbeat
   attempts within each 60-second caretaker interval; it abandons work only when
   the caretaker consumes an interval containing no report.
+- Relative controller-owned paths are resolved against the controller process
+  working directory. The executable location and controller-config location do
+  not change that base. An on-demand launcher must therefore set the working
+  directory deliberately. Absolute paths remain unchanged.
 
 ## Open Questions
 
@@ -306,10 +310,7 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 8. Which startup failures may expose a limited diagnostic HTTP endpoint, and
     which require the process to exit without binding?
 9. Does controller exclusivity/database locking belong in this epic's startup
-    readiness boundary or exclusively in `controller-resilience`?
-10. What is the resolution base for relative path values such as the default
-    `controller_root_dir = "./.run"`: controller executable directory,
-    controller-config directory, or process working directory?
+   readiness boundary or exclusively in `controller-resilience`?
 
 ## Completion Criteria
 
@@ -331,6 +332,8 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - HTTP listen and advertised addresses are resolved independently and validated.
 - Git cache, temp, artifact, caretaker, and logging settings come from typed
   variables rather than hidden defaults or parallel config paths.
+- Relative controller paths resolve consistently against the controller process
+  working directory, including when an on-demand client starts the process.
 - No global resolver or duplicate aggregate configuration authority is added.
 - Required services and database schema are ready before normal API admission.
 - Heartbeat/report APIs become reachable at the documented recovery boundary.
