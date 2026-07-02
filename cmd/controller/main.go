@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"runtime/debug"
@@ -43,6 +45,11 @@ type WorkReuseDecision struct {
 	Reusable       bool
 	Reason         string
 	PriorAttemptID string
+}
+
+type controllerStartupOptions struct {
+	ConfigPath   string
+	OverrideJSON []string
 }
 
 func newController(items []model.WorkItem) *Controller {
@@ -108,6 +115,39 @@ func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
 	}
 
 	return loadControllerConfig(args[1])
+}
+
+func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
+	var options controllerStartupOptions
+	var configSet bool
+
+	flags := flag.NewFlagSet("controller", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Func("config", "controller configuration path", func(value string) error {
+		if configSet {
+			return fmt.Errorf("--config may be specified only once")
+		}
+		configSet = true
+		options.ConfigPath = value
+		return nil
+	})
+	flags.Func("override", "canonical JSON override declaration", func(value string) error {
+		options.OverrideJSON = append(options.OverrideJSON, value)
+		return nil
+	})
+
+	arguments := args
+	if len(arguments) > 0 {
+		arguments = arguments[1:]
+	}
+	if err := flags.Parse(arguments); err != nil {
+		return controllerStartupOptions{}, fmt.Errorf("parse controller startup arguments: %w", err)
+	}
+	if flags.NArg() != 0 {
+		return controllerStartupOptions{}, fmt.Errorf("parse controller startup arguments: unexpected positional argument %q", flags.Arg(0))
+	}
+
+	return options, nil
 }
 
 func loadDefaultControllerConfig() (ControllerConfig, error) {

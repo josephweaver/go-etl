@@ -271,6 +271,69 @@ func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 	}
 }
 
+func TestParseControllerStartupOptions(t *testing.T) {
+	options, err := parseControllerStartupOptions([]string{
+		"controller",
+		"--config", "controller.json",
+		`--override={"name":{"namespace":"override","key":"log_level"},"type":"string","expression":"debug"}`,
+		"--override", `{"name":{"namespace":"override","key":"port"},"type":"int","expression":8081}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if options.ConfigPath != "controller.json" {
+		t.Fatalf("config path = %q, want controller.json", options.ConfigPath)
+	}
+	if len(options.OverrideJSON) != 2 {
+		t.Fatalf("override count = %d, want 2", len(options.OverrideJSON))
+	}
+	if !strings.Contains(options.OverrideJSON[0], `"key":"log_level"`) {
+		t.Fatalf("first override was not preserved: %q", options.OverrideJSON[0])
+	}
+	if !strings.Contains(options.OverrideJSON[1], `"key":"port"`) {
+		t.Fatalf("second override was not preserved: %q", options.OverrideJSON[1])
+	}
+}
+
+func TestParseControllerStartupOptionsWithoutFlags(t *testing.T) {
+	options, err := parseControllerStartupOptions([]string{"controller"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if options.ConfigPath != "" {
+		t.Fatalf("config path = %q, want empty", options.ConfigPath)
+	}
+	if len(options.OverrideJSON) != 0 {
+		t.Fatalf("override count = %d, want 0", len(options.OverrideJSON))
+	}
+}
+
+func TestParseControllerStartupOptionsRejectsInvalidArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "duplicate config", args: []string{"controller", "--config", "one.json", "--config=two.json"}},
+		{name: "missing config value", args: []string{"controller", "--config"}},
+		{name: "missing override value", args: []string{"controller", "--override"}},
+		{name: "unknown flag", args: []string{"controller", "--unknown", "value"}},
+		{name: "positional argument", args: []string{"controller", "controller.json"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseControllerStartupOptions(test.args)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), "parse controller startup arguments") {
+				t.Fatalf("error = %q, want argument parsing context", err)
+			}
+		})
+	}
+}
+
 func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
 	if err != nil {
