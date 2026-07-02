@@ -106,20 +106,31 @@ The default config location is a defined filename next to the controller
 executable, not relative to the process working directory. A command-line config
 path selects a different base document before variable resolution begins.
 
-The document uses the same language-neutral variable declaration shape as
-project and workflow configuration:
+The document has required language-neutral metadata around the standard
+variable declarations:
 
 ```json
 {
-  "name": {
-    "namespace": "controller_config",
-    "key": "main_database_connection_string"
-  },
-  "type": "string",
-  "expression": "postgres://goet:${controller_env.DB_PASSWORD}@db.example/goet",
-  "sensitive": true
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
+  "variables": [
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "main_database_connection_string"
+      },
+      "type": "string",
+      "expression": "postgres://goet:${controller_env.DB_PASSWORD}@db.example/goet",
+      "sensitive": true
+    }
+  ]
 }
 ```
+
+`api_version` selects the document schema. `kind` prevents a project or
+workflow document from being accepted accidentally as controller config. Both
+are validated before variable definition validation or resolution and do not
+participate in variable precedence.
 
 Structural component selection should not become an uncontrolled parallel
 configuration system. Component implementations are supplied by controller
@@ -226,36 +237,38 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Accepted client/command-line overrides win over controller config for keys
   that policy permits callers to override.
 - Generated runtime values remain read-only and non-overridable.
+- Controller JSON requires `api_version` and `kind` metadata. The initial
+  values are `goet/v1alpha1` and `Controller`.
 
 ## Open Questions
 
-1. What is the versioned top-level JSON document shape around the variable
-   declarations?
-2. What is the complete initial required/optional variable catalog, including
+1. What is the complete initial required/optional variable catalog, including
    types, defaults, sensitivity, allowed override status, and owning consumer?
-3. Is `main_database_connection_string` the canonical database key, and is its
+2. Is `main_database_connection_string` the canonical database key, and is its
    driver derived from the connection string or separately declared?
-4. Which controller environment variables are supported initially, and how are
+3. Which controller environment variables are supported initially, and how are
    external names mapped to typed internal keys?
-5. What command-line syntax supplies typed overrides, and how does it represent
+4. What command-line syntax supplies typed overrides, and how does it represent
    structured values without inventing a second schema?
-6. Which keys are forbidden from client/command-line override even though the
+5. Which keys are forbidden from client/command-line override even though the
    `override` namespace otherwise has highest configurable precedence?
-7. Which first secret source materializes `controller_env.DB_PASSWORD`, and
+6. Which first secret source materializes `controller_env.DB_PASSWORD`, and
    what transport/storage guarantees are prerequisite?
-8. What schedule syntax represents caretaker and other interval values before
+7. What schedule syntax represents caretaker and other interval values before
    GOET has a duration type?
-9. Which settings have defaults, and how are defaults represented so
+8. Which settings have defaults, and how are defaults represented so
     provenance remains visible?
-10. Which startup failures may expose a limited diagnostic HTTP endpoint, and
+9. Which startup failures may expose a limited diagnostic HTTP endpoint, and
     which require the process to exit without binding?
-11. Does controller exclusivity/database locking belong in this epic's startup
+10. Does controller exclusivity/database locking belong in this epic's startup
     readiness boundary or exclusively in `controller-resilience`?
 
 ## Completion Criteria
 
 - The controller finds the default JSON relative to its executable and honors
   an explicit command-line path.
+- Startup rejects missing, unsupported, or incorrect `api_version`/`kind`
+  metadata before resolving variables.
 - Controller JSON, approved environment variables, command-line overrides, and
   generated runtime values assemble into one tested precedence model.
 - Client override wins for authorized configurable keys; runtime values remain

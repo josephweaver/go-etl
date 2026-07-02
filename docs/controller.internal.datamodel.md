@@ -661,6 +661,21 @@ The selected file establishes the base structural configuration and
 `controller_config` variable scope. A command-line config path selects the
 base document; it does not by itself become a resolved controller variable.
 
+The selected JSON document requires top-level metadata:
+
+```json
+{
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
+  "variables": []
+}
+```
+
+`api_version` and `kind` are validated before variable definitions. They select
+the document schema and prevent another config-document kind from being
+accepted accidentally. They are metadata, not variables, and do not
+participate in precedence.
+
 "Next to the executable" means resolving the executable's directory and
 joining the defined config filename to it. It does not mean the process's
 current working directory. This matters when a client starts the controller
