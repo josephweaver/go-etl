@@ -305,6 +305,18 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 
 - Detailed rendered-line formatting remains owned by the execution-observability
   epic rather than this startup-resolution epic.
+- Initial HTTP safety policy uses the following non-sensitive,
+  startup-overridable variables:
+
+  | Key | Type | Schema default |
+  |---|---|---:|
+  | `controller_read_header_timeout_secs` | int | `5` |
+  | `controller_idle_timeout_secs` | int | `120` |
+  | `controller_shutdown_timeout_secs` | int | `30` |
+  | `controller_max_request_bytes` | int | `16777216` |
+  | `controller_max_header_bytes` | int | `1048576` |
+
+- Timeout values must be greater than zero, and byte limits must be positive.
 
 ## Open Questions
 
