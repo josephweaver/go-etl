@@ -20,6 +20,10 @@ APIs.
   sensitive dependency.
 - Redact sensitive values from errors, logs, status output, provenance, and
   diagnostic representations.
+- Make safe rendering the default for resolved sensitive values and require an
+  explicit operation to obtain plaintext at an authorized execution boundary.
+- Sanitize GOET-controlled structured events and captured subprocess output
+  before they are persisted or transmitted.
 - Exclude sensitive material from fingerprints while retaining enough
   non-secret identity to explain which source or protected reference was used.
 - Define how sensitive values cross client, controller, workflow-run,
@@ -44,6 +48,11 @@ APIs.
 - Redesigning variable precedence or expression grammar.
 - Implementing the epic before its storage, transport, and redaction contracts
   are agreed.
+- Inspecting every file, network request, or external log produced by arbitrary
+  plugin or subprocess code.
+- Treating artifact content scanning as the primary sensitive-variable
+  protection mechanism; optional data-loss-prevention policy may be designed
+  separately.
 
 ## Architectural Context
 
@@ -98,14 +107,48 @@ No implementation slices are agreed yet. Slice decomposition should begin only
 after the open questions below are resolved and the epic is explicitly moved
 from `Proposed` to `Ready`.
 
+## Agreed Decisions
+
+- A resolved value carries one typed plaintext value together with sensitivity
+  metadata, a non-secret redaction label, and non-secret provenance. It does
+  not retain separate real and redacted copies of the value.
+- Normal formatting, diagnostics, and serialization of a sensitive resolved
+  value produce a safe representation such as
+  `${controller_env.DB_PASSWORD}`. Obtaining plaintext requires an explicit
+  operation at an authorized consumption boundary.
+- Sensitivity propagates with resolved values from client to controller, into
+  durable protected references, and from controller to the worker or plugin
+  operation that requires the value. Operations that do not require a
+  sensitive value must not receive it.
+- Sensitive values must not be placed in subprocess command arguments. An
+  executor should inject plaintext through a narrower mechanism such as the
+  subprocess environment, standard input, or a protected temporary file,
+  according to the plugin contract.
+- Sensitivity-aware formatting is the primary protection against GOET
+  intentionally logging a secret. As defense in depth, every GOET-controlled
+  log and event sink, including captured subprocess standard output and
+  standard error, sanitizes exact occurrences of materialized sensitive values
+  before persistence or transmission. Secret text is treated as a literal,
+  not as a regular expression.
+- A sanitizer registers only sensitive values materialized for the bounded
+  operation. It must not enumerate an environment namespace or persist its
+  plaintext registry.
+- Sanitization cannot guarantee removal of split, encoded, hashed, or otherwise
+  transformed secrets. A plugin remains responsible for plaintext after it
+  explicitly obtains it and sends it to a file, network service, or logging
+  path outside GOET-controlled sinks.
+- Scanning every plugin-created file for known secret strings is not required.
+  It is incomplete, occurs after plaintext has been written, and can be costly
+  or produce false positives for legitimate artifact content.
+
 ## Open Questions
 
 1. Is sensitivity stored only on root `Variable` and `ResolvedValue` objects,
    or may each nested typed-expression node declare sensitivity independently?
 2. What exact propagation rules apply to object fields, list items, accessors,
    and string/path interpolation?
-3. What representation may diagnostics expose: fixed redaction text, type and
-   length, source name, or protected-value identity?
+3. Which qualified variable name or opaque protected identity should supply the
+   redaction label when a sensitive value is derived from multiple inputs?
 4. How does a client safely transmit a sensitive `client_env` value to a remote
    controller?
 5. Which protected-value store backs values required by later workflow steps,

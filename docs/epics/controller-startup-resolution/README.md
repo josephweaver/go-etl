@@ -17,9 +17,10 @@ must not introduce a duplicate aggregate `ControllerRuntimeConfig`.
 
 - Locate the controller JSON next to the executable by default or use an
   explicit command-line path.
-- Load controller startup values from four sources:
+- Load controller startup values from five sources:
+  - namespace-specific declarations from the standard defaults JSON document;
   - serialized controller JSON;
-  - explicitly supported controller process environment variables;
+  - direct `controller_env` access to controller process environment variables;
   - command-line overrides supplied directly or by an on-demand client;
   - generated read-only controller runtime variables.
 - Normalize each source into its standard variable namespace.
@@ -83,8 +84,9 @@ phased readiness are not implemented.
 The target source model is:
 
 ```text
-serialized controller JSON
-+ approved controller_env values
+standard defaults JSON
++ serialized controller JSON
++ controller_env accessor
 + command-line override values
 + generated runtime values
               |
@@ -137,6 +139,25 @@ configuration system. Component implementations are supplied by controller
 code/plugins; their configurable values should be standard variables whenever
 the value participates in source precedence or diagnostics.
 
+### Defaults document
+
+Defaults are canonical variable declarations stored in a separate standard
+JSON document. The document formerly described as `globals` is not a `global`
+namespace and does not own an independent set of runtime variables. Instead,
+it supplies namespace-specific default declarations.
+
+Within a namespace, an explicit declaration from the selected controller JSON
+replaces a defaults-document declaration with the same qualified name. Normal
+namespace precedence then applies to unqualified lookup. A qualified lookup
+may therefore resolve a defaults-document declaration when the selected
+controller JSON does not replace it. Provenance identifies the defaults
+document as the source rather than presenting the value as an implicit code
+default.
+
+The defaults document cannot declare accessor or generated namespaces such as
+`controller_env` or `runtime`. Required values without a documented default
+remain absent until supplied by an authorized explicit source.
+
 ### Required-variable contracts
 
 Each startup consumer requests only the keys it owns. The database consumer,
@@ -169,7 +190,7 @@ The target lifecycle is:
 ```text
 1. Parse command line and select controller JSON path
 2. Load and definition-validate the serialized document
-3. Capture supported controller environment variables
+3. Initialize the controller environment accessor
 4. Parse and type-check command-line overrides
 5. Generate startup runtime variables
 6. Assemble immutable scopes in agreed precedence
@@ -215,9 +236,61 @@ mutable controller startup sources.
 
 ## Proposed Slices
 
-No implementation slices are agreed yet. Slice decomposition should begin only
-after the variable catalog, precedence, secret boundary, and startup readiness
-questions below are resolved and the epic is explicitly moved to `Ready`.
+The following are candidate implementation slices for review. They are ordered
+from the controller entry boundary inward and do not yet authorize creation of
+numbered slice files:
+
+1. **Controller document envelope** — add and test `api_version` and `kind`
+   decoding and validation around the existing controller variable document.
+2. **Startup command-line contract** — parse explicit `--config` and repeated
+   canonical-JSON `--override` arguments without constructing controller
+   services.
+3. **Executable-relative config discovery** — select the default controller
+   document next to the executable while preserving an explicit config path.
+4. **Defaults document loading** — load the standard defaults JSON document,
+   validate its namespace restrictions, and layer declarations beneath the
+   selected controller document with source provenance.
+5. **Controller environment accessor** — add bounded, cached, string-only
+   `controller_env` lookup without enumerating the process environment or
+   exposing values in diagnostics.
+6. **Startup override scope** — validate each CLI declaration as canonical
+   variable JSON, require the `override` namespace, and assemble it above
+   configurable startup namespaces.
+7. **Generated startup runtime scope** — generate process ID, instance ID,
+   startup time, and build version as immutable `runtime` values.
+8. **Startup resolver assembly** — construct and discard bounded resolvers from
+   defaults, controller config, environment access, overrides, and runtime;
+   bootstrap `resolver_max_depth` and preserve non-secret provenance.
+9. **Main database contract** — resolve the qualified database driver and
+   connection string, reject missing dependencies with redacted context, open
+   the database, verify schema/migrations, and fail before HTTP binding.
+10. **Controller filesystem contracts** — resolve and validate controller root,
+    Git-cache, temporary, artifact-cache, and log paths against the process
+    working directory before constructing their consumers.
+11. **Operational policy contracts** — resolve and validate the agreed
+    millisecond, capacity, concurrency, cleanup, caretaker, and log-level
+    variables from the same startup source model.
+12. **HTTP server contract** — resolve listen host/port, advertised URL, timeout,
+    request-size, header-size, and shutdown settings before constructing the
+    HTTP server.
+13. **Exclusive database ownership integration** — require the lock or lease
+    supplied by `controller-resilience` before recovery or API admission and
+    exit a competing controller without binding HTTP.
+14. **Recovery-mode admission integration** — after required services and
+    durable recovery state are ready, expose only health and worker
+    heartbeat/report APIs, capture `runtime.controller_recovery_started_at`,
+    hand off to caretaker recovery, and enable normal admission only when the
+    `attempt-liveness-recovery` contract permits it.
+15. **Startup integration coverage** — exercise the complete success path,
+    precedence, qualified lookup protection, redacted failure paths,
+    fail-without-bind behavior, recovery-mode boundary, and normal readiness.
+
+Sensitivity propagation and sink sanitization are implemented by
+`sensitive-variable-propagation`; database ownership mechanics by
+`controller-resilience`; rendered logging behavior by `execution-observability`;
+and heartbeat tracking/recovery policy by `attempt-liveness-recovery`. This epic
+integrates those completed contracts at startup rather than reimplementing
+them.
 
 ## Agreed Decisions
 
@@ -230,15 +303,67 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
       < runtime
   ```
 
+- Before namespace precedence is applied, declarations within each namespace
+  are layered from the standard defaults JSON document to the selected
+  controller JSON. The explicit controller declaration wins when both define
+  the same qualified name.
+- Until GOET introduces a duration type, controller schedules, intervals,
+  timeouts, and retention ages are positive integer milliseconds. Their keys
+  use a `_milliseconds` suffix so the unit is explicit.
+- Configuration, variable resolution, database, schema, cache, logging, and
+  required-service construction failures terminate startup without binding an
+  HTTP listener. The controller does not remain alive solely to expose a
+  failed-startup diagnostic endpoint. Recovery mode is distinct: after normal
+  bootstrap succeeds, it intentionally exposes only health and worker
+  heartbeat/report APIs before normal admission begins.
+- Each controller process uses exactly one database, and only one active
+  controller may own orchestration access to a given database. Startup must
+  acquire or verify that ownership after connecting and before recovery or API
+  admission. A competing controller that encounters an existing valid lock or
+  lease exits without binding HTTP. This startup epic owns the readiness
+  requirement; `controller-resilience` owns the concrete lock or lease
+  mechanism and stale-owner policy. Separate read-only database observers are
+  not controller instances and may operate when the database backend permits
+  them.
+
 - The serialized controller JSON therefore wins when `controller_env` and
   `controller_config` provide the same unqualified key.
 - A controller-config expression may still explicitly reference a qualified
   environment value such as `${controller_env.DB_PASSWORD}`.
-- Accepted client/command-line overrides win over controller config for keys
-  that policy permits callers to override.
+- The CLI accepts an `override` declaration for any key; it does not maintain a
+  separate override allowlist or denylist. An unqualified lookup follows normal
+  precedence and may select that override. A qualified lookup such as
+  `controller_config.main_database_connection_string` reads only that
+  namespace and therefore cannot be replaced by an `override` declaration.
+  Each startup consumer's required-variable contract chooses deliberately
+  between qualified and precedence-based lookup.
 - Generated runtime values remain read-only and non-overridable.
+- Each command-line override is supplied as a repeated `--override` argument
+  whose value is one canonical JSON variable declaration. The declaration uses
+  the same recursive typed-expression schema as serialized variables and must
+  use the `override` namespace. This supports scalar and structured values
+  without introducing a second command-line type syntax. Inline command-line
+  overrides are not an approved secret transport because command arguments may
+  be exposed through process inspection or shell history.
 - Controller JSON requires `api_version` and `kind` metadata. The initial
   values are `goet/v1alpha1` and `Controller`.
+- `controller_env` is a direct accessor namespace over the controller process
+  environment. `${controller_env.DB_PASSWORD}` reads the operating-system
+  environment key `DB_PASSWORD`; no separate mapping table or hard-coded key
+  catalog is required. The full environment is not copied into a scope or
+  exposed through diagnostics. A resolver reads each referenced key once and
+  reuses that value for the bounded resolution so one operation observes a
+  consistent value. Every `controller_env` value has type `string`, matching
+  the operating-system environment boundary. A typed expression that requires
+  a non-string value cannot consume an environment value directly; any future
+  string-to-type conversion must be introduced explicitly in the expression
+  language rather than inferred by the environment accessor.
+- The operating-system process environment, populated by the launcher or
+  deployment system, is the initial source for values such as
+  `controller_env.DB_PASSWORD`. GOET does not define how that environment is
+  populated. Environment values are never enumerated or rendered in
+  diagnostics. Explicit sensitivity, propagation, safe rendering, and sink
+  sanitization follow the `sensitive-variable-propagation` epic.
 - The main database consumer requires both variables below. Neither has a
   default or permits client/command-line override:
 
@@ -253,7 +378,7 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - The HTTP server consumer uses the following non-sensitive variables. Each
   permits an authorized startup command-line/client override:
 
-  | Key | Type | Declaration required | Schema default |
+  | Key | Type | Declaration required | Defaults document |
   |---|---|---:|---|
   | `controller_listen_host` | string | No | `localhost` |
   | `controller_listen_port` | int | No | `8080` |
@@ -265,7 +390,7 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Controller filesystem storage uses the following non-sensitive path
   variables. Each permits an authorized startup override:
 
-  | Key | Declaration required | Schema default | Lifetime |
+  | Key | Declaration required | Defaults document | Lifetime |
   |---|---:|---|---|
   | `controller_root_dir` | No | `./.run` | Root for controller-owned local state |
   | `controller_git_cache_path` | No | `${controller_root_dir}/git_cache` | Semi-persistent across controller restarts |
@@ -278,26 +403,26 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Caretaker startup uses the following non-sensitive, startup-overridable
   integer variables:
 
-  | Key | Declaration required | Schema default | Validation |
+  | Key | Declaration required | Defaults document | Validation |
   |---|---:|---:|---|
-  | `caretaker_interval_schedule_secs` | No | `60` | Greater than zero |
+  | `caretaker_interval_schedule_milliseconds` | No | `60000` | Greater than zero |
   | `caretaker_missed_interval_limit` | No | `1` | Greater than or equal to one |
 
 - A missed-interval limit of one still permits multiple worker heartbeat
-  attempts within each 60-second caretaker interval; it abandons work only when
-  the caretaker consumes an interval containing no report.
+  attempts within each 60,000-millisecond caretaker interval; it abandons work
+  only when the caretaker consumes an interval containing no report.
 - Relative controller-owned paths are resolved against the controller process
   working directory. The executable location and controller-config location do
   not change that base. An on-demand launcher must therefore set the working
   directory deliberately. Absolute paths remain unchanged.
 - Resolver recursion uses the non-sensitive, startup-overridable integer
-  `resolver_max_depth`, with schema default `10` and validation greater than
+  `resolver_max_depth`, with defaults-document value `10` and validation greater than
   zero. Startup first uses the built-in depth limit to resolve and validate this
   setting, then constructs subsequent resolvers with the resolved value.
 - Initial controller logging uses the following non-sensitive,
   startup-overridable variables:
 
-  | Key | Type | Schema default |
+  | Key | Type | Defaults document |
   |---|---|---|
   | `controller_log_root_path` | path | `${controller_root_dir}/logs` |
   | `controller_filesystem_logging_enabled` | bool | `true` |
@@ -308,13 +433,13 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Initial HTTP safety policy uses the following non-sensitive,
   startup-overridable variables:
 
-  | Key | Type | Schema default |
+  | Key | Type | Defaults document |
   |---|---|---:|
-  | `controller_read_header_timeout_secs` | int | `5` |
-  | `controller_read_timeout_secs` | int | `30` |
-  | `controller_write_timeout_secs` | int | `30` |
-  | `controller_idle_timeout_secs` | int | `120` |
-  | `controller_shutdown_timeout_secs` | int | `30` |
+  | `controller_read_header_timeout_milliseconds` | int | `5000` |
+  | `controller_read_timeout_milliseconds` | int | `30000` |
+  | `controller_write_timeout_milliseconds` | int | `30000` |
+  | `controller_idle_timeout_milliseconds` | int | `120000` |
+  | `controller_shutdown_timeout_milliseconds` | int | `30000` |
   | `controller_max_request_bytes` | int | `16777216` |
   | `controller_max_header_bytes` | int | `1048576` |
 
@@ -322,11 +447,11 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - The semi-persistent Git cache uses the following non-sensitive,
   startup-overridable policy variables:
 
-  | Key | Type | Schema default |
+  | Key | Type | Defaults document |
   |---|---|---:|
   | `controller_git_cache_max_size_mb` | int | `10240` |
-  | `controller_git_cache_retention_secs` | int | `604800` |
-  | `controller_git_fetch_timeout_secs` | int | `300` |
+  | `controller_git_cache_retention_milliseconds` | int | `604800000` |
+  | `controller_git_fetch_timeout_milliseconds` | int | `300000` |
   | `controller_git_fetch_concurrency` | int | `4` |
 
 - These values must be positive. Commits required by active runs remain pinned
@@ -336,11 +461,11 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Temp staging and published artifact retention use the following
   non-sensitive, startup-overridable policy variables:
 
-  | Key | Type | Schema default |
+  | Key | Type | Defaults document |
   |---|---|---:|
-  | `controller_temp_cleanup_age_secs` | int | `86400` |
+  | `controller_temp_cleanup_age_milliseconds` | int | `86400000` |
   | `controller_artifact_cache_max_size_mb` | int | `10240` |
-  | `controller_artifact_cache_retention_secs` | int | `604800` |
+  | `controller_artifact_cache_retention_milliseconds` | int | `604800000` |
   | `controller_storage_min_free_mb` | int | `1024` |
 
 - These values must be positive. Active packaging directories and artifacts
@@ -350,22 +475,8 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 
 ## Open Questions
 
-1. Which controller environment variables are supported initially, and how are
-   external names mapped to typed internal keys?
-2. What command-line syntax supplies typed overrides, and how does it represent
-   structured values without inventing a second schema?
-3. Which keys are forbidden from client/command-line override even though the
-   `override` namespace otherwise has highest configurable precedence?
-4. Which first secret source materializes `controller_env.DB_PASSWORD`, and
-   what transport/storage guarantees are prerequisite?
-5. What schedule syntax represents caretaker and other interval values before
-   GOET has a duration type?
-6. Which settings have defaults, and how are defaults represented so
-    provenance remains visible?
-7. Which startup failures may expose a limited diagnostic HTTP endpoint, and
-    which require the process to exit without binding?
-8. Does controller exclusivity/database locking belong in this epic's startup
-   readiness boundary or exclusively in `controller-resilience`?
+No open questions remain. The epic must not move from `Proposed` to `Ready`
+until the human explicitly approves it and agrees to begin slice decomposition.
 
 ## Completion Criteria
 
@@ -373,8 +484,9 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   an explicit command-line path.
 - Startup rejects missing, unsupported, or incorrect `api_version`/`kind`
   metadata before resolving variables.
-- Controller JSON, approved environment variables, command-line overrides, and
-  generated runtime values assemble into one tested precedence model.
+- Defaults JSON, controller JSON, directly accessed environment variables,
+  command-line overrides, and generated runtime values assemble into one
+  tested precedence model.
 - Client override wins for authorized configurable keys; runtime values remain
   read-only.
 - Every initial startup consumer has a documented and tested variable contract.
