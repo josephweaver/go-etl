@@ -89,6 +89,7 @@ object, but it is already suitable for create-use-discard operation.
 |---|---|---|---|
 | Controller deployment config | Controller process/deployment | Config source | Reload by explicit policy only |
 | Project definition/config | Content revision | Repository or definition store | Immutable per revision |
+| Project execution-environment definition | Project/content revision | Project configuration | Immutable per run snapshot |
 | Workflow definition | Content revision | Repository or definition store | Immutable per revision |
 | Workflow run snapshot | Workflow run | Database | Immutable after submission |
 | Step/stage state | Workflow run | Database | Transactional lifecycle transitions |
@@ -99,8 +100,10 @@ object, but it is already suitable for create-use-discard operation.
 | Resolver | One evaluation | In-memory recipe inputs | No mutation after construction |
 
 The controller may keep persistent handles to the database, immutable config,
-execution-environment components, and definition caches. Those objects supply
-resolver inputs; they do not turn the resolver into long-running state.
+execution-environment factories/capabilities, and definition caches. A
+concrete customer execution environment is selected from project/run context;
+it is not global controller state. These objects supply resolver inputs; they
+do not turn the resolver into long-running state.
 
 ## Resolver Construction Model
 
@@ -156,7 +159,8 @@ At minimum, startup must answer:
 - Which TLS trust roots, client certificate, or connection policy apply?
 - Which schema versions can this controller read and migrate?
 - Where should the HTTP control plane listen and advertise itself?
-- Which execution environments and definition stores are available?
+- Which execution-environment component types and definition stores can this
+  controller support?
 - What resolver limits, logging policy, retention policy, and reconciliation
   timing apply?
 
@@ -167,10 +171,11 @@ Not every answer is a plain variable. Configuration has two forms:
 - **Typed variables** supply values consumed by those components, such as a
   database path, host, port, timeout, controller URL, or secret reference.
 
-The current `ControllerConfig` already has this split: `ExecutionEnvironment`
-is structural while `Variables` are resolved values. The split is legitimate,
-but it needs a declared rule so component settings do not become an
-uncontrolled second variable system.
+The current `ControllerConfig` has this split: `ExecutionEnvironment` is
+structural while `Variables` are resolved values. The structural/value split
+is legitimate, but placing the concrete execution environment in controller
+config is transitional. Project configuration should own the customer's
+environment definition or environment-profile selection.
 
 #### Bootstrap input sources
 
@@ -442,7 +447,8 @@ behavior to an explicit database credential component.
 9. Open database and verify connectivity
 10. Read schema version and apply allowed migrations
 11. Load database-backed controller metadata, if any
-12. Construct execution environments and remaining services
+12. Register supported execution-environment component factories and construct
+    remaining controller services
 13. Start reconciliation/background loops
 14. Bind HTTP listener and report readiness
 15. Discard startup resolver and temporary secret material
@@ -450,12 +456,16 @@ behavior to an explicit database credential component.
 
 Ordering matters. The controller must not report readiness merely because the
 HTTP socket is open. Readiness means the database is usable, schema policy has
-completed, required execution-environment configuration is valid, and the
-controller can safely reconcile durable work.
+completed, required component types are available, and the controller can
+safely reconcile durable work. Project-specific environment validity is
+checked when a project or run is loaded, not by assuming one global startup
+environment.
 
-The database connection handle, stores, execution environments, logger,
-reconciler, and validated non-secret startup snapshot may be long-lived. The
-startup resolver is not.
+The database connection handle, stores, component registry, logger, reconciler,
+and validated non-secret startup snapshot may be long-lived. A project-specific
+environment may be cached or pooled after construction, but its identity and
+lifetime remain attached to project/run context. The startup resolver is not
+long-lived.
 
 #### Startup failure behavior
 
@@ -472,7 +482,7 @@ Examples include:
 - database authentication or TLS failure;
 - database schema newer than the controller supports;
 - failed required migration;
-- invalid required execution environment;
+- missing execution-environment component type required to resume durable work;
 - listener bind failure.
 
 Optional services must be explicitly marked optional. A missing database is
@@ -508,7 +518,7 @@ ControllerRuntimeConfig
   secret references (not materialized values)
   resolver policy
   API listen/advertise settings
-  execution-environment definitions
+  supported execution-environment component types and deployment policy
   reconciliation and retention policy
   logging policy
 ```
@@ -525,11 +535,81 @@ and discards the resolver. Important gaps are:
 - secrets, TLS, connection pooling, and database identity are not modeled;
 - controller environment and startup overrides are not assembled;
 - the resolver policy is not itself resolved from startup configuration;
-- execution-environment construction consumes structural config directly;
+- one concrete execution environment is currently read from controller config
+  and stored globally on `Controller.env`;
 - readiness and phased startup are not explicit;
 - the validated safe controller-variable subset is not retained for later run
   recipes;
 - no reload or credential-rotation boundary exists.
+
+#### Execution-environment ownership
+
+A concrete execution environment is project-level configuration because it
+describes where that project's work is allowed and expected to run. Different
+customers or projects may use local processes, distinct Slurm clusters, cloud
+accounts, containers, credentials, mounts, queues, and worker limits while
+sharing one controller service.
+
+The ownership split should be:
+
+| Concern | Owner |
+|---|---|
+| Supported transport, dialect, scheduler, and runtime implementations | Controller deployment/code |
+| Policies restricting allowed component types, hosts, accounts, or limits | Controller deployment |
+| Concrete environment definition or approved profile selection | Project configuration |
+| Per-run immutable selected environment snapshot | Workflow run |
+| Secret material used to connect to the environment | Secret provider |
+| Secret references and non-secret connection intent | Project config/run snapshot, subject to redaction policy |
+| Constructed clients, sessions, and connection pools | Controller runtime, keyed by environment identity |
+
+This avoids two incorrect extremes:
+
+- a single `Controller.env` that forces every project onto the same compute;
+- project configuration that can load arbitrary controller code or bypass
+  deployment security policy.
+
+The project selects and configures from component types the controller supports
+and permits. For example, a project may select an approved `ssh + bash + slurm
++ worker` composition and supply its host, queue, mount, and secret references.
+The controller still owns the implementations, validates policy, resolves
+secrets, constructs connections, and performs scheduling.
+
+The project definition is immutable by content revision. At workflow
+submission, the controller resolves the selected environment using the
+project's configuration plus allowed submission overrides and snapshots the
+effective non-secret environment definition into the workflow run. Later
+step compilation and assignment use that run snapshot, not a newly edited
+project definition.
+
+```text
+controller capabilities and policy
+                 +
+project environment definition
+                 +
+allowed submission overrides
+                 |
+                 v
+validated per-run environment snapshot
+                 |
+                 v
+constructed/cached runtime components keyed by environment identity
+```
+
+The environment snapshot and the live connection are different objects. The
+snapshot is durable configuration and lineage. The connection is disposable
+runtime state that can be recreated after controller restart.
+
+Environment caching is an optimization. Cache keys must include the immutable
+effective environment identity and credential/provider identity needed for
+safe isolation. Cache eviction must not change workflow meaning. Credential
+rotation may recreate the live connection without rewriting the run's
+non-secret environment snapshot.
+
+This boundary also changes startup readiness. Startup validates that the
+controller can load its database and register required component
+implementations. It does not need to contact every customer's compute system.
+Project environment validation or preflight happens when the project/run is
+accepted and may be repeated before scheduling according to policy.
 
 ### 2. Workflow submission
 
