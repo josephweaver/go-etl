@@ -131,9 +131,7 @@ One row means one attempt currently owns a logical work item.
 
 ```sql
 CREATE TABLE running_work (
-    work_item_id TEXT PRIMARY KEY
-        REFERENCES work_items(work_item_id),
-    attempt_id  TEXT NOT NULL UNIQUE
+    attempt_id TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id)
 );
 ```
@@ -142,9 +140,7 @@ CREATE TABLE running_work (
 
 ```sql
 CREATE TABLE completed_work (
-    work_item_id TEXT PRIMARY KEY
-        REFERENCES work_items(work_item_id),
-    attempt_id   TEXT NOT NULL UNIQUE
+    attempt_id   TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id),
     output_hash  TEXT NOT NULL CHECK (length(output_hash) = 64),
     output_json  TEXT NOT NULL CHECK (json_valid(output_json)),
@@ -156,9 +152,7 @@ CREATE TABLE completed_work (
 
 ```sql
 CREATE TABLE failed_work (
-    work_item_id TEXT PRIMARY KEY
-        REFERENCES work_items(work_item_id),
-    attempt_id   TEXT NOT NULL UNIQUE
+    attempt_id   TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id),
     error_json   TEXT NOT NULL CHECK (json_valid(error_json)),
     finished_at  TEXT NOT NULL
@@ -170,8 +164,8 @@ will retry returns its work item to `queued_work` instead.
 
 ## Invariants
 
-- Placement rows derive run, stage, worker, and timing data from their parent
-  records.
+- Attempt placement rows derive work item, run, stage, worker, and timing data
+  from their parent records.
 - A `work_item_id` occupies only one placement table after commit.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
