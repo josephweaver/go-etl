@@ -230,7 +230,8 @@ not equivalent to an undefined workflow:
 
 - before run acceptance, submission fails with a definition-unavailable or
   integrity error;
-- after run acceptance, execution uses the run's strong immutable snapshot;
+- while resident after run acceptance, execution uses the run's strong decoded
+  pin; restart reloads the exact GitHub commit from the durable run recipe;
 - background catalog/status operations may report the weak reference as
   unavailable without invalidating already accepted runs.
 
@@ -253,22 +254,47 @@ Negative lookup caching may prevent repeated load pressure for missing
 definitions, but it must be short-lived or explicitly invalidated so a newly
 restored source becomes visible.
 
-### Accepted runs: strong immutable pins
+### Active runs: strong pins with GitHub reload
 
-Weak catalog references are insufficient once a workflow run is accepted. The
-run must strongly pin the exact project and workflow content used to construct
-its resolver. This is required because later steps may compile after cache
-eviction, controller restart, or loss of the upstream definition source.
+Once a workflow run is accepted, the controller strongly retains the decoded
+project config and workflow definition while that run is in active scope. The
+pin uses the exact GitHub repository, commit SHA, paths, and canonical document
+hashes recorded at submission. An ordinary cache eviction must not remove
+content pinned by an active run.
 
-A strong run pin consists of immutable content identities plus either:
+The active pin is semi-persistent runtime state, not the authoritative durable
+copy of the source documents. The durable run record stores the complete
+restart recipe:
 
-- canonical definition/config documents stored with the run; or
-- references to a controller-managed immutable content store whose retention
-  is at least as long as the run and required audit/reuse period.
+- GitHub stable repository identity and diagnostic owner/name;
+- full commit SHA;
+- project-config and workflow paths;
+- canonical document SHA-256 values and schema versions;
+- captured overrides and required environment values/references;
+- generated run identities and lifecycle state.
 
-The run must never rely only on an external mutable path. Case 3 reconstructs
-its resolver from the strong run snapshot, not from the weak catalog reference
-or definition cache.
+After a controller crash, in-memory pins and caches are gone. Startup finds
+active run records, reloads project and workflow documents from GitHub at their
+exact commit SHA, verifies path/schema/hash, rebuilds the strong pins, and then
+reconstructs Case 3 resolvers as needed.
+
+This model intentionally makes GitHub availability and authorization a restart
+dependency. If the exact commit cannot be loaded, the run becomes blocked with
+a definition-availability error. The controller must not fall back to a branch,
+tag, default branch, or newer commit. A future local immutable source archive
+could remove this availability dependency, but it is not part of the current
+model.
+
+When a run leaves active scope, its strong pins are released. The decoded
+definitions may then:
+
+- remain as ordinary bounded cache entries;
+- be evicted immediately; or
+- be deleted from any disposable local disk cache.
+
+The terminal run retains its weak immutable GitHub references, hashes, and
+execution lineage according to retention policy. Reopening or inspecting the
+definition later causes the same exact-commit reload and verification.
 
 This produces three clear tiers:
 
@@ -276,12 +302,12 @@ This produces three clear tiers:
 |---|---|---|
 | Effective controller runtime config | Resident and invariant for process lifetime | Constructs and governs the controller |
 | Project/workflow catalog reference and cache | Durable lightweight reference plus bounded, evictable decoded cache | Discovers and validates definitions on demand |
-| Accepted workflow-run snapshot | Strong immutable pin for run/audit lifetime | Reconstructs later resolvers and proves execution lineage |
+| Active workflow run | Durable exact GitHub restart recipe plus strong decoded-content pin while resident | Reconstructs later resolvers; reloads exact commit after restart |
 
-Strong run snapshots may be deduplicated by content hash so many runs using the
-same project/workflow revision do not store duplicate canonical documents.
-Reference counting or retention queries must be database-backed; in-memory
-cache reachability is not evidence that durable content can be deleted.
+Strong active pins should be shared by immutable content key so many concurrent
+runs using the same project/workflow revision do not retain duplicate decoded
+documents. Pin/reference counts are runtime cache mechanics; the database run
+records remain the authority for what restart must reload.
 
 ## Resolver Construction Model
 
@@ -911,9 +937,10 @@ Purpose: combine controller, project, workflow, client-override, and declared
 environment inputs into one immutable workflow-run snapshot, then compile only
 the initially ready stage.
 
-Case 2 is the boundary where external configuration becomes durable run
-context. Later compilation must not depend on those external sources still
-being unchanged or available.
+Case 2 is the boundary where external configuration becomes a durable exact
+reload recipe plus captured run context. Later compilation uses the same GitHub
+commit and captured values; after restart it depends on GitHub still making
+that exact commit available.
 
 #### Case 2 input layers
 
@@ -1021,8 +1048,8 @@ controller must not persist a run without the recipe required to resume it.
 Case 2 persists:
 
 - project and workflow content identities/revisions;
-- immutable project and workflow source documents or durable references to
-  them;
+- durable GitHub repository/commit/path references and canonical hashes for the
+  project and workflow documents;
 - captured controller, environment, and override source scopes, with sensitive
   values replaced by protected-value references in durable JSON;
 - generated workflow-run runtime scope;
@@ -1051,7 +1078,7 @@ their inputs come from:
 
 | Concern | Case 2: submission | Case 3: ready step |
 |---|---|---|
-| Controller/project/workflow config | Read, validate, and snapshot | Reload from run snapshot |
+| Controller/project/workflow config | Read, validate, pin, and record exact GitHub recipe | Use active pin or reload exact commit from run recipe |
 | Environment values | Capture declared values | Reload captured values |
 | Client overrides | Validate and snapshot | Reload from run snapshot |
 | Workflow runtime | Generate and snapshot | Reload existing run values |
@@ -1059,10 +1086,11 @@ their inputs come from:
 | Step/work-item runtime | Initial stage only | Generate for newly ready stage |
 | Result | Create run and initial work | Add later work to existing run |
 
-Case 3 must not reread the current project file, workflow file, client process
-environment, controller process environment, or mutable controller
-configuration. Doing so would allow step 2 to execute under different inputs
-than step 1.
+Case 3 may reload project/workflow documents from GitHub only by the run's exact
+repository and commit SHA, followed by hash verification. It must not read the
+current branch version, client process environment, controller process
+environment, or mutable controller configuration. Doing so would allow step 2
+to execute under different inputs than step 1.
 
 Typical Case 3 additions are:
 
@@ -1235,8 +1263,8 @@ The following are responsibilities, not agreed Go type names.
 Load immutable project and workflow documents by content identity. A cache may
 retain decoded immutable documents, keyed by revision and fingerprint. Cache
 eviction must not affect correctness because the source can be reloaded.
-Accepted runs use their strong immutable run pins instead of depending on this
-cache.
+Active runs promote matching entries to shared strong pins. After restart,
+those pins are rebuilt from exact-commit GitHub reloads.
 
 ### Run snapshot store
 
@@ -1279,9 +1307,8 @@ retain them between reconciliation passes.
 
 1. Which controller and environment values are immutable run inputs, and which
    are live deployment policy?
-2. Are run snapshots stored as complete source documents, normalized variable
-   rows, or both? Complete versioned JSON documents plus indexed identity
-   columns currently align with the persistence direction.
+2. How long are terminal-run GitHub references, captured resolver inputs, and
+   execution lineage retained after strong definition pins are released?
 3. How should predecessor outputs enter the variable model? The dependency
    design currently proposes a generated read-only `workflow.step[index]`
    structure, but its namespace and construction contract need to be fixed.
