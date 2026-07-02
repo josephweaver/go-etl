@@ -84,6 +84,17 @@ idempotent. `work_item_json` contains the compiled worker input.
 `stage_index` is the index of a logical block, commonly one step or a collection
 of parallel steps. `work_item_index` is the ordinal within a fanout operation.
 
+## `workers`
+
+```sql
+CREATE TABLE workers (
+    worker_id  TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+```
+
+This table records worker identity only. Liveness and capabilities are deferred.
+
 ## `work_item_attempts`
 
 ```sql
@@ -91,7 +102,7 @@ CREATE TABLE work_item_attempts (
     attempt_id   TEXT PRIMARY KEY,
     work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id),
     attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
-    worker_id    TEXT NOT NULL,
+    worker_id    TEXT NOT NULL REFERENCES workers(worker_id),
     created_at   TEXT NOT NULL,
     UNIQUE (work_item_id, attempt_index)
 );
