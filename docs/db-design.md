@@ -119,9 +119,7 @@ One row means a logical work item is available for assignment.
 CREATE TABLE queued_work (
     work_item_id TEXT PRIMARY KEY
         REFERENCES work_items(work_item_id),
-    run_id      TEXT NOT NULL,
-    stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
-    queued_at   TEXT NOT NULL
+    queued_at    TEXT NOT NULL
 );
 ```
 
@@ -136,16 +134,14 @@ CREATE TABLE running_work (
     work_item_id TEXT PRIMARY KEY
         REFERENCES work_items(work_item_id),
     attempt_id  TEXT NOT NULL UNIQUE
-        REFERENCES work_item_attempts(attempt_id),
-    run_id      TEXT NOT NULL,
-    stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
-    started_at  TEXT NOT NULL
+        REFERENCES work_item_attempts(attempt_id)
 );
 ```
 
 ## Invariants
 
-- `run_id` and `stage_index` do not change between placement tables.
+- Placement rows derive run, stage, worker, and timing data from their parent
+  records.
 - A `work_item_id` occupies only one placement table after commit.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
