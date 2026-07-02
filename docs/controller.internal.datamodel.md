@@ -238,6 +238,132 @@ attempts to restore it from GitHub at the exact commit. If GitHub is unavailable
 but the verified commit and blobs are already local, execution and restart may
 continue without GitHub.
 
+### Partial fetch and dependency closure
+
+The controller should not fetch or materialize every file in a repository when
+one project/workflow uses only a small subset. The target behavior is:
+
+1. Obtain the commit and tree metadata for the pinned repository revision.
+2. Load the requested project config and workflow definition.
+3. Read their declared component dependencies.
+4. Recursively traverse those dependencies at the same commit.
+5. Fetch missing blob objects only for the resulting dependency closure.
+6. Materialize only that closure when a filesystem tree or worker package is
+   required.
+
+This may use Git partial-clone/blob-filter capabilities where supported. Sparse
+checkout or direct blob extraction controls what is materialized; it does not
+change the immutable repository/commit identity.
+
+For `Project 1 / Workflow A`, the root closure begins with:
+
+```text
+project config
+workflow A definition
+```
+
+It may then include declared:
+
+- dependent workflow definitions;
+- Python scripts and modules;
+- Python environment/lock specifications;
+- plugin configuration or entrypoint definitions;
+- templates, schemas, and static assets;
+- other components explicitly required to compile or execute the workflow.
+
+Every component reference must identify a repository-relative path and
+component kind. All references in the initial model resolve within the same
+repository and commit SHA as the project. Paths must be normalized and rejected
+if they are absolute, escape the repository root, or traverse through an
+unsafe symbolic link.
+
+Dependency traversal maintains a visited set and produces deterministic
+ordering. Cycles that are invalid for the referenced component kind are
+reported with a dependency chain. Shared dependencies are included once.
+Missing components and content-hash mismatches fail submission or packaging;
+the controller does not substitute a similarly named file from another
+revision.
+
+Dependencies must be declared in project/workflow/component metadata. The
+controller should not attempt to infer a complete Python environment by
+scanning imports: imports may be dynamic, conditional, platform-specific, or
+provided by packages rather than repository files. A Python component should
+declare its script/module roots and an environment or lock specification.
+
+The computed dependency closure becomes part of the run's immutable lineage.
+Its deterministic manifest records at least:
+
+- repository identity and commit SHA;
+- normalized relative path;
+- component kind;
+- content SHA-256;
+- executable/file-mode metadata when execution requires it;
+- dependency edges or the normalized closure order.
+
+Active runs pin the Git objects required by this closure, rather than every
+blob reachable from the repository commit.
+
+### Controller temporary and package staging paths
+
+Controller startup configuration should define separate filesystem purposes:
+
+| Setting | Purpose |
+|---|---|
+| `controller_git_cache_path` | Semi-persistent bare/partial Git object cache |
+| `controller_temp_path` | Disposable per-operation materialization and package staging |
+| `controller_artifact_cache_path` | Published content-addressed bundles retained for assignment/retry |
+
+The temp path is not an execution source of truth. Each materialization or
+packaging operation receives a unique directory scoped to its run/step/work
+identity. The controller writes the selected dependency closure there, builds
+and verifies a manifest, creates the package, and then atomically publishes the
+completed package into the artifact cache or configured durable artifact
+destination. A worker must never receive a path to a partially written bundle.
+
+```text
+pinned Git dependency closure
+             |
+             v
+unique controller temp directory
+             |
+             v
+materialize selected files / build package
+             |
+             v
+verify manifest and package fingerprint
+             |
+             v
+atomic publish to content-addressed artifact cache
+             |
+             v
+worker assignment references immutable package identity
+```
+
+Temporary directories are removed after successful publication or failed
+construction. Startup reconciliation may remove abandoned temp directories
+that do not belong to a live packaging operation. Permissions, quotas, minimum
+free-space policy, and cleanup age must be controller configuration.
+
+Package identity should be content-addressed from the dependency manifest plus
+packaging-tool/runtime version and target execution-environment identity. This
+allows multiple work items or runs to reuse one verified package without
+sharing mutable temp directories.
+
+Python packaging requires a portability boundary:
+
+- Python scripts/modules and environment/lock specifications may always be
+  included as source components.
+- A prebuilt Python environment may be packaged only for a compatible target
+  platform, architecture, interpreter, and execution environment.
+- If compatibility is not established, the controller packages the
+  environment specification and the worker/runtime builds or restores the
+  target-specific environment.
+
+The package manifest and artifact identity become durable work-item inputs.
+The controller may delete staging data after publication, but it must retain or
+reconstruct the published artifact for queued work and retries according to
+artifact retention policy.
+
 ### Bounded decoded-definition cache
 
 After reading documents from the local Git object cache, decoded project and
@@ -900,6 +1026,7 @@ ControllerRuntimeConfig
   secret references (not materialized values)
   resolver policy
   API listen/advertise settings
+  Git cache, temp staging, and artifact cache paths/policy
   supported execution-environment component types and deployment policy
   reconciliation and retention policy
   logging policy
@@ -1317,6 +1444,10 @@ resolver lifecycle is truly ephemeral.
     no weak catalog reference, immutable definition loader, bounded decoded
     cache, fingerprint verification path, or strong run pin separated from
     cache residency.
+16. **No dependency-closure/package boundary exists.** Components do not yet
+    declare a transitive repository dependency graph, and the controller has no
+    partial materialization, temp staging, content-addressed worker bundle, or
+    artifact-retention lifecycle.
 
 ## Recommended Internal Boundaries
 
