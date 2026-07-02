@@ -300,6 +300,92 @@ provenance: which source supplied each winning setting. This allows startup
 diagnostics to explain, for example, that a database host came from the JSON
 file while its credential reference came from an environment override.
 
+##### Controller HTTP server configuration
+
+The controller's HTTP server is controller-level infrastructure and belongs in
+the controller startup configuration. It must not be inferred from project or
+workflow configuration.
+
+The configuration must distinguish two addresses:
+
+- **Listen address** tells the operating system where the controller process
+  binds. It consists of a host/interface and port.
+- **Advertised URL** tells clients and workers how to reach the controller.
+
+These values are often different. A controller may listen on `0.0.0.0:8080`
+inside a container while workers use
+`http://host.docker.internal:8080`, or it may listen behind a reverse proxy and
+advertise an HTTPS URL with a different public port.
+
+The initial server settings should include:
+
+| Setting | Type | Purpose |
+|---|---|---|
+| `controller_listen_host` | string | Interface or IP on which to bind |
+| `controller_listen_port` | int | TCP port on which to bind |
+| `controller_url` | string | Base URL advertised to clients and workers |
+| `controller_read_header_timeout_seconds` | int | Limit for reading request headers |
+| `controller_read_timeout_seconds` | int | Limit for reading complete requests |
+| `controller_write_timeout_seconds` | int | Limit for writing responses |
+| `controller_idle_timeout_seconds` | int | Keep-alive idle limit |
+| `controller_shutdown_timeout_seconds` | int | Graceful shutdown limit |
+| `controller_max_request_bytes` | int | Maximum accepted request body size |
+| `controller_max_header_bytes` | int | Maximum accepted request-header size |
+
+Optional direct-TLS settings may include a TLS-enabled flag and references to
+the server certificate and private key. Private key material follows the
+secret-handling rules and must not be stored as an ordinary resolved value.
+When TLS terminates at a reverse proxy, the controller may listen with plain
+HTTP on its private interface while advertising an HTTPS URL.
+
+JSON provides the base values. Supported environment variables and
+command-line flags may override the same typed keys through the normal startup
+precedence. They must not introduce separate `http.Server` settings that bypass
+the resolver.
+
+The startup operation resolves these variables into a validated immutable
+server config before constructing `http.Server`. Validation should reject:
+
+- an empty listen host unless an explicit all-interfaces spelling is agreed;
+- ports outside `1..65535`, except port `0` when explicitly permitted for tests;
+- negative timeouts or size limits;
+- a malformed advertised URL;
+- an advertised URL without `http` or `https` scheme;
+- incomplete direct-TLS configuration;
+- direct-TLS settings inconsistent with the advertised scheme.
+
+Authentication, trusted proxies, cross-origin policy, and per-endpoint rate
+limits are also controller-level HTTP policy, but their concrete settings
+should be added only when their security model is designed. They should not be
+silently enabled by generic web-framework defaults.
+
+Binding to all interfaces is a deployment decision, not a safe universal
+default. Local development may default to loopback. Container or remote-worker
+deployments may explicitly select `0.0.0.0` or `[::]` and must rely on the
+deployment's authentication, firewall, and TLS policy.
+
+The listener should be bound only after the database, schema, and required
+controller services are ready. If binding fails, startup fails. The actual
+bound address should become a process-stable runtime variable. This is
+especially important when tests allow port `0`, because the selected port is
+known only after binding.
+
+Example conceptual values:
+
+```text
+controller_config.controller_listen_host = "127.0.0.1"
+controller_config.controller_listen_port = 8080
+controller_config.controller_url = "http://localhost:8080"
+controller_config.controller_read_header_timeout_seconds = 5
+controller_config.controller_shutdown_timeout_seconds = 30
+```
+
+The current implementation only partially models this. The JSON file contains
+`controller_config.controller_url`, but `main.go` always binds an
+`http.Server` to hard-coded `:8080`. The resolved URL and actual listener can
+therefore disagree, and the server does not yet configure explicit production
+timeouts or request-size limits.
+
 ##### Controller runtime variables
 
 Controller-generated runtime variables have two different lifetimes.
