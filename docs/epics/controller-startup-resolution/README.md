@@ -290,6 +290,10 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   working directory. The executable location and controller-config location do
   not change that base. An on-demand launcher must therefore set the working
   directory deliberately. Absolute paths remain unchanged.
+- Resolver recursion uses the non-sensitive, startup-overridable integer
+  `resolver_max_depth`, with schema default `10` and validation greater than
+  zero. Startup first uses the built-in depth limit to resolve and validate this
+  setting, then constructs subsequent resolvers with the resolved value.
 
 ## Open Questions
 
