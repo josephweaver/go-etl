@@ -222,6 +222,204 @@ func TestLoadControllerConfigRejectsInvalidEnvelopeBeforeVariables(t *testing.T)
 	}
 }
 
+func TestDefaultsPathForControllerConfig(t *testing.T) {
+	tests := []struct {
+		controllerPath string
+		want           string
+	}{
+		{controllerPath: filepath.Join("configs", "controller.json"), want: filepath.Join("configs", defaultsFilename)},
+		{controllerPath: "controller.json", want: defaultsFilename},
+		{controllerPath: filepath.Join(string(filepath.Separator), "opt", "goet", "controller.json"), want: filepath.Join(string(filepath.Separator), "opt", "goet", defaultsFilename)},
+	}
+
+	for _, test := range tests {
+		if got := defaultsPathForControllerConfig(test.controllerPath); got != test.want {
+			t.Errorf("defaults path for %q = %q, want %q", test.controllerPath, got, test.want)
+		}
+	}
+}
+
+func TestLoadDefaultsDocument(t *testing.T) {
+	document, err := loadDefaultsDocument("defaults.json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if document.APIVersion != controllerAPIVersion {
+		t.Fatalf("api version = %q, want %q", document.APIVersion, controllerAPIVersion)
+	}
+	if document.Kind != defaultsKind {
+		t.Fatalf("kind = %q, want %q", document.Kind, defaultsKind)
+	}
+	expectedKeys := []string{
+		"controller_listen_host",
+		"controller_listen_port",
+		"controller_root_dir",
+		"controller_git_cache_path",
+		"controller_temp_path",
+		"controller_artifact_cache_path",
+		"caretaker_interval_schedule_milliseconds",
+		"caretaker_missed_interval_limit",
+		"resolver_max_depth",
+		"controller_log_root_path",
+		"controller_filesystem_logging_enabled",
+		"controller_log_level",
+		"controller_read_header_timeout_milliseconds",
+		"controller_read_timeout_milliseconds",
+		"controller_write_timeout_milliseconds",
+		"controller_idle_timeout_milliseconds",
+		"controller_shutdown_timeout_milliseconds",
+		"controller_max_request_bytes",
+		"controller_max_header_bytes",
+		"controller_git_cache_max_size_mb",
+		"controller_git_cache_retention_milliseconds",
+		"controller_git_fetch_timeout_milliseconds",
+		"controller_git_fetch_concurrency",
+		"controller_temp_cleanup_age_milliseconds",
+		"controller_artifact_cache_max_size_mb",
+		"controller_artifact_cache_retention_milliseconds",
+		"controller_storage_min_free_mb",
+	}
+	actualKeys := make(map[string]bool, len(document.Variables))
+	for _, item := range document.Variables {
+		if item.Name.Namespace != variable.NamespaceControllerConfig {
+			t.Fatalf("checked-in default %s uses namespace %q", item.Name, item.Name.Namespace)
+		}
+		actualKeys[item.Name.Key] = true
+	}
+	if len(actualKeys) != len(expectedKeys) {
+		t.Fatalf("checked-in default count = %d, want %d", len(actualKeys), len(expectedKeys))
+	}
+	for _, key := range expectedKeys {
+		if !actualKeys[key] {
+			t.Errorf("checked-in defaults missing controller_config.%s", key)
+		}
+	}
+}
+
+func TestLoadDefaultsDocumentRejectsInvalidEnvelopeBeforeVariables(t *testing.T) {
+	tests := []struct {
+		name      string
+		document  string
+		errorText string
+	}{
+		{name: "missing api version", document: `{"kind":"Defaults"}`, errorText: "api_version"},
+		{name: "empty api version", document: `{"api_version":"","kind":"Defaults"}`, errorText: "api_version"},
+		{name: "unsupported api version", document: `{"api_version":"goet/v2","kind":"Defaults"}`, errorText: "api_version"},
+		{name: "incorrectly cased api version", document: `{"api_version":"GOET/v1alpha1","kind":"Defaults"}`, errorText: "api_version"},
+		{name: "missing kind", document: `{"api_version":"goet/v1alpha1"}`, errorText: "kind"},
+		{name: "empty kind", document: `{"api_version":"goet/v1alpha1","kind":""}`, errorText: "kind"},
+		{name: "unsupported kind", document: `{"api_version":"goet/v1alpha1","kind":"Controller"}`, errorText: "kind"},
+		{name: "incorrectly cased kind", document: `{"api_version":"goet/v1alpha1","kind":"defaults"}`, errorText: "kind"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), defaultsFilename)
+			if err := os.WriteFile(path, []byte(test.document), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := loadDefaultsDocument(path)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), test.errorText) {
+				t.Fatalf("error = %q, want it to identify %q", err, test.errorText)
+			}
+			if strings.Contains(err.Error(), "variables are required") {
+				t.Fatalf("envelope error occurred after variable validation: %v", err)
+			}
+		})
+	}
+}
+
+func TestDefaultsDocumentAllowsConfigurationNamespaces(t *testing.T) {
+	document := DefaultsDocument{Variables: []variable.Variable{
+		testDefaultVariable(variable.NamespaceClientConfig, "shared"),
+		testDefaultVariable(variable.NamespaceControllerConfig, "shared"),
+		testDefaultVariable(variable.NamespaceWorkerConfig, "shared"),
+		testDefaultVariable(variable.NamespaceProjectConfig, "shared"),
+	}}
+	if err := document.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDefaultsDocumentRejectsDisallowedNamespaces(t *testing.T) {
+	namespaces := []variable.Namespace{
+		variable.NamespaceClientEnvironment,
+		variable.NamespaceControllerEnvironment,
+		variable.NamespaceWorkerEnvironment,
+		variable.NamespaceOverride,
+		variable.NamespaceRuntime,
+		variable.NamespaceWorkflow,
+		variable.NamespaceStep,
+		variable.NamespaceWorkItem,
+		variable.NamespaceGlobalConfig,
+		variable.NamespaceGlobal,
+		variable.NamespaceBackend,
+		variable.NamespaceProject,
+	}
+
+	for _, namespace := range namespaces {
+		t.Run(string(namespace), func(t *testing.T) {
+			document := DefaultsDocument{Variables: []variable.Variable{testDefaultVariable(namespace, "value")}}
+			err := document.Validate()
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), string(namespace)) {
+				t.Fatalf("error = %q, want namespace %q", err, namespace)
+			}
+		})
+	}
+}
+
+func TestDefaultsDocumentRejectsDuplicateKeyWithinNamespace(t *testing.T) {
+	document := DefaultsDocument{Variables: []variable.Variable{
+		testDefaultVariable(variable.NamespaceControllerConfig, "duplicate"),
+		testDefaultVariable(variable.NamespaceControllerConfig, "duplicate"),
+	}}
+	err := document.Validate()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "controller_config") || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("error = %q, want namespace and duplicate key", err)
+	}
+}
+
+func TestLoadDefaultsDocumentErrorsContainPath(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), defaultsFilename)
+	if _, err := loadDefaultsDocument(missingPath); err == nil || !strings.Contains(err.Error(), missingPath) {
+		t.Fatalf("missing-file error = %v, want path %q", err, missingPath)
+	}
+
+	malformedPath := filepath.Join(t.TempDir(), defaultsFilename)
+	if err := os.WriteFile(malformedPath, []byte(`{"variables":`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDefaultsDocument(malformedPath); err == nil || !strings.Contains(err.Error(), malformedPath) {
+		t.Fatalf("decode error = %v, want path %q", err, malformedPath)
+	}
+
+	invalidPath := filepath.Join(t.TempDir(), defaultsFilename)
+	invalid := `{"api_version":"goet/v1alpha1","kind":"Defaults","variables":[{"name":{"namespace":"runtime","key":"bad"},"type":"string","expression":"value"}]}`
+	if err := os.WriteFile(invalidPath, []byte(invalid), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDefaultsDocument(invalidPath); err == nil || !strings.Contains(err.Error(), invalidPath) {
+		t.Fatalf("validation error = %v, want path %q", err, invalidPath)
+	}
+}
+
+func testDefaultVariable(namespace variable.Namespace, key string) variable.Variable {
+	return variable.Variable{
+		Name:            variable.Name{Namespace: namespace, Key: key},
+		TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "default"},
+	}
+}
+
 func TestControllerConfigRejectsNoVariables(t *testing.T) {
 	config := ControllerConfig{}
 

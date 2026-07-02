@@ -224,6 +224,13 @@ controller.json
 
 from the directory containing the running executable. It does not search the process working directory or source tree. Repository development commands use `--config` because `go run` places its temporary executable outside the repository.
 
+`cmd/controller/defaults.json` now contains the agreed canonical
+`controller_config` defaults under a `goet/v1alpha1` / `Defaults` envelope. The
+controller package can load and validate this document, including its allowed
+configuration namespaces and per-namespace duplicate keys. Startup does not
+consume or layer the defaults yet; that remains the next controller-startup
+slice.
+
 The demo client starts the controller with:
 
 ```powershell

@@ -146,6 +146,12 @@ JSON document. The document formerly described as `globals` is not a `global`
 namespace and does not own an independent set of runtime variables. Instead,
 it supplies namespace-specific default declarations.
 
+The required filename is `defaults.json` beside the selected controller
+document. An explicit `--config path/to/controller.json` therefore selects
+`path/to/defaults.json`; default executable-relative `controller.json` selects
+`defaults.json` in the executable directory. The defaults document uses
+`api_version: goet/v1alpha1` and `kind: Defaults`.
+
 Within a namespace, an explicit declaration from the selected controller JSON
 replaces a defaults-document declaration with the same qualified name. Normal
 namespace precedence then applies to unqualified lookup. A qualified lookup
@@ -154,9 +160,11 @@ controller JSON does not replace it. Provenance identifies the defaults
 document as the source rather than presenting the value as an implicit code
 default.
 
-The defaults document cannot declare accessor or generated namespaces such as
-`controller_env` or `runtime`. Required values without a documented default
-remain absent until supplied by an authorized explicit source.
+The defaults document may declare `client_config`, `controller_config`,
+`worker_config`, and `project_config`. It cannot declare environment,
+`override`, `runtime`, workflow, step, work-item, deprecated global, or legacy
+namespaces. Required values without a documented default remain absent until
+supplied by an authorized explicit source.
 
 ### Required-variable contracts
 
@@ -247,41 +255,43 @@ numbered slice files:
    services.
 3. **Executable-relative config discovery** — select the default controller
    document next to the executable while preserving an explicit config path.
-4. **Defaults document loading** — load the standard defaults JSON document,
-   validate its namespace restrictions, and layer declarations beneath the
-   selected controller document with source provenance.
-5. **Controller environment accessor** — add bounded, cached, string-only
+4. **Defaults document loading** — load and validate the required
+   config-adjacent `defaults.json` document and its namespace restrictions.
+5. **Defaults and controller layering** — retain both validated documents and
+   layer explicit controller declarations above matching qualified defaults
+   without losing source identity.
+6. **Controller environment accessor** — add bounded, cached, string-only
    `controller_env` lookup without enumerating the process environment or
    exposing values in diagnostics.
-6. **Startup override scope** — validate each CLI declaration as canonical
+7. **Startup override scope** — validate each CLI declaration as canonical
    variable JSON, require the `override` namespace, and assemble it above
    configurable startup namespaces.
-7. **Generated startup runtime scope** — generate process ID, instance ID,
+8. **Generated startup runtime scope** — generate process ID, instance ID,
    startup time, and build version as immutable `runtime` values.
-8. **Startup resolver assembly** — construct and discard bounded resolvers from
+9. **Startup resolver assembly** — construct and discard bounded resolvers from
    defaults, controller config, environment access, overrides, and runtime;
    bootstrap `resolver_max_depth` and preserve non-secret provenance.
-9. **Main database contract** — resolve the qualified database driver and
+10. **Main database contract** — resolve the qualified database driver and
    connection string, reject missing dependencies with redacted context, open
    the database, verify schema/migrations, and fail before HTTP binding.
-10. **Controller filesystem contracts** — resolve and validate controller root,
+11. **Controller filesystem contracts** — resolve and validate controller root,
     Git-cache, temporary, artifact-cache, and log paths against the process
     working directory before constructing their consumers.
-11. **Operational policy contracts** — resolve and validate the agreed
+12. **Operational policy contracts** — resolve and validate the agreed
     millisecond, capacity, concurrency, cleanup, caretaker, and log-level
     variables from the same startup source model.
-12. **HTTP server contract** — resolve listen host/port, advertised URL, timeout,
+13. **HTTP server contract** — resolve listen host/port, advertised URL, timeout,
     request-size, header-size, and shutdown settings before constructing the
     HTTP server.
-13. **Exclusive database ownership integration** — require the lock or lease
+14. **Exclusive database ownership integration** — require the lock or lease
     supplied by `controller-resilience` before recovery or API admission and
     exit a competing controller without binding HTTP.
-14. **Recovery-mode admission integration** — after required services and
+15. **Recovery-mode admission integration** — after required services and
     durable recovery state are ready, expose only health and worker
     heartbeat/report APIs, capture `runtime.controller_recovery_started_at`,
     hand off to caretaker recovery, and enable normal admission only when the
     `attempt-liveness-recovery` contract permits it.
-15. **Startup integration coverage** — exercise the complete success path,
+16. **Startup integration coverage** — exercise the complete success path,
     precedence, qualified lookup protection, redacted failure paths,
     fail-without-bind behavior, recovery-mode boundary, and normal readiness.
 
