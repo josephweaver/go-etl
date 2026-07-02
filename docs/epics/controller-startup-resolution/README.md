@@ -208,33 +208,48 @@ No implementation slices are agreed yet. Slice decomposition should begin only
 after the variable catalog, precedence, secret boundary, and startup readiness
 questions below are resolved and the epic is explicitly moved to `Ready`.
 
+## Agreed Decisions
+
+- Startup precedence from lowest to highest is:
+
+  ```text
+  controller_env
+      < controller_config
+      < override
+      < runtime
+  ```
+
+- The serialized controller JSON therefore wins when `controller_env` and
+  `controller_config` provide the same unqualified key.
+- A controller-config expression may still explicitly reference a qualified
+  environment value such as `${controller_env.DB_PASSWORD}`.
+- Accepted client/command-line overrides win over controller config for keys
+  that policy permits callers to override.
+- Generated runtime values remain read-only and non-overridable.
+
 ## Open Questions
 
-1. Between `controller_env` and `controller_config`, which source wins for the
-   same unqualified key? The current startup draft says environment overrides
-   JSON, while the general namespace list currently places controller config
-   above controller environment.
-2. What is the versioned top-level JSON document shape around the variable
+1. What is the versioned top-level JSON document shape around the variable
    declarations?
-3. What is the complete initial required/optional variable catalog, including
+2. What is the complete initial required/optional variable catalog, including
    types, defaults, sensitivity, allowed override status, and owning consumer?
-4. Is `main_database_connection_string` the canonical database key, and is its
+3. Is `main_database_connection_string` the canonical database key, and is its
    driver derived from the connection string or separately declared?
-5. Which controller environment variables are supported initially, and how are
+4. Which controller environment variables are supported initially, and how are
    external names mapped to typed internal keys?
-6. What command-line syntax supplies typed overrides, and how does it represent
+5. What command-line syntax supplies typed overrides, and how does it represent
    structured values without inventing a second schema?
-7. Which keys are forbidden from client/command-line override even though the
+6. Which keys are forbidden from client/command-line override even though the
    `override` namespace otherwise has highest configurable precedence?
-8. Which first secret source materializes `controller_env.DB_PASSWORD`, and
+7. Which first secret source materializes `controller_env.DB_PASSWORD`, and
    what transport/storage guarantees are prerequisite?
-9. What schedule syntax represents caretaker and other interval values before
+8. What schedule syntax represents caretaker and other interval values before
    GOET has a duration type?
-10. Which settings have defaults, and how are defaults represented so
+9. Which settings have defaults, and how are defaults represented so
     provenance remains visible?
-11. Which startup failures may expose a limited diagnostic HTTP endpoint, and
+10. Which startup failures may expose a limited diagnostic HTTP endpoint, and
     which require the process to exit without binding?
-12. Does controller exclusivity/database locking belong in this epic's startup
+11. Does controller exclusivity/database locking belong in this epic's startup
     readiness boundary or exclusively in `controller-resilience`?
 
 ## Completion Criteria

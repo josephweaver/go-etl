@@ -632,8 +632,8 @@ controller:
 The precedence from lowest to highest is:
 
 ```text
-controller config JSON
-    < allowlisted system environment
+allowlisted system environment
+    < controller config JSON
     < command-line overrides
     < controller-generated read-only runtime values
 ```
