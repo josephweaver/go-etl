@@ -111,8 +111,9 @@ CREATE TABLE work_item_attempts (
     work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id),
     attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
     worker_id    TEXT NOT NULL REFERENCES workers(worker_id),
-    created_at   TEXT NOT NULL,
-    UNIQUE (work_item_id, attempt_index)
+    started_at   TEXT NOT NULL,
+    UNIQUE (work_item_id, attempt_index),
+    UNIQUE (attempt_id, work_item_id)
 );
 ```
 
@@ -139,11 +140,11 @@ One row means one attempt currently owns a logical work item.
 
 ```sql
 CREATE TABLE running_work (
-    attempt_id   TEXT PRIMARY KEY
-        REFERENCES work_item_attempts(attempt_id),
-    work_item_id TEXT NOT NULL UNIQUE
-        REFERENCES work_items(work_item_id),
-    queued_at    TEXT NOT NULL
+    attempt_id   TEXT PRIMARY KEY,
+    work_item_id TEXT NOT NULL UNIQUE,
+    queued_at    TEXT NOT NULL,
+    FOREIGN KEY (attempt_id, work_item_id)
+        REFERENCES work_item_attempts(attempt_id, work_item_id)
 );
 ```
 
