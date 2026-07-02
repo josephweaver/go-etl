@@ -95,7 +95,7 @@ object, but it is already suitable for create-use-discard operation.
 | Step/stage state | Workflow run | Database | Transactional lifecycle transitions |
 | Typed step outputs | Workflow run and retention period | Database/artifact store | Immutable after successful completion |
 | Work item | Logical work lifetime | Database | Definition immutable; placement changes |
-| Attempt | Attempt lifetime and retention period | Database | Append/transition under fencing rules |
+| Attempt | Attempt lifetime and retention period | Database | Immutable identity; ownership exists only while its `running_work` row exists |
 | Git repository cache | Across controller restarts | Derived from GitHub | Evictable except for commits pinned by active runs |
 | Decoded definition cache | Controller process | Derived from local Git objects | Bounded and disposable |
 | Resolver | One evaluation | In-memory recipe inputs | No mutation after construction |
@@ -1385,7 +1385,7 @@ Typical inputs:
 - the already compiled work item and its immutable resolved inputs;
 - configured worker environment and execution target;
 - worker identity/capabilities supplied by the request;
-- generated attempt ID, assignment time, lease, and fencing values.
+- generated attempt ID, assignment time, and heartbeat/report timing values.
 
 Required durable outputs:
 
@@ -1411,7 +1411,7 @@ new stages ready.
 
 Typical inputs:
 
-- the active attempt and fencing identity;
+- the attempt/work-item identity and matching current `running_work` ownership;
 - worker-reported result and observed state;
 - the immutable work-item assignment snapshot;
 - all terminal outputs required to determine step completion.
@@ -1488,10 +1488,18 @@ A valid heartbeat, completion, or failure report counts as contact. Requiring a
 heartbeat immediately before a terminal report would add no safety.
 
 For the first policy, a persisted running attempt that has not reported by the
-recovery deadline is assumed dead. The abandonment transition must verify that
-the attempt is still the current owner, record its terminal abandoned/lost
-outcome, remove `running_work`, and insert the same `work_item_id` into
-`queued_work` in one transaction. A later claim creates a new `attempt_id`.
+recovery deadline is assumed dead. Abandonment is a failed attempt outcome. In
+one transaction, the controller must:
+
+```text
+verify (attempt_id, work_item_id) still exists in running_work
+→ insert failed_work with timeout/abandoned error_json
+→ delete that running_work row
+→ insert the same work_item_id into queued_work
+```
+
+The failed attempt remains as history while the logical work item becomes
+current queued placement again. A later claim creates a new `attempt_id`.
 
 During normal operation after recovery, liveness uses:
 
@@ -1505,10 +1513,25 @@ renews `last_accepted_report_at`. The configured timeout must be greater than
 the worker heartbeat interval with enough allowance for expected scheduler and
 network delay.
 
-Late reports from an attempt already declared abandoned must not complete a
-replacement attempt. The attempt identity plus a fencing token or equivalent
-current-ownership check is therefore still required even with the simple
-timeout policy.
+Heartbeat, completion, and failure handlers may mutate state only when the
+matching `(attempt_id, work_item_id)` still exists in `running_work`. A report
+arriving after abandonment finds no ownership row and is ignored for state
+mutation. It cannot affect a retry because the retry has a different
+`attempt_id` and its own `running_work` row.
+
+The absence of `running_work` is therefore the database fence for the initial
+single-controller model; no separate fencing token is required. The transition
+must be conditional and transactional so a timeout and completion racing each
+other cannot both win:
+
+- if completion removes `running_work` first, abandonment observes no row and
+  does nothing;
+- if abandonment removes it first, completion observes no row and does
+  nothing.
+
+Although the late report is ignored internally, the HTTP response should tell
+the worker that the attempt is no longer current so a reachable zombie worker
+can exit rather than continue reporting indefinitely.
 
 The controller creates new resolvers only for currently required decisions:
 recompiling an idempotently ready stage, finalizing an assignment, evaluating
@@ -1588,9 +1611,10 @@ resolver lifecycle is truly ephemeral.
     partial materialization, temp staging, content-addressed worker bundle, or
     artifact-retention lifecycle.
 17. **No restart reporting window exists.** The current schema/runtime does not
-    persist heartbeats or fencing state, generate a recovery epoch, gate normal
-    API admission, or abandon and requeue non-reporting attempts after a
-    configured worker timeout.
+    persist heartbeat/report timing, generate a recovery epoch, gate normal API
+    admission, or atomically move non-reporting attempts from `running_work` to
+    `failed_work` while requeueing their logical work after a configured worker
+    timeout.
 
 ## Recommended Internal Boundaries
 
