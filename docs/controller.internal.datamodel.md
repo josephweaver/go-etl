@@ -699,53 +699,177 @@ accepted and may be repeated before scheduling according to policy.
 
 ### 2. Workflow submission
 
-Purpose: create a durable workflow run and compile only the initially ready
-stage.
+Purpose: combine controller, project, workflow, client-override, and declared
+environment inputs into one immutable workflow-run snapshot, then compile only
+the initially ready stage.
 
-Typical inputs:
+Case 2 is the boundary where external configuration becomes durable run
+context. Later compilation must not depend on those external sources still
+being unchanged or available.
 
-- an immutable controller-config subset relevant to execution;
-- configured client, controller, and worker environments;
-- immutable project config and workflow definition;
-- workflow variables;
-- submission overrides;
-- generated workflow-run identity, timestamps, and fingerprints.
+#### Case 2 input layers
 
-Required durable outputs:
+The submission resolver is assembled from these layers in normal namespace
+precedence:
 
-- the immutable workflow-run recipe inputs;
+```text
+eligible controller startup values
+    + project configuration and execution environment
+    + workflow configuration
+    + client submission overrides
+    + declared environment values used by project/workflow
+    + generated workflow-run runtime values
+```
+
+More specifically:
+
+1. **Controller base.** A safe subset of the validated controller runtime
+   configuration from Case 1. This may include resolver policy, controller URL,
+   supported capability/version information, and deployment policy needed to
+   validate the run. It excludes database credentials, HTTP listener internals,
+   transient queue metrics, and unrelated controller secrets.
+2. **Project configuration.** The immutable project definition at a specific
+   content revision, including its execution-environment definition or
+   approved environment-profile selection.
+3. **Workflow configuration.** The immutable workflow definition and its typed
+   workflow variables at a specific content revision within the project.
+4. **Client overrides.** Typed values supplied in the submission envelope. The
+   controller validates which keys may be overridden; generated runtime values
+   and deployment security policy are never overrideable.
+5. **Declared environment capture.** Only the client, controller, and configured
+   worker environment keys explicitly required by the project or workflow.
+6. **Generated workflow runtime.** Read-only values such as run ID, workflow
+   definition ID, submission time, source revisions, and definition
+   fingerprint.
+
+"Prior controller elements" therefore means an explicit exportable subset of
+Case 1 output. It does not mean copying the entire startup resolver or every
+controller variable into the workflow run.
+
+#### Environment-variable capture
+
+Environment access must be explicit and bounded. A project or workflow must
+declare the environment keys it may consume, or expose statically identifiable
+qualified references that the controller can validate against an allowlist.
+Computed environment-variable names are not supported.
+
+The relevant namespaces remain distinct:
+
+- `client_env` contains approved values captured by the submitting client and
+  transmitted in the submission;
+- `controller_env` contains approved values captured by the controller;
+- `worker_env` contains the configured environment that the selected project
+  execution environment will inject into workers.
+
+The controller must not satisfy `client_env` from its own process environment,
+or infer `worker_env` by inspecting an arbitrary active worker. Each namespace
+has a different authority.
+
+Only referenced or explicitly required keys are copied into the run snapshot.
+This reduces accidental coupling and secret exposure. A value classified as
+secret material is represented by an approved secret reference or excluded;
+raw secret material does not enter the ordinary resolver or run snapshot.
+
+Environment capture occurs once for the run. Case 3 uses the captured values,
+not the current environment. This guarantees that a controller restart, client
+exit, or host environment change does not alter downstream resolution.
+
+#### Case 2 sequence
+
+```text
+1. Parse submission and identify project/workflow revisions
+2. Load immutable project and workflow definitions
+3. Definition-validate typed expressions and dependency structure
+4. Determine and authorize required environment keys
+5. Capture the required client/controller/configured-worker environment values
+6. Validate and normalize client overrides
+7. Generate workflow-run identity and runtime values
+8. Assemble scopes and create the submission resolver
+9. Resolve run-level values and compile only the initially ready stage
+10. Persist the run snapshot, stage plan, and compiled work atomically
+11. Commit or roll back, then discard the resolver
+```
+
+If any required value is missing, has the wrong type, violates policy, or
+cannot be resolved, submission fails before the run becomes visible. The
+controller must not persist a run without the recipe required to resume it.
+
+#### Required durable outputs
+
+Case 2 persists:
+
+- project and workflow content identities/revisions;
+- immutable project and workflow source documents or durable references to
+  them;
+- captured controller, environment, and override source scopes;
+- generated workflow-run runtime scope;
+- resolver policy and evaluation timestamp;
 - normalized stage/step definitions and identities;
 - initially compiled work items and their resolved input snapshots;
-- workflow-level fingerprints and runtime values.
+- workflow and initially available step/work-item fingerprints;
+- non-secret provenance showing which source won each consumed value.
+
+The system should persist source expressions/scopes needed by later steps as
+well as resolved values consumed during initial compilation. Persisting only a
+flattened set of Case 2 results is insufficient because Case 3 introduces
+predecessor outputs that were unavailable at submission.
 
 The submission resolver is discarded after the transaction commits or rolls
-back. It must not be retained so that later stages can use it.
+back. It must not be retained for later stages.
 
 ### 3. Ready-step compilation
 
-Purpose: compile a later step or stage after its dependencies complete.
+Purpose: reconstruct the Case 2 run context after dependencies complete, add
+the newly available predecessor outputs and step bindings, and compile one
+ready step or stage.
 
-Typical inputs:
+Case 2 and Case 3 use the same project/workflow basis, but they differ in where
+their inputs come from:
 
-- the immutable workflow-run snapshot captured at submission;
-- the retained workflow definition at its original revision;
+| Concern | Case 2: submission | Case 3: ready step |
+|---|---|---|
+| Controller/project/workflow config | Read, validate, and snapshot | Reload from run snapshot |
+| Environment values | Capture declared values | Reload captured values |
+| Client overrides | Validate and snapshot | Reload from run snapshot |
+| Workflow runtime | Generate and snapshot | Reload existing run values |
+| Predecessor outputs | Usually unavailable | Load completed typed outputs |
+| Step/work-item runtime | Initial stage only | Generate for newly ready stage |
+| Result | Create run and initial work | Add later work to existing run |
+
+Case 3 must not reread the current project file, workflow file, client process
+environment, controller process environment, or mutable controller
+configuration. Doing so would allow step 2 to execute under different inputs
+than step 1.
+
+Typical Case 3 additions are:
+
 - completed predecessor outputs as typed, read-only values;
 - step-local bindings;
-- generated step identity, evaluation time, and fingerprints.
+- fan-out item bindings;
+- generated step/work-item identities;
+- the step evaluation timestamp and derived fingerprints.
 
-Required durable outputs:
+Live controller metrics such as current queue depth or active worker count are
+not workflow expression inputs by default. They may drive a separate
+controller scheduling-policy resolver, but admitting them into workflow
+semantics would make recompilation timing affect work-item meaning. Any future
+exception requires an explicit capture and replay rule.
+
+Case 3 produces and atomically persists:
 
 - step-instance state;
 - zero or more immutable work items;
 - ordered fan-out bindings;
-- resolved input snapshots and fingerprints.
+- resolved input snapshots, provenance, and fingerprints;
+- an idempotent marker preventing the same stage from compiling twice.
 
 This is the most important create-use-discard case. Reconstructing the recipe
 from durable records prevents a long-running controller object from becoming
 the hidden owner of workflow correctness.
 
 If compilation produces zero work items, the transaction records the typed
-empty output and advances readiness without creating a placeholder item.
+empty output and advances readiness without creating a placeholder item. The
+Case 3 resolver is discarded after commit or rollback.
 
 ### 4. Worker request and assignment finalization
 
