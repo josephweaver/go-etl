@@ -16,12 +16,12 @@ it is not updated for every heartbeat.
 ## Goals
 
 - Add an outbound worker heartbeat API for active attempts.
-- Track the latest heartbeat/report time for current attempts in controller
-  memory.
-- Configure the worker reporting timeout through the serialized controller
-  variable document.
-- Start the caretaker after a configured recovery window so workers have time
-  to report to a restarted controller.
+- Track whether each current attempt reported at least once during each
+  caretaker interval.
+- Give workers several consecutive caretaker intervals in which to report
+  before declaring an attempt abandoned.
+- Configure the caretaker schedule and allowed missed-interval count through
+  the serialized controller variable document.
 - Accept heartbeats and terminal reports while normal submission and work-claim
   APIs remain gated during restart recovery.
 - Treat absence from the in-memory tracker after the recovery deadline as an
@@ -31,11 +31,13 @@ it is not updated for every heartbeat.
   `queued_work`.
 - Use absence of the matching `running_work` row as the database fence for
   heartbeats and terminal reports from abandoned attempts.
-- Return a stale-attempt response that tells a reachable abandoned worker to
-  exit.
-- Use persisted `workers.worker_state_json` to request best-effort cancellation
-  through the project execution environment, such as cancelling a Slurm job by
-  job ID.
+- Ignore stale heartbeats and terminal reports for state mutation without
+  requiring the worker to stop its current idempotent operation.
+- Refuse another work claim from a worker whose latest attempt was abandoned so
+  the worker shuts down after finishing or failing its old operation.
+- Retain persisted `workers.worker_state_json` so a cleanup policy may request
+  best-effort cancellation through the project execution environment, such as
+  cancelling a Slurm job by job ID.
 - Make heartbeat, caretaker, abandonment, requeue, cancellation, and recovery
   state observable.
 - Preserve the assumption that work-item operations are idempotent even when an
@@ -44,8 +46,8 @@ it is not updated for every heartbeat.
 ## Non-Goals
 
 - Persisting every heartbeat or implementing renewable database leases.
-- Guaranteeing that a timed-out worker process has stopped before its work item
-  is requeued.
+- Guaranteeing that an abandoned worker process has stopped before its work
+  item is requeued.
 - Guaranteeing exactly-once external side effects.
 - Requiring workers to accept inbound controller connections.
 - Making scheduler cancellation a prerequisite for retry.
@@ -66,9 +68,11 @@ attempt_id
 ```
 
 The heartbeat handler first verifies that the matching `(attempt_id,
-work_item_id)` still exists in `running_work`. If it does, the handler records
-the current report time in the in-memory tracker. If it does not, the handler
-makes no state change and tells the worker that its attempt is stale.
+work_item_id)` still exists in `running_work`. If it does, the handler marks the
+attempt observed in the current in-memory caretaker interval. If it does not,
+the handler makes no state change. The worker does not need to interpret a
+stale heartbeat response and may continue trying to finish its idempotent
+operation.
 
 Completion and failure reports follow the same ownership rule. The transaction
 that deletes `running_work` wins a race between completion and caretaker
@@ -82,19 +86,23 @@ The initial timing variables are conceptually:
 ```text
 runtime.controller_started_at
 runtime.controller_recovery_started_at
-controller_config.worker_timeout_seconds
-worker_config.heartbeat_interval_seconds
+controller_config.caretaker_interval_schedule
+controller_config.caretaker_missed_interval_limit
+worker_config.heartbeat_interval_schedule
 ```
 
 `controller_recovery_started_at` is captured when the heartbeat/report endpoint
-becomes available. The restart recovery deadline is:
+becomes available. The earliest abandonment time is approximately:
 
 ```text
-controller_recovery_started_at + worker_timeout_seconds
+controller_recovery_started_at
++ (caretaker interval × missed interval limit)
 ```
 
-This gives workers a full reporting interval even when database migration or
-Git-cache recovery delays HTTP startup.
+This gives workers multiple reporting opportunities even when one or more
+heartbeats are lost. The worker heartbeat interval should be shorter than the
+caretaker interval so a healthy worker normally has multiple chances to report
+within each interval.
 
 ### Restart recovery
 
@@ -107,14 +115,17 @@ load persisted running attempts
 start heartbeat/report API and empty in-memory tracker
         |
         v
-wait worker_timeout_seconds while accepting reports
+run caretaker on its configured interval schedule
         |
         v
-caretaker compares running_work with observed attempt IDs
+atomically consume reports observed during that interval
         |
-        +-- observed --> keep running
+        +-- observed --> reset consecutive misses to zero
         |
-        +-- absent ----> abandon attempt and requeue work item
+        +-- absent ----> increment consecutive misses
+                              |
+                              +-- below limit --> keep waiting
+                              +-- at limit ----> abandon and requeue
         |
         v
 enter normal API mode
@@ -125,15 +136,25 @@ controller does not require a heartbeat immediately before a terminal report.
 
 ### Normal caretaker operation
 
-After recovery, the tracker retains the most recent accepted report time for
-each current attempt. On its configured schedule, the caretaker finds entries
-whose last report is older than `worker_timeout_seconds`. It rechecks
-`running_work` inside the abandonment transaction before recording failure and
-requeueing.
+The in-memory tracker contains:
 
-The heartbeat interval must be materially shorter than the worker timeout and
-allow for expected scheduler and network delay. The tracker removes entries
-when their attempts leave `running_work`.
+- a concurrency-safe set of attempt IDs observed in the current interval;
+- a consecutive-missed-interval count for current attempts.
+
+At each scheduled caretaker run, it atomically swaps the observed set for a new
+empty set, then compares the consumed set with current `running_work` rows. One
+or many heartbeats in an interval have the same meaning: the worker reported at
+least once. An observed attempt resets its missed count to zero. An unobserved
+attempt increments its count and is abandoned only when the configured limit
+is reached.
+
+An attempt newly claimed during an interval is initialized as observed so it
+receives a complete future interval before its first possible miss. Tracker
+entries and counters are removed when attempts leave `running_work`.
+
+The caretaker schedule is independent from the worker heartbeat schedule. The
+worker heartbeat interval must be shorter and allow for expected scheduler and
+network delay.
 
 ### Abandonment and cancellation
 
@@ -147,11 +168,15 @@ verify current running_work ownership
 ```
 
 A later claim creates a new `attempt_id`. The old failed attempt remains
-history. After commit, the caretaker reads the attempt's `worker_id`, loads the
-minimal cancellation handle from `workers.worker_state_json`, and asks the
-project execution environment to terminate the worker. Cancellation is
-idempotent and best-effort; failure is reported through logs, metrics, and
-status but does not roll back requeueing.
+history. A heartbeat or terminal report from the old attempt is ignored because
+its `running_work` row no longer exists.
+
+The abandoned worker may continue its idempotent operation. When it eventually
+requests more work, the controller recognizes that the worker's latest attempt
+was abandoned, refuses another assignment, and the worker shuts down. A
+separate cleanup policy may instead read `workers.worker_state_json` and ask the
+project execution environment to terminate it. Cancellation remains
+idempotent, best-effort, and independent from the correctness of requeueing.
 
 Because heartbeat state is ephemeral, a controller crash intentionally loses
 all observations. The recovery window reconstructs current liveness from fresh
@@ -180,34 +205,41 @@ is explicitly moved from `Proposed` to `Ready`.
 
 ## Open Questions
 
-1. Is `worker_timeout_seconds` also the caretaker interval, or should the
-   caretaker have a separate shorter scan interval?
-2. What HTTP status and response body instruct a worker with a stale attempt to
-   terminate?
-3. Does worker registration itself count as an initial heartbeat, or does the
-   timer begin when the attempt is claimed?
+1. What schedule syntax represents `caretaker_interval_schedule` and
+   `heartbeat_interval_schedule` before GOET has a duration type?
+2. What default missed-interval limit gives workers enough opportunities
+   without delaying recovery excessively?
+3. What response should stale heartbeat and terminal-report APIs return while
+   making clear that no state mutation occurred?
 4. How does the in-memory tracker bound and clean entries when reports race with
    completion or abandonment?
 5. Should a terminal report received during recovery immediately remove the
    attempt from the recovery candidate set, or is querying `running_work`
    sufficient?
-6. Which logs, metrics, and status fields expose observed, timed-out,
+6. Which logs, metrics, and status fields expose observed, missed-interval,
    abandoned, requeued, cancellation-requested, and cancellation-failed state?
 7. What minimum authentication prevents one worker from refreshing another
    worker's attempt?
+8. When should optional scheduler cancellation be attempted instead of allowing
+   an abandoned idempotent worker to finish and exit after its next claim is
+   refused?
 
 ## Completion Criteria
 
 - Workers report active attempt identity through an outbound heartbeat API.
-- Heartbeats update an in-memory tracker without writing heartbeat timestamps
-  to the database.
-- Restart exposes heartbeat/report endpoints for a full configured recovery
-  window before abandoning non-reporting running attempts.
+- Heartbeats mark an attempt observed in an in-memory interval tracker without
+  writing heartbeat timestamps to the database.
+- Caretaker and worker heartbeat schedules are independently configured.
+- Attempts are abandoned only after the configured number of consecutive
+  caretaker intervals without a report.
+- Restart exposes heartbeat/report endpoints for the full configured number of
+  caretaker intervals before abandoning non-reporting running attempts.
 - Normal API admission remains gated until initial caretaker recovery finishes.
 - The caretaker rechecks `running_work` and performs abandonment/requeue in one
   transaction.
-- Late reports cannot mutate an attempt after its `running_work` row is gone
-  and tell the stale worker to exit.
+- Late reports cannot mutate an attempt after its `running_work` row is gone.
+- A worker whose latest attempt was abandoned is refused another assignment so
+  it exits after finishing its old idempotent operation.
 - A retry preserves `work_item_id` and receives a new `attempt_id`.
 - Persisted worker cancellation state is used for best-effort zombie cleanup.
 - Controller restart reconstructs authoritative work placement without durable
