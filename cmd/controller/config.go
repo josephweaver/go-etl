@@ -29,6 +29,13 @@ type DefaultsDocument struct {
 	Variables  []variable.Variable `json:"variables"`
 }
 
+type controllerStartupSources struct {
+	ControllerPath string
+	DefaultsPath   string
+	Controller     ControllerConfig
+	Defaults       DefaultsDocument
+}
+
 func loadControllerConfig(path string) (ControllerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -44,7 +51,6 @@ func loadControllerConfig(path string) (ControllerConfig, error) {
 		return ControllerConfig{}, fmt.Errorf("validate controller config file %s: %w", path, err)
 	}
 
-	cfg.normalizeVariables()
 	if err := cfg.Validate(); err != nil {
 		return ControllerConfig{}, fmt.Errorf("validate controller config file %s: %w", path, err)
 	}
@@ -63,15 +69,14 @@ func (c ControllerConfig) validateEnvelope() error {
 	return nil
 }
 
-func (c *ControllerConfig) normalizeVariables() {
-	for index := range c.Variables {
-		c.Variables[index].Name.Namespace = variable.NamespaceControllerConfig
-	}
-}
-
 func (c ControllerConfig) Validate() error {
 	if len(c.Variables) == 0 {
 		return fmt.Errorf("variables are required")
+	}
+	for _, item := range c.Variables {
+		if item.Name.Namespace != variable.NamespaceControllerConfig {
+			return fmt.Errorf("controller variable %s must use namespace %q, got %q", item.Name, variable.NamespaceControllerConfig, item.Name.Namespace)
+		}
 	}
 
 	if _, err := variable.NewScope(c.Variables...); err != nil {
@@ -153,4 +158,44 @@ func defaultsNamespaceAllowed(namespace variable.Namespace) bool {
 	default:
 		return false
 	}
+}
+
+func loadControllerStartupSources(controllerPath string) (controllerStartupSources, error) {
+	controller, err := loadControllerConfig(controllerPath)
+	if err != nil {
+		return controllerStartupSources{}, err
+	}
+
+	defaultsPath := defaultsPathForControllerConfig(controllerPath)
+	defaults, err := loadDefaultsDocument(defaultsPath)
+	if err != nil {
+		return controllerStartupSources{}, err
+	}
+
+	return controllerStartupSources{
+		ControllerPath: controllerPath,
+		DefaultsPath:   defaultsPath,
+		Controller:     controller,
+		Defaults:       defaults,
+	}, nil
+}
+
+func (s controllerStartupSources) controllerScopes() (variable.Scope, variable.Scope, error) {
+	defaultVariables := make([]variable.Variable, 0, len(s.Defaults.Variables))
+	for _, item := range s.Defaults.Variables {
+		if item.Name.Namespace == variable.NamespaceControllerConfig {
+			defaultVariables = append(defaultVariables, item)
+		}
+	}
+
+	defaultScope, err := variable.NewScope(defaultVariables...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build defaults controller scope: %w", err)
+	}
+	controllerScope, err := variable.NewScope(s.Controller.Variables...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build explicit controller scope: %w", err)
+	}
+
+	return defaultScope, controllerScope, nil
 }

@@ -20,12 +20,12 @@ func TestLoadControllerConfig(t *testing.T) {
 		"kind": "Controller",
 		"variables": [
 			{
-				"name": {"namespace": "backend", "key": "controller_url"},
+				"name": {"namespace": "controller_config", "key": "controller_url"},
 				"type": "string",
 				"expression": "http://localhost:8080"
 			},
 			{
-				"name": {"namespace": "runtime", "key": "ledger_db_path"},
+				"name": {"namespace": "controller_config", "key": "ledger_db_path"},
 				"type": "path",
 				"expression": ".run/controller/ledger.sqlite"
 			}
@@ -425,6 +425,116 @@ func TestControllerConfigRejectsNoVariables(t *testing.T) {
 
 	if err := config.Validate(); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestLoadControllerConfigRejectsNonCanonicalNamespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "controller.json")
+	document := `{
+		"api_version":"goet/v1alpha1",
+		"kind":"Controller",
+		"variables":[
+			{"name":{"namespace":"backend","key":"controller_url"},"type":"string","expression":"http://localhost:8080"}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(document), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadControllerConfig(path)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "backend") || !strings.Contains(err.Error(), "controller_config") {
+		t.Fatalf("error = %q, want actual and required namespaces", err)
+	}
+}
+
+func TestControllerStartupSourcesRetainAndLayerDocuments(t *testing.T) {
+	directory := t.TempDir()
+	controllerPath := filepath.Join(directory, "selected-controller.json")
+	defaultsPath := filepath.Join(directory, defaultsFilename)
+	controllerDocument := `{
+		"api_version":"goet/v1alpha1",
+		"kind":"Controller",
+		"variables":[
+			{"name":{"namespace":"controller_config","key":"shared"},"type":"string","expression":"explicit"},
+			{"name":{"namespace":"controller_config","key":"explicit_only"},"type":"string","expression":"explicit"}
+		]
+	}`
+	defaultsDocument := `{
+		"api_version":"goet/v1alpha1",
+		"kind":"Defaults",
+		"variables":[
+			{"name":{"namespace":"controller_config","key":"shared"},"type":"string","expression":"default"},
+			{"name":{"namespace":"controller_config","key":"default_only"},"type":"string","expression":"default"},
+			{"name":{"namespace":"worker_config","key":"worker_only"},"type":"string","expression":"retained"}
+		]
+	}`
+	if err := os.WriteFile(controllerPath, []byte(controllerDocument), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultsPath, []byte(defaultsDocument), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sources, err := loadControllerStartupSources(controllerPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sources.ControllerPath != controllerPath {
+		t.Fatalf("controller path = %q, want %q", sources.ControllerPath, controllerPath)
+	}
+	if sources.DefaultsPath != defaultsPath {
+		t.Fatalf("defaults path = %q, want %q", sources.DefaultsPath, defaultsPath)
+	}
+	if len(sources.Defaults.Variables) != 3 {
+		t.Fatalf("retained default count = %d, want 3", len(sources.Defaults.Variables))
+	}
+
+	defaultScope, controllerScope, err := sources.controllerScopes()
+	if err != nil {
+		t.Fatalf("unexpected scope error: %v", err)
+	}
+	if _, ok := defaultScope["worker_only"]; ok {
+		t.Fatal("worker_config default entered controller startup scope")
+	}
+	set := variable.NewSet(defaultScope, controllerScope)
+	assertVariableExpression(t, set, "shared", "explicit")
+	assertVariableExpression(t, set, "default_only", "default")
+	assertVariableExpression(t, set, "explicit_only", "explicit")
+
+	if sources.Defaults.Variables[0].TypedExpression.Expression != "default" {
+		t.Fatalf("retained default was mutated: %#v", sources.Defaults.Variables[0])
+	}
+	if sources.Controller.Variables[0].TypedExpression.Expression != "explicit" {
+		t.Fatalf("retained controller declaration was mutated: %#v", sources.Controller.Variables[0])
+	}
+}
+
+func TestLoadControllerStartupSourcesRequiresAdjacentDefaults(t *testing.T) {
+	directory := t.TempDir()
+	controllerPath := filepath.Join(directory, "controller.json")
+	writeTestControllerConfig(t, controllerPath)
+
+	_, err := loadControllerStartupSources(controllerPath)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	wantPath := filepath.Join(directory, defaultsFilename)
+	if !strings.Contains(err.Error(), wantPath) {
+		t.Fatalf("error = %q, want defaults path %q", err, wantPath)
+	}
+}
+
+func assertVariableExpression(t *testing.T, set variable.Set, key string, want any) {
+	t.Helper()
+	item, ok := set.LookupName(variable.Name{Namespace: variable.NamespaceControllerConfig, Key: key})
+	if !ok {
+		t.Fatalf("controller_config.%s is missing", key)
+	}
+	if item.TypedExpression.Expression != want {
+		t.Fatalf("controller_config.%s expression = %#v, want %#v", key, item.TypedExpression.Expression, want)
 	}
 }
 

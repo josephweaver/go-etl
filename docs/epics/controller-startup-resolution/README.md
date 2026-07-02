@@ -317,6 +317,10 @@ them.
   are layered from the standard defaults JSON document to the selected
   controller JSON. The explicit controller declaration wins when both define
   the same qualified name.
+- Controller-document variable declarations must already use the canonical
+  `controller_config` namespace. Loading rejects other namespaces rather than
+  silently rewriting the serialized source, so diagnostics and provenance
+  remain truthful.
 - Until GOET introduces a duration type, controller schedules, intervals,
   timeouts, and retention ages are positive integer milliseconds. Their keys
   use a `_milliseconds` suffix so the unit is explicit.

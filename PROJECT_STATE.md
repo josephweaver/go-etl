@@ -227,9 +227,12 @@ from the directory containing the running executable. It does not search the pro
 `cmd/controller/defaults.json` now contains the agreed canonical
 `controller_config` defaults under a `goet/v1alpha1` / `Defaults` envelope. The
 controller package can load and validate this document, including its allowed
-configuration namespaces and per-namespace duplicate keys. Startup does not
-consume or layer the defaults yet; that remains the next controller-startup
-slice.
+configuration namespaces and per-namespace duplicate keys. It can also retain
+the defaults and selected controller documents as distinct sources and produce
+ordered `controller_config` scopes where explicit controller declarations win.
+Controller documents now reject non-`controller_config` declarations instead
+of silently rewriting their namespaces. `main` does not yet consume these
+retained scopes for service construction.
 
 The demo client starts the controller with:
 
