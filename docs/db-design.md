@@ -144,15 +144,15 @@ CREATE TABLE completed_work (
         REFERENCES work_item_attempts(attempt_id),
     output_json_sha256 TEXT NOT NULL CHECK (length(output_json_sha256) = 64),
     output_json        TEXT NOT NULL CHECK (json_valid(output_json)),
-    pre_state_hash     TEXT NOT NULL CHECK (length(pre_state_hash) = 64),
-    post_state_hash    TEXT NOT NULL CHECK (length(post_state_hash) = 64),
+    pre_state_sha256   TEXT NOT NULL CHECK (length(pre_state_sha256) = 64),
+    post_state_sha256  TEXT NOT NULL CHECK (length(post_state_sha256) = 64),
     finished_at        TEXT NOT NULL
 );
 ```
 
-`output_json_sha256` verifies the canonical `output_json`. `pre_state_hash`
+`output_json_sha256` verifies the canonical `output_json`. `pre_state_sha256`
 records the plugin-defined external state observed before execution;
-`post_state_hash` records the same state domain after success. A later pre-state
+`post_state_sha256` records the same state domain after success. A later pre-state
 matching a prior post-state indicates that the requested state already exists.
 
 ## `failed_work`
@@ -166,7 +166,7 @@ CREATE TABLE failed_work (
 );
 ```
 
-`failed_work` is terminal for the logical work item. An abandoned attempt that
+`failed_work` is terminal for the logical work item attempt. An abandoned attempt that
 will retry returns its work item to `queued_work` instead.
 
 ## Invariants
