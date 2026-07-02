@@ -69,8 +69,9 @@ object, but it is already suitable for create-use-discard operation.
    workflow, or deployment changes do not alter an existing run.
 4. New lifecycle scopes are added by constructing a new resolver, not by
    mutating a prior resolver or scope.
-5. The ordered namespace precedence in `internal/variable/namespace.go` remains
-   the authority for unqualified lookup.
+5. One declared namespace precedence remains the authority for unqualified
+   lookup; the current implementation order must be changed to match the target
+   order below.
 6. Generated `runtime` values are read-only and exist only at or below the
    lifecycle boundary where they become known.
 7. Workers receive concrete resolved parameters whenever practical. They do
@@ -82,6 +83,42 @@ object, but it is already suitable for create-use-discard operation.
    to fail; partially resolved work is not published.
 10. Persisted work items contain the concrete values needed for execution and
     enough lineage to identify the recipe that produced them.
+
+## Target Variable Precedence
+
+The target namespace precedence, from lowest to highest, is:
+
+```text
+global_config
+client_env
+controller_env
+worker_env
+client_config
+controller_config
+worker_config
+project_config
+workflow
+step
+work_item
+override
+runtime
+```
+
+`override` is the highest configurable source. A client submission override
+therefore wins over execution-environment/project defaults, workflow settings,
+step settings, and work-item settings for the same unqualified key.
+
+`runtime` remains higher because it contains controller-generated read-only
+identities and observations. A client cannot replace values such as
+`runtime.run_id`, `runtime.attempt_id`, or controller-captured timestamps.
+
+Precedence does not grant authorization. The controller may reject an override
+of a deployment-security setting or another reserved key before constructing
+the resolver. For an allowed key, however, an accepted `override` value wins.
+
+A qualified reference still bypasses precedence. For example,
+`${step.max_work_item_retries}` explicitly requests the step declaration even
+when `${max_work_item_retries}` would resolve to the client override.
 
 ## Data Ownership
 
@@ -1199,11 +1236,12 @@ The submission resolver is assembled from these layers in normal namespace
 precedence:
 
 ```text
-eligible controller startup values
+declared client/controller/worker environment values
+    + eligible controller/worker configuration values
     + project configuration and execution environment
     + workflow configuration
+    + step and work-item bindings as each stage is compiled
     + client submission overrides
-    + declared environment values used by project/workflow
     + generated workflow-run runtime values
 ```
 
@@ -1362,7 +1400,7 @@ exception requires an explicit capture and replay rule.
 Case 3 produces and atomically persists:
 
 - step-instance state;
-- zero or more immutable work items;
+- one or more immutable work items;
 - ordered fan-out bindings;
 - resolved input snapshots, provenance, and fingerprints;
 - an idempotent marker preventing the same stage from compiling twice.
@@ -1371,9 +1409,55 @@ This is the most important create-use-discard case. Reconstructing the recipe
 from durable records prevents a long-running controller object from becoming
 the hidden owner of workflow correctness.
 
-If compilation produces zero work items, the transaction records the typed
-empty output and advances readiness without creating a placeholder item. The
-Case 3 resolver is discarded after commit or rollback.
+If a fan-out expression resolves to an empty list, compilation creates one
+deterministic skipped/no-op work item with typed logical output `[]`. Skipped
+work is completed work and satisfies the normal stage-completion check. This
+preserves the invariant that committed stage compilation always produces at
+least one work-item row. The Case 3 resolver is discarded after commit or
+rollback.
+
+#### Resolved work-item retry policy
+
+Retry policy applies to each logical work item, not to the step as one unit.
+The canonical variable key is:
+
+```text
+max_work_item_retries
+```
+
+The execution environment supplies the project-level default. Workflow, step,
+and work-item declarations may replace that default, and an authorized client
+override wins over all of them through normal precedence:
+
+```text
+project/execution-environment default
+    < workflow
+    < step
+    < work_item
+    < override
+```
+
+The resolved value must be an integer greater than or equal to zero:
+
+```text
+max_work_item_retries = 0  -> one initial attempt and no retry
+max_work_item_retries = 3  -> one initial attempt plus at most three retries
+```
+
+Case 2 or Case 3 resolves this value while compiling each work item and copies
+it into the immutable `work_item_json`. Later edits to project, workflow, step,
+or client configuration cannot change retry behavior for an already compiled
+item.
+
+Each fan-out work item tracks attempts independently. Failed and caretaker-
+abandoned attempts count toward the same limit. When retries remain, the
+controller records the failed attempt and requeues the same `work_item_id`; the
+next claim creates a new `attempt_id`. When the limit is exhausted, the work
+item remains terminally failed and its stage cannot complete successfully.
+
+The controller owns this retry loop. An execution environment or scheduler may
+supply the default policy but must not independently retry the same attempt,
+which would create overlapping retry authorities.
 
 ### 4. Worker request and assignment finalization
 
@@ -1572,7 +1656,9 @@ resolver lifecycle is truly ephemeral.
 7. **Precedence depends on call order.** `NewSet` merges scopes in the order
    passed; it does not consult `variable.Precedence`. The declared precedence
    list is therefore documentation unless every assembler supplies scopes in
-   exactly that order.
+   exactly that order. The implementation also currently places `override`
+   below `step` and `work_item`; the target order makes `override` the highest
+   configurable namespace below read-only `runtime`.
 8. **No provenance output.** Resolution returns a typed value but not the
    winning source variable or the dependency set traversed. This limits
    explainability and makes execution-relevant fingerprint selection harder.
@@ -1682,14 +1768,79 @@ retain them between reconciliation passes.
    transaction, or an idempotent durable ready marker consumed by a
    reconciler?
 
-## Recommended First Design Slice
+## Candidate Resolution Epics
 
-Before changing `resolver.go`, define the controller-owned resolver recipe for
-one workflow submission and one later ready-step compilation. The artifact
-should enumerate each source scope, whether it is snapshotted or live, when its
-runtime values become known, and which resolved outputs are persisted.
+The internal model now exposes four distinct variable-resolution cases. Each
+has enough lifecycle, persistence, and consumer-specific behavior to justify a
+separate epic rather than one broad resolver implementation effort.
 
-That slice will show whether production changes belong in `variable.Set`, in a
-new controller-side assembler, in persistence records, or in all three. The
-present evidence does not justify adding mutable state or lifecycle knowledge
-to `variable.Resolver`.
+### Epic 1: Controller startup resolution
+
+Inputs:
+
+- serialized controller JSON;
+- approved controller environment variables;
+- controller command-line overrides;
+- generated controller runtime values.
+
+Outputs are constructed controller services such as the database handle, HTTP
+server, Git/artifact caches, and caretaker. This epic must define required-key
+contracts, startup diagnostics, secret materialization, readiness, and config
+reload boundaries without creating a duplicate aggregate runtime config.
+
+### Epic 2: Workflow submission resolution
+
+Inputs:
+
+- the safe exportable controller scope subset;
+- Git-pinned project and workflow definitions;
+- project execution-environment defaults;
+- captured client/controller/worker environment values;
+- client submission overrides;
+- generated workflow runtime values.
+
+Outputs are the durable run recipe, dependency plan, active definition pins,
+and atomically compiled initial-stage work items. This epic must define
+environment discovery/authorization, override policy, sensitive capture,
+provenance, and submission failure atomicity.
+
+### Epic 3: Ready-step resolution
+
+Inputs:
+
+- the durable Case 2 run recipe;
+- exact-commit project/workflow definitions;
+- completed predecessor outputs;
+- step and work-item bindings;
+- client overrides;
+- generated step/work-item runtime values.
+
+Outputs are one or more immutable work items, including deterministic skipped
+work for empty fan-out. This epic must define Case 3 reconstruction, output
+namespace/access, fan-out bindings, fingerprints, `max_work_item_retries`, and
+idempotent atomic stage compilation.
+
+### Epic 4: Assignment resolution
+
+Inputs:
+
+- an immutable compiled work item;
+- the run's selected project execution environment;
+- worker identity/capabilities and configured worker environment;
+- generated attempt/assignment runtime values.
+
+Outputs are a concrete worker-local assignment plus durable attempt ownership.
+This epic must define which values may remain unresolved until assignment,
+path/mount localization, worker eligibility, assignment snapshots, and the
+atomic claim boundary.
+
+Cases 5 and 6 are not additional variable-resolution epics. Completion,
+caretaker recovery, persistence, and reconciliation consume resolution outputs
+and create future resolution triggers; they belong to their existing workflow,
+persistence, and liveness epics.
+
+The four epic directories and implementation slices should not be created
+until each purpose, goals, non-goals, shared prerequisites, and cross-epic
+contracts are reviewed. Shared variable-model changes such as corrected
+precedence, sensitivity propagation, and provenance should be implemented once
+and consumed consistently by all four cases.
