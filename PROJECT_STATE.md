@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-06-30
+Last updated: 2026-07-02
 
 ## Current Focus
 
@@ -240,6 +240,14 @@ canonical recursive `variable.Variable` JSON schema, rejects other namespaces
 and duplicate keys, and preserves qualified versus unqualified lookup
 behavior. Live controller startup still rejects `--override`; resolver
 integration remains a later startup slice.
+
+The controller package can also construct an immutable generated startup
+`runtime` scope from explicit process ID, instance ID, startup time, and build
+version inputs. The scope uses canonical typed variables for
+`controller_process_id`, `controller_instance_id`, `controller_started_at`, and
+`controller_build_version`, normalizes the startup time to UTC, and validates
+required values. Live startup does not yet construct or consume this scope;
+startup resolver assembly remains a later slice.
 
 The demo client starts the controller with:
 

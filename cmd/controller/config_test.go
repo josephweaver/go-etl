@@ -801,6 +801,76 @@ func TestControllerStartupOverridePrecedence(t *testing.T) {
 	}
 }
 
+func TestNewStartupRuntimeScope(t *testing.T) {
+	startedAt := time.Date(2026, time.July, 2, 20, 15, 16, 123456789, time.FixedZone("test", -4*60*60))
+	scope, err := newStartupRuntimeScope(1234, "instance-001", startedAt, "v0.8.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scope) != 4 {
+		t.Fatalf("scope length = %d, want 4", len(scope))
+	}
+
+	tests := []struct {
+		key       string
+		wantType  variable.Type
+		wantValue any
+	}{
+		{key: "controller_process_id", wantType: variable.TypeInt, wantValue: 1234},
+		{key: "controller_instance_id", wantType: variable.TypeString, wantValue: "instance-001"},
+		{key: "controller_started_at", wantType: variable.TypeDatetime, wantValue: startedAt.UTC().Format(time.RFC3339Nano)},
+		{key: "controller_build_version", wantType: variable.TypeString, wantValue: "v0.8.0"},
+	}
+	for _, test := range tests {
+		declaration, ok := scope[test.key]
+		if !ok {
+			t.Fatalf("runtime.%s is missing", test.key)
+		}
+		if declaration.Name.Namespace != variable.NamespaceRuntime {
+			t.Fatalf("%s namespace = %q, want runtime", test.key, declaration.Name.Namespace)
+		}
+		if declaration.TypedExpression.Type != test.wantType {
+			t.Fatalf("%s type = %s, want %s", test.key, declaration.TypedExpression.Type, test.wantType)
+		}
+		if declaration.TypedExpression.Expression != test.wantValue {
+			t.Fatalf("%s value = %#v, want %#v", test.key, declaration.TypedExpression.Expression, test.wantValue)
+		}
+	}
+
+	first := scope["controller_instance_id"].TypedExpression.Expression
+	second := scope["controller_instance_id"].TypedExpression.Expression
+	if first != second {
+		t.Fatalf("instance ID changed from %#v to %#v", first, second)
+	}
+}
+
+func TestNewStartupRuntimeScopeRejectsInvalidInputs(t *testing.T) {
+	tests := []struct {
+		name         string
+		processID    int
+		instanceID   string
+		buildVersion string
+		want         string
+	}{
+		{name: "zero process ID", processID: 0, instanceID: "instance-001", buildVersion: "v0.8.0", want: "runtime.controller_process_id"},
+		{name: "negative process ID", processID: -1, instanceID: "instance-001", buildVersion: "v0.8.0", want: "runtime.controller_process_id"},
+		{name: "empty instance ID", processID: 1234, instanceID: "", buildVersion: "v0.8.0", want: "runtime.controller_instance_id"},
+		{name: "empty build version", processID: 1234, instanceID: "instance-001", buildVersion: "", want: "runtime.controller_build_version"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newStartupRuntimeScope(test.processID, test.instanceID, time.Unix(0, 0), test.buildVersion)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %q, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
 	if err != nil {

@@ -189,6 +189,49 @@ func parseControllerStartupOverrides(rawOverrides []string) (variable.Scope, err
 	return scope, nil
 }
 
+func newStartupRuntimeScope(processID int, instanceID string, startedAt time.Time, buildVersion string) (variable.Scope, error) {
+	if processID <= 0 {
+		return nil, fmt.Errorf("runtime.controller_process_id must be positive")
+	}
+	if instanceID == "" {
+		return nil, fmt.Errorf("runtime.controller_instance_id is required")
+	}
+	if buildVersion == "" {
+		return nil, fmt.Errorf("runtime.controller_build_version is required")
+	}
+
+	return variable.NewScope(
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_process_id"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeInt,
+				Expression: processID,
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_instance_id"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeString,
+				Expression: instanceID,
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_started_at"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeDatetime,
+				Expression: startedAt.UTC().Format(time.RFC3339Nano),
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_build_version"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeString,
+				Expression: buildVersion,
+			},
+		},
+	)
+}
+
 func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
 	if config.ExecutionEnvironment.IsZero() {
 		return nil, nil
