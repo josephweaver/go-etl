@@ -138,6 +138,36 @@ CREATE TABLE running_work (
 );
 ```
 
+## `completed_work`
+
+```sql
+CREATE TABLE completed_work (
+    work_item_id TEXT PRIMARY KEY
+        REFERENCES work_items(work_item_id),
+    attempt_id   TEXT NOT NULL UNIQUE
+        REFERENCES work_item_attempts(attempt_id),
+    output_hash  TEXT NOT NULL CHECK (length(output_hash) = 64),
+    output_json  TEXT NOT NULL CHECK (json_valid(output_json)),
+    finished_at  TEXT NOT NULL
+);
+```
+
+## `failed_work`
+
+```sql
+CREATE TABLE failed_work (
+    work_item_id TEXT PRIMARY KEY
+        REFERENCES work_items(work_item_id),
+    attempt_id   TEXT NOT NULL UNIQUE
+        REFERENCES work_item_attempts(attempt_id),
+    error_json   TEXT NOT NULL CHECK (json_valid(error_json)),
+    finished_at  TEXT NOT NULL
+);
+```
+
+`failed_work` is terminal for the logical work item. An abandoned attempt that
+will retry returns its work item to `queued_work` instead.
+
 ## Invariants
 
 - Placement rows derive run, stage, worker, and timing data from their parent
@@ -145,4 +175,6 @@ CREATE TABLE running_work (
 - A `work_item_id` occupies only one placement table after commit.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
+- Finishing work inserts one terminal placement row and deletes its
+  `running_work` row in one transaction.
 - Retries reuse `work_item_id` and create a new `attempt_id`.
