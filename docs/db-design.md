@@ -142,7 +142,8 @@ CREATE TABLE running_work (
     attempt_id   TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id),
     work_item_id TEXT NOT NULL UNIQUE
-        REFERENCES work_items(work_item_id)
+        REFERENCES work_items(work_item_id),
+    queued_at    TEXT NOT NULL
 );
 ```
 
@@ -156,6 +157,8 @@ CREATE TABLE completed_work (
     output_json        TEXT NOT NULL CHECK (json_valid(output_json)),
     pre_state_sha256   TEXT NOT NULL CHECK (length(pre_state_sha256) = 64),
     post_state_sha256  TEXT NOT NULL CHECK (length(post_state_sha256) = 64),
+    queued_at          TEXT NOT NULL,
+    started_at         TEXT NOT NULL,
     finished_at        TEXT NOT NULL
 );
 ```
@@ -172,6 +175,8 @@ CREATE TABLE failed_work (
     attempt_id   TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id),
     error_json   TEXT NOT NULL CHECK (json_valid(error_json)),
+    queued_at    TEXT NOT NULL,
+    started_at   TEXT NOT NULL,
     finished_at  TEXT NOT NULL
 );
 ```
@@ -182,13 +187,13 @@ history.
 
 ## Invariants
 
-- Attempt rows derive run, stage, worker, and timing data from their parent
-  records.
+- Attempt rows derive run, stage, and worker data from their parent records.
 - Only `queued_work` and `running_work` represent current placement.
 - `running_work.work_item_id` uniqueness prevents two attempts for one logical
   work item from running concurrently.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
-  `queued_work` row in one transaction.
+  `queued_work` row in one transaction. It copies `queued_at` forward.
 - Finishing work appends one attempt outcome and deletes its `running_work` row
-  in one transaction. A retry also inserts `queued_work` in that transaction.
+  in one transaction, copying `queued_at` and `started_at`. A retry also inserts
+  `queued_work` in that transaction.
 - Retries reuse `work_item_id` and create a new `attempt_id`.
