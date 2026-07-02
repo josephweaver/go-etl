@@ -311,6 +311,8 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   | Key | Type | Schema default |
   |---|---|---:|
   | `controller_read_header_timeout_secs` | int | `5` |
+  | `controller_read_timeout_secs` | int | `30` |
+  | `controller_write_timeout_secs` | int | `30` |
   | `controller_idle_timeout_secs` | int | `120` |
   | `controller_shutdown_timeout_secs` | int | `30` |
   | `controller_max_request_bytes` | int | `16777216` |
