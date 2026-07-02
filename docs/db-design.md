@@ -43,6 +43,8 @@ CREATE TABLE workflow_instances (
     project_id              TEXT NOT NULL,
     workflow_id             TEXT NOT NULL,
     source_commit_sha       TEXT NOT NULL,
+    submission_context_json TEXT NOT NULL
+        CHECK (json_valid(submission_context_json)),
     submitted_at            TEXT NOT NULL,
     FOREIGN KEY (project_id, workflow_id)
         REFERENCES workflows(project_id, workflow_id)
@@ -51,6 +53,8 @@ CREATE TABLE workflow_instances (
 
 `source_commit_sha` records the repository revision used for this submission.
 The repository and commit must remain fetchable for restart and audit.
+`submission_context_json` stores immutable resolver inputs captured at
+submission, including generated variables, timezone, overrides, and versions.
 
 ## Submission Transaction
 
