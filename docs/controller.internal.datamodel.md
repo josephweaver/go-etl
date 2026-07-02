@@ -482,10 +482,29 @@ Database configuration has three sensitivity classes:
 
 #### Secret handling
 
-Typed configuration should contain secret references, not secret values. For
-example, a database password variable may identify a secret by name or URI;
-the secret provider materializes its value only when the database component is
-constructed.
+The standard variable declaration may mark any value as sensitive. Sensitivity
+is metadata on the variable, not a separate secret-variable type. For example:
+
+```json
+{
+  "name": {
+    "namespace": "project_config",
+    "key": "postgres_password"
+  },
+  "type": "string",
+  "expression": "${client_env.DB_PASSWORD}",
+  "sensitive": true
+}
+```
+
+This declaration says that `project_config.postgres_password` is a string,
+gets its value from the client's captured `DB_PASSWORD`, and must receive
+sensitive handling.
+
+For long-lived deployment credentials, typed configuration should still prefer
+secret references over embedding secret values. For example, a database
+password variable may identify a secret by name or URI; the secret provider
+materializes its value only when the database component is constructed.
 
 ```text
 controller_config.database_password_ref = "env://GOET_DB_PASSWORD"
@@ -496,28 +515,39 @@ Likely early providers are an explicitly named environment variable and a
 mounted file. OS keychains or external secret managers can be added behind the
 same provider boundary when required.
 
-Secret material follows stricter rules than ordinary resolved values:
+Sensitive material follows stricter rules than ordinary resolved values:
 
 - never store it in workflow-run resolver snapshots;
 - never include it in fingerprints or provenance payloads;
 - never return it through status or diagnostics;
 - never format it into an error message or log record;
-- avoid placing it in a general `variable.Set` if a narrower secret-material
-  argument can be used;
+- expose it to a resolver only for the bounded evaluation that requires it;
 - retain it in memory only as long as its consuming component requires;
 - preserve the secret reference and provider identity for audit, not the
   materialized value.
 
+Sensitivity propagates through resolution. A resolved value is sensitive when
+its declaration is marked sensitive or when it depends on any sensitive value.
+Setting `sensitive: false` must not declassify a sensitive dependency. For
+structured values, field/item sensitivity should be retained, and a containing
+value must be treated as sensitive when any descendant is sensitive.
+
 This creates an intentional boundary: the ordinary variable resolver may
-resolve *which secret reference wins*, while a secret provider resolves that
-reference into sensitive bytes. Secret lookup is an I/O operation and should
-not be hidden inside `variable.Resolver.Resolve`, which is currently a
-deterministic in-memory evaluation operation.
+operate on a temporarily materialized sensitive value, but secret lookup and
+durable decryption remain outside `variable.Resolver.Resolve`. Those are I/O
+operations, while the resolver should remain a deterministic in-memory
+evaluation operation.
 
 For database clients that internally retain credentials or tokens, the
 controller cannot guarantee immediate memory destruction. It can still avoid
 duplicating the secret, constrain its scope, and delegate rotation/reconnect
 behavior to an explicit database credential component.
+
+The current Go model does not implement this contract. `variable.Variable`
+contains a name and typed expression, while `ResolvedValue` has no sensitivity
+or redaction metadata. Adding `sensitive` requires coordinated JSON-model,
+resolution-propagation, diagnostics, persistence, and test design; it is not
+only an extra decoded field.
 
 #### Phased startup lifecycle
 
@@ -748,10 +778,15 @@ controller variable into the workflow run.
 
 #### Environment-variable capture
 
-Environment access must be explicit and bounded. A project or workflow must
-declare the environment keys it may consume, or expose statically identifiable
-qualified references that the controller can validate against an allowlist.
-Computed environment-variable names are not supported.
+Environment use is declared through the same standard variable declarations
+used by controller, project, and workflow configuration. There is no separate
+environment-dependency document. A qualified expression such as
+`${client_env.DB_PASSWORD}` declares the source namespace and key.
+
+Environment access must still be explicit and bounded. Before resolution, the
+controller recursively inspects typed expressions for qualified `client_env`,
+`controller_env`, and `worker_env` references. Computed environment-variable
+names are not supported.
 
 The relevant namespaces remain distinct:
 
@@ -763,12 +798,21 @@ The relevant namespaces remain distinct:
 
 The controller must not satisfy `client_env` from its own process environment,
 or infer `worker_env` by inspecting an arbitrary active worker. Each namespace
-has a different authority.
+has a different authority. A workflow reference is a request for a value, not
+authorization to read it: client and controller capture policies still decide
+which environment keys may be exposed.
 
-Only referenced or explicitly required keys are copied into the run snapshot.
-This reduces accidental coupling and secret exposure. A value classified as
-secret material is represented by an approved secret reference or excluded;
-raw secret material does not enter the ordinary resolver or run snapshot.
+Only referenced keys are captured. This reduces accidental coupling and secret
+exposure. Non-sensitive captured values may enter the ordinary run snapshot.
+Sensitive captured values may enter a bounded in-memory resolver, but must not
+be stored as plaintext in the run's JSON documents.
+
+If a sensitive client value is needed by Case 3 after the client exits, Case 2
+must place it in an approved protected-value store and persist an opaque value
+reference in the run snapshot. Case 3 temporarily materializes that protected
+value while reconstructing its resolver. An alternative is to prove that all
+uses were fully resolved and safely persisted during Case 2; silently rereading
+the environment later is not valid.
 
 Environment capture occurs once for the run. Case 3 uses the captured values,
 not the current environment. This guarantees that a controller restart, client
@@ -780,7 +824,7 @@ exit, or host environment change does not alter downstream resolution.
 1. Parse submission and identify project/workflow revisions
 2. Load immutable project and workflow definitions
 3. Definition-validate typed expressions and dependency structure
-4. Determine and authorize required environment keys
+4. Discover qualified environment references and authorize their keys
 5. Capture the required client/controller/configured-worker environment values
 6. Validate and normalize client overrides
 7. Generate workflow-run identity and runtime values
@@ -801,13 +845,14 @@ Case 2 persists:
 - project and workflow content identities/revisions;
 - immutable project and workflow source documents or durable references to
   them;
-- captured controller, environment, and override source scopes;
+- captured controller, environment, and override source scopes, with sensitive
+  values replaced by protected-value references in durable JSON;
 - generated workflow-run runtime scope;
 - resolver policy and evaluation timestamp;
 - normalized stage/step definitions and identities;
 - initially compiled work items and their resolved input snapshots;
 - workflow and initially available step/work-item fingerprints;
-- non-secret provenance showing which source won each consumed value.
+- redacted provenance showing which source won each consumed value.
 
 The system should persist source expressions/scopes needed by later steps as
 well as resolved values consumed during initial compilation. Persisting only a
