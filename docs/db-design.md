@@ -183,9 +183,16 @@ CREATE TABLE completed_work (
     output_json        TEXT NOT NULL CHECK (json_valid(output_json)),
     pre_state_sha256   TEXT NOT NULL CHECK (length(pre_state_sha256) = 64),
     post_state_sha256  TEXT NOT NULL CHECK (length(post_state_sha256) = 64),
+    skipped            INTEGER NOT NULL DEFAULT 0
+        CHECK (skipped IN (0, 1)),
+    skip_reason        TEXT,
     queued_at          TEXT NOT NULL,
     started_at         TEXT NOT NULL,
-    finished_at        TEXT NOT NULL
+    finished_at        TEXT NOT NULL,
+    CHECK (
+        (skipped = 0 AND skip_reason IS NULL) OR
+        (skipped = 1 AND length(trim(skip_reason)) > 0)
+    )
 );
 ```
 
@@ -193,6 +200,16 @@ CREATE TABLE completed_work (
 records the plugin-defined external state observed before execution;
 `post_state_sha256` records the same state domain after success. A later pre-state
 matching a prior post-state indicates that the requested state already exists.
+
+Skipped work is completed work. `skipped = 1` records that the logical work
+completed successfully without performing its normal external operation.
+`skip_reason` contains a stable reason code such as `empty_fanout` or
+`reused_prior_result`; it is required only for skipped rows.
+
+Skipped rows still contain a valid typed logical `output_json` for downstream
+steps. An empty fan-out uses `[]`. A reused result restores the prior logical
+output. Skipped work therefore satisfies normal stage-completion checks and
+does not require a separate current-placement or terminal-outcome table.
 
 ## `failed_work`
 
@@ -222,4 +239,6 @@ history.
 - Finishing work appends one attempt outcome and deletes its `running_work` row
   in one transaction, copying `queued_at` and `started_at`. A retry also inserts
   `queued_work` in that transaction.
+- A skipped row in `completed_work` is a successful terminal outcome and counts
+  toward stage completion.
 - Retries reuse `work_item_id` and create a new `attempt_id`.
