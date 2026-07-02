@@ -250,6 +250,19 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - The database driver is explicit rather than inferred from the connection
   string. Pool, connection-lifetime, and migration-policy variables are
   deferred until a concrete requirement exists.
+- The HTTP server consumer requires the following non-sensitive variables.
+  Each has no default and permits an authorized startup command-line/client
+  override:
+
+  | Key | Type |
+  |---|---|
+  | `controller_listen_host` | string |
+  | `controller_listen_port` | int |
+  | `controller_url` | string |
+
+- The listen host/port and advertised controller URL remain separate because
+  container networking, port forwarding, and reverse proxies may make them
+  different.
 
 ## Open Questions
 
