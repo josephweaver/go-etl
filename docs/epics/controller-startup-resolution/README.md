@@ -239,28 +239,37 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Generated runtime values remain read-only and non-overridable.
 - Controller JSON requires `api_version` and `kind` metadata. The initial
   values are `goet/v1alpha1` and `Controller`.
+- The main database consumer requires both variables below. Neither has a
+  default or permits client/command-line override:
+
+  | Key | Type | Sensitive |
+  |---|---|---|
+  | `main_database_driver` | string | No |
+  | `main_database_connection_string` | string | Declared or propagated from sensitive dependencies |
+
+- The database driver is explicit rather than inferred from the connection
+  string. Pool, connection-lifetime, and migration-policy variables are
+  deferred until a concrete requirement exists.
 
 ## Open Questions
 
 1. What is the complete initial required/optional variable catalog, including
    types, defaults, sensitivity, allowed override status, and owning consumer?
-2. Is `main_database_connection_string` the canonical database key, and is its
-   driver derived from the connection string or separately declared?
-3. Which controller environment variables are supported initially, and how are
+2. Which controller environment variables are supported initially, and how are
    external names mapped to typed internal keys?
-4. What command-line syntax supplies typed overrides, and how does it represent
+3. What command-line syntax supplies typed overrides, and how does it represent
    structured values without inventing a second schema?
-5. Which keys are forbidden from client/command-line override even though the
+4. Which keys are forbidden from client/command-line override even though the
    `override` namespace otherwise has highest configurable precedence?
-6. Which first secret source materializes `controller_env.DB_PASSWORD`, and
+5. Which first secret source materializes `controller_env.DB_PASSWORD`, and
    what transport/storage guarantees are prerequisite?
-7. What schedule syntax represents caretaker and other interval values before
+6. What schedule syntax represents caretaker and other interval values before
    GOET has a duration type?
-8. Which settings have defaults, and how are defaults represented so
+7. Which settings have defaults, and how are defaults represented so
     provenance remains visible?
-9. Which startup failures may expose a limited diagnostic HTTP endpoint, and
+8. Which startup failures may expose a limited diagnostic HTTP endpoint, and
     which require the process to exit without binding?
-10. Does controller exclusivity/database locking belong in this epic's startup
+9. Does controller exclusivity/database locking belong in this epic's startup
     readiness boundary or exclusively in `controller-resilience`?
 
 ## Completion Criteria
@@ -274,6 +283,8 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - Client override wins for authorized configurable keys; runtime values remain
   read-only.
 - Every initial startup consumer has a documented and tested variable contract.
+- Database startup requires an explicit driver and connection string and does
+  not infer the driver or accept client override of either key.
 - A missing main database connection key and a missing referenced database
   password produce distinct redacted errors.
 - Sensitive startup values never appear in logs, diagnostics, persistence, or
