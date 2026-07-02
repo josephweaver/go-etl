@@ -523,6 +523,9 @@ Current resolver behavior supports:
 - Fan-out list access through `Resolver.ResolveFanOutExpression("${years[*]}")`.
 - Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
 - Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
+- Lazy string-only `controller_env` lookup through an injected function. Each
+  bounded resolver caches present and missing keys without enumerating the
+  process environment; resolver copies share that concurrency-safe cache.
 
 Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Whole-value references resolve recursively at any structured node through normal namespace precedence while preserving the referencing node's declared type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Mixed-text interpolation resolves string, path, int, bool, and datetime values into string or path expressions; it rejects object and list values and does not reinterpret reference syntax produced by a resolved value. Resolution failures retain their underlying cause while reporting the qualified root variable and an escaped JSON Pointer node path. Active qualified reference chains distinguish cycles from long acyclic chains that exceed the configured depth.
 

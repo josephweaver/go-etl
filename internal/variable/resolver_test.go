@@ -2,6 +2,8 @@ package variable
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -57,6 +59,187 @@ func TestResolverOptional(t *testing.T) {
 
 	if _, ok, err := resolver.Optional("missing"); err != nil || ok {
 		t.Fatalf("missing optional = ok %v err %v, want false nil", ok, err)
+	}
+}
+
+func TestResolverResolvesControllerEnvironmentAsString(t *testing.T) {
+	var keys []string
+	resolver := NewResolver(NewSet(), ResolverConfig{
+		ControllerEnvironmentLookup: func(key string) (string, bool) {
+			keys = append(keys, key)
+			return "secret", true
+		},
+	})
+
+	value, err := resolver.Resolve(Reference{
+		Name:      Name{Namespace: NamespaceControllerEnvironment, Key: "DB_PASSWORD"},
+		Qualified: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if value.Type != TypeString || value.Value != "secret" {
+		t.Fatalf("value = %#v, want string secret", value)
+	}
+	if len(keys) != 1 || keys[0] != "DB_PASSWORD" {
+		t.Fatalf("lookup keys = %#v, want DB_PASSWORD", keys)
+	}
+}
+
+func TestResolverUsesControllerEnvironmentInExpressions(t *testing.T) {
+	scope, err := NewScope(
+		Variable{Name: Name{Namespace: NamespaceControllerConfig, Key: "password"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "${controller_env.DB_PASSWORD}"}},
+		Variable{Name: Name{Namespace: NamespaceControllerConfig, Key: "dsn"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "postgres://goet:${controller_env.DB_PASSWORD}@db/goet"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lookups atomic.Int32
+	resolver := NewResolver(NewSet(scope), ResolverConfig{
+		ControllerEnvironmentLookup: func(key string) (string, bool) {
+			lookups.Add(1)
+			return "secret", key == "DB_PASSWORD"
+		},
+	})
+
+	if got, err := resolver.String("password"); err != nil || got != "secret" {
+		t.Fatalf("password = %q, err %v", got, err)
+	}
+	if got, err := resolver.String("dsn"); err != nil || got != "postgres://goet:secret@db/goet" {
+		t.Fatalf("dsn = %q, err %v", got, err)
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("lookup count = %d, want 1", got)
+	}
+}
+
+func TestResolverControllerEnvironmentLookupPrecedence(t *testing.T) {
+	configured, err := NewScope(Variable{
+		Name:            Name{Namespace: NamespaceControllerConfig, Key: "PORT"},
+		TypedExpression: TypedExpression{Type: TypeString, Expression: "configured"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environmentScope, err := NewScope(Variable{
+		Name:            Name{Namespace: NamespaceControllerEnvironment, Key: "PORT"},
+		TypedExpression: TypedExpression{Type: TypeString, Expression: "enumerated"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lookups atomic.Int32
+	resolver := NewResolver(NewSet(environmentScope, configured), ResolverConfig{
+		ControllerEnvironmentLookup: func(string) (string, bool) {
+			lookups.Add(1)
+			return "accessed", true
+		},
+	})
+
+	if got, err := resolver.String("PORT"); err != nil || got != "configured" {
+		t.Fatalf("unqualified PORT = %q, err %v", got, err)
+	}
+	if got := lookups.Load(); got != 0 {
+		t.Fatalf("shadowed lookup count = %d, want 0", got)
+	}
+	if got, err := resolver.String("controller_env.PORT"); err != nil || got != "accessed" {
+		t.Fatalf("qualified PORT = %q, err %v", got, err)
+	}
+}
+
+func TestResolverCachesMissingControllerEnvironmentKey(t *testing.T) {
+	var lookups atomic.Int32
+	resolver := NewResolver(NewSet(), ResolverConfig{
+		ControllerEnvironmentLookup: func(string) (string, bool) {
+			lookups.Add(1)
+			return "", false
+		},
+	})
+
+	for range 2 {
+		_, ok, err := resolver.Optional("controller_env.MISSING")
+		if err != nil || ok {
+			t.Fatalf("optional missing = ok %v err %v, want false nil", ok, err)
+		}
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("lookup count = %d, want 1", got)
+	}
+	_, err := resolver.Resolve(Reference{Name: Name{Namespace: NamespaceControllerEnvironment, Key: "MISSING"}, Qualified: true})
+	if err == nil || !strings.Contains(err.Error(), "controller_env.MISSING") {
+		t.Fatalf("missing diagnostic = %v, want qualified key", err)
+	}
+}
+
+func TestResolverCopiesShareControllerEnvironmentCache(t *testing.T) {
+	var lookups atomic.Int32
+	config := ResolverConfig{ControllerEnvironmentLookup: func(string) (string, bool) {
+		lookups.Add(1)
+		return "value", true
+	}}
+	resolver := NewResolver(NewSet(), config)
+	copyOfResolver := resolver
+
+	if _, err := resolver.String("controller_env.KEY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copyOfResolver.String("controller_env.KEY"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("shared lookup count = %d, want 1", got)
+	}
+	if _, err := NewResolver(NewSet(), config).String("controller_env.KEY"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookups.Load(); got != 2 {
+		t.Fatalf("independent lookup count = %d, want 2", got)
+	}
+}
+
+func TestResolverControllerEnvironmentLookupIsConcurrentSafe(t *testing.T) {
+	var lookups atomic.Int32
+	resolver := NewResolver(NewSet(), ResolverConfig{
+		ControllerEnvironmentLookup: func(string) (string, bool) {
+			lookups.Add(1)
+			return "value", true
+		},
+	})
+
+	var wait sync.WaitGroup
+	for range 20 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if _, err := resolver.String("controller_env.KEY"); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wait.Wait()
+	if got := lookups.Load(); got != 1 {
+		t.Fatalf("lookup count = %d, want 1", got)
+	}
+}
+
+func TestResolverControllerEnvironmentEmptyAndUnconfigured(t *testing.T) {
+	resolver := NewResolver(NewSet(), ResolverConfig{
+		ControllerEnvironmentLookup: func(string) (string, bool) { return "", true },
+	})
+	value, err := resolver.Resolve(Reference{Name: Name{Namespace: NamespaceControllerEnvironment, Key: "EMPTY"}, Qualified: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if value.Type != TypeString || value.Value != "" {
+		t.Fatalf("empty value = %#v, want present empty string", value)
+	}
+	if _, err := resolver.String("controller_env.EMPTY"); err == nil {
+		t.Fatal("required string helper accepted an empty value")
+	}
+
+	withoutLookup := NewResolver(NewSet(), ResolverConfig{})
+	if _, ok, err := withoutLookup.Optional("controller_env.MISSING"); err != nil || ok {
+		t.Fatalf("unconfigured lookup = ok %v err %v, want false nil", ok, err)
 	}
 }
 

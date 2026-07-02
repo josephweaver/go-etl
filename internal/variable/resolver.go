@@ -5,18 +5,31 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const DefaultMaxDepth = 10
 
 type ResolverConfig struct {
-	MaxDepth int
+	MaxDepth                    int
+	ControllerEnvironmentLookup func(string) (string, bool)
 }
 
 type Resolver struct {
 	set    Set
 	config ResolverConfig
+	state  *resolverState
+}
+
+type resolverState struct {
+	mu                    sync.Mutex
+	controllerEnvironment map[string]environmentLookupResult
+}
+
+type environmentLookupResult struct {
+	value string
+	ok    bool
 }
 
 func NewResolver(set Set, config ResolverConfig) Resolver {
@@ -24,7 +37,13 @@ func NewResolver(set Set, config ResolverConfig) Resolver {
 		config.MaxDepth = DefaultMaxDepth
 	}
 
-	return Resolver{set: set, config: config}
+	return Resolver{
+		set:    set,
+		config: config,
+		state: &resolverState{
+			controllerEnvironment: make(map[string]environmentLookupResult),
+		},
+	}
 }
 
 func (r Resolver) Resolve(reference Reference) (ResolvedValue, error) {
@@ -37,7 +56,7 @@ func (r Resolver) Optional(referenceText string) (ResolvedValue, bool, error) {
 		return ResolvedValue{}, false, err
 	}
 
-	if _, ok := r.set.LookupReference(reference); !ok {
+	if _, ok := r.lookupVariable(reference); !ok {
 		return ResolvedValue{}, false, nil
 	}
 
@@ -230,7 +249,7 @@ type resolutionContext struct {
 }
 
 func (r Resolver) resolveRoot(reference Reference) (ResolvedValue, error) {
-	variable, ok := r.set.LookupReference(reference)
+	variable, ok := r.lookupVariable(reference)
 	if !ok {
 		return ResolvedValue{}, fmt.Errorf("resolve %s at /: variable not found: %s", reference.String(), reference.String())
 	}
@@ -263,11 +282,51 @@ func (r Resolver) resolveVariable(variable Variable, depth int, context resoluti
 }
 
 func (r Resolver) resolveReference(reference Reference, depth int, context resolutionContext) (ResolvedValue, error) {
-	variable, ok := r.set.LookupReference(reference)
+	variable, ok := r.lookupVariable(reference)
 	if !ok {
 		return ResolvedValue{}, locatedError{path: context.path, cause: fmt.Errorf("variable not found: %s", reference.String())}
 	}
 	return r.resolveVariable(variable, depth, context)
+}
+
+func (r Resolver) lookupVariable(reference Reference) (Variable, bool) {
+	if reference.Qualified && reference.Name.Namespace == NamespaceControllerEnvironment {
+		return r.lookupControllerEnvironment(reference.Name.Key)
+	}
+	if item, ok := r.set.LookupReference(reference); ok {
+		return item, true
+	}
+	if !reference.Qualified {
+		return r.lookupControllerEnvironment(reference.Name.Key)
+	}
+
+	return Variable{}, false
+}
+
+func (r Resolver) lookupControllerEnvironment(key string) (Variable, bool) {
+	if r.config.ControllerEnvironmentLookup == nil || r.state == nil {
+		return Variable{}, false
+	}
+
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+
+	result, cached := r.state.controllerEnvironment[key]
+	if !cached {
+		result.value, result.ok = r.config.ControllerEnvironmentLookup(key)
+		r.state.controllerEnvironment[key] = result
+	}
+	if !result.ok {
+		return Variable{}, false
+	}
+
+	return Variable{
+		Name: Name{Namespace: NamespaceControllerEnvironment, Key: key},
+		TypedExpression: TypedExpression{
+			Type:       TypeString,
+			Expression: result.value,
+		},
+	}, true
 }
 
 func (r Resolver) resolveExpression(expression TypedExpression, depth int, context resolutionContext) (value ResolvedValue, err error) {
