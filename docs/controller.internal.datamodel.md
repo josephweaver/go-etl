@@ -105,6 +105,152 @@ concrete customer execution environment is selected from project/run context;
 it is not global controller state. These objects supply resolver inputs; they
 do not turn the resolver into long-running state.
 
+## Configuration Retention and Reference Strength
+
+Controller, project, and workflow configurations have different retention
+requirements. Treating all of them as permanently resident controller objects
+would make controller memory grow with the complete customer catalog.
+
+### Controller configuration: process invariant
+
+The effective controller configuration produced by Case 1 is invariant for one
+constructed controller runtime. The controller keeps this validated,
+non-secret runtime config resident because nearly every operation may need it
+and there is only one effective controller configuration per process.
+
+The source JSON file, environment capture, and command-line overrides remain
+provenance for that effective config. Editing any source does not mutate the
+running controller. A reload is a separate lifecycle that builds and validates
+a replacement runtime config before swapping explicitly reloadable components.
+
+This invariance does not mean every controller value is copied into every
+workflow run. Case 2 exports only the subset allowed to influence workflow
+execution.
+
+### Project and workflow configurations: reloadable references
+
+The controller catalog should retain lightweight references to projects and
+workflows rather than keeping every decoded definition resident. In this
+document, a **weak definition reference** means a durable identity plus enough
+information to reload and verify the definition. It does not mean a Go runtime
+weak pointer.
+
+A project reference should identify at least:
+
+- project ID;
+- source/repository identity;
+- immutable source revision or content version;
+- project-config path or object key;
+- expected content fingerprint;
+- schema version.
+
+A workflow reference should identify at least:
+
+- owning project ID;
+- workflow definition ID;
+- immutable source revision or content version;
+- workflow path or object key;
+- expected content fingerprint;
+- schema version.
+
+The exact locator depends on the definition store. A Git-backed source may use
+repository, commit, and relative path. An object store may use bucket, object
+key, version, and digest. A local development source may use a path plus content
+digest, but an unversioned mutable path alone is not an immutable identity.
+
+### Bounded definition cache
+
+Decoded project and workflow definitions may be cached by immutable content
+identity:
+
+```text
+(definition kind, source identity, immutable revision, path/key, fingerprint)
+```
+
+The cache is an optimization with explicit bounds, such as maximum entries,
+maximum decoded bytes, and/or time-based eviction. It may use different bounds
+for projects and workflows. Eviction removes only the decoded object; it does
+not delete the durable catalog reference or an active run snapshot.
+
+On access:
+
+```text
+lookup immutable cache key
+        |
+        +-- hit --> return validated immutable definition
+        |
+        +-- miss --> load from definition store
+                         |
+                         v
+                    validate schema
+                         |
+                         v
+                    verify fingerprint
+                         |
+                         v
+                    cache and return
+```
+
+Concurrent misses for the same immutable key should be coalesced so a burst of
+submissions does not reload and decode the same document repeatedly. Cache
+entries must be immutable after publication. Cache statistics may feed
+controller metrics but do not affect resolver semantics.
+
+The controller should not preload or periodically scan all projects and
+workflows. Lookup begins from the requested project/workflow identity. This
+keeps resident memory proportional to the active working set rather than a
+catalog containing, for example, 1,000 projects and 100,000 workflows.
+
+### Missing and changed definitions
+
+A cache miss is normal and causes reload. A missing or unverifiable source is
+not equivalent to an undefined workflow:
+
+- before run acceptance, submission fails with a definition-unavailable or
+  integrity error;
+- after run acceptance, execution uses the run's strong immutable snapshot;
+- background catalog/status operations may report the weak reference as
+  unavailable without invalidating already accepted runs.
+
+When a locator returns content whose fingerprint differs from the reference,
+the controller rejects it. It must not silently update the reference or run the
+new content under the old identity. A changed definition receives a new
+content identity/revision.
+
+Negative lookup caching may prevent repeated load pressure for missing
+definitions, but it must be short-lived or explicitly invalidated so a newly
+restored source becomes visible.
+
+### Accepted runs: strong immutable pins
+
+Weak catalog references are insufficient once a workflow run is accepted. The
+run must strongly pin the exact project and workflow content used to construct
+its resolver. This is required because later steps may compile after cache
+eviction, controller restart, or loss of the upstream definition source.
+
+A strong run pin consists of immutable content identities plus either:
+
+- canonical definition/config documents stored with the run; or
+- references to a controller-managed immutable content store whose retention
+  is at least as long as the run and required audit/reuse period.
+
+The run must never rely only on an external mutable path. Case 3 reconstructs
+its resolver from the strong run snapshot, not from the weak catalog reference
+or definition cache.
+
+This produces three clear tiers:
+
+| Tier | Retention | Role |
+|---|---|---|
+| Effective controller runtime config | Resident and invariant for process lifetime | Constructs and governs the controller |
+| Project/workflow catalog reference and cache | Durable lightweight reference plus bounded, evictable decoded cache | Discovers and validates definitions on demand |
+| Accepted workflow-run snapshot | Strong immutable pin for run/audit lifetime | Reconstructs later resolvers and proves execution lineage |
+
+Strong run snapshots may be deduplicated by content hash so many runs using the
+same project/workflow revision do not store duplicate canonical documents.
+Reference counting or retention queries must be database-backed; in-memory
+cache reachability is not evidence that durable content can be deleted.
+
 ## Resolver Construction Model
 
 The target construction flow is:
@@ -1042,6 +1188,11 @@ resolver lifecycle is truly ephemeral.
 14. **Configuration time policy is undefined.** The design must distinguish
     controller values snapshotted per run from live deployment policy that may
     legitimately change between assignments or reconciliation cycles.
+15. **No scalable definition-reference/cache boundary exists.** Project and
+    workflow definitions currently arrive in the submission payload. There is
+    no weak catalog reference, immutable definition loader, bounded decoded
+    cache, fingerprint verification path, or strong run pin separated from
+    cache residency.
 
 ## Recommended Internal Boundaries
 
@@ -1052,6 +1203,8 @@ The following are responsibilities, not agreed Go type names.
 Load immutable project and workflow documents by content identity. A cache may
 retain decoded immutable documents, keyed by revision and fingerprint. Cache
 eviction must not affect correctness because the source can be reloaded.
+Accepted runs use their strong immutable run pins instead of depending on this
+cache.
 
 ### Run snapshot store
 
