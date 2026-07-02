@@ -67,11 +67,10 @@ CREATE TABLE work_items (
     workitem_id   TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL REFERENCES workflow_instances(run_id),
     stage_index   INTEGER NOT NULL CHECK (stage_index >= 0),
-    step_index    INTEGER NOT NULL CHECK (step_index >= 0),
     workitem_index INTEGER NOT NULL CHECK (workitem_index >= 0),
     workitem_json TEXT NOT NULL CHECK (json_valid(workitem_json)),
     created_at    TEXT NOT NULL,
-    UNIQUE (run_id, stage_index, step_index, workitem_index)
+    UNIQUE (run_id, stage_index, workitem_index)
 );
 ```
 
