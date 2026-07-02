@@ -135,28 +135,50 @@ document, a **weak definition reference** means a durable identity plus enough
 information to reload and verify the definition. It does not mean a Go runtime
 weak pointer.
 
-A project reference should identify at least:
+The initial definition store is GitHub. One project revision is identified by:
 
 - project ID;
-- source/repository identity;
-- immutable source revision or content version;
-- project-config path or object key;
-- expected content fingerprint;
+- GitHub repository identity;
+- full Git commit SHA;
+- project-config path relative to the repository root;
+- expected canonical project-config SHA-256;
 - schema version.
 
-A workflow reference should identify at least:
+A workflow is a cohesive component of that project revision. Its reference
+identifies:
 
 - owning project ID;
 - workflow definition ID;
-- immutable source revision or content version;
-- workflow path or object key;
-- expected content fingerprint;
+- workflow path relative to the same repository root;
+- expected canonical workflow SHA-256;
 - schema version.
 
-The exact locator depends on the definition store. A Git-backed source may use
-repository, commit, and relative path. An object store may use bucket, object
-key, version, and digest. A local development source may use a path plus content
-digest, but an unversioned mutable path alone is not an immutable identity.
+The workflow inherits the project's GitHub repository and commit SHA. Project
+config and every workflow selected from that project revision therefore come
+from one cohesive source tree. A workflow does not normally select an
+independent branch, tag, repository, or commit.
+
+The GitHub repository identity should include a stable repository identifier
+when available, plus a human-readable canonical owner/name for diagnostics.
+Owner/name alone can change when a repository is renamed or transferred.
+Authentication or installation identity is access configuration, not part of
+the definition's content identity.
+
+Branches and tags are discovery inputs, not durable revision identities. If a
+client supplies one, the client or controller resolves it to a full commit SHA
+before creating the project reference. Every reload uses that exact commit
+SHA. It must never repeat branch or tag resolution for an existing reference.
+
+The commit SHA identifies the repository tree, while each canonical SHA-256
+verifies the exact decoded configuration document. Both are retained because
+they answer different questions:
+
+- commit SHA: which cohesive project source revision was selected;
+- document SHA-256: whether the expected project/workflow document was loaded
+  and canonicalized correctly.
+
+The full Git commit SHA is stored as an opaque validated Git object ID rather
+than assuming SHA-1 will always be Git's only object format.
 
 ### Bounded definition cache
 
@@ -164,7 +186,7 @@ Decoded project and workflow definitions may be cached by immutable content
 identity:
 
 ```text
-(definition kind, source identity, immutable revision, path/key, fingerprint)
+(GitHub repository identity, commit SHA, definition path, canonical SHA-256)
 ```
 
 The cache is an optimization with explicit bounds, such as maximum entries,
@@ -216,6 +238,16 @@ When a locator returns content whose fingerprint differs from the reference,
 the controller rejects it. It must not silently update the reference or run the
 new content under the old identity. A changed definition receives a new
 content identity/revision.
+
+Reloading from the same repository and commit should return the same Git blob.
+The controller still verifies path, schema, and canonical document SHA-256
+before publishing a cache entry. A repository rename does not change content
+identity when the stable repository identifier still resolves it.
+
+The exact commit may become temporarily or permanently inaccessible because
+credentials changed, the repository was deleted, or GitHub access is
+unavailable. That is a definition-availability failure, not permission to fall
+back to the repository's current default branch.
 
 Negative lookup caching may prevent repeated load pressure for missing
 definitions, but it must be short-lived or explicitly invalidated so a newly
