@@ -140,13 +140,20 @@ CREATE TABLE running_work (
 
 ```sql
 CREATE TABLE completed_work (
-    attempt_id   TEXT PRIMARY KEY
+    attempt_id         TEXT PRIMARY KEY
         REFERENCES work_item_attempts(attempt_id),
-    output_hash  TEXT NOT NULL CHECK (length(output_hash) = 64),
-    output_json  TEXT NOT NULL CHECK (json_valid(output_json)),
-    finished_at  TEXT NOT NULL
+    output_json_sha256 TEXT NOT NULL CHECK (length(output_json_sha256) = 64),
+    output_json        TEXT NOT NULL CHECK (json_valid(output_json)),
+    pre_state_hash     TEXT NOT NULL CHECK (length(pre_state_hash) = 64),
+    post_state_hash    TEXT NOT NULL CHECK (length(post_state_hash) = 64),
+    finished_at        TEXT NOT NULL
 );
 ```
+
+`output_json_sha256` verifies the canonical `output_json`. `pre_state_hash`
+records the plugin-defined external state observed before execution;
+`post_state_hash` records the same state domain after success. A later pre-state
+matching a prior post-state indicates that the requested state already exists.
 
 ## `failed_work`
 
