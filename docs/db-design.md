@@ -88,12 +88,17 @@ of parallel steps. `work_item_index` is the ordinal within a fanout operation.
 
 ```sql
 CREATE TABLE work_item_attempts (
-    attempt_id  TEXT PRIMARY KEY,
-    work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id)
+    attempt_id   TEXT PRIMARY KEY,
+    work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id),
+    attempt_index INTEGER NOT NULL CHECK (attempt_index >= 0),
+    worker_id    TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    UNIQUE (work_item_id, attempt_index)
 );
 ```
 
-Retries create new `attempt_id` values for the same `work_item_id`.
+Retries increment `attempt_index` and create a new `attempt_id` for the same
+`work_item_id`. `worker_id` identifies the worker assigned at claim time.
 
 ## `queued_work`
 
