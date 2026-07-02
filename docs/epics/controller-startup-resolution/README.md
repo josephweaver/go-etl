@@ -319,6 +319,20 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   | `controller_max_header_bytes` | int | `1048576` |
 
 - Timeout values must be greater than zero, and byte limits must be positive.
+- The semi-persistent Git cache uses the following non-sensitive,
+  startup-overridable policy variables:
+
+  | Key | Type | Schema default |
+  |---|---|---:|
+  | `controller_git_cache_max_size_mb` | int | `10240` |
+  | `controller_git_cache_retention_secs` | int | `604800` |
+  | `controller_git_fetch_timeout_secs` | int | `300` |
+  | `controller_git_fetch_concurrency` | int | `4` |
+
+- These values must be positive. Commits required by active runs remain pinned
+  even when their objects place the cache above its target size. If the
+  controller cannot recover enough space without deleting pinned content, a
+  new fetch fails explicitly rather than evicting active-run inputs.
 
 ## Open Questions
 
