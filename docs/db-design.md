@@ -96,12 +96,37 @@ work item.
 
 ```sql
 CREATE TABLE workers (
-    worker_id  TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL
+    worker_id         TEXT PRIMARY KEY,
+    worker_state_json TEXT NOT NULL CHECK (json_valid(worker_state_json)),
+    created_at        TEXT NOT NULL
 );
 ```
 
-This table records worker identity only. Liveness and capabilities are deferred.
+When a worker starts, it registers `worker_state_json` containing exactly the
+execution-environment-specific identity the controller needs to terminate that
+worker later. The document is a versioned cancellation handle, not a general
+worker status document and not a place for credentials.
+
+For a worker started as a Slurm job, the minimum state is conceptually:
+
+```json
+{
+  "schema_version": 1,
+  "scheduler": "slurm",
+  "job_id": "12345"
+}
+```
+
+The controller combines this state with the project/run execution-environment
+definition to select the correct scheduler adapter and request cancellation.
+Other execution environments provide their own minimal versioned state, such
+as a container ID or process identity.
+
+Worker registration must commit this cancellation state before the worker may
+claim work. If the controller later declares the worker's attempt abandoned,
+the persisted state remains available after controller restart for best-effort
+cleanup of the old worker. Liveness, heartbeat timestamps, and worker
+capabilities are separate concerns and are not stored in `worker_state_json`.
 
 ## `work_item_attempts`
 
