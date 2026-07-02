@@ -333,26 +333,38 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
   even when their objects place the cache above its target size. If the
   controller cannot recover enough space without deleting pinned content, a
   new fetch fails explicitly rather than evicting active-run inputs.
+- Temp staging and published artifact retention use the following
+  non-sensitive, startup-overridable policy variables:
+
+  | Key | Type | Schema default |
+  |---|---|---:|
+  | `controller_temp_cleanup_age_secs` | int | `86400` |
+  | `controller_artifact_cache_max_size_mb` | int | `10240` |
+  | `controller_artifact_cache_retention_secs` | int | `604800` |
+  | `controller_storage_min_free_mb` | int | `1024` |
+
+- These values must be positive. Active packaging directories and artifacts
+  referenced by queued or running work are pinned. Cleanup removes unpinned
+  content oldest-first. New packaging fails clearly before consuming the
+  configured free-space reserve.
 
 ## Open Questions
 
-1. What is the complete initial required/optional variable catalog, including
-   types, defaults, sensitivity, allowed override status, and owning consumer?
-2. Which controller environment variables are supported initially, and how are
+1. Which controller environment variables are supported initially, and how are
    external names mapped to typed internal keys?
-3. What command-line syntax supplies typed overrides, and how does it represent
+2. What command-line syntax supplies typed overrides, and how does it represent
    structured values without inventing a second schema?
-4. Which keys are forbidden from client/command-line override even though the
+3. Which keys are forbidden from client/command-line override even though the
    `override` namespace otherwise has highest configurable precedence?
-5. Which first secret source materializes `controller_env.DB_PASSWORD`, and
+4. Which first secret source materializes `controller_env.DB_PASSWORD`, and
    what transport/storage guarantees are prerequisite?
-6. What schedule syntax represents caretaker and other interval values before
+5. What schedule syntax represents caretaker and other interval values before
    GOET has a duration type?
-7. Which settings have defaults, and how are defaults represented so
+6. Which settings have defaults, and how are defaults represented so
     provenance remains visible?
-8. Which startup failures may expose a limited diagnostic HTTP endpoint, and
+7. Which startup failures may expose a limited diagnostic HTTP endpoint, and
     which require the process to exit without binding?
-9. Does controller exclusivity/database locking belong in this epic's startup
+8. Does controller exclusivity/database locking belong in this epic's startup
    readiness boundary or exclusively in `controller-resilience`?
 
 ## Completion Criteria
