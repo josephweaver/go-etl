@@ -8,7 +8,14 @@ import (
 	"goetl/internal/variable"
 )
 
+const (
+	controllerAPIVersion = "goet/v1alpha1"
+	controllerKind       = "Controller"
+)
+
 type ControllerConfig struct {
+	APIVersion           string                     `json:"api_version"`
+	Kind                 string                     `json:"kind"`
 	Variables            []variable.Variable        `json:"variables"`
 	ExecutionEnvironment ExecutionEnvironmentConfig `json:"execution_environment"`
 }
@@ -24,12 +31,27 @@ func loadControllerConfig(path string) (ControllerConfig, error) {
 		return ControllerConfig{}, fmt.Errorf("decode controller config file %s: %w", path, err)
 	}
 
+	if err := cfg.validateEnvelope(); err != nil {
+		return ControllerConfig{}, fmt.Errorf("validate controller config file %s: %w", path, err)
+	}
+
 	cfg.normalizeVariables()
 	if err := cfg.Validate(); err != nil {
 		return ControllerConfig{}, fmt.Errorf("validate controller config file %s: %w", path, err)
 	}
 
 	return cfg, nil
+}
+
+func (c ControllerConfig) validateEnvelope() error {
+	if c.APIVersion != controllerAPIVersion {
+		return fmt.Errorf("api_version must be %q, got %q", controllerAPIVersion, c.APIVersion)
+	}
+	if c.Kind != controllerKind {
+		return fmt.Errorf("kind must be %q, got %q", controllerKind, c.Kind)
+	}
+
+	return nil
 }
 
 func (c *ControllerConfig) normalizeVariables() {

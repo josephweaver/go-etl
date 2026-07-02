@@ -6,7 +6,7 @@ Last updated: 2026-06-30
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
-The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller can now load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The default configured chain is:
+The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller now requires serialized controller documents to declare `api_version: goet/v1alpha1` and `kind: Controller` before it validates variables or execution-environment settings. It can load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The default configured chain is:
 
 ```text
 transport = DockerContainerTransport backed by DockerTransport

@@ -1,4 +1,6 @@
 {
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
   "variables": [
     {
       "name": {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 func TestLoadControllerConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "controller-config.json")
 	content := []byte(`{
+		"api_version": "goet/v1alpha1",
+		"kind": "Controller",
 		"variables": [
 			{
 				"name": {"namespace": "backend", "key": "controller_url"},
@@ -46,6 +49,12 @@ func TestLoadControllerConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	if config.APIVersion != controllerAPIVersion {
+		t.Fatalf("api version = %q, want %q", config.APIVersion, controllerAPIVersion)
+	}
+	if config.Kind != controllerKind {
+		t.Fatalf("kind = %q, want %q", config.Kind, controllerKind)
+	}
 	if len(config.Variables) != 2 {
 		t.Fatalf("unexpected variable count: %d", len(config.Variables))
 	}
@@ -63,6 +72,8 @@ func TestLoadControllerConfig(t *testing.T) {
 func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "controller-config.json")
 	content := []byte(`{
+		"api_version": "goet/v1alpha1",
+		"kind": "Controller",
 		"variables": [
 			{
 				"name": {"namespace": "controller_config", "key": "controller_url"},
@@ -173,6 +184,43 @@ func TestLoadControllerConfigRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestLoadControllerConfigRejectsInvalidEnvelopeBeforeVariables(t *testing.T) {
+	tests := []struct {
+		name      string
+		document  string
+		errorText string
+	}{
+		{name: "missing api version", document: `{"kind":"Controller"}`, errorText: "api_version"},
+		{name: "empty api version", document: `{"api_version":"","kind":"Controller"}`, errorText: "api_version"},
+		{name: "unsupported api version", document: `{"api_version":"goet/v2","kind":"Controller"}`, errorText: "api_version"},
+		{name: "incorrectly cased api version", document: `{"api_version":"GOET/v1alpha1","kind":"Controller"}`, errorText: "api_version"},
+		{name: "missing kind", document: `{"api_version":"goet/v1alpha1"}`, errorText: "kind"},
+		{name: "empty kind", document: `{"api_version":"goet/v1alpha1","kind":""}`, errorText: "kind"},
+		{name: "unsupported kind", document: `{"api_version":"goet/v1alpha1","kind":"Project"}`, errorText: "kind"},
+		{name: "incorrectly cased kind", document: `{"api_version":"goet/v1alpha1","kind":"controller"}`, errorText: "kind"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "controller-config.json")
+			if err := os.WriteFile(path, []byte(test.document), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := loadControllerConfig(path)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), test.errorText) {
+				t.Fatalf("error = %q, want it to identify %q", err, test.errorText)
+			}
+			if strings.Contains(err.Error(), "variables are required") {
+				t.Fatalf("envelope error occurred after variable validation: %v", err)
+			}
+		})
+	}
+}
+
 func TestControllerConfigRejectsNoVariables(t *testing.T) {
 	config := ControllerConfig{}
 
@@ -198,6 +246,8 @@ func TestControllerConfigFromArgsLoadsDefaultWithoutPath(t *testing.T) {
 func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "controller-config.json")
 	content := []byte(`{
+		"api_version": "goet/v1alpha1",
+		"kind": "Controller",
 		"variables": [
 			{
 				"name": {"namespace": "controller_config", "key": "controller_url"},
