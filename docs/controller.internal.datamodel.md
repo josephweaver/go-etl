@@ -96,7 +96,8 @@ object, but it is already suitable for create-use-discard operation.
 | Typed step outputs | Workflow run and retention period | Database/artifact store | Immutable after successful completion |
 | Work item | Logical work lifetime | Database | Definition immutable; placement changes |
 | Attempt | Attempt lifetime and retention period | Database | Append/transition under fencing rules |
-| Definition cache | Controller process | Derived from immutable source | Replaceable and disposable |
+| Git repository cache | Across controller restarts | Derived from GitHub | Evictable except for commits pinned by active runs |
+| Decoded definition cache | Controller process | Derived from local Git objects | Bounded and disposable |
 | Resolver | One evaluation | In-memory recipe inputs | No mutation after construction |
 
 The controller may keep persistent handles to the database, immutable config,
@@ -180,10 +181,67 @@ they answer different questions:
 The full Git commit SHA is stored as an opaque validated Git object ID rather
 than assuming SHA-1 will always be Git's only object format.
 
-### Bounded definition cache
+### Semi-persistent Git repository cache
 
-Decoded project and workflow definitions may be cached by immutable content
-identity:
+The controller should maintain a local bare Git repository cache for each
+GitHub repository it uses. A bare repository stores Git objects and refs
+without creating a checked-out working tree. Project and workflow documents
+can be read directly from an exact commit and path. This avoids one clone or
+checkout per workflow and allows many projects/runs to share repository
+objects.
+
+The cache is semi-persistent: it lives under a controller-configured cache root
+on durable local disk and normally survives controller process restart, but it
+can be reconstructed from GitHub and remains subject to explicit retention and
+capacity policy.
+
+Conceptually, repository lookup is:
+
+```text
+repository cache keyed by stable GitHub repository identity
+        |
+        +-- repository absent --> clone/fetch into local bare repository
+        |
+        +-- repository present
+                |
+                +-- commit present --> read blobs locally
+                |
+                +-- commit absent --> fetch exact commit from GitHub
+```
+
+The cache must not use the default branch as the execution lookup. After the
+required commit object is local, project and workflow documents are always read
+as `<commit SHA>:<repository-relative path>` and verified against their
+canonical SHA-256 values.
+
+Repository cache operations require per-repository coordination so concurrent
+submissions do not clone, fetch, repack, or delete the same repository at the
+same time. Credentials are supplied through the controller's secret boundary;
+they must not be embedded in cached remote URLs, filesystem names, errors, or
+logs.
+
+The configured cache policy should eventually include:
+
+- cache root path;
+- total disk capacity or high/low watermarks;
+- inactive repository/commit retention period;
+- fetch timeout and concurrency limits;
+- integrity-check and corruption-recovery behavior.
+
+Active run records pin their repository and commit against cache garbage
+collection. On startup, the controller reconstructs the pin set from durable
+active runs before performing eviction. A terminal run releases its pin; its
+objects may remain for reuse or be removed later according to policy.
+
+If a required local repository or commit is missing or corrupt, the controller
+attempts to restore it from GitHub at the exact commit. If GitHub is unavailable
+but the verified commit and blobs are already local, execution and restart may
+continue without GitHub.
+
+### Bounded decoded-definition cache
+
+After reading documents from the local Git object cache, decoded project and
+workflow definitions may be cached in memory by immutable content identity:
 
 ```text
 (GitHub repository identity, commit SHA, definition path, canonical SHA-256)
@@ -194,14 +252,14 @@ maximum decoded bytes, and/or time-based eviction. It may use different bounds
 for projects and workflows. Eviction removes only the decoded object; it does
 not delete the durable catalog reference or an active run snapshot.
 
-On access:
+On decoded-definition access:
 
 ```text
 lookup immutable cache key
         |
         +-- hit --> return validated immutable definition
         |
-        +-- miss --> load from definition store
+        +-- miss --> read exact blob from local Git cache
                          |
                          v
                     validate schema
@@ -214,7 +272,7 @@ lookup immutable cache key
 ```
 
 Concurrent misses for the same immutable key should be coalesced so a burst of
-submissions does not reload and decode the same document repeatedly. Cache
+submissions does not reread and decode the same document repeatedly. Cache
 entries must be immutable after publication. Cache statistics may feed
 controller metrics but do not affect resolver semantics.
 
@@ -225,13 +283,16 @@ catalog containing, for example, 1,000 projects and 100,000 workflows.
 
 ### Missing and changed definitions
 
-A cache miss is normal and causes reload. A missing or unverifiable source is
-not equivalent to an undefined workflow:
+A decoded-cache miss is normal and causes a local Git blob read. A missing
+local commit causes an exact-commit GitHub fetch. A missing or unverifiable
+source is not equivalent to an undefined workflow:
 
 - before run acceptance, submission fails with a definition-unavailable or
   integrity error;
 - while resident after run acceptance, execution uses the run's strong decoded
-  pin; restart reloads the exact GitHub commit from the durable run recipe;
+  pin and pinned local Git commit;
+- after restart, the controller reads the pinned local commit and contacts
+  GitHub only when the required objects are absent;
 - background catalog/status operations may report the weak reference as
   unavailable without invalidating already accepted runs.
 
@@ -245,22 +306,25 @@ The controller still verifies path, schema, and canonical document SHA-256
 before publishing a cache entry. A repository rename does not change content
 identity when the stable repository identifier still resolves it.
 
-The exact commit may become temporarily or permanently inaccessible because
-credentials changed, the repository was deleted, or GitHub access is
-unavailable. That is a definition-availability failure, not permission to fall
-back to the repository's current default branch.
+The exact commit may become temporarily or permanently inaccessible from
+GitHub because credentials changed, the repository was deleted, or GitHub is
+unavailable. A verified local cached commit remains usable. If neither local
+Git objects nor GitHub can supply it, that is a definition-availability
+failure, not permission to fall back to the repository's current default
+branch.
 
 Negative lookup caching may prevent repeated load pressure for missing
 definitions, but it must be short-lived or explicitly invalidated so a newly
 restored source becomes visible.
 
-### Active runs: strong pins with GitHub reload
+### Active runs: strong local pins with GitHub fallback
 
-Once a workflow run is accepted, the controller strongly retains the decoded
-project config and workflow definition while that run is in active scope. The
-pin uses the exact GitHub repository, commit SHA, paths, and canonical document
-hashes recorded at submission. An ordinary cache eviction must not remove
-content pinned by an active run.
+Once a workflow run is accepted, the controller strongly retains both the
+required local Git commit and the decoded project config/workflow definition
+while that run is in active scope. The pin uses the exact GitHub repository,
+commit SHA, paths, and canonical document hashes recorded at submission.
+Ordinary disk or memory cache eviction must not remove content pinned by an
+active run.
 
 The active pin is semi-persistent runtime state, not the authoritative durable
 copy of the source documents. The durable run record stores the complete
@@ -273,17 +337,15 @@ restart recipe:
 - captured overrides and required environment values/references;
 - generated run identities and lifecycle state.
 
-After a controller crash, in-memory pins and caches are gone. Startup finds
-active run records, reloads project and workflow documents from GitHub at their
-exact commit SHA, verifies path/schema/hash, rebuilds the strong pins, and then
-reconstructs Case 3 resolvers as needed.
+After a controller crash, memory pins are gone but the bare Git cache remains
+on disk. Startup finds active run records, re-pins their local commits, reads
+and verifies project/workflow blobs, rebuilds decoded pins, and reconstructs
+Case 3 resolvers as needed. It fetches the exact commit from GitHub only when
+the local object cache is incomplete.
 
-This model intentionally makes GitHub availability and authorization a restart
-dependency. If the exact commit cannot be loaded, the run becomes blocked with
-a definition-availability error. The controller must not fall back to a branch,
-tag, default branch, or newer commit. A future local immutable source archive
-could remove this availability dependency, but it is not part of the current
-model.
+If the exact commit exists neither locally nor on GitHub, the run becomes
+blocked with a definition-availability error. The controller must not fall back
+to a branch, tag, default branch, or newer commit.
 
 When a run leaves active scope, its strong pins are released. The decoded
 definitions may then:
@@ -301,8 +363,8 @@ This produces three clear tiers:
 | Tier | Retention | Role |
 |---|---|---|
 | Effective controller runtime config | Resident and invariant for process lifetime | Constructs and governs the controller |
-| Project/workflow catalog reference and cache | Durable lightweight reference plus bounded, evictable decoded cache | Discovers and validates definitions on demand |
-| Active workflow run | Durable exact GitHub restart recipe plus strong decoded-content pin while resident | Reconstructs later resolvers; reloads exact commit after restart |
+| Project/workflow catalog and caches | Durable lightweight reference, semi-persistent bare Git cache, and bounded decoded cache | Discovers and validates definitions on demand |
+| Active workflow run | Durable exact GitHub restart recipe plus strong local-commit and decoded-content pins | Reconstructs later resolvers; uses GitHub only when exact objects are absent locally |
 
 Strong active pins should be shared by immutable content key so many concurrent
 runs using the same project/workflow revision do not retain duplicate decoded
@@ -939,8 +1001,9 @@ the initially ready stage.
 
 Case 2 is the boundary where external configuration becomes a durable exact
 reload recipe plus captured run context. Later compilation uses the same GitHub
-commit and captured values; after restart it depends on GitHub still making
-that exact commit available.
+commit and captured values. After restart it reloads from the local bare Git
+cache, fetching the exact commit from GitHub only if required objects are
+missing.
 
 #### Case 2 input layers
 
@@ -1078,7 +1141,7 @@ their inputs come from:
 
 | Concern | Case 2: submission | Case 3: ready step |
 |---|---|---|
-| Controller/project/workflow config | Read, validate, pin, and record exact GitHub recipe | Use active pin or reload exact commit from run recipe |
+| Controller/project/workflow config | Read, validate, pin local Git content, and record exact GitHub recipe | Use active pin or reload exact commit from local Git cache, with GitHub fallback |
 | Environment values | Capture declared values | Reload captured values |
 | Client overrides | Validate and snapshot | Reload from run snapshot |
 | Workflow runtime | Generate and snapshot | Reload existing run values |
@@ -1086,11 +1149,12 @@ their inputs come from:
 | Step/work-item runtime | Initial stage only | Generate for newly ready stage |
 | Result | Create run and initial work | Add later work to existing run |
 
-Case 3 may reload project/workflow documents from GitHub only by the run's exact
-repository and commit SHA, followed by hash verification. It must not read the
-current branch version, client process environment, controller process
-environment, or mutable controller configuration. Doing so would allow step 2
-to execute under different inputs than step 1.
+Case 3 may reload project/workflow documents from the local Git cache only by
+the run's exact repository and commit SHA, followed by hash verification. If
+the commit is absent locally, the controller may fetch that exact commit from
+GitHub. It must not read the current branch version, client process environment,
+controller process environment, or mutable controller configuration. Doing so
+would allow step 2 to execute under different inputs than step 1.
 
 Typical Case 3 additions are:
 
@@ -1260,11 +1324,11 @@ The following are responsibilities, not agreed Go type names.
 
 ### Definition stores and caches
 
-Load immutable project and workflow documents by content identity. A cache may
-retain decoded immutable documents, keyed by revision and fingerprint. Cache
-eviction must not affect correctness because the source can be reloaded.
-Active runs promote matching entries to shared strong pins. After restart,
-those pins are rebuilt from exact-commit GitHub reloads.
+Load immutable project and workflow documents by content identity. The
+semi-persistent bare Git cache stores repository objects; a separate bounded
+memory cache retains decoded documents. Active runs promote matching Git
+commits and decoded entries to shared strong pins. After restart, those pins
+are rebuilt from local Git objects, with exact-commit GitHub fetch as fallback.
 
 ### Run snapshot store
 
