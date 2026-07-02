@@ -352,9 +352,10 @@ Controller startup configuration should define separate filesystem purposes:
 
 | Setting | Purpose |
 |---|---|
-| `controller_git_cache_path` | Semi-persistent bare/partial Git object cache |
-| `controller_temp_path` | Disposable per-operation materialization and package staging |
-| `controller_artifact_cache_path` | Published content-addressed bundles retained for assignment/retry |
+| `controller_root_dir` | Root for controller-owned local state; defaults to `./.run` |
+| `controller_git_cache_path` | Semi-persistent bare/partial Git object cache; defaults to `${controller_root_dir}/git_cache` |
+| `controller_temp_path` | Disposable per-operation materialization and package staging; defaults to `${controller_root_dir}/temp` |
+| `controller_artifact_cache_path` | Published content-addressed bundles retained for assignment/retry; defaults to `${controller_root_dir}/artifacts` |
 
 The temp path is not an execution source of truth. Each materialization or
 packaging operation receives a unique directory scoped to its run/step/work
@@ -1540,7 +1541,7 @@ The timing variables are:
 ```text
 runtime.controller_started_at
 runtime.controller_recovery_started_at
-controller_config.caretaker_interval_schedule
+controller_config.caretaker_interval_schedule_secs
 controller_config.caretaker_missed_interval_limit
 worker_config.heartbeat_interval_schedule
 ```

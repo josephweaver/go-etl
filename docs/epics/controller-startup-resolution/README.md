@@ -250,19 +250,42 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
 - The database driver is explicit rather than inferred from the connection
   string. Pool, connection-lifetime, and migration-policy variables are
   deferred until a concrete requirement exists.
-- The HTTP server consumer requires the following non-sensitive variables.
-  Each has no default and permits an authorized startup command-line/client
-  override:
+- The HTTP server consumer uses the following non-sensitive variables. Each
+  permits an authorized startup command-line/client override:
 
-  | Key | Type |
-  |---|---|
-  | `controller_listen_host` | string |
-  | `controller_listen_port` | int |
-  | `controller_url` | string |
+  | Key | Type | Declaration required | Schema default |
+  |---|---|---:|---|
+  | `controller_listen_host` | string | No | `localhost` |
+  | `controller_listen_port` | int | No | `8080` |
+  | `controller_url` | string | Yes | None |
 
 - The listen host/port and advertised controller URL remain separate because
   container networking, port forwarding, and reverse proxies may make them
   different.
+- Controller filesystem storage uses the following non-sensitive path
+  variables. Each permits an authorized startup override:
+
+  | Key | Declaration required | Schema default | Lifetime |
+  |---|---:|---|---|
+  | `controller_root_dir` | No | `./.run` | Root for controller-owned local state |
+  | `controller_git_cache_path` | No | `${controller_root_dir}/git_cache` | Semi-persistent across controller restarts |
+  | `controller_temp_path` | No | `${controller_root_dir}/temp` | Disposable per-operation staging |
+  | `controller_artifact_cache_path` | No | `${controller_root_dir}/artifacts` | Retained published worker packages |
+
+- These paths remain separate because they have different integrity, cleanup,
+  capacity, and restart semantics. The derived defaults are ordinary typed path
+  expressions and therefore follow normal resolution and provenance rules.
+- Caretaker startup uses the following non-sensitive, startup-overridable
+  integer variables:
+
+  | Key | Declaration required | Schema default | Validation |
+  |---|---:|---:|---|
+  | `caretaker_interval_schedule_secs` | No | `60` | Greater than zero |
+  | `caretaker_missed_interval_limit` | No | `1` | Greater than or equal to one |
+
+- A missed-interval limit of one still permits multiple worker heartbeat
+  attempts within each 60-second caretaker interval; it abandons work only when
+  the caretaker consumes an interval containing no report.
 
 ## Open Questions
 
@@ -284,6 +307,9 @@ questions below are resolved and the epic is explicitly moved to `Ready`.
     which require the process to exit without binding?
 9. Does controller exclusivity/database locking belong in this epic's startup
     readiness boundary or exclusively in `controller-resilience`?
+10. What is the resolution base for relative path values such as the default
+    `controller_root_dir = "./.run"`: controller executable directory,
+    controller-config directory, or process working directory?
 
 ## Completion Criteria
 
