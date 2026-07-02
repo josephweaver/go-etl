@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,7 +231,13 @@ func TestControllerConfigRejectsNoVariables(t *testing.T) {
 }
 
 func TestControllerConfigFromArgsLoadsDefaultWithoutPath(t *testing.T) {
-	config, err := controllerConfigFromArgs([]string{"controller"})
+	directory := t.TempDir()
+	path := filepath.Join(directory, defaultControllerConfigFilename)
+	writeTestControllerConfig(t, path)
+
+	config, err := controllerConfigFromArgs([]string{"controller"}, func() (string, error) {
+		return filepath.Join(directory, "controller.exe"), nil
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -238,13 +245,50 @@ func TestControllerConfigFromArgsLoadsDefaultWithoutPath(t *testing.T) {
 	if len(config.Variables) == 0 {
 		t.Fatal("expected default variables")
 	}
-	if config.ExecutionEnvironment.Name != "dockerized-slurm" {
-		t.Fatalf("execution environment = %q, want dockerized-slurm", config.ExecutionEnvironment.Name)
-	}
 }
 
 func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "controller-config.json")
+	writeTestControllerConfig(t, path)
+
+	config, err := controllerConfigFromArgs([]string{"controller", "--config", path}, func() (string, error) {
+		return "", fmt.Errorf("explicit config must not inspect the executable")
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(config.Variables) != 1 {
+		t.Fatalf("unexpected variable count: %d", len(config.Variables))
+	}
+}
+
+func TestControllerConfigFromArgsRejectsExecutablePathFailure(t *testing.T) {
+	_, err := controllerConfigFromArgs([]string{"controller"}, func() (string, error) {
+		return "", fmt.Errorf("executable unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "determine controller executable path") {
+		t.Fatalf("error = %q, want executable path context", err)
+	}
+}
+
+func TestControllerConfigFromArgsRejectsUnappliedOverride(t *testing.T) {
+	_, err := controllerConfigFromArgs([]string{"controller", "--override", `{}`}, func() (string, error) {
+		return "", fmt.Errorf("override rejection must occur first")
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "overrides are not supported yet") {
+		t.Fatalf("error = %q, want unsupported override context", err)
+	}
+}
+
+func writeTestControllerConfig(t *testing.T, path string) {
+	t.Helper()
 	content := []byte(`{
 		"api_version": "goet/v1alpha1",
 		"kind": "Controller",
@@ -256,18 +300,8 @@ func TestControllerConfigFromArgsLoadsPath(t *testing.T) {
 			}
 		]
 	}`)
-
 	if err := os.WriteFile(path, content, 0644); err != nil {
 		t.Fatal(err)
-	}
-
-	config, err := controllerConfigFromArgs([]string{"controller", path})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(config.Variables) != 1 {
-		t.Fatalf("unexpected variable count: %d", len(config.Variables))
 	}
 }
 

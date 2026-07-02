@@ -216,18 +216,18 @@ GET  /status         return queue counts
 
 Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
 
-If started with a config path, the controller loads a variable document and normalizes all variables into `controller_config`. If no config path is supplied, the controller now attempts to load:
+If started with `--config`, the controller loads that variable document and normalizes all variables into `controller_config`. A relative explicit path remains relative to the process working directory. If no config path is supplied, the controller loads:
 
 ```text
-cmd/controller/controller-default-config.json
+controller.json
 ```
 
-falling back to `controller-default-config.json` relative to the current working directory.
+from the directory containing the running executable. It does not search the process working directory or source tree. Repository development commands use `--config` because `go run` places its temporary executable outside the repository.
 
 The demo client starts the controller with:
 
 ```powershell
-go run ./cmd/controller ./cmd/controller/demo-config.json
+go run ./cmd/controller --config ./cmd/controller/demo-config.json
 ```
 
 `cmd/controller/demo-config.json` currently defines:
@@ -658,7 +658,7 @@ The local controller starter is intentionally minimal. It resolves structured ex
 The demo client currently starts the controller with:
 
 ```text
-controller_config.controller_start_args = ["run", "./cmd/controller", "./cmd/controller/demo-config.json"]
+controller_config.controller_start_args = ["run", "./cmd/controller", "--config", "./cmd/controller/demo-config.json"]
 ```
 
 `internal/clientsetup` contains the first client-side SSH setup engine. `SSHSetup` is intentionally decoupled from terminal I/O through a `Prompter` interface and from filesystem writes through a `FileStore` interface. The current setup flow can ask for transport choice, SSH host, port, user, key creation or existing key path, and host public key confirmation. For SSH it can generate a project-local Ed25519 key pair and write a generated controller config that selects `transport.type = "ssh"`. This package is not yet wired into `cmd/demo-client`; remote public-key installation and durable `known_hosts` management remain future slices.

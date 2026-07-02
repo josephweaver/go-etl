@@ -18,7 +18,7 @@ rm -f .run/controller/local-singularity-ledger.sqlite*
 mkdir -p .run/local-singularity
 rm -f .run/local-singularity/controller.out .run/local-singularity/controller.err
 
-go run ./cmd/controller ./cmd/controller/local-singularity-config.json \
+go run ./cmd/controller --config ./cmd/controller/local-singularity-config.json \
   >.run/local-singularity/controller.out \
   2>.run/local-singularity/controller.err &
 controller_pid=$!

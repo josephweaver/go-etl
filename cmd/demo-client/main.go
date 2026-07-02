@@ -61,6 +61,7 @@ func demoResolver() (variable.Resolver, error) {
 		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"}, TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
 			{Type: variable.TypeString, Expression: "run"},
 			{Type: variable.TypeString, Expression: "./cmd/controller"},
+			{Type: variable.TypeString, Expression: "--config"},
 			{Type: variable.TypeString, Expression: "./cmd/controller/demo-config.json"},
 		}}},
 

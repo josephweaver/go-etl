@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ import (
 	"goetl/internal/workflow"
 )
 
-const defaultControllerConfigPath = "cmd/controller/controller-default-config.json"
+const defaultControllerConfigFilename = "controller.json"
 
 type Controller struct {
 	mu       sync.Mutex
@@ -66,7 +67,7 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
-	config, err := controllerConfigFromArgs(os.Args)
+	config, err := controllerConfigFromArgs(os.Args, os.Executable)
 	if err != nil {
 		fmt.Println("controller config failed:", err)
 		return
@@ -109,12 +110,24 @@ func main() {
 	}
 }
 
-func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
-	if len(args) < 2 {
-		return loadDefaultControllerConfig()
+func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
+	options, err := parseControllerStartupOptions(args)
+	if err != nil {
+		return ControllerConfig{}, err
+	}
+	if len(options.OverrideJSON) != 0 {
+		return ControllerConfig{}, fmt.Errorf("controller startup overrides are not supported yet")
+	}
+	if options.ConfigPath != "" {
+		return loadControllerConfig(options.ConfigPath)
 	}
 
-	return loadControllerConfig(args[1])
+	executable, err := executablePath()
+	if err != nil {
+		return ControllerConfig{}, fmt.Errorf("determine controller executable path: %w", err)
+	}
+	path := filepath.Join(filepath.Dir(executable), defaultControllerConfigFilename)
+	return loadControllerConfig(path)
 }
 
 func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
@@ -148,14 +161,6 @@ func parseControllerStartupOptions(args []string) (controllerStartupOptions, err
 	}
 
 	return options, nil
-}
-
-func loadDefaultControllerConfig() (ControllerConfig, error) {
-	if _, err := os.Stat(defaultControllerConfigPath); err == nil {
-		return loadControllerConfig(defaultControllerConfigPath)
-	}
-
-	return loadControllerConfig("controller-default-config.json")
 }
 
 func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {

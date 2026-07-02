@@ -489,7 +489,7 @@ go build -o .run/fake-hpcc/controller ./cmd/controller
 Start the controller from Bash:
 
 ```bash
-.run/fake-hpcc/controller ./cmd/controller/demo-config.json
+.run/fake-hpcc/controller --config ./cmd/controller/demo-config.json
 ```
 
 In another Bash shell, submit the fake-HPCC workflow:
