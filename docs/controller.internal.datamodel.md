@@ -114,15 +114,21 @@ would make controller memory grow with the complete customer catalog.
 
 ### Controller configuration: process invariant
 
-The effective controller configuration produced by Case 1 is invariant for one
-constructed controller runtime. The controller keeps this validated,
-non-secret runtime config resident because nearly every operation may need it
-and there is only one effective controller configuration per process.
+The controller configuration authority is the serialized JSON variable
+document selected in Case 1, combined with the captured approved environment
+scope, command-line override scope, and generated startup runtime scope. These
+immutable source scopes remain resident for the constructed controller process.
 
-The source JSON file, environment capture, and command-line overrides remain
-provenance for that effective config. Editing any source does not mutate the
-running controller. A reload is a separate lifecycle that builds and validates
-a replacement runtime config before swapping explicitly reloadable components.
+The controller does not flatten them into a second aggregate
+`ControllerRuntimeConfig`. Each startup consumer uses a resolver over the same
+immutable scopes and requests the typed variables it requires. A database
+constructor asks for database variables; the HTTP server asks for listener
+variables; the Git cache asks for cache-path and retention variables.
+
+Editing the JSON file or changing the parent environment does not mutate the
+running controller. A reload is a separate lifecycle that loads new immutable
+scopes, resolves and validates every affected consumer, then replaces only
+components explicitly declared reloadable.
 
 This invariance does not mean every controller value is copied into every
 workflow run. Case 2 exports only the subset allowed to influence workflow
@@ -488,7 +494,7 @@ This produces three clear tiers:
 
 | Tier | Retention | Role |
 |---|---|---|
-| Effective controller runtime config | Resident and invariant for process lifetime | Constructs and governs the controller |
+| Serialized controller variable document and captured startup scopes | Resident and invariant for process lifetime | Resolver authority used to construct and govern controller components |
 | Project/workflow catalog and caches | Durable lightweight reference, semi-persistent bare Git cache, and bounded decoded cache | Discovers and validates definitions on demand |
 | Active workflow run | Durable exact GitHub restart recipe plus strong local-commit and decoded-content pins | Reconstructs later resolvers; uses GitHub only when exact objects are absent locally |
 
@@ -602,7 +608,7 @@ They are a resolver source, but not user configuration.
 Built-in defaults are also not a fourth external source. They are part of the
 controller's versioned configuration schema. A default applies only when none
 of the three external sources supplies that setting, and the effective value
-must be visible in the validated runtime configuration.
+must be observable through resolver provenance and diagnostics.
 
 ##### Config-file selection
 
@@ -687,10 +693,10 @@ same source precedence even if they are decoded into Go structs rather than
 represented as variables. A structural setting and a typed variable must not
 both claim authority over the same concept.
 
-The resulting effective runtime configuration should record non-secret
-provenance: which source supplied each winning setting. This allows startup
-diagnostics to explain, for example, that a database host came from the JSON
-file while its credential reference came from an environment override.
+Resolution should retain non-secret provenance showing which source supplied
+each winning setting. This allows startup diagnostics to explain, for example,
+that a database connection expression came from JSON while its password value
+came from the controller environment.
 
 ##### Controller HTTP server configuration
 
@@ -847,22 +853,49 @@ needed. Examples include `runtime.controller_process_id`,
 
 #### Database configuration
 
-Database configuration should describe connection intent without requiring a
-single opaque connection string. The initial SQLite case needs only a driver
-and path. A network database may need:
+The serialized controller JSON must declare the required variables needed to
+open the controller's main database. The initial contract may use one required
+sensitive connection-string variable rather than an aggregate Go config type.
 
-- driver;
-- host and port;
-- database or schema name;
+Conceptually:
+
+```json
+{
+  "name": {
+    "namespace": "controller_config",
+    "key": "main_database_connection_string"
+  },
+  "type": "string",
+  "expression": "postgres://goet:${controller_env.DB_PASSWORD}@db.example/goet",
+  "sensitive": true
+}
+```
+
+The approved controller-environment mapping exposes `DB_PASSWORD` as a typed,
+sensitive `controller_env` variable. The startup resolver evaluates the
+connection-string expression in memory and passes the result directly to the
+database-opening boundary. The resolved string is not retained in a general
+config object, persisted, logged, or included in diagnostics.
+
+The database consumer owns a small required-key contract. For example, it may
+require:
+
+- `main_database_connection_string`;
+- database driver only when it cannot be determined safely from the connection
+  string;
 - connect and query timeouts;
-- TLS mode and trust material references;
-- username reference and password/token reference;
 - pool limits;
 - migration policy.
 
-Individual typed values improve validation and redaction. A derived connection
-string may be built immediately before opening the database, but it should not
-become the persisted configuration authority.
+Each item remains a normal typed variable in the serialized controller config.
+Component constructors may copy resolved values into narrow local arguments
+needed to construct a library object, but those arguments are not a second
+configuration authority.
+
+The initial SQLite configuration can follow the same contract with an SQLite
+connection string/path that requires no password. Supporting SQLite does not
+make the main database optional: the selected controller config must still
+provide the required key.
 
 Database configuration has three sensitivity classes:
 
@@ -871,6 +904,26 @@ Database configuration has three sensitivity classes:
 | Public operational | driver, host, port, database name, SQLite path | Yes |
 | Sensitive reference | secret URI, credential name, certificate path | Yes, with access controls |
 | Secret material | password, token, private key contents | No |
+
+Startup errors should preserve the consumer context and failing variable while
+redacting values. The important cases are:
+
+```text
+controller startup: required variable
+controller_config.main_database_connection_string is missing
+```
+
+and:
+
+```text
+controller startup: resolve
+controller_config.main_database_connection_string:
+controller_env.DB_PASSWORD is missing
+```
+
+The exact wording may evolve, but callers must be able to distinguish a missing
+database declaration from a declared database expression whose environment
+dependency is unavailable.
 
 #### Secret handling
 
@@ -970,10 +1023,10 @@ checked when a project or run is loaded, not by assuming one global startup
 environment.
 
 The database connection handle, stores, component registry, logger, reconciler,
-and validated non-secret startup snapshot may be long-lived. A project-specific
-environment may be cached or pooled after construction, but its identity and
-lifetime remain attached to project/run context. The startup resolver is not
-long-lived.
+and immutable serialized/captured controller scopes may be long-lived. A
+project-specific environment may be cached or pooled after construction, but
+its identity and lifetime remain attached to project/run context. The startup
+resolver is not long-lived.
 
 #### Startup failure behavior
 
@@ -1005,50 +1058,58 @@ leave the controller serving against a partially upgraded schema.
 
 Startup configuration is immutable for one constructed controller runtime
 unless a separate reload lifecycle is designed. Editing the source file must
-not mutate an already constructed resolver or silently reconfigure active
-runs.
+not mutate the retained source scopes, constructed services, or active runs.
 
 A later reload operation should create a new resolver and a candidate runtime
-configuration, validate it completely, then atomically replace only components
-declared reloadable. Database credential rotation may require a new connection
-pool. Run-snapshotted values remain unchanged even when deployment policy is
-reloaded.
+scope set, validate every affected required-variable contract, then atomically
+replace only components declared reloadable. Database credential rotation may
+require a new connection pool. Run-snapshotted values remain unchanged even
+when deployment policy is reloaded.
 
 #### Startup resolution outputs
 
-The startup operation should produce a validated, non-secret runtime
-configuration with fields required to construct services. Conceptually:
+Startup does not produce one aggregate runtime-configuration object. It
+produces constructed services and retains the immutable serialized/captured
+source scopes needed for later resolver creation:
 
 ```text
-ControllerRuntimeConfig
-  controller instance identity
-  database connection intent
-  secret references (not materialized values)
-  resolver policy
-  API listen/advertise settings
-  Git cache, temp staging, and artifact cache paths/policy
-  supported execution-environment component types and deployment policy
-  reconciliation and retention policy
-  logging policy
+serialized controller JSON
++ captured controller_env
++ command-line override scope
++ generated startup runtime scope
+              |
+              v
+        startup resolver
+              |
+              +-- required database variables --> open database handle
+              +-- required HTTP variables -----> construct HTTP server
+              +-- required cache variables ----> construct Git/artifact caches
+              +-- required policy variables ---> construct reconcilers/services
 ```
 
-This runtime config is a normal immutable Go value passed to constructors. It
-is not a global variable manager. It may also expose the safe subset of
-controller variables eligible to be snapshotted into a new workflow run.
+Each consumer validates its own required variables and returns a contextual
+startup error on missing, wrong-type, or invalid values. After construction,
+long-lived library/service objects retain only the values their implementations
+actually require. The resolver is discarded; the immutable source scopes may
+be used to create another resolver for a later controller-level decision.
+
+Case 2 receives an explicitly selected safe subset of these source variables,
+not a serialized Go runtime-config object.
 
 Current behavior partially follows this pattern for `ledger_db_path`: the
 controller loads a config document, builds a temporary resolver, opens SQLite,
 and discards the resolver. Important gaps are:
 
 - the database driver is implicit and only SQLite is supported;
-- secrets, TLS, connection pooling, and database identity are not modeled;
+- a required sensitive main-database connection-string contract, TLS,
+  connection pooling, and database identity are not modeled;
 - controller environment and startup overrides are not assembled;
 - the resolver policy is not itself resolved from startup configuration;
 - one concrete execution environment is currently read from controller config
   and stored globally on `Controller.env`;
 - readiness and phased startup are not explicit;
-- the validated safe controller-variable subset is not retained for later run
-  recipes;
+- the immutable controller source scopes and their safe workflow-export subset
+  are not retained for later run recipes;
 - no reload or credential-rotation boundary exists.
 
 #### Execution-environment ownership
@@ -1148,11 +1209,12 @@ eligible controller startup values
 
 More specifically:
 
-1. **Controller base.** A safe subset of the validated controller runtime
-   configuration from Case 1. This may include resolver policy, controller URL,
-   supported capability/version information, and deployment policy needed to
-   validate the run. It excludes database credentials, HTTP listener internals,
-   transient queue metrics, and unrelated controller secrets.
+1. **Controller base.** A safe subset selected from the immutable controller
+   JSON/environment/override scopes retained from Case 1. This may include
+   resolver policy, controller URL, supported capability/version information,
+   and deployment policy needed to validate the run. It excludes database
+   credentials, HTTP listener internals, transient queue metrics, and unrelated
+   controller secrets.
 2. **Project configuration.** The immutable project definition at a specific
    content revision, including its execution-environment definition or
    approved environment-profile selection.
