@@ -68,22 +68,32 @@ One row stores one immutable compiled unit of work.
 
 ```sql
 CREATE TABLE work_items (
-    workitem_id   TEXT PRIMARY KEY,
-    run_id        TEXT NOT NULL REFERENCES workflow_instances(run_id),
-    stage_index   INTEGER NOT NULL CHECK (stage_index >= 0),
-    workitem_index INTEGER NOT NULL CHECK (workitem_index >= 0),
-    workitem_json TEXT NOT NULL CHECK (json_valid(workitem_json)),
-    created_at    TEXT NOT NULL,
-    UNIQUE (run_id, stage_index, workitem_index)
+    work_item_id   TEXT PRIMARY KEY,
+    run_id         TEXT NOT NULL REFERENCES workflow_instances(run_id),
+    stage_index    INTEGER NOT NULL CHECK (stage_index >= 0),
+    work_item_index INTEGER NOT NULL CHECK (work_item_index >= 0),
+    work_item_json  TEXT NOT NULL CHECK (json_valid(work_item_json)),
+    created_at     TEXT NOT NULL,
+    UNIQUE (run_id, stage_index, work_item_index)
 );
 ```
 
 The composite uniqueness constraint makes repeated stage compilation
-idempotent. `workitem_json` contains the compiled worker input.
+idempotent. `work_item_json` contains the compiled worker input.
 
-## Assumed Parent Tables
+`stage_index` is the index of a logical block, commonly one step or a collection
+of parallel steps. `work_item_index` is the ordinal within a fanout operation.
 
-- `attempts(attempt_id, workitem_id)` stores immutable execution attempts.
+## `work_item_attempts`
+
+```sql
+CREATE TABLE work_item_attempts (
+    attempt_id  TEXT PRIMARY KEY,
+    work_item_id TEXT NOT NULL REFERENCES work_items(work_item_id)
+);
+```
+
+Retries create new `attempt_id` values for the same `work_item_id`.
 
 ## `queued_work`
 
@@ -91,15 +101,15 @@ One row means a logical work item is available for assignment.
 
 ```sql
 CREATE TABLE queued_work (
-    workitem_id TEXT PRIMARY KEY
-        REFERENCES work_items(workitem_id),
+    work_item_id TEXT PRIMARY KEY
+        REFERENCES work_items(work_item_id),
     run_id      TEXT NOT NULL,
     stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
     queued_at   TEXT NOT NULL
 );
 ```
 
-Assignment order is `queued_at`, then `workitem_id` for a stable tie-break.
+Assignment order is `queued_at`, then `work_item_id` for a stable tie-break.
 
 ## `running_work`
 
@@ -107,10 +117,10 @@ One row means one attempt currently owns a logical work item.
 
 ```sql
 CREATE TABLE running_work (
-    workitem_id TEXT PRIMARY KEY
-        REFERENCES work_items(workitem_id),
+    work_item_id TEXT PRIMARY KEY
+        REFERENCES work_items(work_item_id),
     attempt_id  TEXT NOT NULL UNIQUE
-        REFERENCES attempts(attempt_id),
+        REFERENCES work_item_attempts(attempt_id),
     run_id      TEXT NOT NULL,
     stage_index INTEGER NOT NULL CHECK (stage_index >= 0),
     started_at  TEXT NOT NULL
@@ -120,7 +130,7 @@ CREATE TABLE running_work (
 ## Invariants
 
 - `run_id` and `stage_index` do not change between placement tables.
-- A `workitem_id` occupies only one placement table after commit.
+- A `work_item_id` occupies only one placement table after commit.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
-- Retries reuse `workitem_id` and create a new `attempt_id`.
+- Retries reuse `work_item_id` and create a new `attempt_id`.
