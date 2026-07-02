@@ -36,6 +36,49 @@ Design mode feature files should describe the expected artifact of a future
 implementation slice. A feature file is stronger when it names the concrete
 production, test, or documentation artifact that will prove the feature exists.
 
+### Epic Delivery Cadence
+
+Epic work must state whether slice planning and implementation are interleaved
+or grouped. Use the following notation.
+
+#### Epic `(slice impl)+` Mode
+
+This mode develops one epic through repeated slice-and-implementation pairs:
+
+```text
+epic (slice impl)+
+```
+
+For each pair:
+
+1. Draft and agree on one slice charter.
+2. Implement only that slice under the active HCI mode.
+3. Run the narrowest relevant test.
+4. Stop for human review.
+5. Commit the accepted slice before drafting or implementing the next slice.
+
+All slices for the epic remain on one epic branch. Each accepted slice receives
+its own commit, and one pull request is opened for the complete epic after all
+agreed slices are implemented. This mode is appropriate when implementation
+evidence may refine the planning of later slices.
+
+#### Epic `(slice)+ (impl)+` Mode
+
+This mode completes slice planning before implementation begins:
+
+```text
+epic (slice)+ (impl)+
+```
+
+First draft and agree on all slice charters in Design Mode. After the complete
+decomposition is approved, implement the slices in order under the active HCI
+mode. EC review boundaries still apply during implementation; grouping the
+planning phase does not authorize implementing multiple EC-3 slices without
+human review.
+
+If the user does not choose an epic delivery cadence, ask before moving from an
+approved epic into slice creation.
+
 ## Initial Project Direction
 
 - Start at `main.go`.
@@ -258,9 +301,13 @@ no commit is necessary.
 Before starting a new implementation slice after a completed feature slice:
 
 1. Commit the completed slice changes.
-2. Create a pull request if the work is intended to land through GitHub review.
-3. Merge or accept the pull request when appropriate.
-4. Create a new branch for the next slice.
+2. In epic `(slice impl)+` mode, remain on the epic branch and continue with the
+   next slice; open one pull request after the epic is complete.
+3. Otherwise, create a pull request if the completed slice is intended to land
+   through GitHub review.
+4. Merge or accept that pull request when appropriate.
+5. Create a new branch for the next slice when the selected delivery cadence
+   requires a slice boundary branch.
 
 ### Required Slice Report
 
