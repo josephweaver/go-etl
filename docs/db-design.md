@@ -79,13 +79,19 @@ CREATE TABLE work_items (
     stage_index    INTEGER NOT NULL CHECK (stage_index >= 0),
     work_item_index INTEGER NOT NULL CHECK (work_item_index >= 0),
     work_item_json  TEXT NOT NULL CHECK (json_valid(work_item_json)),
+    resolved_inputs_json TEXT NOT NULL CHECK (json_valid(resolved_inputs_json)),
+    resolved_inputs_sha256 TEXT NOT NULL
+        CHECK (length(resolved_inputs_sha256) = 64),
     created_at     TEXT NOT NULL,
     UNIQUE (run_id, stage_index, work_item_index)
 );
 ```
 
 The composite uniqueness constraint makes repeated stage compilation
-idempotent. `work_item_json` contains the compiled worker input.
+idempotent. `work_item_json` contains the compiled worker payload.
+`resolved_inputs_json` contains the canonical resolved operation inputs;
+`resolved_inputs_sha256` supports prior-work lookup without including unrelated
+submission context. Retries reuse both values.
 
 `stage_index` is the index of a logical block, commonly one step or a collection
 of parallel steps. `work_item_index` is the ordinal within a fanout operation.
