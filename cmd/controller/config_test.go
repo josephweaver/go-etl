@@ -676,6 +676,131 @@ func TestParseControllerStartupOptionsRejectsInvalidArguments(t *testing.T) {
 	}
 }
 
+func TestParseControllerStartupOverrides(t *testing.T) {
+	raw := []string{
+		`{"name":{"namespace":"override","key":"level"},"type":"string","expression":"debug"}`,
+		`{"name":{"namespace":"override","key":"ports"},"type":"list","expression":[{"type":"int","expression":8080}]}`,
+		`{"name":{"namespace":"override","key":"logging"},"type":"object","expression":{"enabled":{"type":"bool","expression":true}}}`,
+	}
+
+	scope, err := parseControllerStartupOverrides(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scope) != 3 {
+		t.Fatalf("scope length = %d, want 3", len(scope))
+	}
+	for _, key := range []string{"level", "ports", "logging"} {
+		if _, ok := scope[key]; !ok {
+			t.Fatalf("override.%s is missing", key)
+		}
+	}
+}
+
+func TestParseControllerStartupOverridesAllowsEmptyScope(t *testing.T) {
+	scope, err := parseControllerStartupOverrides(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scope) != 0 {
+		t.Fatalf("scope length = %d, want 0", len(scope))
+	}
+}
+
+func TestParseControllerStartupOverridesRejectsInvalidDeclarations(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     []string
+		want    []string
+		missing string
+	}{
+		{
+			name: "malformed recursive expression",
+			raw: []string{
+				`{"name":{"namespace":"override","key":"first"},"type":"string","expression":"ok"}`,
+				`{"name":{"namespace":"override","key":"secret"},"type":"list","expression":[{"type":"invalid","expression":"do-not-repeat"}]}`,
+			},
+			want:    []string{"override argument 2"},
+			missing: "do-not-repeat",
+		},
+		{
+			name: "missing namespace",
+			raw:  []string{`{"name":{"key":"port"},"type":"int","expression":8080}`},
+			want: []string{"override argument 1"},
+		},
+		{
+			name: "different namespace",
+			raw:  []string{`{"name":{"namespace":"runtime","key":"port"},"type":"int","expression":8080}`},
+			want: []string{"override argument 1", "runtime.port", "namespace must be override"},
+		},
+		{
+			name:    "controller environment namespace",
+			raw:     []string{`{"name":{"namespace":"controller_env","key":"PASSWORD"},"type":"string","expression":"hidden"}`},
+			want:    []string{"override argument 1", "controller_env.PASSWORD", "namespace must be override"},
+			missing: "hidden",
+		},
+		{
+			name: "duplicate key",
+			raw: []string{
+				`{"name":{"namespace":"override","key":"port"},"type":"int","expression":8080}`,
+				`{"name":{"namespace":"override","key":"port"},"type":"int","expression":9090}`,
+			},
+			want: []string{"override argument 2", "override.port", "duplicate"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseControllerStartupOverrides(test.raw)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, text := range test.want {
+				if !strings.Contains(err.Error(), text) {
+					t.Fatalf("error = %q, want %q", err, text)
+				}
+			}
+			if test.missing != "" && strings.Contains(err.Error(), test.missing) {
+				t.Fatalf("error reproduces expression value: %q", err)
+			}
+		})
+	}
+}
+
+func TestControllerStartupOverridePrecedence(t *testing.T) {
+	defaultScope, err := variable.NewScope(testDefaultVariable(variable.NamespaceControllerConfig, "level"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controllerScope, err := variable.NewScope(variable.Variable{
+		Name:            variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "level"},
+		TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "info"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideScope, err := parseControllerStartupOverrides([]string{
+		`{"name":{"namespace":"override","key":"level"},"type":"string","expression":"debug"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set := variable.NewSet(defaultScope, controllerScope, overrideScope)
+	unqualified, ok := set.Lookup("level")
+	if !ok || unqualified.TypedExpression.Expression != "debug" {
+		t.Fatalf("unqualified level = %#v, want override", unqualified)
+	}
+	controller, ok := set.LookupName(variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "level"})
+	if !ok || controller.TypedExpression.Expression != "info" {
+		t.Fatalf("qualified controller_config.level = %#v, want controller", controller)
+	}
+	override, ok := set.LookupName(variable.Name{Namespace: variable.NamespaceOverride, Key: "level"})
+	if !ok || override.TypedExpression.Expression != "debug" {
+		t.Fatalf("qualified override.level = %#v, want override", override)
+	}
+}
+
 func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
 	if err != nil {

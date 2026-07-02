@@ -234,6 +234,13 @@ Controller documents now reject non-`controller_config` declarations instead
 of silently rewriting their namespaces. `main` does not yet consume these
 retained scopes for service construction.
 
+The controller package can decode raw declarations collected from repeated
+`--override` arguments into a validated `override` scope. Decoding uses the
+canonical recursive `variable.Variable` JSON schema, rejects other namespaces
+and duplicate keys, and preserves qualified versus unqualified lookup
+behavior. Live controller startup still rejects `--override`; resolver
+integration remains a later startup slice.
+
 The demo client starts the controller with:
 
 ```powershell

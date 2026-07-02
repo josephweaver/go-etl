@@ -163,6 +163,32 @@ func parseControllerStartupOptions(args []string) (controllerStartupOptions, err
 	return options, nil
 }
 
+func parseControllerStartupOverrides(rawOverrides []string) (variable.Scope, error) {
+	variables := make([]variable.Variable, 0, len(rawOverrides))
+	seen := make(map[string]struct{}, len(rawOverrides))
+
+	for index, raw := range rawOverrides {
+		var declaration variable.Variable
+		if err := json.Unmarshal([]byte(raw), &declaration); err != nil {
+			return nil, fmt.Errorf("override argument %d: %w", index+1, err)
+		}
+		if declaration.Name.Namespace != variable.NamespaceOverride {
+			return nil, fmt.Errorf("override argument %d (%s): namespace must be %s", index+1, declaration.Name, variable.NamespaceOverride)
+		}
+		if _, ok := seen[declaration.Name.Key]; ok {
+			return nil, fmt.Errorf("override argument %d (%s): duplicate variable key", index+1, declaration.Name)
+		}
+		seen[declaration.Name.Key] = struct{}{}
+		variables = append(variables, declaration)
+	}
+
+	scope, err := variable.NewScope(variables...)
+	if err != nil {
+		return nil, fmt.Errorf("build override scope: %w", err)
+	}
+	return scope, nil
+}
+
 func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
 	if config.ExecutionEnvironment.IsZero() {
 		return nil, nil
