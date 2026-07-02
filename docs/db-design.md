@@ -16,6 +16,8 @@ CREATE TABLE projects (
 
 `repo_ref` identifies the repository. `config_path` is relative to its root.
 `config_sha256` hashes the canonical project-config JSON.
+Project rows are immutable. A materially different configuration receives a
+new `project_id`, even when its repository and path are unchanged.
 
 ## Workflow Definitions
 
@@ -32,6 +34,8 @@ CREATE TABLE workflows (
 
 `workflow_path` is relative to the project repository root. `workflow_sha256`
 hashes the canonical workflow JSON.
+Workflow rows are immutable. A materially different workflow receives a new
+`workflow_id`.
 
 ## `workflow_instances`
 
@@ -55,12 +59,14 @@ CREATE TABLE workflow_instances (
 The repository and commit must remain fetchable for restart and audit.
 `submission_context_json` stores immutable resolver inputs captured at
 submission, including generated variables, timezone, overrides, and versions.
+Together with the repository commit and immutable definitions, it reconstructs
+the variable stack used by later compilation.
 
 ## Submission Transaction
 
-In one transaction, upsert the project and workflow metadata, then insert the
-workflow instance. Acknowledge the client with `run_id` only after commit
-succeeds.
+In one transaction, insert any new immutable project and workflow metadata,
+then insert the workflow instance. Acknowledge the client with `run_id` only
+after commit succeeds.
 
 ## `work_items`
 
@@ -83,6 +89,8 @@ idempotent. `work_item_json` contains the compiled worker input.
 
 `stage_index` is the index of a logical block, commonly one step or a collection
 of parallel steps. `work_item_index` is the ordinal within a fanout operation.
+Every stage produces at least one work item; a no-op stage produces a skipped
+work item.
 
 ## `workers`
 
@@ -166,16 +174,19 @@ CREATE TABLE failed_work (
 );
 ```
 
-`failed_work` is terminal for the logical work item attempt. An abandoned attempt that
-will retry returns its work item to `queued_work` instead.
+`failed_work` durably records a failed or abandoned attempt. A retry also
+returns the logical work item to `queued_work`; it does not remove prior failure
+history.
 
 ## Invariants
 
-- Attempt placement rows derive work item, run, stage, worker, and timing data
-  from their parent records.
-- A `work_item_id` occupies only one placement table after commit.
+- Attempt rows derive work item, run, stage, worker, and timing data from their
+  parent records.
+- Only `queued_work` and `running_work` represent current placement.
+- Transaction logic prevents two attempts for one work item from occupying
+  `running_work`; `attempt_id` uniqueness alone cannot enforce this rule.
 - Claiming work inserts its attempt and `running_work` row, then deletes its
   `queued_work` row in one transaction.
-- Finishing work inserts one terminal placement row and deletes its
-  `running_work` row in one transaction.
+- Finishing work appends one attempt outcome and deletes its `running_work` row
+  in one transaction. A retry also inserts `queued_work` in that transaction.
 - Retries reuse `work_item_id` and create a new `attempt_id`.
