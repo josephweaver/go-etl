@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -18,6 +19,161 @@ import (
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
+
+func TestBuildControllerServerUsesStartupPrecedenceAndRecoveryMode(t *testing.T) {
+	dir := t.TempDir()
+	controllerPath, defaultDBPath, overrideDBPath := writeControllerStartupFiles(t, dir)
+	overrideDBJSON := filepath.ToSlash(overrideDBPath)
+
+	server, release, err := buildControllerServer(
+		[]string{"controller", "--config", controllerPath, "--override", `{"name":{"namespace":"override","key":"main_database_connection_string"},"type":"string","expression":"` + overrideDBJSON + `"}`},
+		func() (string, error) { return filepath.Join(dir, "controller-binary"), nil },
+		func(string) (string, bool) { return "", false },
+		func() (string, error) { return dir, nil },
+		func() int { return 1234 },
+		func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		func(int) string { return "cafebabe" },
+		func() string { return "test-version" },
+	)
+	if err != nil {
+		t.Fatalf("buildControllerServer() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if release != nil {
+			if err := release(); err != nil {
+				t.Fatalf("release controller startup resources: %v", err)
+			}
+		}
+	})
+
+	if server.Addr != "localhost:9091" {
+		t.Fatalf("server addr = %q, want localhost:9091", server.Addr)
+	}
+
+	statusResp := httptest.NewRecorder()
+	server.Handler.ServeHTTP(statusResp, httptest.NewRequest(http.MethodGet, "/status", nil))
+	if statusResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503 in recovery mode", statusResp.Code)
+	}
+
+	healthResp := httptest.NewRecorder()
+	server.Handler.ServeHTTP(healthResp, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if healthResp.Code != http.StatusNoContent {
+		t.Fatalf("health code = %d, want 204", healthResp.Code)
+	}
+
+	if _, err := os.Stat(defaultDBPath); err != nil {
+		t.Fatalf("default database path missing: %v", err)
+	}
+	if _, err := os.Stat(overrideDBPath); !os.IsNotExist(err) {
+		t.Fatalf("override database path exists or unreadable: %v", err)
+	}
+}
+
+func TestBuildControllerServerFailsClosedBeforeBind(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _ = writeControllerStartupFiles(t, dir)
+	badControllerPath := filepath.Join(dir, "bad-controller.json")
+	if err := os.WriteFile(badControllerPath, []byte(`{"api_version":"goet/v1alpha1","kind":"Controller","variables":[{"name":{"namespace":"controller_config","key":"main_database_driver"},"type":"string","expression":"bad"}]}`), 0600); err != nil {
+		t.Fatalf("write bad controller config: %v", err)
+	}
+
+	server, release, err := buildControllerServer(
+		[]string{"controller", "--config", badControllerPath},
+		func() (string, error) { return filepath.Join(dir, "controller-binary"), nil },
+		func(string) (string, bool) { return "", false },
+		func() (string, error) { return dir, nil },
+		func() int { return 1234 },
+		func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		func(int) string { return "cafebabe" },
+		func() string { return "test-version" },
+	)
+	if err == nil || !strings.Contains(err.Error(), "controller database failed") {
+		t.Fatalf("error = %v, want controller database failure", err)
+	}
+	if server != nil || release != nil {
+		t.Fatalf("server = %#v release = %T, want nils on startup failure", server, release)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "controller-startup.sqlite")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected database file created for failing startup: %v", err)
+	}
+}
+
+func writeControllerStartupFiles(t *testing.T, dir string) (string, string, string) {
+	t.Helper()
+
+	defaultDBPath := filepath.Join(dir, "controller-startup.sqlite")
+	overrideDBPath := filepath.Join(dir, "override-startup.sqlite")
+	defaultDBJSON := filepath.ToSlash(defaultDBPath)
+	controllerPath := filepath.Join(dir, "controller.json")
+	defaultsPath := filepath.Join(dir, "defaults.json")
+
+	controllerJSON := `{
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
+  "variables": [
+    {
+      "name": {"namespace": "controller_config", "key": "main_database_driver"},
+      "type": "string",
+      "expression": "sqlite"
+    },
+    {
+      "name": {"namespace": "controller_config", "key": "main_database_connection_string"},
+      "type": "string",
+      "expression": "` + defaultDBJSON + `"
+    },
+    {
+      "name": {"namespace": "controller_config", "key": "controller_url"},
+      "type": "string",
+      "expression": "http://localhost:9091"
+    }
+  ]
+}`
+
+	defaultsJSON := `{
+  "api_version": "goet/v1alpha1",
+  "kind": "Defaults",
+  "variables": [
+    {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
+    {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 9091},
+    {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_path"}, "type": "path", "expression": "${controller_root_dir}/git_cache"},
+    {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_path"}, "type": "path", "expression": "${controller_root_dir}/artifacts"},
+    {"name": {"namespace": "controller_config", "key": "caretaker_interval_schedule_milliseconds"}, "type": "int", "expression": 60000},
+    {"name": {"namespace": "controller_config", "key": "caretaker_missed_interval_limit"}, "type": "int", "expression": 1},
+    {"name": {"namespace": "controller_config", "key": "resolver_max_depth"}, "type": "int", "expression": 10},
+    {"name": {"namespace": "controller_config", "key": "controller_log_root_path"}, "type": "path", "expression": "${controller_root_dir}/logs"},
+    {"name": {"namespace": "controller_config", "key": "controller_filesystem_logging_enabled"}, "type": "bool", "expression": true},
+    {"name": {"namespace": "controller_config", "key": "controller_log_level"}, "type": "string", "expression": "info"},
+    {"name": {"namespace": "controller_config", "key": "controller_read_header_timeout_milliseconds"}, "type": "int", "expression": 5000},
+    {"name": {"namespace": "controller_config", "key": "controller_read_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_write_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_idle_timeout_milliseconds"}, "type": "int", "expression": 120000},
+    {"name": {"namespace": "controller_config", "key": "controller_shutdown_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_max_request_bytes"}, "type": "int", "expression": 16777216},
+    {"name": {"namespace": "controller_config", "key": "controller_max_header_bytes"}, "type": "int", "expression": 1048576},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_git_fetch_timeout_milliseconds"}, "type": "int", "expression": 300000},
+    {"name": {"namespace": "controller_config", "key": "controller_git_fetch_concurrency"}, "type": "int", "expression": 4},
+    {"name": {"namespace": "controller_config", "key": "controller_temp_cleanup_age_milliseconds"}, "type": "int", "expression": 86400000},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_storage_min_free_mb"}, "type": "int", "expression": 1024}
+  ]
+}`
+
+	if err := os.WriteFile(controllerPath, []byte(controllerJSON), 0600); err != nil {
+		t.Fatalf("write controller config: %v", err)
+	}
+	if err := os.WriteFile(defaultsPath, []byte(defaultsJSON), 0600); err != nil {
+		t.Fatalf("write defaults config: %v", err)
+	}
+
+	return controllerPath, defaultDBPath, overrideDBPath
+}
 
 func TestResolveControllerFilesystemPaths(t *testing.T) {
 	workingDirectory := filepath.Join(t.TempDir(), "working")

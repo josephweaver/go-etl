@@ -871,6 +871,7 @@ Current coverage includes:
 - Controller config loading and namespace normalization.
 - Controller default config loading when no config path is supplied.
 - Controller execution-environment config validation and construction.
+- Controller startup assembly coverage for precedence, recovery mode, qualified lookup protection, and fail-closed startup.
 - Docker transport command construction for `exec` and `cp` behavior.
 - SSH transport config validation, key loading, host-key checking, connect/close behavior, command execution, copy/list behavior, filesystem helpers, reconnect behavior, and end-to-end in-process SSH/SFTP fixture coverage.
 - Fake HPCC SSH controller config construction.
@@ -1019,6 +1020,8 @@ The current verified demo run records two attempt rows and four attempt-variable
 ## Design Direction
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
+
+The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
 

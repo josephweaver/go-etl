@@ -26,17 +26,17 @@ import (
 const defaultControllerConfigFilename = "controller.json"
 
 type Controller struct {
-	mu       sync.Mutex
-	pending  []model.WorkItem
-	assigned map[string]model.WorkItem
-	failed   map[string]model.WorkFailure
-	ledger   *sql.DB
-	shutdown func(context.Context) error
-	env      *ExecutionEnvironment
-	scaler   WorkerScaleState
-	scaleCfg WorkerScaleConfig
+	mu                sync.Mutex
+	pending           []model.WorkItem
+	assigned          map[string]model.WorkItem
+	failed            map[string]model.WorkFailure
+	ledger            *sql.DB
+	shutdown          func(context.Context) error
+	env               *ExecutionEnvironment
+	scaler            WorkerScaleState
+	scaleCfg          WorkerScaleConfig
 	recoveryStartedAt time.Time
-	normalAdmission    bool
+	normalAdmission   bool
 }
 
 type WorkflowSubmission struct {
@@ -134,79 +134,108 @@ func (c *Controller) requireNormalAdmission(w http.ResponseWriter) bool {
 }
 
 func main() {
-	options, err := parseControllerStartupOptions(os.Args)
+	server, release, err := buildControllerServer(os.Args, os.Executable, os.LookupEnv, os.Getwd, os.Getpid, time.Now, randomHex, buildInfoCodeVersion)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
+		fmt.Println(err)
 		return
 	}
-	configPath, err := controllerConfigPath(options.ConfigPath, os.Executable)
+	defer func() {
+		if release != nil {
+			if err := release(); err != nil {
+				fmt.Println("controller database ownership release failed:", err)
+			}
+		}
+	}()
+
+	fmt.Println("controller listening on", server.Addr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Println("controller failed:", err)
+	}
+}
+
+func buildControllerServer(
+	args []string,
+	executablePath func() (string, error),
+	lookupEnv func(string) (string, bool),
+	getwd func() (string, error),
+	pid func() int,
+	now func() time.Time,
+	randomHex func(int) string,
+	buildVersion func() string,
+) (*http.Server, func() error, error) {
+	options, err := parseControllerStartupOptions(args)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	configPath, err := controllerConfigPath(options.ConfigPath, executablePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
 	}
 	sources, err := loadControllerStartupSources(configPath)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
 	}
 	overrideScope, err := parseControllerStartupOverrides(options.OverrideJSON)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
 	}
-	runtimeScope, err := newStartupRuntimeScope(os.Getpid(), randomHex(16), time.Now().UTC(), buildInfoCodeVersion())
+	runtimeScope, err := newStartupRuntimeScope(pid(), randomHex(16), now().UTC(), buildVersion())
 	if err != nil {
-		fmt.Println("controller config failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
 	}
-	resolver, err := newControllerStartupResolver(sources, overrideScope, runtimeScope, os.LookupEnv)
+	resolver, err := newControllerStartupResolver(sources, overrideScope, runtimeScope, lookupEnv)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
 	}
 	config := sources.Controller
 
 	ledgerDB, err := initMainDatabase(context.Background(), resolver)
 	if err != nil {
-		fmt.Println("controller database failed:", err)
-		return
+		return nil, nil, fmt.Errorf("controller database failed: %w", err)
 	}
 	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnership(ledgerDB)
 	if err != nil {
-		fmt.Println("controller database ownership failed:", err)
-		return
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller database ownership failed: %w", err)
 	}
-	defer func() {
-		if releaseDatabaseOwnership != nil {
-			if err := releaseDatabaseOwnership(); err != nil {
-				fmt.Println("controller database ownership release failed:", err)
-			}
-		}
-	}()
-	defer ledgerDB.Close()
-	workingDirectory, err := os.Getwd()
+	workingDirectory, err := getwd()
 	if err != nil {
-		fmt.Println("controller filesystem failed:", err)
-		return
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
-		fmt.Println("controller filesystem failed:", err)
-		return
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
-		fmt.Println("controller policy failed:", err)
-		return
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller policy failed: %w", err)
 	}
 	httpSettings, err := resolveControllerHTTPSettings(resolver)
 	if err != nil {
-		fmt.Println("controller http failed:", err)
-		return
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller http failed: %w", err)
 	}
 
 	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
 	if err != nil {
-		fmt.Println("controller execution environment failed:", err)
-		return
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller execution environment failed: %w", err)
 	}
 
 	controller := newController(nil)
@@ -235,10 +264,14 @@ func main() {
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
 
-	fmt.Println("controller listening on", server.Addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Println("controller failed:", err)
-	}
+	return server, func() error {
+		if releaseDatabaseOwnership != nil {
+			if err := releaseDatabaseOwnership(); err != nil {
+				return err
+			}
+		}
+		return ledgerDB.Close()
+	}, nil
 }
 
 func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
