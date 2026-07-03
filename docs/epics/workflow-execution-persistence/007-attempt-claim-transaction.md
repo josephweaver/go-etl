@@ -89,7 +89,7 @@ Documentation Files:
 Later atoms should be selected one at a time after reviewing the previous atom.
 Likely candidates include:
 
-- Add claim input/output structs without claim behavior.
+- Add claim input/output structs and request validation without claim behavior.
 - Add the claim transaction for the oldest queued row.
 - Add empty-queue behavior.
 - Add conflict/rollback tests for active-running constraints.
@@ -106,3 +106,10 @@ atoms in one cycle.
   The current schema permits controller-owned attempts through
   `executor_type = 'controller'`.
 - No worker should receive a payload until the claim transaction has committed.
+
+## Review Atom Notes
+
+- The first Review Atom adds `queued_at` to `running_work`.
+- The second Review Atom defines the claim request/result structs and validates
+  caller-supplied attempt ID, executor type, and start timestamp without adding
+  the claim transaction.

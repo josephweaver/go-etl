@@ -10,6 +10,9 @@ import (
 const (
 	DriverSQLite           = "sqlite"
 	SupportedSchemaVersion = 1
+
+	ExecutorTypeWorker     = "worker"
+	ExecutorTypeController = "controller"
 )
 
 type Config struct {
@@ -87,6 +90,22 @@ type WorkItemStatusCounts struct {
 	Running   int
 	Completed int
 	Failed    int
+}
+
+type ClaimWorkRequest struct {
+	AttemptID    string
+	WorkerID     string
+	ExecutorType string
+	StartedAt    string
+}
+
+type ClaimedWorkRecord struct {
+	AttemptID    string
+	WorkItem     WorkItemRecord
+	WorkerID     string
+	ExecutorType string
+	QueuedAt     string
+	StartedAt    string
 }
 
 func OpenStore(ctx context.Context, cfg Config) (*Store, error) {
@@ -1044,6 +1063,28 @@ func (w WorkItemRecord) validate() error {
 		return fmt.Errorf("work item created at is required")
 	}
 	return nil
+}
+
+func (r ClaimWorkRequest) validate() error {
+	if r.AttemptID == "" {
+		return fmt.Errorf("claim attempt id is required")
+	}
+	if !validExecutorType(r.ExecutorType) {
+		return fmt.Errorf("unsupported claim executor type: %s", r.ExecutorType)
+	}
+	if r.StartedAt == "" {
+		return fmt.Errorf("claim started at is required")
+	}
+	return nil
+}
+
+func validExecutorType(executorType string) bool {
+	switch executorType {
+	case ExecutorTypeWorker, ExecutorTypeController:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p ProjectRecord) validate() error {

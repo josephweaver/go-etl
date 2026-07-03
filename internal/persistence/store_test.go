@@ -646,6 +646,72 @@ func TestStoreCountWorkItemsForStage(t *testing.T) {
 	}
 }
 
+func TestClaimWorkRequestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		request ClaimWorkRequest
+		want    string
+	}{
+		{
+			name: "worker executor",
+			request: ClaimWorkRequest{
+				AttemptID:    "attempt-001",
+				WorkerID:     "worker-001",
+				ExecutorType: ExecutorTypeWorker,
+				StartedAt:    "2026-07-03T00:00:00Z",
+			},
+		},
+		{
+			name: "controller executor",
+			request: ClaimWorkRequest{
+				AttemptID:    "attempt-001",
+				ExecutorType: ExecutorTypeController,
+				StartedAt:    "2026-07-03T00:00:00Z",
+			},
+		},
+		{
+			name: "missing attempt",
+			request: ClaimWorkRequest{
+				ExecutorType: ExecutorTypeWorker,
+				StartedAt:    "2026-07-03T00:00:00Z",
+			},
+			want: "attempt id is required",
+		},
+		{
+			name: "unsupported executor",
+			request: ClaimWorkRequest{
+				AttemptID:    "attempt-001",
+				ExecutorType: "service",
+				StartedAt:    "2026-07-03T00:00:00Z",
+			},
+			want: "unsupported claim executor type",
+		},
+		{
+			name: "missing started at",
+			request: ClaimWorkRequest{
+				AttemptID:    "attempt-001",
+				ExecutorType: ExecutorTypeWorker,
+			},
+			want: "started at is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.request.validate()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validate() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
