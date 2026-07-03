@@ -63,6 +63,13 @@ publication wherever their lifecycle inputs overlap.
   it keeps the project/workflow GitHub repository, commit SHA, path, runtime
   records, and later step outputs needed to rebuild a resolver for stage 1 and
   later Case 3 compilations.
+- Case 2 does not persist extracted source expressions for future stages as a
+  separate expression store. The workflow instance retains the authoritative
+  workflow definition identity, including GitHub repository, commit SHA, and
+  repository-relative path. Case 3 reconstructs future expressions from the
+  authoritative workflow definition, optionally through a normalized workflow
+  representation derived from that definition. The normalized representation is
+  derived compiler state, not a second expression source of truth.
 
 ## Goals
 
@@ -218,13 +225,16 @@ unit of execution. A worker executing that item should not need to read
 The workflow instance still retains the source references and runtime context
 needed for continuation. Later, when stage 1 or higher becomes ready, Case 3 uses
 that workflow-instance run basis plus completed step `output_json` records to
-rebuild a resolver and compile the next stage.
+rebuild a resolver and compile the next stage. Case 3 reloads or reconstructs the
+workflow definition from the retained authoritative workflow identity rather than
+from separately persisted extracted expressions.
 
 This creates the intended split:
 
 ```text
 compiled work item = self-contained execution payload
 workflow instance  = retained run basis for future compilation
+workflow definition = authoritative source for future expressions
 resolver           = discarded evaluation object
 ```
 
@@ -388,55 +398,52 @@ state, outputs, and downstream activation.
 
 ## Open Questions
 
-1. Does Case 2 persist source expressions for every later stage, or does it
-   retain the entire normalized workflow definition and reconstruct future
-   expressions from that definition?
-2. Should resolved provenance be stored for every consumed value, only for
+1. Should resolved provenance be stored for every consumed value, only for
    non-sensitive values, only in debug mode, or only in failure diagnostics?
-3. What exact provenance shape is needed to explain precedence without leaking
+2. What exact provenance shape is needed to explain precedence without leaking
    sensitive values?
-4. Which resolved values participate in workflow, step, work-item, input,
+3. Which resolved values participate in workflow, step, work-item, input,
    output, and code-version fingerprints?
-5. Should compilation produce work items directly, or should it first produce an
+4. Should compilation produce work items directly, or should it first produce an
    intermediate compiled-stage representation that persistence later publishes?
-6. Does fan-out expansion belong inside the shared compilation operation, or is
+5. Does fan-out expansion belong inside the shared compilation operation, or is
    fan-out a separate compiler phase that consumes a resolver?
-7. What is the exact typed output shape made available from predecessor steps?
-8. What namespace exposes predecessor outputs to downstream expressions?
-9. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
+6. What is the exact typed output shape made available from predecessor steps?
+7. What namespace exposes predecessor outputs to downstream expressions?
+8. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
    scope, a workflow read-only scope, or another typed scope?
-10. What happens when a downstream expression references a future or unavailable
-    step output?
-11. Should empty fan-out create no work item and immediately complete the stage,
+9. What happens when a downstream expression references a future or unavailable
+   step output?
+10. Should empty fan-out create no work item and immediately complete the stage,
     or create a deterministic skipped/no-op work item?
-12. Which stage-level or step-level values may be recomputed during Case 3, and
+11. Which stage-level or step-level values may be recomputed during Case 3, and
     which must come only from the Case 2 run snapshot?
-13. How should protected sensitive values captured at Case 2 be materialized for
+12. How should protected sensitive values captured at Case 2 be materialized for
     Case 3 without persisting plaintext?
-14. Should compilation be allowed to read current controller operational metrics,
+13. Should compilation be allowed to read current controller operational metrics,
     or must those remain outside workflow semantics unless explicitly captured?
-15. What is the boundary between compilation and database transaction ownership?
-16. Can the shared compilation context builder be pure/in-memory, with callers
+14. What is the boundary between compilation and database transaction ownership?
+15. Can the shared compilation context builder be pure/in-memory, with callers
     responsible for loading and persisting state?
-17. How should compilation failures be represented: submission rejection, blocked
+16. How should compilation failures be represented: submission rejection, blocked
     run, failed stage, or retryable controller error?
-18. Can a ready-stage compilation be retried safely after a crash before its
+17. Can a ready-stage compilation be retried safely after a crash before its
     transaction commits?
-19. What idempotency key uniquely identifies an already-compiled stage?
-20. How should compilation versioning and schema evolution be recorded so older
+18. What idempotency key uniquely identifies an already-compiled stage?
+19. How should compilation versioning and schema evolution be recorded so older
     runs remain explainable?
-21. Which pieces of compiled work are immutable after publication?
-22. Can any compilation artifacts be cached, and if so what is the cache key and
+20. Which pieces of compiled work are immutable after publication?
+21. Can any compilation artifacts be cached, and if so what is the cache key and
     eviction policy?
-23. How much of the existing `internal/workflow` compiler should be reused versus
+22. How much of the existing `internal/workflow` compiler should be reused versus
     wrapped by a controller-side compilation boundary?
-24. What is the eventual boundary for plugin-provided compile-time behavior, if
+23. What is the eventual boundary for plugin-provided compile-time behavior, if
     plugins need to contribute declared outputs, package references, or parameter
     schemas?
-25. How should this epic divide responsibilities with
+24. How should this epic divide responsibilities with
     `workflow-execution-persistence` so neither document owns the same durable
     state twice?
-26. Should `dependency-aware-workflows` be revised immediately after this epic is
+25. Should `dependency-aware-workflows` be revised immediately after this epic is
     accepted, or after the first implementation slice proves the boundary?
 
 ## Completion Criteria
@@ -451,6 +458,8 @@ state, outputs, and downstream activation.
   2, and Case 3.
 - The minimum first implementation publishes only initially ready work and keeps
   the workflow instance source references needed for later Case 3 compilation.
+- Case 2 retains the authoritative workflow definition identity for future
+  expressions instead of persisting extracted expression records.
 - Case 2 and Case 3 share the same conceptual resolver recipe and compilation
   path wherever their inputs overlap.
 - The design identifies which lifecycle-specific inputs distinguish submission
