@@ -78,6 +78,9 @@ A **Review Atom** is the smallest coherent implementation unit that an average p
 
 Each implementation cycle should contain **exactly one Review Atom**.
 
+A feature may require multiple Review Atoms; repeat this cycle one atom at a
+time until the feature's acceptance criteria are fully implemented and reviewed.
+
 A valid Review Atom:
 
 * Has one conceptual purpose.
