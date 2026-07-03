@@ -70,6 +70,7 @@ Recommended sequence:
 012d Persistence-backed Work Claim Endpoint
 012e Persistence-backed Completion/Failure Endpoints
 012e2 Worker-observed Skip Evidence
+012f2 Client Source-reference Workflow Submission
 012f Remove In-Memory Queue Authority
 ```
 
@@ -210,6 +211,28 @@ Open issue:
   `input_sha256`, and `output_sha256` must be tightened before implementation.
 - The persistence schema may need explicit columns for worker-observed input
   and output hashes rather than hiding them in `output_json`.
+
+## 012f2 Candidate: Client Source-reference Workflow Submission
+
+Update `internal/client` and `cmd/demo-client` so clients submit project and
+workflow source references to `/workflow`, not inline workflow JSON.
+
+Acceptance criteria:
+
+- The client submission envelope contains project/workflow repository, ref, and
+  path fields.
+- The demo client loads a workflow-run submission file containing source
+  references.
+- The demo client no longer calls the inline workflow-file submission method.
+- Controller startup, reachability checks, status polling, and shutdown behavior
+  remain unchanged.
+- Inline workflow JSON submission is not the normal client/demo path.
+
+Out of scope:
+
+- Controller-side source-reference admission.
+- GitHub/cache implementation.
+- Ref resolution to immutable commits.
 
 ## 012f Candidate: Remove In-Memory Queue Authority
 
