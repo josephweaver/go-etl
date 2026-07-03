@@ -119,3 +119,6 @@ atoms in one cycle.
 - The fourth Review Atom implements the successful claim transition for one
   queued row: insert attempt, insert running placement with copied `queued_at`,
   delete queue placement, commit, then return the claimed payload.
+- The fifth Review Atom adds rollback/conflict coverage showing that a duplicate
+  attempt ID fails the claim and leaves the selected work item queued with no
+  running placement.

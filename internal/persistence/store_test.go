@@ -830,6 +830,33 @@ func TestStoreClaimNextWorkUsesWorkItemIDTieBreak(t *testing.T) {
 	}
 }
 
+func TestStoreClaimNextWorkRollsBackOnDuplicateAttemptID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	existing := testWorkItemRecord("work-existing", run.ID, 0, 0)
+	queued := testWorkItemRecord("work-queued", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{existing, queued}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertAttempt(t, ctx, store.db, "attempt-001", existing.ID, ExecutorTypeWorker)
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: queued, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+
+	_, found, err := store.ClaimNextWork(ctx, testClaimWorkRequest())
+	if err == nil || !strings.Contains(err.Error(), "insert work item attempt") {
+		t.Fatalf("ClaimNextWork() error = %v, want duplicate attempt failure", err)
+	}
+	if found {
+		t.Fatal("ClaimNextWork() found = true, want false")
+	}
+
+	assertQueuedWork(t, ctx, store, queued.ID, "2026-07-03T00:00:00Z")
+	assertRunningWorkMissingForWorkItem(t, ctx, store, queued.ID)
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -942,6 +969,30 @@ func assertQueuedWorkMissing(t *testing.T, ctx context.Context, store *Store, wo
 	}
 	if count != 0 {
 		t.Fatalf("queued work count = %d, want 0", count)
+	}
+}
+
+func assertQueuedWork(t *testing.T, ctx context.Context, store *Store, workItemID string, queuedAt string) {
+	t.Helper()
+
+	var gotQueuedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT queued_at FROM queued_work WHERE work_item_id = ?`, workItemID).Scan(&gotQueuedAt); err != nil {
+		t.Fatalf("query queued work: %v", err)
+	}
+	if gotQueuedAt != queuedAt {
+		t.Fatalf("queued at = %q, want %q", gotQueuedAt, queuedAt)
+	}
+}
+
+func assertRunningWorkMissingForWorkItem(t *testing.T, ctx context.Context, store *Store, workItemID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM running_work WHERE work_item_id = ?`, workItemID).Scan(&count); err != nil {
+		t.Fatalf("count running work: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("running work count = %d, want 0", count)
 	}
 }
 
