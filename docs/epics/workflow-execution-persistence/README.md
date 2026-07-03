@@ -631,24 +631,18 @@ logical work item.
 Add the durable transition that marks a stage complete exactly once and inserts
 newly ready work items/queue rows in the same transaction.
 
-010 Source-Control Abstraction
+010 Source-Control Dependency
 
-Define the controller-facing source-control interface for ref resolution,
-pinned file reads, commit identity, safe path handling, and materialization of a
-manifest into a staging directory.
+Record that source-control abstraction and cache behavior moved to the separate
+`source-control-resolution-and-cache` epic. This persistence epic stores source
+locator facts but does not implement GitHub, cache, or materialization behavior.
 
-011 GitHub Source-Control Implementation
-
-Implement the first source-control adapter for GitHub, preserving the locator vs
-semantic fingerprint distinction and returning repository/commit/path/blob
-metadata where available.
-
-012 Restart Reconstruction
+011 Restart Reconstruction
 
 On controller startup, rebuild active run, queue, running-attempt, and cache-pin
 views from persisted rows without reconstructing an in-memory queue authority.
 
-013 Controller Integration Cutover
+012 Controller Integration Cutover
 
 Move `/workflow`, `/work/next`, `/work/complete`, `/work/fail`, `/status`, and
 worker-scaling demand reads onto the store boundary and remove the old pending /

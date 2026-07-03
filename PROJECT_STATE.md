@@ -377,6 +377,12 @@ This persistence package is not yet wired into the live controller HTTP
 assignment and report paths. The older `internal/ledger` attempt snapshot
 ledger remains the currently wired local demo ledger.
 
+Source-control resolution, GitHub retrieval, local cache layout, and
+materialization have been split into the separate
+`source-control-resolution-and-cache` epic. Workflow execution persistence keeps
+the database-owned source locator fields but does not own the source-control
+implementation.
+
 ## SQLite Ledger
 
 `internal/ledger` contains the first SQLite-backed attempt ledger.
