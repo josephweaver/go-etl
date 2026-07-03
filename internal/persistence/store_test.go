@@ -888,6 +888,222 @@ func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
 	assertAttempt(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
 }
 
+func TestStoreCompleteAttemptCompletesRunningWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testCompleteAttemptRequest("attempt-001")
+
+	completed, found, err := store.CompleteAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("CompleteAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("CompleteAttempt() found = false, want true")
+	}
+	if completed.WorkItemID != work.ID {
+		t.Fatalf("completed work item id = %q, want %q", completed.WorkItemID, work.ID)
+	}
+	if completed.QueuedAt != "2026-07-03T00:00:00Z" {
+		t.Fatalf("completed queued at = %q, want copied queued_at", completed.QueuedAt)
+	}
+	if completed.StartedAt != "2026-07-03T00:00:01Z" {
+		t.Fatalf("completed started at = %q, want copied started_at", completed.StartedAt)
+	}
+	if completed.CompletedAt != request.CompletedAt {
+		t.Fatalf("completed at = %q, want %q", completed.CompletedAt, request.CompletedAt)
+	}
+	assertRunningWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertCompletedWork(t, ctx, store, completed)
+}
+
+func TestStoreCompleteAttemptIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testCompleteAttemptRequest("attempt-001")
+
+	first, found, err := store.CompleteAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("first CompleteAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("first CompleteAttempt() found = false, want true")
+	}
+	second, found, err := store.CompleteAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("second CompleteAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("second CompleteAttempt() found = false, want true")
+	}
+	if second != first {
+		t.Fatalf("second completion = %+v, want %+v", second, first)
+	}
+}
+
+func TestStoreCompleteAttemptRejectsConflictingRetry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testCompleteAttemptRequest("attempt-001")
+	if _, found, err := store.CompleteAttempt(ctx, request); err != nil || !found {
+		t.Fatalf("CompleteAttempt() = found %v, error %v; want success", found, err)
+	}
+	request.OutputJSON = `{"changed":true}`
+
+	_, found, err := store.CompleteAttempt(ctx, request)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing completed work") {
+		t.Fatalf("CompleteAttempt() error = %v, want conflict", err)
+	}
+	if found {
+		t.Fatal("CompleteAttempt() found = true, want false")
+	}
+}
+
+func TestStoreCompleteAttemptReturnsMissingForNonRunningAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	completed, found, err := store.CompleteAttempt(ctx, testCompleteAttemptRequest("missing-attempt"))
+	if err != nil {
+		t.Fatalf("CompleteAttempt() error = %v", err)
+	}
+	if found {
+		t.Fatalf("CompleteAttempt() found = true with record %+v, want false", completed)
+	}
+}
+
+func TestStoreCompleteAttemptRollsBackOnTerminalInsertFailure(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testCompleteAttemptRequest("attempt-001")
+	request.SkippedParentID = "missing-parent"
+
+	_, found, err := store.CompleteAttempt(ctx, request)
+	if err == nil || !strings.Contains(err.Error(), "insert completed work") {
+		t.Fatalf("CompleteAttempt() error = %v, want terminal insert failure", err)
+	}
+	if found {
+		t.Fatal("CompleteAttempt() found = true, want false")
+	}
+	assertRunningWork(t, ctx, store, "attempt-001", work.ID, "", "2026-07-03T00:00:00Z", "2026-07-03T00:00:01Z")
+}
+
+func TestStoreFailAttemptFailsRunningWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testFailAttemptRequest("attempt-001")
+
+	failed, found, err := store.FailAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("FailAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("FailAttempt() found = false, want true")
+	}
+	if failed.WorkItemID != work.ID {
+		t.Fatalf("failed work item id = %q, want %q", failed.WorkItemID, work.ID)
+	}
+	if failed.QueuedAt != "2026-07-03T00:00:00Z" {
+		t.Fatalf("failed queued at = %q, want copied queued_at", failed.QueuedAt)
+	}
+	if failed.StartedAt != "2026-07-03T00:00:01Z" {
+		t.Fatalf("failed started at = %q, want copied started_at", failed.StartedAt)
+	}
+	assertRunningWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertFailedWork(t, ctx, store, failed)
+}
+
+func TestStoreFailAttemptIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testFailAttemptRequest("attempt-001")
+
+	first, found, err := store.FailAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("first FailAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("first FailAttempt() found = false, want true")
+	}
+	second, found, err := store.FailAttempt(ctx, request)
+	if err != nil {
+		t.Fatalf("second FailAttempt() error = %v", err)
+	}
+	if !found {
+		t.Fatal("second FailAttempt() found = false, want true")
+	}
+	if second != first {
+		t.Fatalf("second failure = %+v, want %+v", second, first)
+	}
+}
+
+func TestStoreFailAttemptRejectsConflictingRetry(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-001", work.ID)
+	request := testFailAttemptRequest("attempt-001")
+	if _, found, err := store.FailAttempt(ctx, request); err != nil || !found {
+		t.Fatalf("FailAttempt() = found %v, error %v; want success", found, err)
+	}
+	request.Error = "different failure"
+
+	_, found, err := store.FailAttempt(ctx, request)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with existing failed work") {
+		t.Fatalf("FailAttempt() error = %v, want conflict", err)
+	}
+	if found {
+		t.Fatal("FailAttempt() found = true, want false")
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -991,6 +1207,25 @@ func testClaimWorkRequest() ClaimWorkRequest {
 	}
 }
 
+func testCompleteAttemptRequest(attemptID string) CompleteAttemptRequest {
+	return CompleteAttemptRequest{
+		AttemptID:        attemptID,
+		OutputJSON:       `{"ok":true}`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		PreStateSHA256:   strings.Repeat("e", 64),
+		PostStateSHA256:  strings.Repeat("f", 64),
+		CompletedAt:      "2026-07-03T00:00:02Z",
+	}
+}
+
+func testFailAttemptRequest(attemptID string) FailAttemptRequest {
+	return FailAttemptRequest{
+		AttemptID: attemptID,
+		Error:     "worker failed",
+		FailedAt:  "2026-07-03T00:00:02Z",
+	}
+}
+
 func insertTestWorker(t *testing.T, ctx context.Context, store *Store, workerID string, runID string) {
 	t.Helper()
 
@@ -1040,6 +1275,18 @@ func assertRunningWorkMissingForWorkItem(t *testing.T, ctx context.Context, stor
 	}
 }
 
+func assertRunningWorkMissingForAttempt(t *testing.T, ctx context.Context, store *Store, attemptID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM running_work WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		t.Fatalf("count running work: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("running work count = %d, want 0", count)
+	}
+}
+
 func assertRunningWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string, workerID string, queuedAt string, startedAt string) {
 	t.Helper()
 
@@ -1067,6 +1314,36 @@ func assertRunningWork(t *testing.T, ctx context.Context, store *Store, attemptI
 	}
 	if gotStartedAt != startedAt {
 		t.Fatalf("running started at = %q, want %q", gotStartedAt, startedAt)
+	}
+}
+
+func assertCompletedWork(t *testing.T, ctx context.Context, store *Store, want CompletedWorkRecord) {
+	t.Helper()
+
+	got, found, err := getCompletedWork(ctx, store.db, want.AttemptID)
+	if err != nil {
+		t.Fatalf("get completed work: %v", err)
+	}
+	if !found {
+		t.Fatal("completed work missing")
+	}
+	if got != want {
+		t.Fatalf("completed work = %+v, want %+v", got, want)
+	}
+}
+
+func assertFailedWork(t *testing.T, ctx context.Context, store *Store, want FailedWorkRecord) {
+	t.Helper()
+
+	got, found, err := getFailedWork(ctx, store.db, want.AttemptID)
+	if err != nil {
+		t.Fatalf("get failed work: %v", err)
+	}
+	if !found {
+		t.Fatal("failed work missing")
+	}
+	if got != want {
+		t.Fatalf("failed work = %+v, want %+v", got, want)
 	}
 }
 
@@ -1139,8 +1416,10 @@ func insertTestCompletedWork(t *testing.T, ctx context.Context, store *Store, at
 		output_json_sha256,
 		pre_state_sha256,
 		post_state_sha256,
+		queued_at,
+		started_at,
 		completed_at
-	) VALUES (?, ?, '{}', ?, ?, ?, '2026-07-03T00:00:00Z')`,
+	) VALUES (?, ?, '{}', ?, ?, ?, '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z', '2026-07-03T00:00:02Z')`,
 		attemptID,
 		workItemID,
 		strings.Repeat("d", 64),
@@ -1166,8 +1445,10 @@ func insertTestFailedWork(t *testing.T, ctx context.Context, store *Store, attem
 		attempt_id,
 		work_item_id,
 		error,
+		queued_at,
+		started_at,
 		failed_at
-	) VALUES (?, ?, 'failed', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+	) VALUES (?, ?, 'failed', '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z', '2026-07-03T00:00:02Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert failed work: %v", err)
 	}
 }

@@ -108,6 +108,44 @@ type ClaimedWorkRecord struct {
 	StartedAt    string
 }
 
+type CompleteAttemptRequest struct {
+	AttemptID        string
+	SkippedParentID  string
+	OutputJSON       string
+	OutputJSONSHA256 string
+	PreStateSHA256   string
+	PostStateSHA256  string
+	CompletedAt      string
+}
+
+type CompletedWorkRecord struct {
+	AttemptID        string
+	WorkItemID       string
+	SkippedParentID  string
+	OutputJSON       string
+	OutputJSONSHA256 string
+	PreStateSHA256   string
+	PostStateSHA256  string
+	QueuedAt         string
+	StartedAt        string
+	CompletedAt      string
+}
+
+type FailAttemptRequest struct {
+	AttemptID string
+	Error     string
+	FailedAt  string
+}
+
+type FailedWorkRecord struct {
+	AttemptID  string
+	WorkItemID string
+	Error      string
+	QueuedAt   string
+	StartedAt  string
+	FailedAt   string
+}
+
 func OpenStore(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.Driver == "" {
 		return nil, fmt.Errorf("database driver is required")
@@ -791,12 +829,257 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 	return claimed, true, nil
 }
 
+func (s *Store) CompleteAttempt(ctx context.Context, request CompleteAttemptRequest) (CompletedWorkRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return CompletedWorkRecord{}, false, err
+	}
+	if err := request.validate(); err != nil {
+		return CompletedWorkRecord{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CompletedWorkRecord{}, false, fmt.Errorf("begin complete attempt: %w", err)
+	}
+	defer tx.Rollback()
+
+	running, found, err := getRunningWork(ctx, tx, request.AttemptID)
+	if err != nil {
+		return CompletedWorkRecord{}, false, fmt.Errorf("get running work %s: %w", request.AttemptID, err)
+	}
+	if !found {
+		existing, completed, err := getCompletedWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return CompletedWorkRecord{}, false, fmt.Errorf("get completed work %s: %w", request.AttemptID, err)
+		}
+		if completed {
+			if !completedWorkMatchesRequest(existing, request) {
+				return CompletedWorkRecord{}, false, fmt.Errorf("complete attempt %s conflicts with existing completed work", request.AttemptID)
+			}
+			return existing, true, nil
+		}
+		_, failed, err := getFailedWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return CompletedWorkRecord{}, false, fmt.Errorf("get failed work %s: %w", request.AttemptID, err)
+		}
+		if failed {
+			return CompletedWorkRecord{}, false, fmt.Errorf("complete attempt %s conflicts with existing failed work", request.AttemptID)
+		}
+		return CompletedWorkRecord{}, false, nil
+	}
+
+	completed := CompletedWorkRecord{
+		AttemptID:        request.AttemptID,
+		WorkItemID:       running.workItemID,
+		SkippedParentID:  request.SkippedParentID,
+		OutputJSON:       request.OutputJSON,
+		OutputJSONSHA256: request.OutputJSONSHA256,
+		PreStateSHA256:   request.PreStateSHA256,
+		PostStateSHA256:  request.PostStateSHA256,
+		QueuedAt:         running.queuedAt,
+		StartedAt:        running.startedAt,
+		CompletedAt:      request.CompletedAt,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO completed_work (
+		attempt_id,
+		work_item_id,
+		skipped_parent_id,
+		output_json,
+		output_json_sha256,
+		pre_state_sha256,
+		post_state_sha256,
+		queued_at,
+		started_at,
+		completed_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		completed.AttemptID,
+		completed.WorkItemID,
+		nullString(completed.SkippedParentID),
+		completed.OutputJSON,
+		completed.OutputJSONSHA256,
+		completed.PreStateSHA256,
+		completed.PostStateSHA256,
+		completed.QueuedAt,
+		completed.StartedAt,
+		completed.CompletedAt,
+	); err != nil {
+		return CompletedWorkRecord{}, false, fmt.Errorf("insert completed work %s: %w", request.AttemptID, err)
+	}
+	if err := deleteRunningWork(ctx, tx, request.AttemptID); err != nil {
+		return CompletedWorkRecord{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CompletedWorkRecord{}, false, fmt.Errorf("commit complete attempt: %w", err)
+	}
+	return completed, true, nil
+}
+
+func (s *Store) FailAttempt(ctx context.Context, request FailAttemptRequest) (FailedWorkRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return FailedWorkRecord{}, false, err
+	}
+	if err := request.validate(); err != nil {
+		return FailedWorkRecord{}, false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return FailedWorkRecord{}, false, fmt.Errorf("begin fail attempt: %w", err)
+	}
+	defer tx.Rollback()
+
+	running, found, err := getRunningWork(ctx, tx, request.AttemptID)
+	if err != nil {
+		return FailedWorkRecord{}, false, fmt.Errorf("get running work %s: %w", request.AttemptID, err)
+	}
+	if !found {
+		existing, failed, err := getFailedWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return FailedWorkRecord{}, false, fmt.Errorf("get failed work %s: %w", request.AttemptID, err)
+		}
+		if failed {
+			if !failedWorkMatchesRequest(existing, request) {
+				return FailedWorkRecord{}, false, fmt.Errorf("fail attempt %s conflicts with existing failed work", request.AttemptID)
+			}
+			return existing, true, nil
+		}
+		_, completed, err := getCompletedWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return FailedWorkRecord{}, false, fmt.Errorf("get completed work %s: %w", request.AttemptID, err)
+		}
+		if completed {
+			return FailedWorkRecord{}, false, fmt.Errorf("fail attempt %s conflicts with existing completed work", request.AttemptID)
+		}
+		return FailedWorkRecord{}, false, nil
+	}
+
+	failed := FailedWorkRecord{
+		AttemptID:  request.AttemptID,
+		WorkItemID: running.workItemID,
+		Error:      request.Error,
+		QueuedAt:   running.queuedAt,
+		StartedAt:  running.startedAt,
+		FailedAt:   request.FailedAt,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO failed_work (
+		attempt_id,
+		work_item_id,
+		error,
+		queued_at,
+		started_at,
+		failed_at
+	) VALUES (?, ?, ?, ?, ?, ?)`,
+		failed.AttemptID,
+		failed.WorkItemID,
+		failed.Error,
+		failed.QueuedAt,
+		failed.StartedAt,
+		failed.FailedAt,
+	); err != nil {
+		return FailedWorkRecord{}, false, fmt.Errorf("insert failed work %s: %w", request.AttemptID, err)
+	}
+	if err := deleteRunningWork(ctx, tx, request.AttemptID); err != nil {
+		return FailedWorkRecord{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return FailedWorkRecord{}, false, fmt.Errorf("commit fail attempt: %w", err)
+	}
+	return failed, true, nil
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type scanner interface {
 	Scan(...any) error
+}
+
+type runningWorkRecord struct {
+	attemptID  string
+	workItemID string
+	queuedAt   string
+	startedAt  string
+}
+
+func getRunningWork(ctx context.Context, q queryer, attemptID string) (runningWorkRecord, bool, error) {
+	var running runningWorkRecord
+	err := q.QueryRowContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		queued_at,
+		started_at
+	FROM running_work
+	WHERE attempt_id = ?`, attemptID).Scan(
+		&running.attemptID,
+		&running.workItemID,
+		&running.queuedAt,
+		&running.startedAt,
+	)
+	if err == sql.ErrNoRows {
+		return runningWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return runningWorkRecord{}, false, err
+	}
+	return running, true, nil
+}
+
+func getCompletedWork(ctx context.Context, q queryer, attemptID string) (CompletedWorkRecord, bool, error) {
+	completed, err := scanCompletedWork(q.QueryRowContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		skipped_parent_id,
+		output_json,
+		output_json_sha256,
+		pre_state_sha256,
+		post_state_sha256,
+		queued_at,
+		started_at,
+		completed_at
+	FROM completed_work
+	WHERE attempt_id = ?`, attemptID))
+	if err == sql.ErrNoRows {
+		return CompletedWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return CompletedWorkRecord{}, false, err
+	}
+	return completed, true, nil
+}
+
+func getFailedWork(ctx context.Context, q queryer, attemptID string) (FailedWorkRecord, bool, error) {
+	failed, err := scanFailedWork(q.QueryRowContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		error,
+		queued_at,
+		started_at,
+		failed_at
+	FROM failed_work
+	WHERE attempt_id = ?`, attemptID))
+	if err == sql.ErrNoRows {
+		return FailedWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return FailedWorkRecord{}, false, err
+	}
+	return failed, true, nil
+}
+
+func deleteRunningWork(ctx context.Context, tx *sql.Tx, attemptID string) error {
+	result, err := tx.ExecContext(ctx, `DELETE FROM running_work WHERE attempt_id = ?`, attemptID)
+	if err != nil {
+		return fmt.Errorf("delete running work %s: %w", attemptID, err)
+	}
+	deleted, err := rowsAffected(result)
+	if err != nil {
+		return fmt.Errorf("delete running work %s: %w", attemptID, err)
+	}
+	if !deleted {
+		return fmt.Errorf("delete running work %s: no row deleted", attemptID)
+	}
+	return nil
 }
 
 func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord, bool, error) {
@@ -1066,6 +1349,41 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 	return item, err
 }
 
+func scanCompletedWork(row scanner) (CompletedWorkRecord, error) {
+	var completed CompletedWorkRecord
+	var skippedParentID sql.NullString
+	err := row.Scan(
+		&completed.AttemptID,
+		&completed.WorkItemID,
+		&skippedParentID,
+		&completed.OutputJSON,
+		&completed.OutputJSONSHA256,
+		&completed.PreStateSHA256,
+		&completed.PostStateSHA256,
+		&completed.QueuedAt,
+		&completed.StartedAt,
+		&completed.CompletedAt,
+	)
+	if err != nil {
+		return CompletedWorkRecord{}, err
+	}
+	completed.SkippedParentID = skippedParentID.String
+	return completed, nil
+}
+
+func scanFailedWork(row scanner) (FailedWorkRecord, error) {
+	var failed FailedWorkRecord
+	err := row.Scan(
+		&failed.AttemptID,
+		&failed.WorkItemID,
+		&failed.Error,
+		&failed.QueuedAt,
+		&failed.StartedAt,
+		&failed.FailedAt,
+	)
+	return failed, err
+}
+
 func (s *Store) requireOpen() error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store is not open")
@@ -1168,6 +1486,60 @@ func (r ClaimWorkRequest) validate() error {
 		return fmt.Errorf("claim started at is required")
 	}
 	return nil
+}
+
+func (r CompleteAttemptRequest) validate() error {
+	if r.AttemptID == "" {
+		return fmt.Errorf("complete attempt id is required")
+	}
+	if r.OutputJSON == "" {
+		return fmt.Errorf("complete output json is required")
+	}
+	if !json.Valid([]byte(r.OutputJSON)) {
+		return fmt.Errorf("complete output json must be valid JSON")
+	}
+	if r.OutputJSONSHA256 == "" {
+		return fmt.Errorf("complete output json sha256 is required")
+	}
+	if r.PreStateSHA256 == "" {
+		return fmt.Errorf("complete pre state sha256 is required")
+	}
+	if r.PostStateSHA256 == "" {
+		return fmt.Errorf("complete post state sha256 is required")
+	}
+	if r.CompletedAt == "" {
+		return fmt.Errorf("complete completed at is required")
+	}
+	return nil
+}
+
+func (r FailAttemptRequest) validate() error {
+	if r.AttemptID == "" {
+		return fmt.Errorf("fail attempt id is required")
+	}
+	if r.Error == "" {
+		return fmt.Errorf("fail error is required")
+	}
+	if r.FailedAt == "" {
+		return fmt.Errorf("fail failed at is required")
+	}
+	return nil
+}
+
+func completedWorkMatchesRequest(completed CompletedWorkRecord, request CompleteAttemptRequest) bool {
+	return completed.AttemptID == request.AttemptID &&
+		completed.SkippedParentID == request.SkippedParentID &&
+		completed.OutputJSON == request.OutputJSON &&
+		completed.OutputJSONSHA256 == request.OutputJSONSHA256 &&
+		completed.PreStateSHA256 == request.PreStateSHA256 &&
+		completed.PostStateSHA256 == request.PostStateSHA256 &&
+		completed.CompletedAt == request.CompletedAt
+}
+
+func failedWorkMatchesRequest(failed FailedWorkRecord, request FailAttemptRequest) bool {
+	return failed.AttemptID == request.AttemptID &&
+		failed.Error == request.Error &&
+		failed.FailedAt == request.FailedAt
 }
 
 func validExecutorType(executorType string) bool {

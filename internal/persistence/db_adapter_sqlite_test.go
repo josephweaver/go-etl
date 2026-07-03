@@ -232,8 +232,10 @@ func TestOpenStoreCreatesSQLiteSkippedParentColumn(t *testing.T) {
 			output_json_sha256,
 			pre_state_sha256,
 			post_state_sha256,
+			queued_at,
+			started_at,
 			completed_at
-		) VALUES ('attempt-001', 'work-item-001', '[]', ?, ?, ?, '2026-07-03T00:00:00Z')`,
+		) VALUES ('attempt-001', 'work-item-001', '[]', ?, ?, ?, '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z', '2026-07-03T00:00:02Z')`,
 		`INSERT INTO completed_work (
 			attempt_id,
 			work_item_id,
@@ -242,8 +244,10 @@ func TestOpenStoreCreatesSQLiteSkippedParentColumn(t *testing.T) {
 			output_json_sha256,
 			pre_state_sha256,
 			post_state_sha256,
+			queued_at,
+			started_at,
 			completed_at
-		) VALUES ('attempt-002', 'work-item-002', 'attempt-001', '[]', ?, ?, ?, '2026-07-03T00:00:00Z')`,
+		) VALUES ('attempt-002', 'work-item-002', 'attempt-001', '[]', ?, ?, ?, '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z', '2026-07-03T00:00:02Z')`,
 	} {
 		if _, err := store.db.ExecContext(ctx, statement, strings.Repeat("d", 64), strings.Repeat("e", 64), strings.Repeat("f", 64)); err != nil {
 			t.Fatalf("insert completed work: %v", err)

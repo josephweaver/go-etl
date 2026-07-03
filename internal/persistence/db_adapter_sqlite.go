@@ -119,6 +119,8 @@ var sqliteSchemaStatements = []string{
 		output_json_sha256 TEXT NOT NULL,
 		pre_state_sha256 TEXT NOT NULL,
 		post_state_sha256 TEXT NOT NULL,
+		queued_at TEXT NOT NULL,
+		started_at TEXT NOT NULL,
 		completed_at TEXT NOT NULL,
 
 		FOREIGN KEY (attempt_id) REFERENCES work_item_attempts(attempt_id),
@@ -129,6 +131,8 @@ var sqliteSchemaStatements = []string{
 		attempt_id TEXT PRIMARY KEY,
 		work_item_id TEXT NOT NULL,
 		error TEXT NOT NULL,
+		queued_at TEXT NOT NULL,
+		started_at TEXT NOT NULL,
 		failed_at TEXT NOT NULL,
 
 		FOREIGN KEY (attempt_id) REFERENCES work_item_attempts(attempt_id),

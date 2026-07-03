@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 ## Current Focus
 
@@ -351,6 +351,27 @@ The older `LocalWorkerStarter` remains in the repository for the local process p
 The controller has small read, comparison, decision, marker, and skipped-attempt helpers for idempotency groundwork. `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. `priorCompletedAttemptMatchesWorkItem` checks that the prior attempt was completed and that work-item, input, output, and code-version fingerprints still match the current assignment. `reusablePriorAttempt` composes those checks into a single controller question. `workReuseDecision` returns an observational decision with reason strings such as `no_prior_completed_attempt`, `prior_attempt_mismatch`, and `matched_prior_completed_attempt`. `workSkipForReuseDecision` can build a validated `WorkSkip` marker from a positive reuse decision. `skippedAttemptFromWorkSkip` can build a skipped `ledger.Attempt` snapshot with `runtime.prior_attempt_id` and `runtime.skip_reason`. `recordSkippedAttempt` can persist that skipped snapshot when called explicitly. `/status` reports how many pending work items are currently reuse candidates, derived from pending reuse-decision reason counts. `/work/next` now records and removes reusable pending items as skipped attempts before assigning the next non-reusable item.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
+
+## Workflow Execution Persistence
+
+`internal/persistence` contains the first SQLite-backed workflow execution
+store for the `workflow-execution-persistence` epic. The schema currently
+tracks projects, workflows, workflow runs, stage plans, work items, queued
+work, attempts, running work, completed work, failed work, and worker records.
+
+The store can insert workflow/run/stage/work-item records, enqueue work,
+derive per-stage queued/running/completed/failed counts, atomically claim the
+oldest queued work into `running_work`, and atomically terminate a running
+attempt into either `completed_work` or `failed_work`. Terminal rows preserve
+the copied `queued_at` and `started_at` values from `running_work` plus the
+terminal timestamp. Completion records store output JSON, output hash,
+pre-state hash, post-state hash, and optional `skipped_parent_id`; failure
+records store the error and failure time. Repeated identical terminal reports
+are idempotent; conflicting terminal reports fail.
+
+This persistence package is not yet wired into the live controller HTTP
+assignment and report paths. The older `internal/ledger` attempt snapshot
+ledger remains the currently wired local demo ledger.
 
 ## SQLite Ledger
 

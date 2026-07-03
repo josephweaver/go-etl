@@ -1,6 +1,6 @@
 # 008 Attempt Terminal Transition Transaction
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
