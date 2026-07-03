@@ -607,6 +607,31 @@ assigned / failed in-memory collections.
    JSON document, or carried by schema version for the first implementation?
 7. What exact canonical JSON rules should GOET adopt for numbers and
    schema-declared non-semantic fields?
+8. Should persistence expose one monolithic `Store` interface, or should it be
+   decomposed into repositories such as Projects, Runs, WorkItems, Workers, and
+   SourceControlMetadata?
+9. Which layer owns database transactions: the persistence package, controller
+   services, or explicit transaction objects passed between repositories?
+10. Which component is responsible for generating each identifier, including
+    `project_id`, `workflow_id`, `run_id`, `work_item_id`, and `attempt_id`?
+11. Should canonical JSON versioning be independent from database schema
+    versioning?
+12. Which immutable documents are persisted in full versus referenced only by
+    fingerprints, including project config, workflow definition, resolved inputs,
+    stage definitions, submission context, and dependency manifests?
+13. Should the source-control abstraction materialize an entire dependency
+    closure, or should it only provide object retrieval while a separate
+    packaging service owns materialization?
+14. Should the persistence abstraction be designed now for future database
+    backends such as PostgreSQL, or may it remain SQLite-specific for the first
+    implementation?
+15. Which package owns fingerprint computation: persistence, a fingerprint
+    package, source-control, workflow compiler, or plugin-specific code?
+16. Should schema migration infrastructure live inside the persistence package or
+    be a separate migration subsystem?
+17. Which epic owns physical deletion behavior versus retention policy? The
+    persistence epic introduces delete methods, while `controller-retention-cleanup`
+    appears to own cleanup and retention policy.
 
 ## Completion Criteria
 
