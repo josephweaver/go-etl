@@ -647,6 +647,238 @@ func TestStoreCountWorkItemsForStage(t *testing.T) {
 	}
 }
 
+func TestStoreCompleteStageIfReadyCompletesStage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
+	request := testCompleteStageRequest(run.ID, 0)
+
+	result, err := store.CompleteStageIfReady(ctx, request)
+	if err != nil {
+		t.Fatalf("CompleteStageIfReady() error = %v", err)
+	}
+	if !result.Found || !result.Completed {
+		t.Fatalf("CompleteStageIfReady() result = %+v, want found completed", result)
+	}
+	if result.Stage.State != "completed" {
+		t.Fatalf("stage state = %q, want completed", result.Stage.State)
+	}
+	if result.Stage.CompletedAt != request.CompletedAt {
+		t.Fatalf("completed at = %q, want %q", result.Stage.CompletedAt, request.CompletedAt)
+	}
+	if result.Stage.OutputJSON != request.OutputJSON {
+		t.Fatalf("output json = %q, want %q", result.Stage.OutputJSON, request.OutputJSON)
+	}
+	assertWorkflowStage(t, ctx, store, result.Stage)
+}
+
+func TestStoreCompleteStageIfReadyPublishesReadyWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStages(t, ctx, store, []WorkflowStageRecord{
+		testWorkflowStageRecord("run-001", 0, "ready"),
+		testWorkflowStageRecord("run-001", 1, "ready"),
+	})
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	next := testWorkItemRecord("work-next", run.ID, 1, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
+	request := testCompleteStageRequest(run.ID, 0)
+	request.ReadyWorkItems = []WorkItemRecord{next}
+	request.ReadyQueuedWork = []QueuedWorkRecord{{WorkItemRecord: next, QueuedAt: "2026-07-03T00:00:03Z"}}
+
+	result, err := store.CompleteStageIfReady(ctx, request)
+	if err != nil {
+		t.Fatalf("CompleteStageIfReady() error = %v", err)
+	}
+	if !result.Found || !result.Completed {
+		t.Fatalf("CompleteStageIfReady() result = %+v, want found completed", result)
+	}
+	got, found, err := store.GetWorkItem(ctx, next.ID)
+	if err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	if !found || got != next {
+		t.Fatalf("published work = %+v found %v, want %+v", got, found, next)
+	}
+	assertQueuedWork(t, ctx, store, next.ID, "2026-07-03T00:00:03Z")
+}
+
+func TestStoreCompleteStageIfReadyIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
+	request := testCompleteStageRequest(run.ID, 0)
+
+	first, err := store.CompleteStageIfReady(ctx, request)
+	if err != nil {
+		t.Fatalf("first CompleteStageIfReady() error = %v", err)
+	}
+	second, err := store.CompleteStageIfReady(ctx, request)
+	if err != nil {
+		t.Fatalf("second CompleteStageIfReady() error = %v", err)
+	}
+	if second != first {
+		t.Fatalf("second result = %+v, want %+v", second, first)
+	}
+}
+
+func TestStoreCompleteStageIfReadyRejectsConflictingCompletion(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
+	request := testCompleteStageRequest(run.ID, 0)
+	if _, err := store.CompleteStageIfReady(ctx, request); err != nil {
+		t.Fatalf("CompleteStageIfReady() error = %v", err)
+	}
+	request.OutputJSON = `{"changed":true}`
+
+	_, err := store.CompleteStageIfReady(ctx, request)
+	if err == nil || !strings.Contains(err.Error(), "different values") {
+		t.Fatalf("CompleteStageIfReady() error = %v, want conflict", err)
+	}
+}
+
+func TestStoreCompleteStageIfReadyReturnsMissingStage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	result, err := store.CompleteStageIfReady(ctx, testCompleteStageRequest("missing-run", 0))
+	if err != nil {
+		t.Fatalf("CompleteStageIfReady() error = %v", err)
+	}
+	if result.Found || result.Completed {
+		t.Fatalf("CompleteStageIfReady() result = %+v, want missing", result)
+	}
+}
+
+func TestStoreCompleteStageIfReadyRequiresCompleteWorkEvidence(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, context.Context, *Store, WorkflowRunRecord)
+	}{
+		{
+			name: "no work items",
+		},
+		{
+			name: "queued work",
+			setup: func(t *testing.T, ctx context.Context, store *Store, run WorkflowRunRecord) {
+				work := testWorkItemRecord("work-queued", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+					t.Fatalf("EnqueueWorkItems() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "running work",
+			setup: func(t *testing.T, ctx context.Context, store *Store, run WorkflowRunRecord) {
+				work := testWorkItemRecord("work-running", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				insertTestRunningWork(t, ctx, store, "attempt-running", work.ID)
+			},
+		},
+		{
+			name: "failed work",
+			setup: func(t *testing.T, ctx context.Context, store *Store, run WorkflowRunRecord) {
+				work := testWorkItemRecord("work-failed", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				insertTestFailedWork(t, ctx, store, "attempt-failed", work.ID)
+			},
+		},
+		{
+			name: "missing completed row",
+			setup: func(t *testing.T, ctx context.Context, store *Store, run WorkflowRunRecord) {
+				work := testWorkItemRecord("work-incomplete", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+			defer store.Close()
+			run := insertTestRunWithStage(t, ctx, store)
+			if tt.setup != nil {
+				tt.setup(t, ctx, store, run)
+			}
+
+			result, err := store.CompleteStageIfReady(ctx, testCompleteStageRequest(run.ID, 0))
+			if err != nil {
+				t.Fatalf("CompleteStageIfReady() error = %v", err)
+			}
+			if !result.Found || result.Completed {
+				t.Fatalf("CompleteStageIfReady() result = %+v, want found not completed", result)
+			}
+			stage, found, err := store.GetWorkflowStage(ctx, run.ID, 0)
+			if err != nil {
+				t.Fatalf("GetWorkflowStage() error = %v", err)
+			}
+			if !found || stage.State == "completed" {
+				t.Fatalf("stage = %+v found %v, want not completed", stage, found)
+			}
+		})
+	}
+}
+
+func TestStoreCompleteStageIfReadyRollsBackWhenReadyWorkPublicationFails(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
+	request := testCompleteStageRequest(run.ID, 0)
+	request.ReadyQueuedWork = []QueuedWorkRecord{{WorkItemRecord: WorkItemRecord{ID: "missing-work"}, QueuedAt: "2026-07-03T00:00:03Z"}}
+
+	_, err := store.CompleteStageIfReady(ctx, request)
+	if err == nil || !strings.Contains(err.Error(), "enqueue work item") {
+		t.Fatalf("CompleteStageIfReady() error = %v, want ready-work enqueue failure", err)
+	}
+	stage, found, err := store.GetWorkflowStage(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if !found || stage.State == "completed" {
+		t.Fatalf("stage = %+v found %v, want rollback to non-completed", stage, found)
+	}
+}
+
 func TestClaimWorkRequestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1187,6 +1419,17 @@ func insertTestRunWithStage(t *testing.T, ctx context.Context, store *Store) Wor
 	return run
 }
 
+func insertTestRunWithStages(t *testing.T, ctx context.Context, store *Store, stages []WorkflowStageRecord) WorkflowRunRecord {
+	t.Helper()
+
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := insertTestWorkflowRun(t, ctx, store, "run-001", project.ID, workflow.ID)
+	if err := store.InsertStagePlan(ctx, run.ID, stages); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+	return run
+}
+
 func testWorkItemRecord(id string, runID string, stageIndex int, workItemIndex int) WorkItemRecord {
 	return WorkItemRecord{
 		ID:                   id,
@@ -1223,6 +1466,16 @@ func testFailAttemptRequest(attemptID string) FailAttemptRequest {
 		AttemptID: attemptID,
 		Error:     "worker failed",
 		FailedAt:  "2026-07-03T00:00:02Z",
+	}
+}
+
+func testCompleteStageRequest(runID string, stageIndex int) CompleteStageRequest {
+	return CompleteStageRequest{
+		RunID:            runID,
+		StageIndex:       stageIndex,
+		OutputJSON:       `{"items":["work-001"]}`,
+		OutputJSONSHA256: strings.Repeat("a", 64),
+		CompletedAt:      "2026-07-03T00:00:04Z",
 	}
 }
 
@@ -1344,6 +1597,21 @@ func assertFailedWork(t *testing.T, ctx context.Context, store *Store, want Fail
 	}
 	if got != want {
 		t.Fatalf("failed work = %+v, want %+v", got, want)
+	}
+}
+
+func assertWorkflowStage(t *testing.T, ctx context.Context, store *Store, want WorkflowStageRecord) {
+	t.Helper()
+
+	got, found, err := store.GetWorkflowStage(ctx, want.RunID, want.StageIndex)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow stage missing")
+	}
+	if got != want {
+		t.Fatalf("workflow stage = %+v, want %+v", got, want)
 	}
 }
 

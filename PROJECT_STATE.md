@@ -361,13 +361,17 @@ work, attempts, running work, completed work, failed work, and worker records.
 
 The store can insert workflow/run/stage/work-item records, enqueue work,
 derive per-stage queued/running/completed/failed counts, atomically claim the
-oldest queued work into `running_work`, and atomically terminate a running
-attempt into either `completed_work` or `failed_work`. Terminal rows preserve
-the copied `queued_at` and `started_at` values from `running_work` plus the
-terminal timestamp. Completion records store output JSON, output hash,
-pre-state hash, post-state hash, and optional `skipped_parent_id`; failure
-records store the error and failure time. Repeated identical terminal reports
-are idempotent; conflicting terminal reports fail.
+oldest queued work into `running_work`, atomically terminate a running attempt
+into either `completed_work` or `failed_work`, and atomically mark a stage
+complete when persisted work rows prove every work item for the stage completed
+successfully. Terminal rows preserve the copied `queued_at` and `started_at`
+values from `running_work` plus the terminal timestamp. Completion records store
+output JSON, output hash, pre-state hash, post-state hash, and optional
+`skipped_parent_id`; failure records store the error and failure time. Repeated
+identical terminal reports are idempotent; conflicting terminal reports fail.
+Stage completion can publish caller-supplied newly ready work items and queue
+rows in the same transaction, while dependency readiness and downstream
+compilation remain out of scope.
 
 This persistence package is not yet wired into the live controller HTTP
 assignment and report paths. The older `internal/ledger` attempt snapshot

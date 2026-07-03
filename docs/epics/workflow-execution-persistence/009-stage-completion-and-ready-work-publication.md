@@ -1,6 +1,6 @@
 # 009 Stage Completion and Ready-Work Publication
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
