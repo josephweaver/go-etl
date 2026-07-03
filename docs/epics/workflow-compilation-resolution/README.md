@@ -34,6 +34,20 @@ publication wherever their lifecycle inputs overlap.
   authoritative state immediately before building a short-lived resolver.
   Persistence owns the durable records; workflow compilation owns recipe
   reconstruction; the variable subsystem owns expression evaluation.
+- The authoritative inputs required to reconstruct a resolver are case-specific.
+  Case 1 startup uses `defaults.json`, the controller environment,
+  `controller.json`, and caller/client overrides. Case 2 workflow submission uses
+  the Case 1 exportable inputs plus `workflow.json`, `project.json`, and
+  generated runtime records. Case 3 ready-step compilation uses the Case 2 run
+  basis plus worker-produced step `output_json` records. Given the recorded
+  source identities and runtime records for the relevant case, variable
+  resolution must be deterministic.
+- Persistence stores exactly the durable references and records needed to
+  reconstruct each resolver case. For Case 2 this includes `workflow.json` and
+  `project.json` source identity, including GitHub repository, commit SHA, and
+  repository-relative path, plus runtime records. For Case 3 this additionally
+  includes completed step `output_json` records. Client environment and client
+  configuration may be added later, but are currently empty inputs.
 
 ## Goals
 
@@ -129,6 +143,30 @@ precedence lookup, recursion limits, cycle detection, interpolation, and
 accessors. The controller remains responsible for deciding which scopes apply,
 when a lifecycle event occurs, which values must be resolved, what transaction
 publishes the compiled work, and which durable records are required for restart.
+
+## Authoritative Resolver Reconstruction Inputs
+
+Resolver reconstruction is case-specific. The controller must assemble the
+required sources for the lifecycle case, construct a short-lived resolver,
+resolve the required values, and discard the resolver.
+
+| Case | Purpose | Authoritative inputs |
+|---|---|---|
+| Case 1 | Controller startup | `defaults.json`, controller environment, `controller.json`, and caller/client overrides. |
+| Case 2 | Workflow submission compilation | Case 1 exportable inputs plus `workflow.json`, `project.json`, and generated runtime records. |
+| Case 3 | Ready-step compilation | Case 2 run basis plus completed worker-produced step `output_json` records. |
+
+For Case 2, persistence must record the workflow and project source identities:
+GitHub repository, resolved commit SHA, repository-relative path, and any
+fingerprint/hash required by the persistence design. It must also record the
+runtime records needed to recreate the run basis.
+
+For Case 3, persistence additionally records the completed step output JSONs that
+become typed read-only inputs to downstream resolution.
+
+Client environment and client configuration may later join these inputs. They are
+currently treated as empty sources until their capture and authorization model is
+designed.
 
 ## Lifecycle Model
 
@@ -290,59 +328,57 @@ state, outputs, and downstream activation.
 
 ## Open Questions
 
-1. Which parts of the resolver recipe reconstruction inputs must be durable
-   before `workflow-execution-persistence` exists?
-2. What is the minimum first implementation that improves correctness without
+1. What is the minimum first implementation that improves correctness without
    prematurely designing the final database schema?
-3. Does Case 2 persist source expressions for every later stage, or does it
+2. Does Case 2 persist source expressions for every later stage, or does it
    retain the entire normalized workflow definition and reconstruct future
    expressions from that definition?
-4. Should resolved provenance be stored for every consumed value, only for
+3. Should resolved provenance be stored for every consumed value, only for
    non-sensitive values, only in debug mode, or only in failure diagnostics?
-5. What exact provenance shape is needed to explain precedence without leaking
+4. What exact provenance shape is needed to explain precedence without leaking
    sensitive values?
-6. Which resolved values participate in workflow, step, work-item, input,
+5. Which resolved values participate in workflow, step, work-item, input,
    output, and code-version fingerprints?
-7. Should compilation produce work items directly, or should it first produce an
+6. Should compilation produce work items directly, or should it first produce an
    intermediate compiled-stage representation that persistence later publishes?
-8. Does fan-out expansion belong inside the shared compilation operation, or is
+7. Does fan-out expansion belong inside the shared compilation operation, or is
    fan-out a separate compiler phase that consumes a resolver?
-9. What is the exact typed output shape made available from predecessor steps?
-10. What namespace exposes predecessor outputs to downstream expressions?
-11. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
+8. What is the exact typed output shape made available from predecessor steps?
+9. What namespace exposes predecessor outputs to downstream expressions?
+10. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
     scope, a workflow read-only scope, or another typed scope?
-12. What happens when a downstream expression references a future or unavailable
+11. What happens when a downstream expression references a future or unavailable
     step output?
-13. Should empty fan-out create no work item and immediately complete the stage,
+12. Should empty fan-out create no work item and immediately complete the stage,
     or create a deterministic skipped/no-op work item?
-14. Which stage-level or step-level values may be recomputed during Case 3, and
+13. Which stage-level or step-level values may be recomputed during Case 3, and
     which must come only from the Case 2 run snapshot?
-15. How should protected sensitive values captured at Case 2 be materialized for
+14. How should protected sensitive values captured at Case 2 be materialized for
     Case 3 without persisting plaintext?
-16. Should compilation be allowed to read current controller operational metrics,
+15. Should compilation be allowed to read current controller operational metrics,
     or must those remain outside workflow semantics unless explicitly captured?
-17. What is the boundary between compilation and database transaction ownership?
-18. Can the shared compilation context builder be pure/in-memory, with callers
+16. What is the boundary between compilation and database transaction ownership?
+17. Can the shared compilation context builder be pure/in-memory, with callers
     responsible for loading and persisting state?
-19. How should compilation failures be represented: submission rejection, blocked
+18. How should compilation failures be represented: submission rejection, blocked
     run, failed stage, or retryable controller error?
-20. Can a ready-stage compilation be retried safely after a crash before its
+19. Can a ready-stage compilation be retried safely after a crash before its
     transaction commits?
-21. What idempotency key uniquely identifies an already-compiled stage?
-22. How should compilation versioning and schema evolution be recorded so older
+20. What idempotency key uniquely identifies an already-compiled stage?
+21. How should compilation versioning and schema evolution be recorded so older
     runs remain explainable?
-23. Which pieces of compiled work are immutable after publication?
-24. Can any compilation artifacts be cached, and if so what is the cache key and
+22. Which pieces of compiled work are immutable after publication?
+23. Can any compilation artifacts be cached, and if so what is the cache key and
     eviction policy?
-25. How much of the existing `internal/workflow` compiler should be reused versus
+24. How much of the existing `internal/workflow` compiler should be reused versus
     wrapped by a controller-side compilation boundary?
-26. What is the eventual boundary for plugin-provided compile-time behavior, if
+25. What is the eventual boundary for plugin-provided compile-time behavior, if
     plugins need to contribute declared outputs, package references, or parameter
     schemas?
-27. How should this epic divide responsibilities with
+26. How should this epic divide responsibilities with
     `workflow-execution-persistence` so neither document owns the same durable
     state twice?
-28. Should `dependency-aware-workflows` be revised immediately after this epic is
+27. Should `dependency-aware-workflows` be revised immediately after this epic is
     accepted, or after the first implementation slice proves the boundary?
 
 ## Completion Criteria
@@ -353,6 +389,8 @@ state, outputs, and downstream activation.
   as workflow execution state.
 - A resolver recipe is treated as a reconstructable controller contract, not a
   persisted object.
+- The authoritative resolver reconstruction inputs are defined for Case 1, Case
+  2, and Case 3.
 - Case 2 and Case 3 share the same conceptual resolver recipe and compilation
   path wherever their inputs overlap.
 - The design identifies which lifecycle-specific inputs distinguish submission
