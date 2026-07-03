@@ -1,6 +1,6 @@
 # 011 Restart Reconstruction Queries
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

@@ -371,7 +371,10 @@ output JSON, output hash, pre-state hash, post-state hash, and optional
 identical terminal reports are idempotent; conflicting terminal reports fail.
 Stage completion can publish caller-supplied newly ready work items and queue
 rows in the same transaction, while dependency readiness and downstream
-compilation remain out of scope.
+compilation remain out of scope. Restart-oriented read queries can list running
+work, retrieve one running attempt, list terminal attempts for a run, and derive
+run-level queued/running/completed/failed counts from placement and terminal
+tables.
 
 This persistence package is not yet wired into the live controller HTTP
 assignment and report paths. The older `internal/ledger` attempt snapshot

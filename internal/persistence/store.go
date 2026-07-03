@@ -92,6 +92,39 @@ type WorkItemStatusCounts struct {
 	Failed    int
 }
 
+type RunWorkStatusCounts struct {
+	Queued    int
+	Running   int
+	Completed int
+	Failed    int
+}
+
+type RunningWorkRecord struct {
+	AttemptID    string
+	WorkItem     WorkItemRecord
+	WorkerID     string
+	ExecutorType string
+	QueuedAt     string
+	StartedAt    string
+}
+
+type TerminalAttemptRecord struct {
+	AttemptID        string
+	WorkItem         WorkItemRecord
+	TerminalState    string
+	WorkerID         string
+	ExecutorType     string
+	QueuedAt         string
+	StartedAt        string
+	FinishedAt       string
+	Error            string
+	SkippedParentID  string
+	OutputJSON       string
+	OutputJSONSHA256 string
+	PreStateSHA256   string
+	PostStateSHA256  string
+}
+
 type CompleteStageRequest struct {
 	RunID            string
 	StageIndex       int
@@ -690,6 +723,108 @@ func (s *Store) CountWorkItemsForStage(ctx context.Context, runID string, stageI
 		}
 	}
 	return counts, nil
+}
+
+func (s *Store) CountWorkItemsForRun(ctx context.Context, runID string) (RunWorkStatusCounts, error) {
+	if err := s.requireOpen(); err != nil {
+		return RunWorkStatusCounts{}, err
+	}
+	if runID == "" {
+		return RunWorkStatusCounts{}, fmt.Errorf("run id is required")
+	}
+
+	var counts RunWorkStatusCounts
+	queries := []struct {
+		name string
+		sql  string
+		dest *int
+	}{
+		{name: "queued", sql: `SELECT COUNT(*) FROM queued_work JOIN work_items ON work_items.work_item_id = queued_work.work_item_id WHERE work_items.run_id = ?`, dest: &counts.Queued},
+		{name: "running", sql: `SELECT COUNT(*) FROM running_work JOIN work_items ON work_items.work_item_id = running_work.work_item_id WHERE work_items.run_id = ?`, dest: &counts.Running},
+		{name: "completed", sql: `SELECT COUNT(*) FROM completed_work JOIN work_items ON work_items.work_item_id = completed_work.work_item_id WHERE work_items.run_id = ?`, dest: &counts.Completed},
+		{name: "failed", sql: `SELECT COUNT(*) FROM failed_work JOIN work_items ON work_items.work_item_id = failed_work.work_item_id WHERE work_items.run_id = ?`, dest: &counts.Failed},
+	}
+	for _, query := range queries {
+		if err := s.db.QueryRowContext(ctx, query.sql, runID).Scan(query.dest); err != nil {
+			return RunWorkStatusCounts{}, fmt.Errorf("count %s work items for run %s: %w", query.name, runID, err)
+		}
+	}
+	return counts, nil
+}
+
+func (s *Store) ListRunningWork(ctx context.Context) ([]RunningWorkRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, runningWorkSelectSQL()+`
+	ORDER BY running_work.started_at, running_work.attempt_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list running work: %w", err)
+	}
+	defer rows.Close()
+
+	records := []RunningWorkRecord{}
+	for rows.Next() {
+		record, err := scanRunningWork(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list running work: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running work: %w", err)
+	}
+	return records, nil
+}
+
+func (s *Store) GetRunningWork(ctx context.Context, attemptID string) (RunningWorkRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return RunningWorkRecord{}, false, err
+	}
+	if attemptID == "" {
+		return RunningWorkRecord{}, false, fmt.Errorf("attempt id is required")
+	}
+
+	record, err := scanRunningWork(s.db.QueryRowContext(ctx, runningWorkSelectSQL()+`
+	WHERE running_work.attempt_id = ?`, attemptID))
+	if err == sql.ErrNoRows {
+		return RunningWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return RunningWorkRecord{}, false, fmt.Errorf("get running work %s: %w", attemptID, err)
+	}
+	return record, true, nil
+}
+
+func (s *Store) ListTerminalAttemptsForRun(ctx context.Context, runID string) ([]TerminalAttemptRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, terminalAttemptSelectSQL()+`
+	WHERE run_id = ?
+	ORDER BY finished_at, attempt_id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list terminal attempts for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	records := []TerminalAttemptRecord{}
+	for rows.Next() {
+		record, err := scanTerminalAttempt(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list terminal attempts for run %s: %w", runID, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list terminal attempts for run %s: %w", runID, err)
+	}
+	return records, nil
 }
 
 func (s *Store) CompleteStageIfReady(ctx context.Context, request CompleteStageRequest) (CompleteStageResult, error) {
@@ -1475,6 +1610,168 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 		&item.QueuedAt,
 	)
 	return item, err
+}
+
+func runningWorkSelectSQL() string {
+	return `SELECT
+		running_work.attempt_id,
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		running_work.worker_id,
+		work_item_attempts.executor_type,
+		running_work.queued_at,
+		running_work.started_at
+	FROM running_work
+	JOIN work_items ON work_items.work_item_id = running_work.work_item_id
+	JOIN work_item_attempts ON work_item_attempts.attempt_id = running_work.attempt_id`
+}
+
+func scanRunningWork(row scanner) (RunningWorkRecord, error) {
+	var record RunningWorkRecord
+	var workerID sql.NullString
+	err := row.Scan(
+		&record.AttemptID,
+		&record.WorkItem.ID,
+		&record.WorkItem.RunID,
+		&record.WorkItem.StageIndex,
+		&record.WorkItem.WorkItemIndex,
+		&record.WorkItem.WorkerPayloadJSON,
+		&record.WorkItem.ResolvedInputsSHA256,
+		&record.WorkItem.CreatedAt,
+		&workerID,
+		&record.ExecutorType,
+		&record.QueuedAt,
+		&record.StartedAt,
+	)
+	if err != nil {
+		return RunningWorkRecord{}, err
+	}
+	record.WorkerID = workerID.String
+	return record, nil
+}
+
+func terminalAttemptSelectSQL() string {
+	return `SELECT
+		terminal_attempts.attempt_id,
+		terminal_attempts.work_item_id,
+		terminal_attempts.run_id,
+		terminal_attempts.stage_index,
+		terminal_attempts.work_item_index,
+		terminal_attempts.worker_payload_json,
+		terminal_attempts.resolved_inputs_sha256,
+		terminal_attempts.created_at,
+		terminal_attempts.terminal_state,
+		terminal_attempts.worker_id,
+		terminal_attempts.executor_type,
+		terminal_attempts.queued_at,
+		terminal_attempts.started_at,
+		terminal_attempts.finished_at,
+		terminal_attempts.error,
+		terminal_attempts.skipped_parent_id,
+		terminal_attempts.output_json,
+		terminal_attempts.output_json_sha256,
+		terminal_attempts.pre_state_sha256,
+		terminal_attempts.post_state_sha256
+	FROM (
+		SELECT
+			completed_work.attempt_id,
+			work_items.work_item_id,
+			work_items.run_id,
+			work_items.stage_index,
+			work_items.work_item_index,
+			work_items.worker_payload_json,
+			work_items.resolved_inputs_sha256,
+			work_items.created_at,
+			'completed' AS terminal_state,
+			work_item_attempts.worker_id,
+			work_item_attempts.executor_type,
+			completed_work.queued_at,
+			completed_work.started_at,
+			completed_work.completed_at AS finished_at,
+			NULL AS error,
+			completed_work.skipped_parent_id,
+			completed_work.output_json,
+			completed_work.output_json_sha256,
+			completed_work.pre_state_sha256,
+			completed_work.post_state_sha256
+		FROM completed_work
+		JOIN work_items ON work_items.work_item_id = completed_work.work_item_id
+		JOIN work_item_attempts ON work_item_attempts.attempt_id = completed_work.attempt_id
+		UNION ALL
+		SELECT
+			failed_work.attempt_id,
+			work_items.work_item_id,
+			work_items.run_id,
+			work_items.stage_index,
+			work_items.work_item_index,
+			work_items.worker_payload_json,
+			work_items.resolved_inputs_sha256,
+			work_items.created_at,
+			'failed' AS terminal_state,
+			work_item_attempts.worker_id,
+			work_item_attempts.executor_type,
+			failed_work.queued_at,
+			failed_work.started_at,
+			failed_work.failed_at AS finished_at,
+			failed_work.error,
+			NULL AS skipped_parent_id,
+			NULL AS output_json,
+			NULL AS output_json_sha256,
+			NULL AS pre_state_sha256,
+			NULL AS post_state_sha256
+		FROM failed_work
+		JOIN work_items ON work_items.work_item_id = failed_work.work_item_id
+		JOIN work_item_attempts ON work_item_attempts.attempt_id = failed_work.attempt_id
+	) AS terminal_attempts`
+}
+
+func scanTerminalAttempt(row scanner) (TerminalAttemptRecord, error) {
+	var record TerminalAttemptRecord
+	var workerID sql.NullString
+	var errorText sql.NullString
+	var skippedParentID sql.NullString
+	var outputJSON sql.NullString
+	var outputJSONSHA256 sql.NullString
+	var preStateSHA256 sql.NullString
+	var postStateSHA256 sql.NullString
+	err := row.Scan(
+		&record.AttemptID,
+		&record.WorkItem.ID,
+		&record.WorkItem.RunID,
+		&record.WorkItem.StageIndex,
+		&record.WorkItem.WorkItemIndex,
+		&record.WorkItem.WorkerPayloadJSON,
+		&record.WorkItem.ResolvedInputsSHA256,
+		&record.WorkItem.CreatedAt,
+		&record.TerminalState,
+		&workerID,
+		&record.ExecutorType,
+		&record.QueuedAt,
+		&record.StartedAt,
+		&record.FinishedAt,
+		&errorText,
+		&skippedParentID,
+		&outputJSON,
+		&outputJSONSHA256,
+		&preStateSHA256,
+		&postStateSHA256,
+	)
+	if err != nil {
+		return TerminalAttemptRecord{}, err
+	}
+	record.WorkerID = workerID.String
+	record.Error = errorText.String
+	record.SkippedParentID = skippedParentID.String
+	record.OutputJSON = outputJSON.String
+	record.OutputJSONSHA256 = outputJSONSHA256.String
+	record.PreStateSHA256 = preStateSHA256.String
+	record.PostStateSHA256 = postStateSHA256.String
+	return record, nil
 }
 
 func scanCompletedWork(row scanner) (CompletedWorkRecord, error) {

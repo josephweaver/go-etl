@@ -647,6 +647,155 @@ func TestStoreCountWorkItemsForStage(t *testing.T) {
 	}
 }
 
+func TestStoreCountWorkItemsForRun(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStages(t, ctx, store, []WorkflowStageRecord{
+		testWorkflowStageRecord("run-001", 0, "ready"),
+		testWorkflowStageRecord("run-001", 1, "ready"),
+	})
+	queued := testWorkItemRecord("work-queued", run.ID, 0, 0)
+	running := testWorkItemRecord("work-running", run.ID, 0, 1)
+	completed := testWorkItemRecord("work-completed", run.ID, 1, 0)
+	failed := testWorkItemRecord("work-failed", run.ID, 1, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{queued, running, completed, failed}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: queued, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-running", running.ID)
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", completed.ID)
+	insertTestFailedWork(t, ctx, store, "attempt-failed", failed.ID)
+
+	counts, err := store.CountWorkItemsForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("CountWorkItemsForRun() error = %v", err)
+	}
+	want := RunWorkStatusCounts{Queued: 1, Running: 1, Completed: 1, Failed: 1}
+	if counts != want {
+		t.Fatalf("counts = %+v, want %+v", counts, want)
+	}
+}
+
+func TestStoreListRunningWorkAndGetRunningWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	bWork := testWorkItemRecord("work-b", run.ID, 0, 0)
+	aWork := testWorkItemRecord("work-a", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{bWork, aWork}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-b", bWork.ID)
+	insertTestRunningWork(t, ctx, store, "attempt-a", aWork.ID)
+
+	running, err := store.ListRunningWork(ctx)
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 2 {
+		t.Fatalf("running count = %d, want 2: %+v", len(running), running)
+	}
+	if running[0].AttemptID != "attempt-a" || running[1].AttemptID != "attempt-b" {
+		t.Fatalf("running order = %+v, want attempt-a then attempt-b", running)
+	}
+	if running[0].WorkItem != aWork {
+		t.Fatalf("running work item = %+v, want %+v", running[0].WorkItem, aWork)
+	}
+	if running[0].ExecutorType != ExecutorTypeWorker {
+		t.Fatalf("executor type = %q, want %q", running[0].ExecutorType, ExecutorTypeWorker)
+	}
+	if running[0].QueuedAt != "2026-07-03T00:00:00Z" || running[0].StartedAt != "2026-07-03T00:00:01Z" {
+		t.Fatalf("running timing = queued %q started %q, want copied timing", running[0].QueuedAt, running[0].StartedAt)
+	}
+
+	got, found, err := store.GetRunningWork(ctx, "attempt-a")
+	if err != nil {
+		t.Fatalf("GetRunningWork() error = %v", err)
+	}
+	if !found || got != running[0] {
+		t.Fatalf("GetRunningWork() = %+v found %v, want %+v", got, found, running[0])
+	}
+}
+
+func TestStoreGetRunningWorkReturnsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	got, found, err := store.GetRunningWork(ctx, "missing-attempt")
+	if err != nil {
+		t.Fatalf("GetRunningWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("GetRunningWork() = %+v found true, want false", got)
+	}
+}
+
+func TestStoreListTerminalAttemptsForRun(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	completed := testWorkItemRecord("work-completed", run.ID, 0, 0)
+	failed := testWorkItemRecord("work-failed", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{completed, failed}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", completed.ID)
+	insertTestFailedWork(t, ctx, store, "attempt-failed", failed.ID)
+
+	otherRun := insertTestWorkflowRun(t, ctx, store, "run-002", run.ProjectID, run.WorkflowID)
+	if err := store.InsertStagePlan(ctx, otherRun.ID, []WorkflowStageRecord{testWorkflowStageRecord(otherRun.ID, 0, "ready")}); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+	otherWork := testWorkItemRecord("work-other", otherRun.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{otherWork}); err != nil {
+		t.Fatalf("InsertWorkItems(other) error = %v", err)
+	}
+	insertTestCompletedWork(t, ctx, store, "attempt-other", otherWork.ID)
+
+	terminals, err := store.ListTerminalAttemptsForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminals) != 2 {
+		t.Fatalf("terminal count = %d, want 2: %+v", len(terminals), terminals)
+	}
+	if terminals[0].AttemptID != "attempt-completed" || terminals[1].AttemptID != "attempt-failed" {
+		t.Fatalf("terminal order = %+v, want completed then failed by timestamp and attempt", terminals)
+	}
+	completedTerminal := terminals[0]
+	if completedTerminal.TerminalState != "completed" {
+		t.Fatalf("terminal state = %q, want completed", completedTerminal.TerminalState)
+	}
+	if completedTerminal.WorkItem != completed {
+		t.Fatalf("completed terminal work item = %+v, want %+v", completedTerminal.WorkItem, completed)
+	}
+	if completedTerminal.OutputJSON != "{}" || completedTerminal.OutputJSONSHA256 != strings.Repeat("d", 64) {
+		t.Fatalf("completed terminal output = %+v, want output evidence", completedTerminal)
+	}
+	if completedTerminal.PreStateSHA256 != strings.Repeat("e", 64) || completedTerminal.PostStateSHA256 != strings.Repeat("f", 64) {
+		t.Fatalf("completed terminal state hashes = %+v, want state evidence", completedTerminal)
+	}
+	failedTerminal := terminals[1]
+	if failedTerminal.TerminalState != "failed" {
+		t.Fatalf("terminal state = %q, want failed", failedTerminal.TerminalState)
+	}
+	if failedTerminal.WorkItem != failed {
+		t.Fatalf("failed terminal work item = %+v, want %+v", failedTerminal.WorkItem, failed)
+	}
+	if failedTerminal.Error != "failed" {
+		t.Fatalf("failed terminal error = %q, want failed", failedTerminal.Error)
+	}
+	if failedTerminal.OutputJSON != "" || failedTerminal.OutputJSONSHA256 != "" {
+		t.Fatalf("failed terminal output = %+v, want no output evidence", failedTerminal)
+	}
+}
+
 func TestStoreCompleteStageIfReadyCompletesStage(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
