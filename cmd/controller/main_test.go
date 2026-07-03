@@ -1654,6 +1654,76 @@ func TestSubmitWorkHandlerRejectsGet(t *testing.T) {
 	}
 }
 
+func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204", submitResp.Code)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResp := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResp, nextReq)
+
+	if nextResp.Code != http.StatusOK {
+		t.Fatalf("next status code = %d, want 200", nextResp.Code)
+	}
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResp.Body).Decode(&item); err != nil {
+		t.Fatalf("decode assigned work: %v", err)
+	}
+	if item.ID != "test-001" || item.OutputFilename != "result.txt" {
+		t.Fatalf("assigned item = %+v, want submitted item", item)
+	}
+	if len(controller.assigned) != 0 {
+		t.Fatalf("assigned map count = %d, want 0 for persisted claim", len(controller.assigned))
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued count = %d, want 0 after persisted claim", len(queued))
+	}
+	running, err := store.ListRunningWork(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 1 {
+		t.Fatalf("running count = %d, want 1: %+v", len(running), running)
+	}
+	if running[0].WorkItem.ID != "test-001" {
+		t.Fatalf("running work item id = %q, want test-001", running[0].WorkItem.ID)
+	}
+}
+
+func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204", response.Code)
+	}
+	if len(controller.pending) != 1 {
+		t.Fatalf("in-memory pending count = %d, want unchanged fallback state", len(controller.pending))
+	}
+}
+
 func TestSubmitWorkflowHandler(t *testing.T) {
 	controller := newController(nil)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{

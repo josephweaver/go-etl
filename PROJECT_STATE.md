@@ -395,7 +395,10 @@ assigned, and failed-equivalent counts from persisted queued, running, and
 failed work rows instead of the in-memory queue maps. Raw `POST /work`
 submissions also persist into a synthetic raw-work run and queue row when the
 workflow-execution store is configured; the old in-memory raw submission path
-remains as fallback when no store is present.
+remains as fallback when no store is present. `/work/next` claims persisted
+queued work through the workflow-execution store and decodes the stored worker
+payload back into the existing worker response shape when the store is
+configured; the old in-memory assignment path remains as fallback.
 
 ## SQLite Ledger
 

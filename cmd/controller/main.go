@@ -1700,6 +1700,10 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if !c.requireNormalAdmission(w) {
 		return
 	}
+	if c.workflowStore != nil {
+		c.nextPersistedWorkHandler(w, r)
+		return
+	}
 
 	for {
 		c.mu.Lock()
@@ -1734,5 +1738,36 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "encode work item", http.StatusInternalServerError)
 		}
 		return
+	}
+}
+
+func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {
+	claim, found, err := c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-" + randomHex(16),
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		http.Error(w, "claim work", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	var item model.WorkItem
+	if err := json.Unmarshal([]byte(claim.WorkItem.WorkerPayloadJSON), &item); err != nil {
+		http.Error(w, "decode persisted worker payload", http.StatusInternalServerError)
+		return
+	}
+	if err := item.Validate(); err != nil {
+		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(item); err != nil {
+		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
 }

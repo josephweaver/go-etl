@@ -1,6 +1,6 @@
 # 012d Persistence-backed Work Claim Endpoint
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
