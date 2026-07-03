@@ -104,6 +104,7 @@ var sqliteSchemaStatements = []string{
 		attempt_id TEXT PRIMARY KEY,
 		work_item_id TEXT NOT NULL UNIQUE,
 		worker_id TEXT,
+		queued_at TEXT NOT NULL,
 		started_at TEXT NOT NULL,
 
 		FOREIGN KEY (attempt_id) REFERENCES work_item_attempts(attempt_id),

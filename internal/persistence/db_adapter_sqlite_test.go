@@ -259,6 +259,43 @@ func TestOpenStoreCreatesSQLiteSkippedParentColumn(t *testing.T) {
 	}
 }
 
+func TestOpenStoreCreatesSQLiteRunningWorkQueuedAtColumn(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	insertMinimalStage(t, ctx, store.db)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_items (
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	) VALUES ('work-item-001', 'run-001', 0, 0, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`, strings.Repeat("b", 64)); err != nil {
+		t.Fatalf("insert work item: %v", err)
+	}
+	insertAttempt(t, ctx, store.db, "attempt-001", "work-item-001", "worker")
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO running_work (
+		attempt_id,
+		work_item_id,
+		queued_at,
+		started_at
+	) VALUES ('attempt-001', 'work-item-001', '2026-07-03T00:00:01Z', '2026-07-03T00:00:02Z')`); err != nil {
+		t.Fatalf("insert running work: %v", err)
+	}
+
+	var queuedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT queued_at FROM running_work WHERE attempt_id = 'attempt-001'`).Scan(&queuedAt); err != nil {
+		t.Fatalf("query running queued_at: %v", err)
+	}
+	if queuedAt != "2026-07-03T00:00:01Z" {
+		t.Fatalf("queued_at = %q, want 2026-07-03T00:00:01Z", queuedAt)
+	}
+}
+
 func TestOpenStoreDoesNotCreateSupportedSchemaAfterFailedValidation(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "store.sqlite")

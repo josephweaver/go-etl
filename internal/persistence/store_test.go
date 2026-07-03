@@ -755,8 +755,9 @@ func insertTestRunningWork(t *testing.T, ctx context.Context, store *Store, atte
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO running_work (
 		attempt_id,
 		work_item_id,
+		queued_at,
 		started_at
-	) VALUES (?, ?, '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+	) VALUES (?, ?, '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert running work: %v", err)
 	}
 }
