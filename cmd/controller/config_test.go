@@ -1207,6 +1207,54 @@ func TestInitMainDatabaseRequiresStringVariables(t *testing.T) {
 	}
 }
 
+func TestAcquireControllerDatabaseOwnershipCreatesAndReleasesLock(t *testing.T) {
+	db := testSQLiteMainDatabase(t)
+	defer db.Close()
+
+	release, err := acquireControllerDatabaseOwnership(db)
+	if err != nil {
+		t.Fatalf("acquireControllerDatabaseOwnership() error = %v", err)
+	}
+
+	var path string
+	if err := db.QueryRowContext(context.Background(), `PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		t.Fatalf("query database path: %v", err)
+	}
+	lockPath := path + ".controller.lock"
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("expected lock file: %v", err)
+	}
+
+	if err := release(); err != nil {
+		t.Fatalf("release ownership: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("expected lock file removal, got: %v", err)
+	}
+}
+
+func TestAcquireControllerDatabaseOwnershipRejectsExistingLock(t *testing.T) {
+	db := testSQLiteMainDatabase(t)
+	defer db.Close()
+
+	var path string
+	if err := db.QueryRowContext(context.Background(), `PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		t.Fatalf("query database path: %v", err)
+	}
+	lockPath := path + ".controller.lock"
+	if err := os.WriteFile(lockPath, []byte("owned"), 0600); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+
+	release, err := acquireControllerDatabaseOwnership(db)
+	if err == nil || !strings.Contains(err.Error(), "already owned") {
+		t.Fatalf("error = %v, want already owned", err)
+	}
+	if release != nil {
+		t.Fatal("release = non-nil, want nil")
+	}
+}
+
 func TestControllerOwnsConfiguredLedger(t *testing.T) {
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()

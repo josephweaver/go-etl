@@ -141,6 +141,18 @@ func main() {
 		fmt.Println("controller database failed:", err)
 		return
 	}
+	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnership(ledgerDB)
+	if err != nil {
+		fmt.Println("controller database ownership failed:", err)
+		return
+	}
+	defer func() {
+		if releaseDatabaseOwnership != nil {
+			if err := releaseDatabaseOwnership(); err != nil {
+				fmt.Println("controller database ownership release failed:", err)
+			}
+		}
+	}()
 	defer ledgerDB.Close()
 	workingDirectory, err := os.Getwd()
 	if err != nil {
@@ -401,6 +413,39 @@ func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB,
 	}
 
 	return db, nil
+}
+
+func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
+	if db == nil {
+		return nil, fmt.Errorf("controller startup database ownership: database handle is required")
+	}
+
+	var path string
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		return nil, fmt.Errorf("controller startup database ownership: inspect database path: %w", err)
+	}
+	if path == "" || path == ":memory:" {
+		return func() error { return nil }, nil
+	}
+
+	lockPath := path + ".controller.lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("controller startup database ownership: database is already owned")
+		}
+		return nil, fmt.Errorf("controller startup database ownership: create lock file: %w", err)
+	}
+	if err := lockFile.Close(); err != nil {
+		return nil, fmt.Errorf("controller startup database ownership: close lock file: %w", err)
+	}
+
+	return func() error {
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("controller startup database ownership: remove lock file: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirectory string) (controllerFilesystemPaths, error) {
