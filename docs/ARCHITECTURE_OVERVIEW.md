@@ -1,6 +1,6 @@
 # GOET Architecture Overview
 
-Last updated: 2026-06-26
+Last updated: 2026-07-03
 
 ## Purpose
 
@@ -18,34 +18,34 @@ A user already knows how to train a model, rasterize imagery, execute SQL, or ru
 
 ```text
 Customer
-│
-├── CLI
-├── Python SDK
-├── R SDK
-└── REST
+|
+|-- CLI
+|-- Python SDK
+|-- R SDK
+`-- REST
 
-        │
+        |
 
 Controller
-│
-├── Submission API
-├── Workflow Compiler
-├── Variable Resolver
-├── Scheduler
-├── Worker Manager
-├── Artifact Manager
-└── Attempt Ledger
+|
+|-- Submission API
+|-- Workflow Compiler
+|-- Variable Resolver
+|-- Scheduler
+|-- Worker Manager
+|-- Artifact Manager
+`-- Attempt Ledger
 
-        │
+        |
 
 Execution Environment
-│
-├── Transport
-├── Scheduler
-├── Runtime
-└── Shell Dialect
+|
+|-- Transport
+|-- Scheduler
+|-- Runtime
+`-- Shell Dialect
 
-        │
+        |
 
 Workers
 ```
@@ -95,21 +95,29 @@ Workers obtain work from the Controller, execute assigned work items, report sta
 
 ```text
 Customer
-    ↓
+    |
+    v
 Submission
-    ↓
+    |
+    v
 Workflow Compilation
-    ↓
+    |
+    v
 Work Items
-    ↓
+    |
+    v
 Queue
-    ↓
+    |
+    v
 Workers
-    ↓
+    |
+    v
 Artifacts
-    ↓
+    |
+    v
 Attempt Ledger
-    ↓
+    |
+    v
 Status
 ```
 
@@ -127,6 +135,17 @@ GOET follows these principles:
 - Customer-specific logic stays outside GOET core.
 - Everything should be resumable where practical.
 - Everything should be designed for reproducibility.
+- Variable resolvers are short-lived evaluation objects, not durable execution state.
+
+### Resolver Construction Principle
+
+GOET treats variable resolvers as short-lived, stateless evaluation engines. A resolver is constructed immediately before a startup, compilation, assignment, policy, or other evaluation event; it performs the required variable resolution; and it is discarded afterward.
+
+Long-lived controller state is represented by durable configuration, workflow definitions, project definitions, captured environment values, runtime snapshots, typed outputs, compiled work items, and attempts. It is not represented by retaining resolver instances.
+
+A resolver recipe is a reconstructable controller contract. It is not a persisted object, serialized document, standalone database entity, or long-lived runtime object. The controller reconstructs the recipe from authoritative state immediately before building a resolver. Persistence components own the durable records; controller lifecycle code owns recipe reconstruction; the variable subsystem owns expression evaluation.
+
+This principle applies beyond workflow compilation. Controller startup, workflow submission, ready-step compilation, assignment-time finalization, reconciliation, and future policy decisions should each build a resolver for one explicit lifecycle boundary and discard it after producing validated outputs.
 
 ## Relationship to Customer APIs
 
