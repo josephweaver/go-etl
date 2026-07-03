@@ -122,3 +122,6 @@ atoms in one cycle.
 - The fifth Review Atom adds rollback/conflict coverage showing that a duplicate
   attempt ID fails the claim and leaves the selected work item queued with no
   running placement.
+- The sixth Review Atom adds coverage for claiming with an existing worker ID,
+  proving the claim records that worker on both the attempt and running
+  placement without designing worker registration.

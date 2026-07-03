@@ -857,6 +857,37 @@ func TestStoreClaimNextWorkRollsBackOnDuplicateAttemptID(t *testing.T) {
 	assertRunningWorkMissingForWorkItem(t, ctx, store, queued.ID)
 }
 
+func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	work := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	insertTestWorker(t, ctx, store, "worker-001", run.ID)
+	request := testClaimWorkRequest()
+	request.WorkerID = "worker-001"
+
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+	if claimed.WorkerID != request.WorkerID {
+		t.Fatalf("claimed worker id = %q, want %q", claimed.WorkerID, request.WorkerID)
+	}
+
+	assertRunningWork(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
+	assertAttempt(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -957,6 +988,19 @@ func testClaimWorkRequest() ClaimWorkRequest {
 		AttemptID:    "attempt-001",
 		ExecutorType: ExecutorTypeWorker,
 		StartedAt:    "2026-07-03T00:00:00Z",
+	}
+}
+
+func insertTestWorker(t *testing.T, ctx context.Context, store *Store, workerID string, runID string) {
+	t.Helper()
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workers (
+		worker_id,
+		run_id,
+		execution_handle,
+		created_at
+	) VALUES (?, ?, 'handle', '2026-07-03T00:00:00Z')`, workerID, runID); err != nil {
+		t.Fatalf("insert worker: %v", err)
 	}
 }
 
