@@ -1,6 +1,6 @@
 # 012b Persistence-backed Status Read Model
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

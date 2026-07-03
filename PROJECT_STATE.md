@@ -389,7 +389,10 @@ implementation.
 Controller cutover has started by adding a workflow-execution store handle to
 `Controller` and opening that store as the configured main database during live
 startup. The older attempt ledger remains in code for legacy skip/reuse helpers
-and tests, but live startup no longer opens it as the main database.
+and tests, but live startup no longer opens it as the main database. When a
+workflow-execution store is configured, `/status` now derives pending,
+assigned, and failed-equivalent counts from persisted queued, running, and
+failed work rows instead of the in-memory queue maps.
 
 ## SQLite Ledger
 

@@ -1328,6 +1328,58 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	queued := testPersistenceWorkItem("persisted-queued", run.ID, 0, 0)
+	running := testPersistenceWorkItem("persisted-running", run.ID, 0, 1)
+	failed := testPersistenceWorkItem("persisted-failed", run.ID, 0, 2)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{queued, running, failed}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{
+		{WorkItemRecord: queued, QueuedAt: "2026-07-03T00:00:00Z"},
+		{WorkItemRecord: running, QueuedAt: "2026-07-03T00:00:01Z"},
+		{WorkItemRecord: failed, QueuedAt: "2026-07-03T00:00:02Z"},
+	}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-running",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:03Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork(running) found = %v error = %v, want success", found, err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-failed",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:04Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork(failed) found = %v error = %v, want success", found, err)
+	}
+	if _, found, err := store.FailAttempt(ctx, persistence.FailAttemptRequest{
+		AttemptID: "attempt-failed",
+		Error:     "failed",
+		FailedAt:  "2026-07-03T00:00:05Z",
+	}); err != nil || !found {
+		t.Fatalf("FailAttempt() found = %v error = %v, want success", found, err)
+	}
+
+	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
+	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "memory failed"}
+	controller.workflowStore = store
+
+	status := getStatus(t, controller)
+
+	if status.Pending != 1 || status.Assigned != 1 || status.Failed != 1 {
+		t.Fatalf("unexpected persisted status: %+v", status)
+	}
+}
+
 func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	controller := newTestController()
 	db := testSQLiteMainDatabase(t)
@@ -2397,6 +2449,95 @@ func newTestController() *Controller {
 			OutputFilename: "result.txt",
 		},
 	})
+}
+
+func testWorkItem(id string) model.WorkItem {
+	return model.WorkItem{
+		ID:             id,
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: id + ".txt",
+	}
+}
+
+func openTestWorkflowExecutionStore(t *testing.T) *persistence.Store {
+	t.Helper()
+
+	store, err := persistence.OpenStore(context.Background(), persistence.Config{
+		Driver:           persistence.DriverSQLite,
+		ConnectionString: filepath.Join(t.TempDir(), "workflow-execution.sqlite"),
+	})
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	return store
+}
+
+func insertTestPersistenceRunWithStage(t *testing.T, ctx context.Context, store *persistence.Store) persistence.WorkflowRunRecord {
+	t.Helper()
+
+	project := persistence.ProjectRecord{
+		ID:                 "project-001",
+		Name:               "Project",
+		RepositoryIdentity: "repo",
+		SourceCommit:       "commit",
+		ConfigPath:         "project.json",
+		SourceObjectID:     "object",
+		ConfigSHA256:       strings.Repeat("a", 64),
+		CreatedAt:          "2026-07-03T00:00:00Z",
+	}
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatalf("UpsertProject() error = %v", err)
+	}
+	workflow := persistence.WorkflowRecord{
+		ID:                 "workflow-001",
+		ProjectID:          project.ID,
+		Name:               "Workflow",
+		RepositoryIdentity: "repo",
+		SourceCommit:       "commit",
+		WorkflowPath:       "workflow.json",
+		SourceObjectID:     "object",
+		WorkflowSHA256:     strings.Repeat("b", 64),
+		CreatedAt:          "2026-07-03T00:00:00Z",
+	}
+	if err := store.UpsertWorkflow(ctx, workflow); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+	run := persistence.WorkflowRunRecord{
+		ID:                    "run-001",
+		ProjectID:             project.ID,
+		WorkflowID:            workflow.ID,
+		SubmissionContextJSON: `{"variables":[]}`,
+		CreatedAt:             "2026-07-03T00:00:00Z",
+	}
+	if err := store.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("CreateWorkflowRun() error = %v", err)
+	}
+	if err := store.InsertStagePlan(ctx, run.ID, []persistence.WorkflowStageRecord{
+		{
+			RunID:                run.ID,
+			StageIndex:           0,
+			StepID:               "step-001",
+			StageSourceReference: "workflow.json#/steps/0",
+			State:                "ready",
+			CreatedAt:            "2026-07-03T00:00:00Z",
+			ReadyAt:              "2026-07-03T00:00:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+	return run
+}
+
+func testPersistenceWorkItem(id string, runID string, stageIndex int, workItemIndex int) persistence.WorkItemRecord {
+	return persistence.WorkItemRecord{
+		ID:                   id,
+		RunID:                runID,
+		StageIndex:           stageIndex,
+		WorkItemIndex:        workItemIndex,
+		WorkerPayloadJSON:    `{"plugin":"plugin-name","parameters":{}}`,
+		ResolvedInputsSHA256: strings.Repeat("c", 64),
+		CreatedAt:            "2026-07-03T00:00:00Z",
+	}
 }
 
 func reusableTestWorkItem(id string) model.WorkItem {

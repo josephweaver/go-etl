@@ -1284,6 +1284,23 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	status, err := c.controllerStatus(r.Context())
+	if err != nil {
+		http.Error(w, "query controller status", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		http.Error(w, "encode status", http.StatusInternalServerError)
+	}
+}
+
+func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
+	if c.workflowStore != nil {
+		return c.persistenceControllerStatus(ctx)
+	}
+
 	c.mu.Lock()
 	pendingItems := append([]model.WorkItem(nil), c.pending...)
 	status := model.ControllerStatus{
@@ -1293,25 +1310,48 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 
-	reuseReasons, err := c.pendingReuseDecisionReasons(r.Context(), pendingItems)
+	reuseReasons, err := c.pendingReuseDecisionReasons(ctx, pendingItems)
 	if err != nil {
-		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
-		return
+		return model.ControllerStatus{}, fmt.Errorf("query reuse candidates: %w", err)
 	}
 	status.PendingReuseCandidates = reuseReasons["matched_prior_completed_attempt"]
 
-	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
+	attempts, attemptVariables, err := c.ledgerStatusCounts(ctx)
 	if err != nil {
-		http.Error(w, "query ledger status", http.StatusInternalServerError)
-		return
+		return model.ControllerStatus{}, fmt.Errorf("query ledger status: %w", err)
 	}
 	status.Attempts = attempts
 	status.AttemptVariables = attemptVariables
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(status); err != nil {
-		http.Error(w, "encode status", http.StatusInternalServerError)
+	return status, nil
+}
+
+func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.ControllerStatus, error) {
+	queued, err := c.workflowStore.ListQueuedWorkItems(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list queued work: %w", err)
 	}
+	running, err := c.workflowStore.ListRunningWork(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list running work: %w", err)
+	}
+	runs, err := c.workflowStore.ListActiveWorkflowRuns(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list active workflow runs: %w", err)
+	}
+
+	status := model.ControllerStatus{
+		Pending:  len(queued),
+		Assigned: len(running),
+	}
+	for _, run := range runs {
+		counts, err := c.workflowStore.CountWorkItemsForRun(ctx, run.ID)
+		if err != nil {
+			return model.ControllerStatus{}, fmt.Errorf("count work items for run %s: %w", run.ID, err)
+		}
+		status.Failed += counts.Failed
+	}
+	return status, nil
 }
 
 func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {
