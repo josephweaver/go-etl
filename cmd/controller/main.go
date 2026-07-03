@@ -35,6 +35,8 @@ type Controller struct {
 	env      *ExecutionEnvironment
 	scaler   WorkerScaleState
 	scaleCfg WorkerScaleConfig
+	recoveryStartedAt time.Time
+	normalAdmission    bool
 }
 
 type WorkflowSubmission struct {
@@ -92,15 +94,43 @@ type controllerHTTPSettings struct {
 
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
-		pending:  items,
-		assigned: make(map[string]model.WorkItem),
-		failed:   make(map[string]model.WorkFailure),
+		pending:         items,
+		assigned:        make(map[string]model.WorkItem),
+		failed:          make(map[string]model.WorkFailure),
+		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
 			MaxCount:                2,
 			CountPerStart:           1,
 			MinElapsedBetweenStarts: 30 * time.Second,
 		},
 	}
+}
+
+func (c *Controller) enterRecoveryMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recoveryStartedAt = time.Now().UTC()
+	c.normalAdmission = false
+}
+
+func (c *Controller) allowNormalAdmission() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.normalAdmission = true
+}
+
+func (c *Controller) recoveryAdmissionClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.normalAdmission
+}
+
+func (c *Controller) requireNormalAdmission(w http.ResponseWriter) bool {
+	if c.recoveryAdmissionClosed() {
+		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
 }
 
 func main() {
@@ -182,6 +212,7 @@ func main() {
 	controller := newController(nil)
 	controller.ledger = ledgerDB
 	controller.env = executionEnvironment
+	controller.enterRecoveryMode()
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -198,6 +229,7 @@ func main() {
 	mux.HandleFunc("/work/next", controller.nextWorkHandler)
 	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
 	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/work", controller.submitWorkHandler)
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
@@ -785,6 +817,9 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	var item model.WorkItem
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
@@ -812,6 +847,13 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
+	if c.recoveryAdmissionClosed() {
+		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1131,6 +1173,9 @@ func (c *Controller) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	if c.shutdown == nil {
 		http.Error(w, "shutdown unavailable", http.StatusServiceUnavailable)
@@ -1169,6 +1214,9 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	c.mu.Lock()
 	pendingItems := append([]model.WorkItem(nil), c.pending...)
@@ -1198,6 +1246,15 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(status); err != nil {
 		http.Error(w, "encode status", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
@@ -1401,6 +1458,9 @@ func runtimeStringVariable(name string, value string, lifecycle string) ledger.A
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
 		return
 	}
 

@@ -654,6 +654,8 @@ This local path should be built before HPCC orchestration. The HPCC backend shou
 
 All local bootstrap behavior should be driven by resolved variables and explicit execution-environment config. The local client may provide defaults and overrides, but runtime decisions should come from variables such as `controller_url`, `worker_target_environment`, `max_worker_count`, and `client_status_poll_interval`, plus the selected transport/dialect/scheduler/runtime components, not from a separate hidden configuration channel.
 
+The controller startup boundary should also make recovery explicit: after the required startup services are ready, it should enter a recovery-only phase, expose only the health and worker report endpoints, and delay normal admission until the recovery contract says otherwise.
+
 ## Near-Term Build Direction
 
 The near-term implementation can still build from the worker inward, but each step should keep the eventual Python package boundary in mind:

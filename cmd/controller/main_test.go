@@ -2112,6 +2112,103 @@ func TestShutdownHandlerRejectsUnavailableShutdown(t *testing.T) {
 	}
 }
 
+func TestRecoveryModeBlocksNormalAdmission(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{"workflow":{"ID":"cdl"}}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "recovery mode") {
+		t.Fatalf("response body = %q, want recovery-mode context", response.Body.String())
+	}
+}
+
+func TestRecoveryModeBlocksStatusAndShutdown(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/status", nil)
+	statusResp := httptest.NewRecorder()
+	controller.statusHandler(statusResp, statusReq)
+	if statusResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503", statusResp.Code)
+	}
+
+	shutdownReq := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	shutdownResp := httptest.NewRecorder()
+	controller.shutdownHandler(shutdownResp, shutdownReq)
+	if shutdownResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("shutdown code = %d, want 503", shutdownResp.Code)
+	}
+}
+
+func TestRecoveryModeAllowsWorkerReportEndpoints(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+	controller.assigned["test-001"] = model.WorkItem{
+		ID:             "test-001",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result.txt",
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{"id":"test-001"}`))
+	completeResp := httptest.NewRecorder()
+	controller.completeWorkHandler(completeResp, completeReq)
+	if completeResp.Code != http.StatusNoContent {
+		t.Fatalf("complete status = %d, want 204", completeResp.Code)
+	}
+
+	controller.assigned["test-002"] = model.WorkItem{
+		ID:             "test-002",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result-2.txt",
+	}
+	failReq := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-002","error":"boom"}`))
+	failResp := httptest.NewRecorder()
+	controller.failWorkHandler(failResp, failReq)
+	if failResp.Code != http.StatusNoContent {
+		t.Fatalf("fail status = %d, want 204", failResp.Code)
+	}
+}
+
+func TestHealthHandler(t *testing.T) {
+	controller := newController(nil)
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+
+	controller.healthHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+}
+
+func TestEnterRecoveryModeStampsRecoveryStartedAt(t *testing.T) {
+	controller := newController(nil)
+	if !controller.recoveryStartedAt.IsZero() {
+		t.Fatal("new controller should not start with recovery timestamp")
+	}
+
+	before := time.Now().UTC()
+	controller.enterRecoveryMode()
+
+	if controller.normalAdmission {
+		t.Fatal("recovery mode should close normal admission")
+	}
+	if controller.recoveryStartedAt.IsZero() {
+		t.Fatal("recovery timestamp should be set")
+	}
+	if controller.recoveryStartedAt.Before(before) {
+		t.Fatalf("recovery timestamp = %v, want not before %v", controller.recoveryStartedAt, before)
+	}
+}
+
 func newTestController() *Controller {
 	return newController([]model.WorkItem{
 		{

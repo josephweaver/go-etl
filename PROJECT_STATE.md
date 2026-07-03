@@ -265,6 +265,11 @@ constructing the HTTP server. The resolved settings are validated as the
 startup HTTP contract and are used to configure the listener address and HTTP
 server timeouts and limits.
 
+The controller startup path now stamps a recovery-start timestamp and enters a
+recovery-only admission mode before serving requests. During this phase the
+controller keeps normal workflow and raw-work submission closed while still
+serving the dedicated health endpoint and the existing worker report endpoints.
+
 The demo client starts the controller with:
 
 ```powershell
