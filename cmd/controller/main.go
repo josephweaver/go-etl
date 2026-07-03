@@ -232,6 +232,45 @@ func newStartupRuntimeScope(processID int, instanceID string, startedAt time.Tim
 	)
 }
 
+func newControllerStartupResolver(
+	sources controllerStartupSources,
+	overrideScope variable.Scope,
+	runtimeScope variable.Scope,
+	controllerEnvironmentLookup func(string) (string, bool),
+) (variable.Resolver, error) {
+	defaultScope, controllerScope, err := sources.controllerScopes()
+	if err != nil {
+		return variable.Resolver{}, err
+	}
+
+	set := variable.NewSet(defaultScope, controllerScope, overrideScope, runtimeScope)
+	bootstrap := variable.NewResolver(set, variable.ResolverConfig{
+		MaxDepth:                    variable.DefaultMaxDepth,
+		ControllerEnvironmentLookup: controllerEnvironmentLookup,
+	})
+	depth, err := bootstrap.Resolve(variable.Reference{
+		Name: variable.Name{Key: "resolver_max_depth"},
+	})
+	if err != nil {
+		return variable.Resolver{}, fmt.Errorf("resolve resolver_max_depth: %w", err)
+	}
+	if depth.Type != variable.TypeInt {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth has type %s, want int", depth.Type)
+	}
+	maxDepth, ok := depth.Value.(int)
+	if !ok {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth must be an int")
+	}
+	if maxDepth <= 0 {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth must be greater than zero")
+	}
+
+	return variable.NewResolver(set, variable.ResolverConfig{
+		MaxDepth:                    maxDepth,
+		ControllerEnvironmentLookup: controllerEnvironmentLookup,
+	}), nil
+}
+
 func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
 	if config.ExecutionEnvironment.IsZero() {
 		return nil, nil

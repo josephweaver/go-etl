@@ -871,6 +871,164 @@ func TestNewStartupRuntimeScopeRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestNewControllerStartupResolverAssemblesSourcesInPrecedenceOrder(t *testing.T) {
+	sources := testControllerStartupSources(t,
+		[]variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 10),
+			testStartupVariable(variable.NamespaceControllerConfig, "selected", variable.TypeString, "default"),
+			testStartupVariable(variable.NamespaceControllerConfig, "default_only", variable.TypeString, "default"),
+		},
+		[]variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "selected", variable.TypeString, "controller"),
+			testStartupVariable(variable.NamespaceControllerConfig, "controller_only", variable.TypeString, "controller"),
+		},
+	)
+	overrideScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceOverride, "selected", variable.TypeString, "override"),
+		testStartupVariable(variable.NamespaceOverride, "override_only", variable.TypeString, "override"),
+	)
+	runtimeScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceRuntime, "selected", variable.TypeString, "runtime"),
+		testStartupVariable(variable.NamespaceRuntime, "runtime_only", variable.TypeString, "runtime"),
+	)
+
+	resolver, err := newControllerStartupResolver(sources, overrideScope, runtimeScope, func(key string) (string, bool) {
+		if key == "ENV_ONLY" || key == "selected" {
+			return "environment", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	checks := map[string]string{
+		"selected":                   "runtime",
+		"default_only":               "default",
+		"controller_only":            "controller",
+		"override_only":              "override",
+		"runtime_only":               "runtime",
+		"controller_config.selected": "controller",
+		"override.selected":          "override",
+		"runtime.selected":           "runtime",
+		"controller_env.ENV_ONLY":    "environment",
+	}
+	for reference, want := range checks {
+		got, err := resolver.String(reference)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", reference, err)
+		}
+		if got != want {
+			t.Fatalf("resolve %s = %q, want %q", reference, got, want)
+		}
+	}
+
+	if sources.Defaults.Variables[1].TypedExpression.Expression != "default" {
+		t.Fatalf("retained defaults source was mutated: %#v", sources.Defaults.Variables[1])
+	}
+	if sources.Controller.Variables[0].TypedExpression.Expression != "controller" {
+		t.Fatalf("retained controller source was mutated: %#v", sources.Controller.Variables[0])
+	}
+}
+
+func TestNewControllerStartupResolverUsesConfiguredMaximumDepth(t *testing.T) {
+	sources := testControllerStartupSources(t,
+		[]variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 5),
+			testStartupVariable(variable.NamespaceControllerConfig, "first", variable.TypeString, "${second}"),
+			testStartupVariable(variable.NamespaceControllerConfig, "second", variable.TypeString, "${third}"),
+			testStartupVariable(variable.NamespaceControllerConfig, "third", variable.TypeString, "done"),
+		},
+		nil,
+	)
+	overrideScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceOverride, "resolver_max_depth", variable.TypeInt, 2),
+	)
+
+	resolver, err := newControllerStartupResolver(sources, overrideScope, testStartupScope(t), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if depth, err := resolver.Resolve(variable.Reference{
+		Name:      variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "resolver_max_depth"},
+		Qualified: true,
+	}); err != nil || depth.Value != 5 {
+		t.Fatalf("qualified controller depth = %#v, %v; want 5", depth, err)
+	}
+	if _, err := resolver.String("first"); err == nil || !strings.Contains(err.Error(), "maximum variable resolution depth exceeded") {
+		t.Fatalf("error = %v, want configured maximum depth", err)
+	}
+}
+
+func TestNewControllerStartupResolverRejectsInvalidMaximumDepth(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{name: "missing", want: "resolver_max_depth"},
+		{name: "wrong type", variables: []variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeString, "ten"),
+		}, want: "want int"},
+		{name: "zero", variables: []variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 0),
+		}, want: "greater than zero"},
+		{name: "negative", variables: []variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, -1),
+		}, want: "greater than zero"},
+		{name: "unresolvable", variables: []variable.Variable{
+			testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, "${missing_depth}"),
+		}, want: "missing_depth"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sources := testControllerStartupSources(t, test.variables, nil)
+			_, err := newControllerStartupResolver(sources, testStartupScope(t), testStartupScope(t), nil)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), "resolver_max_depth") || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %q, want resolver_max_depth and %q", err, test.want)
+			}
+		})
+	}
+}
+
+func testControllerStartupSources(t *testing.T, defaults, controller []variable.Variable) controllerStartupSources {
+	t.Helper()
+	return controllerStartupSources{
+		ControllerPath: "controller.json",
+		DefaultsPath:   "defaults.json",
+		Controller: ControllerConfig{
+			APIVersion: controllerAPIVersion,
+			Kind:       controllerKind,
+			Variables:  controller,
+		},
+		Defaults: DefaultsDocument{
+			APIVersion: controllerAPIVersion,
+			Kind:       defaultsKind,
+			Variables:  defaults,
+		},
+	}
+}
+
+func testStartupScope(t *testing.T, variables ...variable.Variable) variable.Scope {
+	t.Helper()
+	scope, err := variable.NewScope(variables...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func testStartupVariable(namespace variable.Namespace, key string, valueType variable.Type, expression any) variable.Variable {
+	return variable.Variable{
+		Name:            variable.Name{Namespace: namespace, Key: key},
+		TypedExpression: variable.TypedExpression{Type: valueType, Expression: expression},
+	}
+}
+
 func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
 	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
 	if err != nil {
