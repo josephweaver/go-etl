@@ -60,6 +60,23 @@ type controllerFilesystemPaths struct {
 	ArtifactCache string
 }
 
+type controllerOperationalPolicy struct {
+	ResolverMaxDepth                int
+	CaretakerIntervalScheduleMillis int
+	CaretakerMissedIntervalLimit    int
+	GitCacheMaxSizeMB               int
+	GitCacheRetentionMillis         int
+	GitFetchTimeoutMillis           int
+	GitFetchConcurrency             int
+	TempCleanupAgeMillis            int
+	ArtifactCacheMaxSizeMB          int
+	ArtifactCacheRetentionMillis    int
+	StorageMinFreeMB                int
+	FilesystemLoggingEnabled        bool
+	LogRootPath                     string
+	LogLevel                        string
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
 		pending:  items,
@@ -119,6 +136,10 @@ func main() {
 	}
 	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
 		fmt.Println("controller filesystem failed:", err)
+		return
+	}
+	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
+		fmt.Println("controller policy failed:", err)
 		return
 	}
 
@@ -400,6 +421,122 @@ func resolveControllerFilesystemPath(resolver variable.Resolver, workingDirector
 	path, ok := value.Value.(string)
 	if !ok || path == "" {
 		return "", fmt.Errorf("controller startup filesystem: %s is required", key)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDirectory, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func resolveControllerOperationalPolicy(resolver variable.Resolver, workingDirectory string) (controllerOperationalPolicy, error) {
+	policy := controllerOperationalPolicy{}
+
+	var err error
+	if policy.ResolverMaxDepth, err = resolvePositiveIntPolicy(resolver, "resolver_max_depth", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.CaretakerIntervalScheduleMillis, err = resolvePositiveIntPolicy(resolver, "caretaker_interval_schedule_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.CaretakerMissedIntervalLimit, err = resolvePositiveIntPolicy(resolver, "caretaker_missed_interval_limit", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_max_size_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_retention_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitFetchTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_fetch_timeout_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitFetchConcurrency, err = resolvePositiveIntPolicy(resolver, "controller_git_fetch_concurrency", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.TempCleanupAgeMillis, err = resolvePositiveIntPolicy(resolver, "controller_temp_cleanup_age_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.ArtifactCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_artifact_cache_max_size_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.ArtifactCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_artifact_cache_retention_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.StorageMinFreeMB, err = resolvePositiveIntPolicy(resolver, "controller_storage_min_free_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.FilesystemLoggingEnabled, err = resolveBoolPolicy(resolver, "controller_filesystem_logging_enabled", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.LogRootPath, err = resolvePathPolicy(resolver, workingDirectory, "controller_log_root_path", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.LogLevel, err = resolveStringPolicy(resolver, "controller_log_level", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+
+	return policy, nil
+}
+
+func resolvePositiveIntPolicy(resolver variable.Resolver, key string, consumer string) (int, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return 0, fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeInt {
+		return 0, fmt.Errorf("%s: %s has type %s, want int", consumer, key, value.Type)
+	}
+	number, ok := value.Value.(int)
+	if !ok {
+		return 0, fmt.Errorf("%s: %s must be an int", consumer, key)
+	}
+	if number <= 0 {
+		return 0, fmt.Errorf("%s: %s must be greater than zero", consumer, key)
+	}
+	return number, nil
+}
+
+func resolveBoolPolicy(resolver variable.Resolver, key string, consumer string) (bool, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return false, fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeBool {
+		return false, fmt.Errorf("%s: %s has type %s, want bool", consumer, key, value.Type)
+	}
+	flag, ok := value.Value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s: %s must be a bool", consumer, key)
+	}
+	return flag, nil
+}
+
+func resolveStringPolicy(resolver variable.Resolver, key string, consumer string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeString {
+		return "", fmt.Errorf("%s: %s has type %s, want string", consumer, key, value.Type)
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", fmt.Errorf("%s: %s is required", consumer, key)
+	}
+	return text, nil
+}
+
+func resolvePathPolicy(resolver variable.Resolver, workingDirectory, key, consumer string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypePath {
+		return "", fmt.Errorf("%s: %s has type %s, want path", consumer, key, value.Type)
+	}
+	path, ok := value.Value.(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("%s: %s is required", consumer, key)
 	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(workingDirectory, path)

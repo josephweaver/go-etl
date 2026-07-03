@@ -251,6 +251,14 @@ required values. Live startup constructs this scope and uses it with the
 retained defaults, controller, override, and environment sources in a bounded
 resolver.
 
+The controller startup path now also resolves the agreed operational policy
+variables after filesystem resolution and before HTTP construction. The policy
+contract covers resolver depth, caretaker cadence, Git-cache sizing and
+timeouts, temp and artifact cleanup, free-space reserve, filesystem logging,
+and log root/level values. The values are validated and normalized for later
+constructors but are not yet used to build the cache, caretaker, or logger
+services.
+
 The demo client starts the controller with:
 
 ```powershell

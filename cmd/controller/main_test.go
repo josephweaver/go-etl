@@ -103,6 +103,112 @@ func TestResolveControllerFilesystemPathsReportsInvalidVariable(t *testing.T) {
 	}
 }
 
+func TestResolveControllerOperationalPolicy(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 12),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 60000),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 2),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 10240),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 300000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 4),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 86400000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 20480),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1024),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_level", variable.TypeString, "debug"),
+	)), variable.ResolverConfig{})
+
+	policy, err := resolveControllerOperationalPolicy(resolver, workingDirectory)
+	if err != nil {
+		t.Fatalf("resolveControllerOperationalPolicy() error = %v", err)
+	}
+
+	if policy.ResolverMaxDepth != 12 {
+		t.Fatalf("resolver max depth = %d, want 12", policy.ResolverMaxDepth)
+	}
+	if policy.CaretakerIntervalScheduleMillis != 60000 || policy.CaretakerMissedIntervalLimit != 2 {
+		t.Fatalf("caretaker policy = %+v", policy)
+	}
+	if policy.GitCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
+		t.Fatalf("git policy = %+v", policy)
+	}
+	if policy.TempCleanupAgeMillis != 86400000 || policy.StorageMinFreeMB != 1024 {
+		t.Fatalf("storage policy = %+v", policy)
+	}
+	if !policy.FilesystemLoggingEnabled {
+		t.Fatal("filesystem logging should be enabled")
+	}
+	if policy.LogRootPath != filepath.Join(workingDirectory, "logs") {
+		t.Fatalf("log root path = %q, want joined working directory", policy.LogRootPath)
+	}
+	if policy.LogLevel != "debug" {
+		t.Fatalf("log level = %q, want debug", policy.LogLevel)
+	}
+}
+
+func TestResolveControllerOperationalPolicyRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "missing",
+			want: "resolver_max_depth",
+		},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeString, "ten"),
+			},
+			want: "resolver_max_depth has type string, want int",
+		},
+		{
+			name: "not positive",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 0),
+			},
+			want: "resolver_max_depth must be greater than zero",
+		},
+		{
+			name: "log level missing",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+			},
+			want: "controller_log_level",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, tt.variables...)), variable.ResolverConfig{})
+			_, err := resolveControllerOperationalPolicy(resolver, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup policy") {
+				t.Fatalf("error = %v, want policy consumer context", err)
+			}
+		})
+	}
+}
+
 func TestNextWorkHandler(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
