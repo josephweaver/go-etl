@@ -223,6 +223,22 @@ Acceptance criteria:
   persistence store.
 - Tests no longer seed queue state by mutating controller internals directly.
 
+Implementation should proceed in smaller atoms:
+
+```text
+012f-a Define workflow admission payload and provenance bridge
+012f-b Persist admitted workflow run and initially ready compiled work
+012f-c Make persisted workflow scaling demand derive from queued/running store counts
+012f-d Add guard tests proving persisted paths do not mutate pending/assigned/failed
+012f-e Remove or demote in-memory queue authority after no live store path uses it
+```
+
+`/workflow` remains the client API for submitting a project/workflow run. It
+should accept source-control references to project/workflow JSON documents. It
+must not be reframed as client-submitted work items or direct inline JSON
+submission. Compiled work items are controller generated after the workflow run
+is admitted.
+
 ## Out Of Scope For 012
 
 - Source-control implementation.
@@ -235,17 +251,12 @@ Acceptance criteria:
 
 ## Ambiguity To Review
 
-Full `/workflow` cutover may be blocked until source-control resolution exists.
-The persistence schema expects project/workflow source identities, but the live
+Full `/workflow` cutover depends on a source-reference admission boundary. The
+persistence schema expects project/workflow source identities, while the live
 controller currently compiles submitted JSON directly from the HTTP payload.
-We can either:
-
-- implement a temporary persisted submission path with synthetic/local source
-  identities; or
-- leave `/workflow` on the current in-memory path until the source-control epic
-  can provide real pinned project/workflow identities.
-
-The second option is cleaner architecturally, but it delays full cutover.
+012f should either define the narrow source-reference loader it needs or split
+that source-reference admission work into a preceding slice. It should not add a
+new persisted inline-JSON workflow submission path.
 
 There is also a model conversion ambiguity between `internal/model.WorkItem`
 and `persistence.WorkItemRecord`. The persistence model stores compact
