@@ -712,6 +712,37 @@ func TestClaimWorkRequestValidate(t *testing.T) {
 	}
 }
 
+func TestStoreClaimNextWorkReturnsNoWorkForEmptyQueue(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	claimed, found, err := store.ClaimNextWork(ctx, testClaimWorkRequest())
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("ClaimNextWork() found = true with claim %+v, want false", claimed)
+	}
+}
+
+func TestStoreClaimNextWorkValidatesRequest(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	_, found, err := store.ClaimNextWork(ctx, ClaimWorkRequest{
+		ExecutorType: ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:00Z",
+	})
+	if err == nil || !strings.Contains(err.Error(), "attempt id is required") {
+		t.Fatalf("ClaimNextWork() error = %v, want validation failure", err)
+	}
+	if found {
+		t.Fatal("ClaimNextWork() found = true, want false")
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -804,6 +835,14 @@ func testWorkItemRecord(id string, runID string, stageIndex int, workItemIndex i
 		WorkerPayloadJSON:    `{"plugin":"plugin-name","parameters":{"param1":"param1value"}}`,
 		ResolvedInputsSHA256: strings.Repeat("c", 64),
 		CreatedAt:            "2026-07-03T00:00:00Z",
+	}
+}
+
+func testClaimWorkRequest() ClaimWorkRequest {
+	return ClaimWorkRequest{
+		AttemptID:    "attempt-001",
+		ExecutorType: ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:00Z",
 	}
 }
 

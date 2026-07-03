@@ -113,3 +113,6 @@ atoms in one cycle.
 - The second Review Atom defines the claim request/result structs and validates
   caller-supplied attempt ID, executor type, and start timestamp without adding
   the claim transaction.
+- The third Review Atom adds the `ClaimNextWork` method boundary, including
+  request validation and an empty-queue no-work result, without adding the
+  successful queue-to-running transition.

@@ -699,6 +699,28 @@ func (s *Store) CountWorkItemsForStage(ctx context.Context, runID string, stageI
 	return counts, nil
 }
 
+func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (ClaimedWorkRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return ClaimedWorkRecord{}, false, err
+	}
+	if err := request.validate(); err != nil {
+		return ClaimedWorkRecord{}, false, err
+	}
+
+	var workItemID string
+	err := s.db.QueryRowContext(ctx, `SELECT work_item_id
+	FROM queued_work
+	ORDER BY queued_at, work_item_id
+	LIMIT 1`).Scan(&workItemID)
+	if err == sql.ErrNoRows {
+		return ClaimedWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work: %w", err)
+	}
+	return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work transition is not implemented")
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
