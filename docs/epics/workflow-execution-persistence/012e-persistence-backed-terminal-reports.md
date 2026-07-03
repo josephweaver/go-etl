@@ -1,6 +1,6 @@
 # 012e Persistence-backed Completion and Failure Reports
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -220,3 +220,24 @@ final plugin state-observation schema for every future operation.
   building `persistence.CompleteAttemptRequest`.
 - Do not use controller-side SQL.
 - Do not hold `Controller.mu` for persistence-backed terminal reports.
+
+## Implementation Notes
+
+- Persisted `/work/next` now returns the store-created `attempt_id` on the
+  assigned work item.
+- Persisted `/work/complete` validates worker-reported JSON evidence,
+  canonicalizes `output_json`, computes SHA-256 hashes for output, pre-state,
+  and post-state, then calls `Store.CompleteAttempt`.
+- Persisted `/work/fail` requires the worker-reported `attempt_id` and calls
+  `Store.FailAttempt`; failure reports now include optional `failed_at` so an
+  identical duplicate report can remain idempotent.
+- Worker completion reports echo an assigned `attempt_id`; the old generated
+  attempt ID remains only as a legacy fallback when the assignment has no
+  attempt ID.
+- The worker demo and summary operations now return `WorkEvidence` so report
+  generation can include output, pre-state, and post-state JSON.
+
+The original allowed production file list was too narrow for real worker
+evidence. Passing evidence from execution to reporting required touching
+`cmd/worker/main.go`, `cmd/worker/worker.go`, and
+`cmd/worker/work_summary.go` in addition to the planned files.

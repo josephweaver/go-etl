@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,15 +22,19 @@ func TestReportWorkFailed(t *testing.T) {
 			t.Fatalf("decode failure: %v", err)
 		}
 
-		if failure.ID != "test-001" || failure.Error != "failed" {
+		if failure.ID != "test-001" || failure.AttemptID != "attempt-001" || failure.Error != "failed" {
 			t.Fatalf("unexpected failure: %+v", failure)
+		}
+		if _, err := time.Parse(time.RFC3339, failure.FailedAt); err != nil {
+			t.Fatalf("failed_at is not RFC3339: %q", failure.FailedAt)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	if err := reportWorkFailed(server.URL, "test-001", errors.New("failed")); err != nil {
+	item := model.WorkItem{ID: "test-001", AttemptID: "attempt-001"}
+	if err := reportWorkFailed(server.URL, item, errors.New("failed")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -40,6 +43,7 @@ func TestReportWorkComplete(t *testing.T) {
 	startedAt := time.Now().UTC().Add(-time.Minute)
 	item := model.WorkItem{
 		ID:                   "test-001",
+		AttemptID:            "attempt-001",
 		Type:                 model.WorkItemTypeWriteDemoOutput,
 		OutputFilename:       "result.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
@@ -75,7 +79,7 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected id: %q", completion.ID)
 		}
 
-		if !strings.HasPrefix(completion.AttemptID, "test-001-attempt-") {
+		if completion.AttemptID != item.AttemptID {
 			t.Fatalf("unexpected attempt id: %q", completion.AttemptID)
 		}
 
@@ -115,6 +119,10 @@ func TestReportWorkComplete(t *testing.T) {
 			t.Fatalf("unexpected input_path parameter: %+v", completion.Parameters["input_path"])
 		}
 
+		if completion.OutputJSON == "" || completion.PreStateJSON == "" || completion.PostStateJSON == "" {
+			t.Fatalf("completion evidence is incomplete: %+v", completion)
+		}
+
 		if completion.StartedAt != startedAt.Format(time.RFC3339) {
 			t.Fatalf("started_at = %q, want %q", completion.StartedAt, startedAt.Format(time.RFC3339))
 		}
@@ -132,7 +140,12 @@ func TestReportWorkComplete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, item, startedAt); err != nil {
+	evidence := WorkEvidence{
+		OutputJSON:    `{"work_item_id":"test-001"}`,
+		PreStateJSON:  `{"output_exists":false}`,
+		PostStateJSON: `{"output_exists":true}`,
+	}
+	if err := reportWorkComplete(server.URL, item, startedAt, evidence); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -143,7 +156,7 @@ func TestReportWorkCompleteRejectsServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := reportWorkComplete(server.URL, model.WorkItem{ID: "test-001"}, time.Now()); err == nil {
+	if err := reportWorkComplete(server.URL, model.WorkItem{ID: "test-001"}, time.Now(), WorkEvidence{}); err == nil {
 		t.Fatal("expected an error")
 	}
 }

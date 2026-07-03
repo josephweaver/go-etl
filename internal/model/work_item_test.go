@@ -103,6 +103,7 @@ func TestWorkItemValidate(t *testing.T) {
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:                   "work-item-001",
+		AttemptID:            "attempt-001",
 		Type:                 WorkItemTypeWriteDemoOutput,
 		OutputFilename:       "output.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
@@ -134,6 +135,10 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		t.Fatalf("workflow_instance_id = %q, want %q", decodedItem.WorkflowInstanceID, item.WorkflowInstanceID)
 	}
 
+	if decodedItem.AttemptID != item.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decodedItem.AttemptID, item.AttemptID)
+	}
+
 	if decodedItem.StepDefinitionID != item.StepDefinitionID {
 		t.Fatalf("step_definition_id = %q, want %q", decodedItem.StepDefinitionID, item.StepDefinitionID)
 	}
@@ -155,6 +160,9 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
 		ID:                   "work-item-001",
 		AttemptID:            "attempt-001",
+		OutputJSON:           `{"result":"ok"}`,
+		PreStateJSON:         `{"output_exists":false}`,
+		PostStateJSON:        `{"output_exists":true}`,
 		WorkflowDefinitionID: "workflow-definition-001",
 		WorkflowFingerprint:  "workflow-fingerprint",
 		WorkflowInstanceID:   "workflow-instance-001",
@@ -186,6 +194,18 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
 	}
 
+	if decodedCompletion.OutputJSON != completion.OutputJSON {
+		t.Fatalf("output_json = %q, want %q", decodedCompletion.OutputJSON, completion.OutputJSON)
+	}
+
+	if decodedCompletion.PreStateJSON != completion.PreStateJSON {
+		t.Fatalf("pre_state_json = %q, want %q", decodedCompletion.PreStateJSON, completion.PreStateJSON)
+	}
+
+	if decodedCompletion.PostStateJSON != completion.PostStateJSON {
+		t.Fatalf("post_state_json = %q, want %q", decodedCompletion.PostStateJSON, completion.PostStateJSON)
+	}
+
 	if decodedCompletion.WorkflowDefinitionID != completion.WorkflowDefinitionID {
 		t.Fatalf("workflow_definition_id = %q, want %q", decodedCompletion.WorkflowDefinitionID, completion.WorkflowDefinitionID)
 	}
@@ -200,6 +220,32 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 
 	if decodedCompletion.Parameters["input_path"].Value != "demo-summary-input.txt" {
 		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
+	}
+}
+
+func TestWorkFailureJSONIncludesAttemptID(t *testing.T) {
+	failure := WorkFailure{
+		ID:        "work-item-001",
+		AttemptID: "attempt-001",
+		FailedAt:  "2026-07-03T12:00:00Z",
+		Error:     "boom",
+	}
+
+	data, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatalf("marshal failure: %v", err)
+	}
+
+	var decoded WorkFailure
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode failure: %v", err)
+	}
+
+	if decoded.AttemptID != failure.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decoded.AttemptID, failure.AttemptID)
+	}
+	if decoded.FailedAt != failure.FailedAt {
+		t.Fatalf("failed_at = %q, want %q", decoded.FailedAt, failure.FailedAt)
 	}
 }
 

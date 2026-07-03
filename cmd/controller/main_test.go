@@ -1684,6 +1684,9 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 	if item.ID != "test-001" || item.OutputFilename != "result.txt" {
 		t.Fatalf("assigned item = %+v, want submitted item", item)
 	}
+	if item.AttemptID == "" {
+		t.Fatal("assigned item attempt_id is required for persisted claim")
+	}
 	if len(controller.assigned) != 0 {
 		t.Fatalf("assigned map count = %d, want 0 for persisted claim", len(controller.assigned))
 	}
@@ -1704,6 +1707,201 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 	if running[0].WorkItem.ID != "test-001" {
 		t.Fatalf("running work item id = %q, want test-001", running[0].WorkItem.ID)
 	}
+	if running[0].AttemptID != item.AttemptID {
+		t.Fatalf("running attempt id = %q, want assigned attempt %q", running[0].AttemptID, item.AttemptID)
+	}
+}
+
+func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	item := submitAndClaimPersistedWork(t, controller)
+	controller.assigned[item.ID] = item
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"output_json":"{\"work_item_id\":\"test-001\",\"status\":\"ok\"}",
+		"pre_state_json":"{\"output_exists\":false}",
+		"post_state_json":"{\"bytes_written\":19,\"output_exists\":true}",
+		"completed_at":"2026-07-03T12:00:00Z"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if _, ok := controller.assigned[item.ID]; !ok {
+		t.Fatal("persisted completion should not mutate in-memory assigned map")
+	}
+	running, err := store.ListRunningWork(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("running count = %d, want 0: %+v", len(running), running)
+	}
+	terminal, err := store.ListTerminalAttemptsForRun(context.Background(), rawPersistenceRunID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminal) != 1 {
+		t.Fatalf("terminal count = %d, want 1: %+v", len(terminal), terminal)
+	}
+	if terminal[0].TerminalState != "completed" || terminal[0].AttemptID != item.AttemptID {
+		t.Fatalf("terminal attempt = %+v, want completed assigned attempt", terminal[0])
+	}
+	if terminal[0].OutputJSON != `{"status":"ok","work_item_id":"test-001"}` {
+		t.Fatalf("canonical output json = %q", terminal[0].OutputJSON)
+	}
+	if terminal[0].OutputJSONSHA256 == "" || terminal[0].PreStateSHA256 == "" || terminal[0].PostStateSHA256 == "" {
+		t.Fatalf("missing completion hashes: %+v", terminal[0])
+	}
+}
+
+func TestCompleteWorkHandlerRejectsPersistedCompletionMissingAttemptID(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	submitAndClaimPersistedWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", response.Code)
+	}
+}
+
+func TestCompleteWorkHandlerReturnsNotFoundForMissingPersistedAttempt(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"missing-attempt",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status code = %d, want 404", response.Code)
+	}
+}
+
+func TestFailWorkHandlerFailsPersistedAttemptWhenWorkflowStoreConfigured(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	item := submitAndClaimPersistedWork(t, controller)
+	controller.assigned[item.ID] = item
+
+	body := `{
+		"id":"test-001",
+		"attempt_id":"` + item.AttemptID + `",
+		"failed_at":"2026-07-03T12:01:00Z",
+		"error":"boom"
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(body))
+	response := httptest.NewRecorder()
+
+	controller.failWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("fail status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if _, ok := controller.assigned[item.ID]; !ok {
+		t.Fatal("persisted failure should not mutate in-memory assigned map")
+	}
+	running, err := store.ListRunningWork(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("running count = %d, want 0: %+v", len(running), running)
+	}
+	terminal, err := store.ListTerminalAttemptsForRun(context.Background(), rawPersistenceRunID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminal) != 1 {
+		t.Fatalf("terminal count = %d, want 1: %+v", len(terminal), terminal)
+	}
+	if terminal[0].TerminalState != "failed" || terminal[0].AttemptID != item.AttemptID || terminal[0].Error != "boom" {
+		t.Fatalf("terminal attempt = %+v, want failed assigned attempt", terminal[0])
+	}
+
+	duplicate := httptest.NewRecorder()
+	controller.failWorkHandler(duplicate, httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(body)))
+	if duplicate.Code != http.StatusNoContent {
+		t.Fatalf("duplicate fail status code = %d, want 204: %s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+func TestFailWorkHandlerRejectsPersistedFailureMissingAttemptID(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","error":"boom"}`))
+	response := httptest.NewRecorder()
+
+	controller.failWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", response.Code)
+	}
+}
+
+func submitAndClaimPersistedWork(t *testing.T, controller *Controller) model.WorkItem {
+	t.Helper()
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResp := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResp, nextReq)
+	if nextResp.Code != http.StatusOK {
+		t.Fatalf("next status code = %d, want 200: %s", nextResp.Code, nextResp.Body.String())
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResp.Body).Decode(&item); err != nil {
+		t.Fatalf("decode assigned work: %v", err)
+	}
+	if item.AttemptID == "" {
+		t.Fatal("assigned item attempt_id is required")
+	}
+	return item
 }
 
 func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {

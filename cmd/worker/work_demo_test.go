@@ -18,8 +18,12 @@ func TestWorkerWriteDemoOutput(t *testing.T) {
 		OutputFilename: "result.txt",
 	}
 
-	if err := worker.writeDemoOutput(item); err != nil {
+	evidence, err := worker.writeDemoOutput(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
+		t.Fatalf("expected output evidence: %+v", evidence)
 	}
 
 	tmpPath := filepath.Join(worker.Config.TmpDir, item.OutputFilename)
@@ -65,8 +69,12 @@ func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
 		t.Fatalf("write stale output: %v", err)
 	}
 
-	if err := worker.writeDemoOutput(item); err != nil {
+	evidence, err := worker.writeDemoOutput(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(evidence.PreStateJSON, `"output_exists":true`) {
+		t.Fatalf("expected pre-state to see stale output: %s", evidence.PreStateJSON)
 	}
 
 	output, err := os.ReadFile(dataPath)

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	fp "goetl/internal/fingerprint"
 	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/persistence"
@@ -1540,6 +1541,10 @@ func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "work item id and error are required", http.StatusBadRequest)
 		return
 	}
+	if c.workflowStore != nil {
+		c.failPersistedWorkHandler(w, r, failure)
+		return
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1571,6 +1576,10 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "work item id is required", http.StatusBadRequest)
 		return
 	}
+	if c.workflowStore != nil {
+		c.completePersistedWorkHandler(w, r, completion)
+		return
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1595,6 +1604,131 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 	delete(c.assigned, completion.ID)
 	fmt.Println("work item completed:", completion.ID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Request, failure model.WorkFailure) {
+	if failure.AttemptID == "" {
+		http.Error(w, "attempt_id is required", http.StatusBadRequest)
+		return
+	}
+	failedAt, err := reportTimestamp("failed_at", failure.FailedAt, time.Now().UTC())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
+		AttemptID: failure.AttemptID,
+		Error:     failure.Error,
+		FailedAt:  failedAt,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "conflicts with existing") {
+			http.Error(w, "fail attempt conflict", http.StatusConflict)
+			return
+		}
+		http.Error(w, "fail persisted attempt", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "active attempt not found", http.StatusNotFound)
+		return
+	}
+
+	fmt.Println("persisted work item failed:", failure.ID, failure.AttemptID, failure.Error)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http.Request, completion model.WorkCompletion) {
+	request, err := completeAttemptRequestFromCompletion(completion, time.Now().UTC())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
+	if err != nil {
+		if strings.Contains(err.Error(), "conflicts with existing") {
+			http.Error(w, "complete attempt conflict", http.StatusConflict)
+			return
+		}
+		http.Error(w, "complete persisted attempt", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "active attempt not found", http.StatusNotFound)
+		return
+	}
+
+	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallbackCompletedAt time.Time) (persistence.CompleteAttemptRequest, error) {
+	if completion.AttemptID == "" {
+		return persistence.CompleteAttemptRequest{}, fmt.Errorf("attempt_id is required")
+	}
+
+	outputJSON, outputJSONSHA256, err := canonicalJSONTextAndHash("output_json", completion.OutputJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	_, preStateSHA256, err := canonicalJSONTextAndHash("pre_state_json", completion.PreStateJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	_, postStateSHA256, err := canonicalJSONTextAndHash("post_state_json", completion.PostStateJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+
+	completedAt, err := reportTimestamp("completed_at", completion.CompletedAt, fallbackCompletedAt)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+
+	return persistence.CompleteAttemptRequest{
+		AttemptID:        completion.AttemptID,
+		OutputJSON:       outputJSON,
+		OutputJSONSHA256: outputJSONSHA256,
+		PreStateSHA256:   preStateSHA256,
+		PostStateSHA256:  postStateSHA256,
+		CompletedAt:      completedAt,
+	}, nil
+}
+
+func canonicalJSONTextAndHash(name string, value string) (string, string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", "", fmt.Errorf("%s is required", name)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", "", fmt.Errorf("decode %s: %w", name, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return "", "", fmt.Errorf("%s must contain one JSON document", name)
+	}
+
+	canonical, hash, err := fp.CanonicalJSONSHA256(decoded)
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize %s: %w", name, err)
+	}
+	return string(canonical), hash, nil
+}
+
+func reportTimestamp(name string, value string, fallback time.Time) (string, error) {
+	if value == "" {
+		return fallback.UTC().Format(time.RFC3339), nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed.UTC().Format(time.RFC3339), nil
 }
 
 func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, bool, error) {
@@ -1761,6 +1895,7 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "decode persisted worker payload", http.StatusInternalServerError)
 		return
 	}
+	item.AttemptID = claim.AttemptID
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
 		return

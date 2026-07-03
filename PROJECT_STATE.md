@@ -1069,6 +1069,40 @@ The current verified demo run records two attempt rows and four attempt-variable
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
 
+## Workflow Execution Persistence Cutover
+
+Feature 012e now routes `/work/complete` and `/work/fail` through
+`internal/persistence.Store` when `Controller.workflowStore` is configured.
+Persisted `/work/next` returns the store-created `attempt_id`, and workers echo
+that attempt ID in completion and failure reports. Failure reports also carry
+optional `failed_at` so duplicate persisted failure reports can be idempotent
+when they repeat the same durable payload.
+
+Worker completions now carry three JSON evidence documents:
+
+- `output_json`
+- `pre_state_json`
+- `post_state_json`
+
+The controller validates and canonicalizes the completion evidence, stores
+canonical `output_json`, and writes SHA-256 hashes for output, pre-state, and
+post-state through `Store.CompleteAttempt`. Legacy in-memory completion and
+failure behavior is unchanged when no workflow-execution store is configured.
+
+The worker demo and summary operations now return `WorkEvidence` to the worker
+loop so terminal reports can include discernible output, pre-state, and
+post-state evidence. This changed the worker execution shape from:
+
+```go
+err := worker.Run(item)
+```
+
+to:
+
+```go
+evidence, err := worker.Run(item)
+```
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

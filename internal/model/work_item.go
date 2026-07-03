@@ -14,6 +14,7 @@ const (
 
 type WorkItem struct {
 	ID                   string       `json:"id"`
+	AttemptID            string       `json:"attempt_id,omitempty"`
 	Type                 WorkItemType `json:"type"`
 	OutputFilename       string       `json:"output_filename"`
 	Parameters           Parameters   `json:"parameters,omitempty"`
@@ -39,6 +40,9 @@ type Parameter struct {
 type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
+	OutputJSON           string     `json:"output_json,omitempty"`
+	PreStateJSON         string     `json:"pre_state_json,omitempty"`
+	PostStateJSON        string     `json:"post_state_json,omitempty"`
 	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string     `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
@@ -55,8 +59,10 @@ type WorkCompletion struct {
 }
 
 type WorkFailure struct {
-	ID    string `json:"id"`
-	Error string `json:"error"`
+	ID        string `json:"id"`
+	AttemptID string `json:"attempt_id,omitempty"`
+	FailedAt  string `json:"failed_at,omitempty"`
+	Error     string `json:"error"`
 }
 
 type WorkSkip struct {
