@@ -231,23 +231,25 @@ configuration namespaces and per-namespace duplicate keys. It can also retain
 the defaults and selected controller documents as distinct sources and produce
 ordered `controller_config` scopes where explicit controller declarations win.
 Controller documents now reject non-`controller_config` declarations instead
-of silently rewriting their namespaces. `main` does not yet consume these
-retained scopes for service construction.
+of silently rewriting their namespaces. Live startup now consumes these
+retained scopes when constructing the main database.
 
 The controller package can decode raw declarations collected from repeated
 `--override` arguments into a validated `override` scope. Decoding uses the
 canonical recursive `variable.Variable` JSON schema, rejects other namespaces
 and duplicate keys, and preserves qualified versus unqualified lookup
-behavior. Live controller startup still rejects `--override`; resolver
-integration remains a later startup slice.
+behavior. Live controller startup now parses this scope and includes it in the
+bounded startup resolver. Qualified main-database lookups deliberately bypass
+matching override declarations.
 
 The controller package can also construct an immutable generated startup
 `runtime` scope from explicit process ID, instance ID, startup time, and build
 version inputs. The scope uses canonical typed variables for
 `controller_process_id`, `controller_instance_id`, `controller_started_at`, and
 `controller_build_version`, normalizes the startup time to UTC, and validates
-required values. Live startup does not yet construct or consume this scope;
-startup resolver assembly remains a later slice.
+required values. Live startup constructs this scope and uses it with the
+retained defaults, controller, override, and environment sources in a bounded
+resolver.
 
 The demo client starts the controller with:
 
@@ -259,7 +261,8 @@ go run ./cmd/controller --config ./cmd/controller/demo-config.json
 
 ```text
 controller_config.controller_url
-controller_config.ledger_db_path
+controller_config.main_database_driver
+controller_config.main_database_connection_string
 ```
 
 `cmd/controller/controller-default-config.json` currently defines those same controller variables plus an `execution_environment` block for the Dockerized Slurm backend:
@@ -273,7 +276,15 @@ runtime = worker rooted at /data/goetl
 worker controller_url = http://host.docker.internal:8080
 ```
 
-When `controller_config.ledger_db_path` is present, the controller opens or creates the SQLite ledger, initializes the version 1 schema, and stores the DB handle on the `Controller`. The controller remains the only process that talks directly to SQLite. Clients and workers interact through HTTP APIs.
+The controller requires qualified string values for
+`controller_config.main_database_driver` and
+`controller_config.main_database_connection_string`. The initial supported
+driver is `sqlite`. Startup opens the database and initializes an empty schema
+at version 1, or strictly requires exactly one existing version row equal to
+version 1, before constructing later services or binding HTTP. The DB handle is
+stored on `Controller`; the bounded resolver and resolved connection string are
+not retained. The controller remains the only process that talks directly to
+SQLite. Clients and workers interact through HTTP APIs.
 
 When `execution_environment` is present, the controller builds an `ExecutionEnvironment` and stores it on `Controller.env`. The current environment is assembled from four role interfaces:
 
@@ -558,7 +569,8 @@ controller_config.controller_url
 controller_config.controller_start_executable
 controller_config.controller_start_args
 controller_config.controller_start_lock_path
-controller_config.ledger_db_path
+controller_config.main_database_driver
+controller_config.main_database_connection_string
 controller_config.code_version
 worker_config.worker_target_environment
 worker_config.transport
@@ -574,7 +586,6 @@ override.controller_url
 override.controller_start_executable
 override.controller_start_args
 override.controller_start_lock_path
-override.ledger_db_path
 override.worker_target_environment
 override.worker_start_executable
 override.worker_start_args
@@ -842,8 +853,8 @@ Current coverage includes:
 - WorkerRuntime path derivation, remote directory preparation, worker config upload, and optional worker artifact upload.
 - Optional `Preparer` helper behavior for components that need setup hooks.
 - Controller workflow submission using `Controller.env` to prepare the runtime and submit scheduled worker jobs.
-- Controller SQLite ledger initialization from `controller_config.ledger_db_path`.
-- SQLite schema creation, parent-directory creation, and attempt snapshot insertion.
+- Required controller SQLite initialization from the qualified main-database driver and connection-string variables.
+- SQLite schema creation, strict version-1 validation, parent-directory creation, and attempt snapshot insertion.
 - Controller-owned attempt recording adapter.
 - Controller completion handling that records full completion metadata when present and still accepts legacy `id`-only completions.
 

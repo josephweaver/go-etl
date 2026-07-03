@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1029,13 +1030,14 @@ func testStartupVariable(namespace variable.Namespace, key string, valueType var
 	}
 }
 
-func TestInitConfiguredLedgerReturnsNilWithoutPath(t *testing.T) {
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if db != nil {
-		t.Fatal("expected no database")
+func TestInitMainDatabaseRequiresDriver(t *testing.T) {
+	resolver := testMainDatabaseResolver(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, ":memory:"),
+	)
+
+	_, err := initMainDatabase(context.Background(), resolver)
+	if err == nil || !strings.Contains(err.Error(), "controller_config.main_database_driver") {
+		t.Fatalf("error = %v, want missing driver context", err)
 	}
 }
 
@@ -1092,9 +1094,12 @@ func TestInitConfiguredExecutionEnvironmentRejectsInvalidEnvironment(t *testing.
 
 func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
+	resolver := testMainDatabaseResolver(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, dbPath),
+	)
 
-	db, err := initConfiguredLedger(context.Background(), config)
+	db, err := initMainDatabase(context.Background(), resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1109,22 +1114,101 @@ func TestInitConfiguredLedgerCreatesSchema(t *testing.T) {
 	}
 }
 
-func TestInitConfiguredLedgerRejectsWrongPathType(t *testing.T) {
-	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "ledger.sqlite"}}}}
+func TestInitMainDatabaseRequiresConnectionString(t *testing.T) {
+	resolver := testMainDatabaseResolver(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+	)
 
-	if _, err := initConfiguredLedger(context.Background(), config); err == nil {
-		t.Fatal("expected an error")
+	_, err := initMainDatabase(context.Background(), resolver)
+	if err == nil || !strings.Contains(err.Error(), "controller_config.main_database_connection_string") {
+		t.Fatalf("error = %v, want missing connection-string context", err)
+	}
+}
+
+func TestInitMainDatabaseRejectsUnsupportedDriver(t *testing.T) {
+	resolver := testMainDatabaseResolver(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "postgres"),
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, "secret-connection-string"),
+	)
+
+	_, err := initMainDatabase(context.Background(), resolver)
+	if err == nil || !strings.Contains(err.Error(), "unsupported main_database_driver") {
+		t.Fatalf("error = %v, want unsupported driver", err)
+	}
+	if strings.Contains(err.Error(), "secret-connection-string") {
+		t.Fatalf("error exposed connection string: %v", err)
+	}
+}
+
+func TestInitMainDatabaseUsesQualifiedControllerConfig(t *testing.T) {
+	controllerScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, ":memory:"),
+	)
+	overrideScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceOverride, "main_database_driver", variable.TypeString, "postgres"),
+		testStartupVariable(variable.NamespaceOverride, "main_database_connection_string", variable.TypeString, "secret-override"),
+	)
+	resolver := variable.NewResolver(variable.NewSet(controllerScope, overrideScope), variable.ResolverConfig{})
+
+	db, err := initMainDatabase(context.Background(), resolver)
+	if err != nil {
+		t.Fatalf("initMainDatabase() error = %v", err)
+	}
+	db.Close()
+}
+
+func TestInitMainDatabaseReportsMissingConnectionDependency(t *testing.T) {
+	resolver := variable.NewResolver(
+		variable.NewSet(testStartupScope(t,
+			testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+			testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, "file:${controller_env.DB_PASSWORD}"),
+		)),
+		variable.ResolverConfig{ControllerEnvironmentLookup: func(string) (string, bool) { return "", false }},
+	)
+
+	_, err := initMainDatabase(context.Background(), resolver)
+	if err == nil || !strings.Contains(err.Error(), "controller_config.main_database_connection_string") || !strings.Contains(err.Error(), "controller_env.DB_PASSWORD") {
+		t.Fatalf("error = %v, want connection variable and dependency context", err)
+	}
+}
+
+func TestInitMainDatabaseRequiresStringVariables(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "driver",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, ":memory:"),
+			},
+			want: "main_database_driver has type int, want string",
+		},
+		{
+			name: "connection string",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+				testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypePath, "ledger.sqlite"),
+			},
+			want: "main_database_connection_string has type path, want string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := initMainDatabase(context.Background(), testMainDatabaseResolver(t, tt.variables...))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
 func TestControllerOwnsConfiguredLedger(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
-
-	db, err := initConfiguredLedger(context.Background(), config)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 
 	controller := newController(nil)
@@ -1144,13 +1228,7 @@ func TestControllerRecordAttemptNoopsWithoutLedger(t *testing.T) {
 }
 
 func TestControllerRecordAttemptWritesConfiguredLedger(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "ledger.sqlite")
-	config := ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: dbPath}}}}
-
-	db, err := initConfiguredLedger(context.Background(), config)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 
 	controller := newController(nil)
@@ -1179,4 +1257,22 @@ func TestControllerRecordAttemptWritesConfiguredLedger(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("attempt count = %d, want 1", count)
 	}
+}
+
+func testMainDatabaseResolver(t *testing.T, variables ...variable.Variable) variable.Resolver {
+	t.Helper()
+	return variable.NewResolver(variable.NewSet(testStartupScope(t, variables...)), variable.ResolverConfig{})
+}
+
+func testSQLiteMainDatabase(t *testing.T) *sql.DB {
+	t.Helper()
+	resolver := testMainDatabaseResolver(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_driver", variable.TypeString, "sqlite"),
+		testStartupVariable(variable.NamespaceControllerConfig, "main_database_connection_string", variable.TypeString, filepath.Join(t.TempDir(), "ledger.sqlite")),
+	)
+	db, err := initMainDatabase(context.Background(), resolver)
+	if err != nil {
+		t.Fatalf("initMainDatabase() error = %v", err)
+	}
+	return db
 }

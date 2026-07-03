@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,64 @@ func TestInitSQLiteSchemaCreatesVersionOneLedger(t *testing.T) {
 		if name != table {
 			t.Fatalf("table name = %q, want %q", name, table)
 		}
+	}
+}
+
+func TestInitSQLiteSchemaAcceptsExistingVersionOneLedger(t *testing.T) {
+	ctx := context.Background()
+	db := testLedgerDB(t, ctx)
+	defer db.Close()
+
+	if err := InitSQLiteSchema(ctx, db); err != nil {
+		t.Fatalf("second InitSQLiteSchema() error = %v", err)
+	}
+}
+
+func TestInitSQLiteSchemaRejectsInvalidVersionState(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup string
+		want  string
+	}{
+		{name: "missing row", setup: `CREATE TABLE schema_version (version INTEGER NOT NULL)`, want: "exactly one row"},
+		{name: "multiple rows", setup: `CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (1), (1)`, want: "exactly one row"},
+		{name: "older version", setup: `CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (0)`, want: "unsupported"},
+		{name: "newer version", setup: `CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (2)`, want: "unsupported"},
+		{name: "malformed version", setup: `CREATE TABLE schema_version (version); INSERT INTO schema_version VALUES ('invalid')`, want: "read sqlite schema version"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := OpenSQLite(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err := db.Exec(tt.setup); err != nil {
+				t.Fatalf("setup schema: %v", err)
+			}
+
+			err = InitSQLiteSchema(context.Background(), db)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("InitSQLiteSchema() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitSQLiteSchemaRejectsExistingSchemaWithoutVersionTable(t *testing.T) {
+	db, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE attempts (attempt_id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+
+	err = InitSQLiteSchema(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "read sqlite schema version") {
+		t.Fatalf("InitSQLiteSchema() error = %v, want missing version table", err)
 	}
 }
 

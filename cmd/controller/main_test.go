@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
-	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
@@ -165,10 +163,7 @@ func TestCompleteWorkHandler(t *testing.T) {
 
 func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 	assignNextWork(t, controller)
@@ -250,10 +245,7 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 
 func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 
@@ -304,10 +296,7 @@ func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testin
 		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
 	}
 
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 
@@ -874,10 +863,7 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 
 func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 	assignNextWork(t, controller)
@@ -1871,10 +1857,7 @@ func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkComple
 	t.Helper()
 
 	controller := newController(nil)
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	t.Cleanup(func() {
 		db.Close()
 	})

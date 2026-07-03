@@ -67,20 +67,44 @@ func newController(items []model.WorkItem) *Controller {
 }
 
 func main() {
-	config, err := controllerConfigFromArgs(os.Args, os.Executable)
+	options, err := parseControllerStartupOptions(os.Args)
 	if err != nil {
 		fmt.Println("controller config failed:", err)
 		return
 	}
-
-	ledgerDB, err := initConfiguredLedger(context.Background(), config)
+	configPath, err := controllerConfigPath(options.ConfigPath, os.Executable)
 	if err != nil {
-		fmt.Println("controller ledger failed:", err)
+		fmt.Println("controller config failed:", err)
 		return
 	}
-	if ledgerDB != nil {
-		defer ledgerDB.Close()
+	sources, err := loadControllerStartupSources(configPath)
+	if err != nil {
+		fmt.Println("controller config failed:", err)
+		return
 	}
+	overrideScope, err := parseControllerStartupOverrides(options.OverrideJSON)
+	if err != nil {
+		fmt.Println("controller config failed:", err)
+		return
+	}
+	runtimeScope, err := newStartupRuntimeScope(os.Getpid(), randomHex(16), time.Now().UTC(), buildInfoCodeVersion())
+	if err != nil {
+		fmt.Println("controller config failed:", err)
+		return
+	}
+	resolver, err := newControllerStartupResolver(sources, overrideScope, runtimeScope, os.LookupEnv)
+	if err != nil {
+		fmt.Println("controller config failed:", err)
+		return
+	}
+	config := sources.Controller
+
+	ledgerDB, err := initMainDatabase(context.Background(), resolver)
+	if err != nil {
+		fmt.Println("controller database failed:", err)
+		return
+	}
+	defer ledgerDB.Close()
 
 	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
 	if err != nil {
@@ -118,16 +142,23 @@ func controllerConfigFromArgs(args []string, executablePath func() (string, erro
 	if len(options.OverrideJSON) != 0 {
 		return ControllerConfig{}, fmt.Errorf("controller startup overrides are not supported yet")
 	}
-	if options.ConfigPath != "" {
-		return loadControllerConfig(options.ConfigPath)
+	path, err := controllerConfigPath(options.ConfigPath, executablePath)
+	if err != nil {
+		return ControllerConfig{}, err
+	}
+	return loadControllerConfig(path)
+}
+
+func controllerConfigPath(explicitPath string, executablePath func() (string, error)) (string, error) {
+	if explicitPath != "" {
+		return explicitPath, nil
 	}
 
 	executable, err := executablePath()
 	if err != nil {
-		return ControllerConfig{}, fmt.Errorf("determine controller executable path: %w", err)
+		return "", fmt.Errorf("determine controller executable path: %w", err)
 	}
-	path := filepath.Join(filepath.Dir(executable), defaultControllerConfigFilename)
-	return loadControllerConfig(path)
+	return filepath.Join(filepath.Dir(executable), defaultControllerConfigFilename), nil
 }
 
 func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
@@ -283,59 +314,30 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 	return &env, nil
 }
 
-func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
-	if len(config.Variables) == 0 {
-		return nil, nil
+func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
+	driver, err := resolver.String("controller_config.main_database_driver")
+	if err != nil {
+		return nil, fmt.Errorf("controller startup database: required variable controller_config.main_database_driver: %w", err)
+	}
+	connectionString, err := resolver.String("controller_config.main_database_connection_string")
+	if err != nil {
+		return nil, fmt.Errorf("controller startup database: resolve controller_config.main_database_connection_string: %w", err)
+	}
+	if driver != "sqlite" {
+		return nil, fmt.Errorf("controller startup database: unsupported main_database_driver %q", driver)
 	}
 
-	scope, err := variable.NewScope(config.Variables...)
+	db, err := ledger.OpenSQLite(connectionString)
 	if err != nil {
-		return nil, err
-	}
-
-	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
-	path, err := optionalPathVariable(resolver, "ledger_db_path")
-	if err != nil {
-		return nil, err
-	}
-	if path == "" {
-		return nil, nil
-	}
-
-	db, err := ledger.OpenSQLite(path)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("controller startup database: %w", err)
 	}
 
 	if err := ledger.InitSQLiteSchema(ctx, db); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("controller startup database: %w", err)
 	}
 
 	return db, nil
-}
-
-func optionalPathVariable(resolver variable.Resolver, name string) (string, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return "", err
-	}
-
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return "", nil
-	}
-
-	if value.Type != variable.TypePath {
-		return "", fmt.Errorf("%s has type %s, want path", name, value.Type)
-	}
-
-	path, ok := value.Value.(string)
-	if !ok {
-		return "", fmt.Errorf("%s must be a path", name)
-	}
-
-	return path, nil
 }
 
 func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) error {

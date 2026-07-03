@@ -292,7 +292,7 @@ global_config.default_output_root
 client_env.USERPROFILE
 controller_env.TEMP
 worker_env.GDAL_DATA
-controller_config.ledger_db_path
+controller_config.main_database_connection_string
 worker_config.data_dir
 project_config.crop
 workflow.years
@@ -333,7 +333,8 @@ controller_config.controller_url
 controller_config.controller_start_executable
 controller_config.controller_start_args
 controller_config.controller_start_lock_path
-controller_config.ledger_db_path
+controller_config.main_database_driver
+controller_config.main_database_connection_string
 worker_config.worker_target_environment
 worker_config.transport
 worker_config.dialect
@@ -348,7 +349,6 @@ override.controller_url
 override.controller_start_executable
 override.controller_start_args
 override.controller_start_lock_path
-override.ledger_db_path
 override.worker_target_environment
 override.worker_start_executable
 override.worker_start_args
