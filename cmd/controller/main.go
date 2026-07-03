@@ -53,6 +53,13 @@ type controllerStartupOptions struct {
 	OverrideJSON []string
 }
 
+type controllerFilesystemPaths struct {
+	Root          string
+	GitCache      string
+	Temp          string
+	ArtifactCache string
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
 		pending:  items,
@@ -105,6 +112,15 @@ func main() {
 		return
 	}
 	defer ledgerDB.Close()
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		fmt.Println("controller filesystem failed:", err)
+		return
+	}
+	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
+		fmt.Println("controller filesystem failed:", err)
+		return
+	}
 
 	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
 	if err != nil {
@@ -338,6 +354,57 @@ func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB,
 	}
 
 	return db, nil
+}
+
+func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirectory string) (controllerFilesystemPaths, error) {
+	if workingDirectory == "" {
+		return controllerFilesystemPaths{}, fmt.Errorf("controller startup filesystem: working directory is required")
+	}
+	if !filepath.IsAbs(workingDirectory) {
+		return controllerFilesystemPaths{}, fmt.Errorf("controller startup filesystem: working directory must be absolute")
+	}
+
+	root, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_root_dir")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	gitCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_git_cache_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	temp, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_temp_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	artifactCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_artifact_cache_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+
+	return controllerFilesystemPaths{
+		Root:          root,
+		GitCache:      gitCache,
+		Temp:          temp,
+		ArtifactCache: artifactCache,
+	}, nil
+}
+
+func resolveControllerFilesystemPath(resolver variable.Resolver, workingDirectory, key string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("controller startup filesystem: resolve %s: %w", key, err)
+	}
+	if value.Type != variable.TypePath {
+		return "", fmt.Errorf("controller startup filesystem: %s has type %s, want path", key, value.Type)
+	}
+	path, ok := value.Value.(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("controller startup filesystem: %s is required", key)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDirectory, path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) error {

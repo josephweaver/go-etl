@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -14,8 +15,93 @@ import (
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
+	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
+
+func TestResolveControllerFilesystemPaths(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	outsideRoot := filepath.Join(t.TempDir(), "shared", "artifacts")
+	controllerScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git/../git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "ignored"),
+	)
+	overrideScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceOverride, "controller_artifact_cache_path", variable.TypePath, outsideRoot),
+	)
+	resolver := variable.NewResolver(variable.NewSet(controllerScope, overrideScope), variable.ResolverConfig{})
+
+	paths, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+	if err != nil {
+		t.Fatalf("resolveControllerFilesystemPaths() error = %v", err)
+	}
+
+	want := controllerFilesystemPaths{
+		Root:          filepath.Join(workingDirectory, "state"),
+		GitCache:      filepath.Join(workingDirectory, "state", "git-cache"),
+		Temp:          filepath.Join(workingDirectory, "controller-temp"),
+		ArtifactCache: filepath.Clean(outsideRoot),
+	}
+	if paths != want {
+		t.Fatalf("resolveControllerFilesystemPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestResolveControllerFilesystemPathsRejectsInvalidWorkingDirectory(t *testing.T) {
+	resolver := testMainDatabaseResolver(t)
+	for _, workingDirectory := range []string{"", "relative"} {
+		_, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+		if err == nil || !strings.Contains(err.Error(), "working directory") {
+			t.Fatalf("working directory %q error = %v, want working-directory context", workingDirectory, err)
+		}
+	}
+}
+
+func TestResolveControllerFilesystemPathsReportsInvalidVariable(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{name: "missing", want: "controller_root_dir"},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypeString, "state"),
+			},
+			want: "controller_root_dir has type string, want path",
+		},
+		{
+			name: "empty",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, ""),
+			},
+			want: "controller_root_dir is required",
+		},
+		{
+			name: "missing dependency",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "${missing_root}"),
+			},
+			want: "missing_root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := testMainDatabaseResolver(t, tt.variables...)
+			_, err := resolveControllerFilesystemPaths(resolver, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup filesystem") {
+				t.Fatalf("error = %v, want filesystem consumer context", err)
+			}
+		})
+	}
+}
 
 func TestNextWorkHandler(t *testing.T) {
 	controller := newTestController()

@@ -286,6 +286,14 @@ stored on `Controller`; the bounded resolver and resolved connection string are
 not retained. The controller remains the only process that talks directly to
 SQLite. Clients and workers interact through HTTP APIs.
 
+After the main database is ready, controller startup resolves
+`controller_root_dir`, `controller_git_cache_path`, `controller_temp_path`, and
+`controller_artifact_cache_path` as typed paths through the bounded startup
+resolver. Relative values are anchored to the controller process working
+directory and cleaned before execution-environment or HTTP construction;
+absolute values may remain outside `controller_root_dir`. This contract does
+not yet create directories or construct the corresponding filesystem services.
+
 When `execution_environment` is present, the controller builds an `ExecutionEnvironment` and stores it on `Controller.env`. The current environment is assembled from four role interfaces:
 
 - `Transport` copies files into and executes commands inside a target environment.
