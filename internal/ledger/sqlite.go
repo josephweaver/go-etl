@@ -97,15 +97,67 @@ func InitSQLiteSchema(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 
-	for _, statement := range schemaStatements {
-		if _, err := db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("initialize sqlite schema: %w", err)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sqlite schema initialization: %w", err)
+	}
+	defer tx.Rollback()
+
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect sqlite schema: %w", err)
+	}
+
+	if tableCount == 0 {
+		for _, statement := range schemaStatements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("initialize sqlite schema: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, schemaVersion); err != nil {
+			return fmt.Errorf("record sqlite schema version: %w", err)
+		}
+	} else {
+		if err := validateSQLiteSchemaVersion(ctx, tx); err != nil {
+			return err
+		}
+		for _, statement := range schemaStatements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("initialize sqlite schema: %w", err)
+			}
 		}
 	}
 
-	if _, err := db.ExecContext(ctx, `INSERT INTO schema_version (version)
-		SELECT ? WHERE NOT EXISTS (SELECT 1 FROM schema_version);`, schemaVersion); err != nil {
-		return fmt.Errorf("record sqlite schema version: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite schema initialization: %w", err)
+	}
+	return nil
+}
+
+func validateSQLiteSchemaVersion(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT version FROM schema_version`)
+	if err != nil {
+		return fmt.Errorf("read sqlite schema version: %w", err)
+	}
+	defer rows.Close()
+
+	versions := make([]int, 0, 2)
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("read sqlite schema version: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read sqlite schema version: %w", err)
+	}
+	if len(versions) != 1 {
+		return fmt.Errorf("sqlite schema_version must contain exactly one row, got %d", len(versions))
+	}
+	if versions[0] != schemaVersion {
+		return fmt.Errorf("sqlite schema version %d is unsupported; controller supports version %d", versions[0], schemaVersion)
 	}
 
 	return nil

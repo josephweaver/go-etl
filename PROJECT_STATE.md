@@ -1,12 +1,12 @@
 # Project State
 
-Last updated: 2026-06-30
+Last updated: 2026-07-02
 
 ## Current Focus
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
-The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller can now load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. The default configured chain is:
+The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller now requires serialized controller documents to declare `api_version: goet/v1alpha1` and `kind: Controller` before it validates variables or execution-environment settings. It can load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. Controller startup now also acquires a file-based exclusive ownership lock beside the SQLite ledger before binding HTTP; if the lock already exists, startup fails closed before admission. The default configured chain is:
 
 ```text
 transport = DockerContainerTransport backed by DockerTransport
@@ -216,25 +216,72 @@ GET  /status         return queue counts
 
 Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
 
-If started with a config path, the controller loads a variable document and normalizes all variables into `controller_config`. If no config path is supplied, the controller now attempts to load:
+If started with `--config`, the controller loads that variable document and normalizes all variables into `controller_config`. A relative explicit path remains relative to the process working directory. If no config path is supplied, the controller loads:
 
 ```text
-cmd/controller/controller-default-config.json
+controller.json
 ```
 
-falling back to `controller-default-config.json` relative to the current working directory.
+from the directory containing the running executable. It does not search the process working directory or source tree. Repository development commands use `--config` because `go run` places its temporary executable outside the repository.
+
+`cmd/controller/defaults.json` now contains the agreed canonical
+`controller_config` defaults under a `goet/v1alpha1` / `Defaults` envelope. The
+controller package can load and validate this document, including its allowed
+configuration namespaces and per-namespace duplicate keys. It can also retain
+the defaults and selected controller documents as distinct sources and produce
+ordered `controller_config` scopes where explicit controller declarations win.
+Controller documents now reject non-`controller_config` declarations instead
+of silently rewriting their namespaces. Live startup now consumes these
+retained scopes when constructing the main database.
+
+The controller package can decode raw declarations collected from repeated
+`--override` arguments into a validated `override` scope. Decoding uses the
+canonical recursive `variable.Variable` JSON schema, rejects other namespaces
+and duplicate keys, and preserves qualified versus unqualified lookup
+behavior. Live controller startup now parses this scope and includes it in the
+bounded startup resolver. Qualified main-database lookups deliberately bypass
+matching override declarations.
+
+The controller package can also construct an immutable generated startup
+`runtime` scope from explicit process ID, instance ID, startup time, and build
+version inputs. The scope uses canonical typed variables for
+`controller_process_id`, `controller_instance_id`, `controller_started_at`, and
+`controller_build_version`, normalizes the startup time to UTC, and validates
+required values. Live startup constructs this scope and uses it with the
+retained defaults, controller, override, and environment sources in a bounded
+resolver.
+
+The controller startup path now also resolves the agreed operational policy
+variables after filesystem resolution and before HTTP construction. The policy
+contract covers resolver depth, caretaker cadence, Git-cache sizing and
+timeouts, temp and artifact cleanup, free-space reserve, filesystem logging,
+and log root/level values. The values are validated and normalized for later
+constructors but are not yet used to build the cache, caretaker, or logger
+services.
+
+The controller startup path now also resolves the HTTP listen host, listen
+port, advertised URL, timeout, and request-size/header-size settings before
+constructing the HTTP server. The resolved settings are validated as the
+startup HTTP contract and are used to configure the listener address and HTTP
+server timeouts and limits.
+
+The controller startup path now stamps a recovery-start timestamp and enters a
+recovery-only admission mode before serving requests. During this phase the
+controller keeps normal workflow and raw-work submission closed while still
+serving the dedicated health endpoint and the existing worker report endpoints.
 
 The demo client starts the controller with:
 
 ```powershell
-go run ./cmd/controller ./cmd/controller/demo-config.json
+go run ./cmd/controller --config ./cmd/controller/demo-config.json
 ```
 
 `cmd/controller/demo-config.json` currently defines:
 
 ```text
 controller_config.controller_url
-controller_config.ledger_db_path
+controller_config.main_database_driver
+controller_config.main_database_connection_string
 ```
 
 `cmd/controller/controller-default-config.json` currently defines those same controller variables plus an `execution_environment` block for the Dockerized Slurm backend:
@@ -248,7 +295,23 @@ runtime = worker rooted at /data/goetl
 worker controller_url = http://host.docker.internal:8080
 ```
 
-When `controller_config.ledger_db_path` is present, the controller opens or creates the SQLite ledger, initializes the version 1 schema, and stores the DB handle on the `Controller`. The controller remains the only process that talks directly to SQLite. Clients and workers interact through HTTP APIs.
+The controller requires qualified string values for
+`controller_config.main_database_driver` and
+`controller_config.main_database_connection_string`. The initial supported
+driver is `sqlite`. Startup opens the database and initializes an empty schema
+at version 1, or strictly requires exactly one existing version row equal to
+version 1, before constructing later services or binding HTTP. The DB handle is
+stored on `Controller`; the bounded resolver and resolved connection string are
+not retained. The controller remains the only process that talks directly to
+SQLite. Clients and workers interact through HTTP APIs.
+
+After the main database is ready, controller startup resolves
+`controller_root_dir`, `controller_git_cache_path`, `controller_temp_path`, and
+`controller_artifact_cache_path` as typed paths through the bounded startup
+resolver. Relative values are anchored to the controller process working
+directory and cleaned before execution-environment or HTTP construction;
+absolute values may remain outside `controller_root_dir`. This contract does
+not yet create directories or construct the corresponding filesystem services.
 
 When `execution_environment` is present, the controller builds an `ExecutionEnvironment` and stores it on `Controller.env`. The current environment is assembled from four role interfaces:
 
@@ -262,6 +325,20 @@ The current concrete implementations are `DockerContainerTransport`, `SSHTranspo
 `POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
 
 `POST /workflow` currently accepts JSON containing a workflow and optional submitted variables. Workflow-scope variables live inside the workflow object. Top-level submitted variables are reserved for overrides and runtime/config variables. The controller builds variable scopes from workflow variables and submitted variables, compiles the workflow through `internal/workflow`, checks generated work-item IDs against the existing queue state, and appends generated work items to the pending queue.
+
+The current workflow compiler eagerly compiles and queues every submitted step;
+it does not retain per-workflow resolver context, track step dependencies, or
+compile downstream steps after predecessor completion. The proposed
+`dependency-aware-workflows` epic records this correctness gap and is a
+prerequisite for the resource-constraint epic's workflow-eligibility gate.
+The proposed `workflow-dependency-resolution` epic separately owns lookup of
+dependent workflow definitions from a GitHub repository and cross-workflow
+readiness after workflow-instance lifecycle and typed outputs exist.
+The proposed `workflow-execution-persistence` epic owns database-backed run,
+step, work-item, attempt, configuration-snapshot, output, and restart state.
+The proposed `attempt-liveness-recovery` epic owns worker heartbeat leases, the
+controller caretaker loop, fencing, and abandoned-attempt recovery. Both are
+prerequisites consumed by dependency-aware workflow execution.
 
 After workflow submission creates pending work, the controller uses worker-scaling state to decide how many workers to start. If `Controller.env` is configured, `submitWorkflowHandler` prepares the execution environment and asks `env.Scheduler` to submit worker jobs. The Slurm path generates a worker Slurm script using the configured shell dialect, copies the generated script through the transport, and submits it through `sbatch` inside the Dockerized Slurm control container.
 
@@ -499,6 +576,9 @@ Current resolver behavior supports:
 - Fan-out list access through `Resolver.ResolveFanOutExpression("${years[*]}")`.
 - Typed convenience accessors for required and optional variables, including string, path-or-string, object, and string-list values.
 - Optional object-field helpers for resolved object settings used by layer-specific worker launch config.
+- Lazy string-only `controller_env` lookup through an injected function. Each
+  bounded resolver caches present and missing keys without enumerating the
+  process environment; resolver copies share that concurrency-safe cache.
 
 Structured access remains intentionally small. Literal object fields and list items declare their own types and resolve into the existing `ResolvedValue` tree. Whole-value references resolve recursively at any structured node through normal namespace precedence while preserving the referencing node's declared type. Scalar access supports `.field` and `[index]`. Fan-out supports only `[*]` and returns a list of resolved values for later workflow compilation. Mixed-text interpolation resolves string, path, int, bool, and datetime values into string or path expressions; it rejects object and list values and does not reinterpret reference syntax produced by a resolved value. Resolution failures retain their underlying cause while reporting the qualified root variable and an escaped JSON Pointer node path. Active qualified reference chains distinguish cycles from long acyclic chains that exceed the configured depth.
 
@@ -516,7 +596,8 @@ controller_config.controller_url
 controller_config.controller_start_executable
 controller_config.controller_start_args
 controller_config.controller_start_lock_path
-controller_config.ledger_db_path
+controller_config.main_database_driver
+controller_config.main_database_connection_string
 controller_config.code_version
 worker_config.worker_target_environment
 worker_config.transport
@@ -532,7 +613,6 @@ override.controller_url
 override.controller_start_executable
 override.controller_start_args
 override.controller_start_lock_path
-override.ledger_db_path
 override.worker_target_environment
 override.worker_start_executable
 override.worker_start_args
@@ -644,7 +724,7 @@ The local controller starter is intentionally minimal. It resolves structured ex
 The demo client currently starts the controller with:
 
 ```text
-controller_config.controller_start_args = ["run", "./cmd/controller", "./cmd/controller/demo-config.json"]
+controller_config.controller_start_args = ["run", "./cmd/controller", "--config", "./cmd/controller/demo-config.json"]
 ```
 
 `internal/clientsetup` contains the first client-side SSH setup engine. `SSHSetup` is intentionally decoupled from terminal I/O through a `Prompter` interface and from filesystem writes through a `FileStore` interface. The current setup flow can ask for transport choice, SSH host, port, user, key creation or existing key path, and host public key confirmation. For SSH it can generate a project-local Ed25519 key pair and write a generated controller config that selects `transport.type = "ssh"`. This package is not yet wired into `cmd/demo-client`; remote public-key installation and durable `known_hosts` management remain future slices.
@@ -791,6 +871,7 @@ Current coverage includes:
 - Controller config loading and namespace normalization.
 - Controller default config loading when no config path is supplied.
 - Controller execution-environment config validation and construction.
+- Controller startup assembly coverage for precedence, recovery mode, qualified lookup protection, and fail-closed startup.
 - Docker transport command construction for `exec` and `cp` behavior.
 - SSH transport config validation, key loading, host-key checking, connect/close behavior, command execution, copy/list behavior, filesystem helpers, reconnect behavior, and end-to-end in-process SSH/SFTP fixture coverage.
 - Fake HPCC SSH controller config construction.
@@ -800,8 +881,8 @@ Current coverage includes:
 - WorkerRuntime path derivation, remote directory preparation, worker config upload, and optional worker artifact upload.
 - Optional `Preparer` helper behavior for components that need setup hooks.
 - Controller workflow submission using `Controller.env` to prepare the runtime and submit scheduled worker jobs.
-- Controller SQLite ledger initialization from `controller_config.ledger_db_path`.
-- SQLite schema creation, parent-directory creation, and attempt snapshot insertion.
+- Required controller SQLite initialization from the qualified main-database driver and connection-string variables.
+- SQLite schema creation, strict version-1 validation, parent-directory creation, and attempt snapshot insertion.
 - Controller-owned attempt recording adapter.
 - Controller completion handling that records full completion metadata when present and still accepts legacy `id`-only completions.
 
@@ -939,6 +1020,8 @@ The current verified demo run records two attempt rows and four attempt-variable
 ## Design Direction
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
+
+The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
 

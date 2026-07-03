@@ -2,6 +2,14 @@
 
 Status: Proposed
 
+## Depends On
+
+`docs/epics/dependency-aware-workflows/README.md` defines when a workflow step
+is eligible to enter the assignable queue. That execution model is a
+prerequisite for resource admission: a resource constraint may further block
+an eligible work item, but it must never make a dependency-blocked downstream
+step assignable.
+
 ## Purpose
 
 Add controller-owned resource constraints so GOET can limit how many work items
@@ -97,7 +105,9 @@ Constraint ordering is FIFO among work items that are eligible for assignment.
 An item waiting for resource capacity does not block unrelated eligible work
 later in the pending queue. Workflow dependencies remain authoritative: a later
 workflow step cannot become eligible until its predecessor requirements are
-satisfied.
+satisfied. The dependency-aware-workflows epic owns that readiness state and
+JIT downstream compilation; this epic consumes readiness as an input to
+resource admission rather than reimplementing it.
 
 Resource declarations use GOET's variable system. Capacity may be declared at
 controller, project, or workflow scope and is resolved using the variable

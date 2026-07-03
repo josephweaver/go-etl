@@ -7,9 +7,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -20,18 +23,20 @@ import (
 	"goetl/internal/workflow"
 )
 
-const defaultControllerConfigPath = "cmd/controller/controller-default-config.json"
+const defaultControllerConfigFilename = "controller.json"
 
 type Controller struct {
-	mu       sync.Mutex
-	pending  []model.WorkItem
-	assigned map[string]model.WorkItem
-	failed   map[string]model.WorkFailure
-	ledger   *sql.DB
-	shutdown func(context.Context) error
-	env      *ExecutionEnvironment
-	scaler   WorkerScaleState
-	scaleCfg WorkerScaleConfig
+	mu                sync.Mutex
+	pending           []model.WorkItem
+	assigned          map[string]model.WorkItem
+	failed            map[string]model.WorkFailure
+	ledger            *sql.DB
+	shutdown          func(context.Context) error
+	env               *ExecutionEnvironment
+	scaler            WorkerScaleState
+	scaleCfg          WorkerScaleConfig
+	recoveryStartedAt time.Time
+	normalAdmission   bool
 }
 
 type WorkflowSubmission struct {
@@ -45,11 +50,54 @@ type WorkReuseDecision struct {
 	PriorAttemptID string
 }
 
+type controllerStartupOptions struct {
+	ConfigPath   string
+	OverrideJSON []string
+}
+
+type controllerFilesystemPaths struct {
+	Root          string
+	GitCache      string
+	Temp          string
+	ArtifactCache string
+}
+
+type controllerOperationalPolicy struct {
+	ResolverMaxDepth                int
+	CaretakerIntervalScheduleMillis int
+	CaretakerMissedIntervalLimit    int
+	GitCacheMaxSizeMB               int
+	GitCacheRetentionMillis         int
+	GitFetchTimeoutMillis           int
+	GitFetchConcurrency             int
+	TempCleanupAgeMillis            int
+	ArtifactCacheMaxSizeMB          int
+	ArtifactCacheRetentionMillis    int
+	StorageMinFreeMB                int
+	FilesystemLoggingEnabled        bool
+	LogRootPath                     string
+	LogLevel                        string
+}
+
+type controllerHTTPSettings struct {
+	ListenHost              string
+	ListenPort              int
+	AdvertisedURL           string
+	ReadHeaderTimeoutMillis int
+	ReadTimeoutMillis       int
+	WriteTimeoutMillis      int
+	IdleTimeoutMillis       int
+	ShutdownTimeoutMillis   int
+	MaxRequestBytes         int
+	MaxHeaderBytes          int
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
-		pending:  items,
-		assigned: make(map[string]model.WorkItem),
-		failed:   make(map[string]model.WorkFailure),
+		pending:         items,
+		assigned:        make(map[string]model.WorkItem),
+		failed:          make(map[string]model.WorkFailure),
+		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
 			MaxCount:                2,
 			CountPerStart:           1,
@@ -58,64 +106,340 @@ func newController(items []model.WorkItem) *Controller {
 	}
 }
 
+func (c *Controller) enterRecoveryMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recoveryStartedAt = time.Now().UTC()
+	c.normalAdmission = false
+}
+
+func (c *Controller) allowNormalAdmission() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.normalAdmission = true
+}
+
+func (c *Controller) recoveryAdmissionClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.normalAdmission
+}
+
+func (c *Controller) requireNormalAdmission(w http.ResponseWriter) bool {
+	if c.recoveryAdmissionClosed() {
+		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
 func main() {
-	config, err := controllerConfigFromArgs(os.Args)
+	server, release, err := buildControllerServer(os.Args, os.Executable, os.LookupEnv, os.Getwd, os.Getpid, time.Now, randomHex, buildInfoCodeVersion)
 	if err != nil {
-		fmt.Println("controller config failed:", err)
+		fmt.Println(err)
 		return
 	}
+	defer func() {
+		if release != nil {
+			if err := release(); err != nil {
+				fmt.Println("controller database ownership release failed:", err)
+			}
+		}
+	}()
 
-	ledgerDB, err := initConfiguredLedger(context.Background(), config)
-	if err != nil {
-		fmt.Println("controller ledger failed:", err)
-		return
-	}
-	if ledgerDB != nil {
-		defer ledgerDB.Close()
-	}
-
-	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
-	if err != nil {
-		fmt.Println("controller execution environment failed:", err)
-		return
-	}
-
-	controller := newController(nil)
-	controller.ledger = ledgerDB
-	controller.env = executionEnvironment
-
-	mux := http.NewServeMux()
-	server := &http.Server{Addr: ":8080", Handler: mux}
-	controller.shutdown = server.Shutdown
-
-	mux.HandleFunc("/work/next", controller.nextWorkHandler)
-	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
-	mux.HandleFunc("/work/fail", controller.failWorkHandler)
-	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
-	mux.HandleFunc("/work", controller.submitWorkHandler)
-	mux.HandleFunc("/shutdown", controller.shutdownHandler)
-	mux.HandleFunc("/status", controller.statusHandler)
-
-	fmt.Println("controller listening on :8080")
+	fmt.Println("controller listening on", server.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println("controller failed:", err)
 	}
 }
 
-func controllerConfigFromArgs(args []string) (ControllerConfig, error) {
-	if len(args) < 2 {
-		return loadDefaultControllerConfig()
+func buildControllerServer(
+	args []string,
+	executablePath func() (string, error),
+	lookupEnv func(string) (string, bool),
+	getwd func() (string, error),
+	pid func() int,
+	now func() time.Time,
+	randomHex func(int) string,
+	buildVersion func() string,
+) (*http.Server, func() error, error) {
+	options, err := parseControllerStartupOptions(args)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	configPath, err := controllerConfigPath(options.ConfigPath, executablePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	sources, err := loadControllerStartupSources(configPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	overrideScope, err := parseControllerStartupOverrides(options.OverrideJSON)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	runtimeScope, err := newStartupRuntimeScope(pid(), randomHex(16), now().UTC(), buildVersion())
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	resolver, err := newControllerStartupResolver(sources, overrideScope, runtimeScope, lookupEnv)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller config failed: %w", err)
+	}
+	config := sources.Controller
+
+	ledgerDB, err := initMainDatabase(context.Background(), resolver)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller database failed: %w", err)
+	}
+	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnership(ledgerDB)
+	if err != nil {
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller database ownership failed: %w", err)
+	}
+	workingDirectory, err := getwd()
+	if err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
+	}
+	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
+	}
+	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller policy failed: %w", err)
+	}
+	httpSettings, err := resolveControllerHTTPSettings(resolver)
+	if err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller http failed: %w", err)
 	}
 
-	return loadControllerConfig(args[1])
+	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
+	if err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		ledgerDB.Close()
+		return nil, nil, fmt.Errorf("controller execution environment failed: %w", err)
+	}
+
+	controller := newController(nil)
+	controller.ledger = ledgerDB
+	controller.env = executionEnvironment
+	controller.enterRecoveryMode()
+
+	mux := http.NewServeMux()
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", httpSettings.ListenHost, httpSettings.ListenPort),
+		Handler:           mux,
+		ReadHeaderTimeout: time.Duration(httpSettings.ReadHeaderTimeoutMillis) * time.Millisecond,
+		ReadTimeout:       time.Duration(httpSettings.ReadTimeoutMillis) * time.Millisecond,
+		WriteTimeout:      time.Duration(httpSettings.WriteTimeoutMillis) * time.Millisecond,
+		IdleTimeout:       time.Duration(httpSettings.IdleTimeoutMillis) * time.Millisecond,
+		MaxHeaderBytes:    httpSettings.MaxHeaderBytes,
+	}
+	controller.shutdown = server.Shutdown
+
+	mux.HandleFunc("/work/next", controller.nextWorkHandler)
+	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
+	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/healthz", controller.healthHandler)
+	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
+	mux.HandleFunc("/work", controller.submitWorkHandler)
+	mux.HandleFunc("/shutdown", controller.shutdownHandler)
+	mux.HandleFunc("/status", controller.statusHandler)
+
+	return server, func() error {
+		if releaseDatabaseOwnership != nil {
+			if err := releaseDatabaseOwnership(); err != nil {
+				return err
+			}
+		}
+		return ledgerDB.Close()
+	}, nil
 }
 
-func loadDefaultControllerConfig() (ControllerConfig, error) {
-	if _, err := os.Stat(defaultControllerConfigPath); err == nil {
-		return loadControllerConfig(defaultControllerConfigPath)
+func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
+	options, err := parseControllerStartupOptions(args)
+	if err != nil {
+		return ControllerConfig{}, err
+	}
+	if len(options.OverrideJSON) != 0 {
+		return ControllerConfig{}, fmt.Errorf("controller startup overrides are not supported yet")
+	}
+	path, err := controllerConfigPath(options.ConfigPath, executablePath)
+	if err != nil {
+		return ControllerConfig{}, err
+	}
+	return loadControllerConfig(path)
+}
+
+func controllerConfigPath(explicitPath string, executablePath func() (string, error)) (string, error) {
+	if explicitPath != "" {
+		return explicitPath, nil
 	}
 
-	return loadControllerConfig("controller-default-config.json")
+	executable, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("determine controller executable path: %w", err)
+	}
+	return filepath.Join(filepath.Dir(executable), defaultControllerConfigFilename), nil
+}
+
+func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
+	var options controllerStartupOptions
+	var configSet bool
+
+	flags := flag.NewFlagSet("controller", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Func("config", "controller configuration path", func(value string) error {
+		if configSet {
+			return fmt.Errorf("--config may be specified only once")
+		}
+		configSet = true
+		options.ConfigPath = value
+		return nil
+	})
+	flags.Func("override", "canonical JSON override declaration", func(value string) error {
+		options.OverrideJSON = append(options.OverrideJSON, value)
+		return nil
+	})
+
+	arguments := args
+	if len(arguments) > 0 {
+		arguments = arguments[1:]
+	}
+	if err := flags.Parse(arguments); err != nil {
+		return controllerStartupOptions{}, fmt.Errorf("parse controller startup arguments: %w", err)
+	}
+	if flags.NArg() != 0 {
+		return controllerStartupOptions{}, fmt.Errorf("parse controller startup arguments: unexpected positional argument %q", flags.Arg(0))
+	}
+
+	return options, nil
+}
+
+func parseControllerStartupOverrides(rawOverrides []string) (variable.Scope, error) {
+	variables := make([]variable.Variable, 0, len(rawOverrides))
+	seen := make(map[string]struct{}, len(rawOverrides))
+
+	for index, raw := range rawOverrides {
+		var declaration variable.Variable
+		if err := json.Unmarshal([]byte(raw), &declaration); err != nil {
+			return nil, fmt.Errorf("override argument %d: %w", index+1, err)
+		}
+		if declaration.Name.Namespace != variable.NamespaceOverride {
+			return nil, fmt.Errorf("override argument %d (%s): namespace must be %s", index+1, declaration.Name, variable.NamespaceOverride)
+		}
+		if _, ok := seen[declaration.Name.Key]; ok {
+			return nil, fmt.Errorf("override argument %d (%s): duplicate variable key", index+1, declaration.Name)
+		}
+		seen[declaration.Name.Key] = struct{}{}
+		variables = append(variables, declaration)
+	}
+
+	scope, err := variable.NewScope(variables...)
+	if err != nil {
+		return nil, fmt.Errorf("build override scope: %w", err)
+	}
+	return scope, nil
+}
+
+func newStartupRuntimeScope(processID int, instanceID string, startedAt time.Time, buildVersion string) (variable.Scope, error) {
+	if processID <= 0 {
+		return nil, fmt.Errorf("runtime.controller_process_id must be positive")
+	}
+	if instanceID == "" {
+		return nil, fmt.Errorf("runtime.controller_instance_id is required")
+	}
+	if buildVersion == "" {
+		return nil, fmt.Errorf("runtime.controller_build_version is required")
+	}
+
+	return variable.NewScope(
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_process_id"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeInt,
+				Expression: processID,
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_instance_id"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeString,
+				Expression: instanceID,
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_started_at"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeDatetime,
+				Expression: startedAt.UTC().Format(time.RFC3339Nano),
+			},
+		},
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_build_version"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeString,
+				Expression: buildVersion,
+			},
+		},
+	)
+}
+
+func newControllerStartupResolver(
+	sources controllerStartupSources,
+	overrideScope variable.Scope,
+	runtimeScope variable.Scope,
+	controllerEnvironmentLookup func(string) (string, bool),
+) (variable.Resolver, error) {
+	defaultScope, controllerScope, err := sources.controllerScopes()
+	if err != nil {
+		return variable.Resolver{}, err
+	}
+
+	set := variable.NewSet(defaultScope, controllerScope, overrideScope, runtimeScope)
+	bootstrap := variable.NewResolver(set, variable.ResolverConfig{
+		MaxDepth:                    variable.DefaultMaxDepth,
+		ControllerEnvironmentLookup: controllerEnvironmentLookup,
+	})
+	depth, err := bootstrap.Resolve(variable.Reference{
+		Name: variable.Name{Key: "resolver_max_depth"},
+	})
+	if err != nil {
+		return variable.Resolver{}, fmt.Errorf("resolve resolver_max_depth: %w", err)
+	}
+	if depth.Type != variable.TypeInt {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth has type %s, want int", depth.Type)
+	}
+	maxDepth, ok := depth.Value.(int)
+	if !ok {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth must be an int")
+	}
+	if maxDepth <= 0 {
+		return variable.Resolver{}, fmt.Errorf("resolver_max_depth must be greater than zero")
+	}
+
+	return variable.NewResolver(set, variable.ResolverConfig{
+		MaxDepth:                    maxDepth,
+		ControllerEnvironmentLookup: controllerEnvironmentLookup,
+	}), nil
 }
 
 func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvironment, error) {
@@ -130,59 +454,268 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 	return &env, nil
 }
 
-func initConfiguredLedger(ctx context.Context, config ControllerConfig) (*sql.DB, error) {
-	if len(config.Variables) == 0 {
-		return nil, nil
+func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
+	driver, err := resolver.String("controller_config.main_database_driver")
+	if err != nil {
+		return nil, fmt.Errorf("controller startup database: required variable controller_config.main_database_driver: %w", err)
+	}
+	connectionString, err := resolver.String("controller_config.main_database_connection_string")
+	if err != nil {
+		return nil, fmt.Errorf("controller startup database: resolve controller_config.main_database_connection_string: %w", err)
+	}
+	if driver != "sqlite" {
+		return nil, fmt.Errorf("controller startup database: unsupported main_database_driver %q", driver)
 	}
 
-	scope, err := variable.NewScope(config.Variables...)
+	db, err := ledger.OpenSQLite(connectionString)
 	if err != nil {
-		return nil, err
-	}
-
-	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
-	path, err := optionalPathVariable(resolver, "ledger_db_path")
-	if err != nil {
-		return nil, err
-	}
-	if path == "" {
-		return nil, nil
-	}
-
-	db, err := ledger.OpenSQLite(path)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("controller startup database: %w", err)
 	}
 
 	if err := ledger.InitSQLiteSchema(ctx, db); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("controller startup database: %w", err)
 	}
 
 	return db, nil
 }
 
-func optionalPathVariable(resolver variable.Resolver, name string) (string, error) {
-	reference, err := variable.ParseReference(name)
-	if err != nil {
-		return "", err
+func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
+	if db == nil {
+		return nil, fmt.Errorf("controller startup database ownership: database handle is required")
 	}
 
-	value, err := resolver.Resolve(reference)
-	if err != nil {
-		return "", nil
+	var path string
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		return nil, fmt.Errorf("controller startup database ownership: inspect database path: %w", err)
+	}
+	if path == "" || path == ":memory:" {
+		return func() error { return nil }, nil
 	}
 
+	lockPath := path + ".controller.lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("controller startup database ownership: database is already owned")
+		}
+		return nil, fmt.Errorf("controller startup database ownership: create lock file: %w", err)
+	}
+	if err := lockFile.Close(); err != nil {
+		return nil, fmt.Errorf("controller startup database ownership: close lock file: %w", err)
+	}
+
+	return func() error {
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("controller startup database ownership: remove lock file: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirectory string) (controllerFilesystemPaths, error) {
+	if workingDirectory == "" {
+		return controllerFilesystemPaths{}, fmt.Errorf("controller startup filesystem: working directory is required")
+	}
+	if !filepath.IsAbs(workingDirectory) {
+		return controllerFilesystemPaths{}, fmt.Errorf("controller startup filesystem: working directory must be absolute")
+	}
+
+	root, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_root_dir")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	gitCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_git_cache_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	temp, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_temp_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+	artifactCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_artifact_cache_path")
+	if err != nil {
+		return controllerFilesystemPaths{}, err
+	}
+
+	return controllerFilesystemPaths{
+		Root:          root,
+		GitCache:      gitCache,
+		Temp:          temp,
+		ArtifactCache: artifactCache,
+	}, nil
+}
+
+func resolveControllerFilesystemPath(resolver variable.Resolver, workingDirectory, key string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("controller startup filesystem: resolve %s: %w", key, err)
+	}
 	if value.Type != variable.TypePath {
-		return "", fmt.Errorf("%s has type %s, want path", name, value.Type)
+		return "", fmt.Errorf("controller startup filesystem: %s has type %s, want path", key, value.Type)
 	}
-
 	path, ok := value.Value.(string)
-	if !ok {
-		return "", fmt.Errorf("%s must be a path", name)
+	if !ok || path == "" {
+		return "", fmt.Errorf("controller startup filesystem: %s is required", key)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDirectory, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func resolveControllerOperationalPolicy(resolver variable.Resolver, workingDirectory string) (controllerOperationalPolicy, error) {
+	policy := controllerOperationalPolicy{}
+
+	var err error
+	if policy.ResolverMaxDepth, err = resolvePositiveIntPolicy(resolver, "resolver_max_depth", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.CaretakerIntervalScheduleMillis, err = resolvePositiveIntPolicy(resolver, "caretaker_interval_schedule_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.CaretakerMissedIntervalLimit, err = resolvePositiveIntPolicy(resolver, "caretaker_missed_interval_limit", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_max_size_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_retention_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitFetchTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_fetch_timeout_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.GitFetchConcurrency, err = resolvePositiveIntPolicy(resolver, "controller_git_fetch_concurrency", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.TempCleanupAgeMillis, err = resolvePositiveIntPolicy(resolver, "controller_temp_cleanup_age_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.ArtifactCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_artifact_cache_max_size_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.ArtifactCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_artifact_cache_retention_milliseconds", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.StorageMinFreeMB, err = resolvePositiveIntPolicy(resolver, "controller_storage_min_free_mb", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.FilesystemLoggingEnabled, err = resolveBoolPolicy(resolver, "controller_filesystem_logging_enabled", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.LogRootPath, err = resolvePathPolicy(resolver, workingDirectory, "controller_log_root_path", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.LogLevel, err = resolveStringPolicy(resolver, "controller_log_level", "controller startup policy"); err != nil {
+		return controllerOperationalPolicy{}, err
 	}
 
-	return path, nil
+	return policy, nil
+}
+
+func resolveControllerHTTPSettings(resolver variable.Resolver) (controllerHTTPSettings, error) {
+	settings := controllerHTTPSettings{}
+
+	var err error
+	if settings.ListenHost, err = resolveStringPolicy(resolver, "controller_listen_host", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ListenPort, err = resolvePositiveIntPolicy(resolver, "controller_listen_port", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.AdvertisedURL, err = resolveStringPolicy(resolver, "controller_url", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ReadHeaderTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_read_header_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ReadTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_read_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.WriteTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_write_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.IdleTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_idle_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ShutdownTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_shutdown_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.MaxRequestBytes, err = resolvePositiveIntPolicy(resolver, "controller_max_request_bytes", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.MaxHeaderBytes, err = resolvePositiveIntPolicy(resolver, "controller_max_header_bytes", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+
+	return settings, nil
+}
+
+func resolvePositiveIntPolicy(resolver variable.Resolver, key string, consumer string) (int, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return 0, fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeInt {
+		return 0, fmt.Errorf("%s: %s has type %s, want int", consumer, key, value.Type)
+	}
+	number, ok := value.Value.(int)
+	if !ok {
+		return 0, fmt.Errorf("%s: %s must be an int", consumer, key)
+	}
+	if number <= 0 {
+		return 0, fmt.Errorf("%s: %s must be greater than zero", consumer, key)
+	}
+	return number, nil
+}
+
+func resolveBoolPolicy(resolver variable.Resolver, key string, consumer string) (bool, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return false, fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeBool {
+		return false, fmt.Errorf("%s: %s has type %s, want bool", consumer, key, value.Type)
+	}
+	flag, ok := value.Value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s: %s must be a bool", consumer, key)
+	}
+	return flag, nil
+}
+
+func resolveStringPolicy(resolver variable.Resolver, key string, consumer string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypeString {
+		return "", fmt.Errorf("%s: %s has type %s, want string", consumer, key, value.Type)
+	}
+	text, ok := value.Value.(string)
+	if !ok || text == "" {
+		return "", fmt.Errorf("%s: %s is required", consumer, key)
+	}
+	return text, nil
+}
+
+func resolvePathPolicy(resolver variable.Resolver, workingDirectory, key, consumer string) (string, error) {
+	value, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: key}})
+	if err != nil {
+		return "", fmt.Errorf("%s: resolve %s: %w", consumer, key, err)
+	}
+	if value.Type != variable.TypePath {
+		return "", fmt.Errorf("%s: %s has type %s, want path", consumer, key, value.Type)
+	}
+	path, ok := value.Value.(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("%s: %s is required", consumer, key)
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workingDirectory, path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func (c *Controller) recordAttempt(ctx context.Context, attempt ledger.Attempt) error {
@@ -317,6 +850,9 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	var item model.WorkItem
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
@@ -344,6 +880,13 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
+	if c.recoveryAdmissionClosed() {
+		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -663,6 +1206,9 @@ func (c *Controller) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	if c.shutdown == nil {
 		http.Error(w, "shutdown unavailable", http.StatusServiceUnavailable)
@@ -701,6 +1247,9 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
 
 	c.mu.Lock()
 	pendingItems := append([]model.WorkItem(nil), c.pending...)
@@ -730,6 +1279,15 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(status); err != nil {
 		http.Error(w, "encode status", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *Controller) ledgerStatusCounts(ctx context.Context) (int, int, error) {
@@ -933,6 +1491,9 @@ func runtimeStringVariable(name string, value string, lifecycle string) ledger.A
 func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
 		return
 	}
 

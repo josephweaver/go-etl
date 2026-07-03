@@ -1,4 +1,6 @@
 {
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
   "variables": [
     {
       "name": {
@@ -11,9 +13,17 @@
     {
       "name": {
         "namespace": "controller_config",
-        "key": "ledger_db_path"
+        "key": "main_database_driver"
       },
-      "type": "path",
+      "type": "string",
+      "expression": "sqlite"
+    },
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "main_database_connection_string"
+      },
+      "type": "string",
       "expression": ".run/controller/fake-hpcc-ssh-ledger.sqlite"
     }
   ],

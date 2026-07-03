@@ -27,6 +27,19 @@ The Controller is the authoritative owner of execution observations. Workers, ru
 
 Workers may also write fallback logs when they are separated from the Controller. Worker fallback logs are emergency diagnostics, not a second authoritative logging system.
 
+## HTTP Delivery Semantics
+
+"Stream logs line-by-line" describes the observation cadence, not a long-lived
+HTTP streaming connection. As a worker or subprocess produces a completed log
+line, the worker sends a structured log observation through a normal bounded
+HTTP request/response exchange. The HTTP client may reuse connections through
+ordinary keep-alive behavior, but no request or response remains open for the
+duration of the work item.
+
+Later batching may combine several completed lines in one bounded request, but
+it must preserve line boundaries and useful local ordering. This transport
+optimization does not change the controller-owned logging model.
+
 ## Core Principles
 
 - Controller owns GOET logging.

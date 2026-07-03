@@ -36,6 +36,49 @@ Design mode feature files should describe the expected artifact of a future
 implementation slice. A feature file is stronger when it names the concrete
 production, test, or documentation artifact that will prove the feature exists.
 
+### Epic Delivery Cadence
+
+Epic work must state whether slice planning and implementation are interleaved
+or grouped. Use the following notation.
+
+#### Epic `(slice impl)+` Mode
+
+This mode develops one epic through repeated slice-and-implementation pairs:
+
+```text
+epic (slice impl)+
+```
+
+For each pair:
+
+1. Draft and agree on one slice charter.
+2. Implement only that slice under the active HCI mode.
+3. Run the narrowest relevant test.
+4. Stop for human review.
+5. Commit the accepted slice before drafting or implementing the next slice.
+
+All slices for the epic remain on one epic branch. Each accepted slice receives
+its own commit, and one pull request is opened for the complete epic after all
+agreed slices are implemented. This mode is appropriate when implementation
+evidence may refine the planning of later slices.
+
+#### Epic `(slice)+ (impl)+` Mode
+
+This mode completes slice planning before implementation begins:
+
+```text
+epic (slice)+ (impl)+
+```
+
+First draft and agree on all slice charters in Design Mode. After the complete
+decomposition is approved, implement the slices in order under the active HCI
+mode. EC review boundaries still apply during implementation; grouping the
+planning phase does not authorize implementing multiple EC-3 slices without
+human review.
+
+If the user does not choose an epic delivery cadence, ask before moving from an
+approved epic into slice creation.
+
 ## Initial Project Direction
 
 - Start at `main.go`.
@@ -137,7 +180,16 @@ repository
 
 #### Budget
 
-The budget defines how much production code may change before review.
+The budget defines how much production code may change within one user prompt
+before review. It is a per-prompt interaction budget, not a requirement that an
+entire implementation slice fit within one prompt.
+
+One implementation slice may span multiple prompts. For example, if an agreed
+slice requires three production files while the active mode permits `file(1)`,
+the AI changes at most one production file, runs the narrowest useful test,
+reports the partial result, and identifies the next file or step. The human may
+then authorize the next prompt-sized portion while remaining inside the same
+slice and HCI mode.
 
 Examples:
 
@@ -233,10 +285,14 @@ AI must report all new files created and explain their purpose.
 When operating under EC-3:
 
 1. Do not exceed the declared budget.
-2. Implement the smallest coherent slice.
+2. Implement the smallest coherent portion of the active slice that fits within
+   the prompt budget.
 3. Run the narrowest relevant test.
-4. Stop after the slice.
+4. Stop when the prompt budget is exhausted or the slice is complete, whichever
+   comes first.
 5. Wait for user approval before continuing.
+6. If the slice is incomplete, report what remains and name the next production
+   file or implementation step.
 
 The user may continue by replying:
 
@@ -244,7 +300,15 @@ The user may continue by replying:
 next
 ```
 
-When the user replies `next`, first commit the current completed slice to the active local branch with a clear commit message, then start the next slice. This keeps each continuation anchored in local git history before new changes are introduced.
+When the user replies `next` and the active slice is incomplete, continue that
+same slice under a fresh prompt-sized budget. Do not represent the partial work
+as a completed slice or automatically commit it unless the user explicitly asks
+for a checkpoint commit.
+
+When the user replies `next` after the active slice is complete, first commit
+the completed slice to the active local branch with a clear commit message, then
+start the next slice. This keeps slice boundaries anchored in local git history
+without confusing prompt boundaries with slice boundaries.
 
 ### Slice Boundary Git Flow
 
@@ -258,9 +322,13 @@ no commit is necessary.
 Before starting a new implementation slice after a completed feature slice:
 
 1. Commit the completed slice changes.
-2. Create a pull request if the work is intended to land through GitHub review.
-3. Merge or accept the pull request when appropriate.
-4. Create a new branch for the next slice.
+2. In epic `(slice impl)+` mode, remain on the epic branch and continue with the
+   next slice; open one pull request after the epic is complete.
+3. Otherwise, create a pull request if the completed slice is intended to land
+   through GitHub review.
+4. Merge or accept that pull request when appropriate.
+5. Create a new branch for the next slice when the selected delivery cadence
+   requires a slice boundary branch.
 
 ### Required Slice Report
 

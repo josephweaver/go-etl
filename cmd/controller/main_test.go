@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -18,6 +19,446 @@ import (
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
+
+func TestBuildControllerServerUsesStartupPrecedenceAndRecoveryMode(t *testing.T) {
+	dir := t.TempDir()
+	controllerPath, defaultDBPath, overrideDBPath := writeControllerStartupFiles(t, dir)
+	overrideDBJSON := filepath.ToSlash(overrideDBPath)
+
+	server, release, err := buildControllerServer(
+		[]string{"controller", "--config", controllerPath, "--override", `{"name":{"namespace":"override","key":"main_database_connection_string"},"type":"string","expression":"` + overrideDBJSON + `"}`},
+		func() (string, error) { return filepath.Join(dir, "controller-binary"), nil },
+		func(string) (string, bool) { return "", false },
+		func() (string, error) { return dir, nil },
+		func() int { return 1234 },
+		func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		func(int) string { return "cafebabe" },
+		func() string { return "test-version" },
+	)
+	if err != nil {
+		t.Fatalf("buildControllerServer() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if release != nil {
+			if err := release(); err != nil {
+				t.Fatalf("release controller startup resources: %v", err)
+			}
+		}
+	})
+
+	if server.Addr != "localhost:9091" {
+		t.Fatalf("server addr = %q, want localhost:9091", server.Addr)
+	}
+
+	statusResp := httptest.NewRecorder()
+	server.Handler.ServeHTTP(statusResp, httptest.NewRequest(http.MethodGet, "/status", nil))
+	if statusResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503 in recovery mode", statusResp.Code)
+	}
+
+	healthResp := httptest.NewRecorder()
+	server.Handler.ServeHTTP(healthResp, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if healthResp.Code != http.StatusNoContent {
+		t.Fatalf("health code = %d, want 204", healthResp.Code)
+	}
+
+	if _, err := os.Stat(defaultDBPath); err != nil {
+		t.Fatalf("default database path missing: %v", err)
+	}
+	if _, err := os.Stat(overrideDBPath); !os.IsNotExist(err) {
+		t.Fatalf("override database path exists or unreadable: %v", err)
+	}
+}
+
+func TestBuildControllerServerFailsClosedBeforeBind(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _ = writeControllerStartupFiles(t, dir)
+	badControllerPath := filepath.Join(dir, "bad-controller.json")
+	if err := os.WriteFile(badControllerPath, []byte(`{"api_version":"goet/v1alpha1","kind":"Controller","variables":[{"name":{"namespace":"controller_config","key":"main_database_driver"},"type":"string","expression":"bad"}]}`), 0600); err != nil {
+		t.Fatalf("write bad controller config: %v", err)
+	}
+
+	server, release, err := buildControllerServer(
+		[]string{"controller", "--config", badControllerPath},
+		func() (string, error) { return filepath.Join(dir, "controller-binary"), nil },
+		func(string) (string, bool) { return "", false },
+		func() (string, error) { return dir, nil },
+		func() int { return 1234 },
+		func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		func(int) string { return "cafebabe" },
+		func() string { return "test-version" },
+	)
+	if err == nil || !strings.Contains(err.Error(), "controller database failed") {
+		t.Fatalf("error = %v, want controller database failure", err)
+	}
+	if server != nil || release != nil {
+		t.Fatalf("server = %#v release = %T, want nils on startup failure", server, release)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "controller-startup.sqlite")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected database file created for failing startup: %v", err)
+	}
+}
+
+func writeControllerStartupFiles(t *testing.T, dir string) (string, string, string) {
+	t.Helper()
+
+	defaultDBPath := filepath.Join(dir, "controller-startup.sqlite")
+	overrideDBPath := filepath.Join(dir, "override-startup.sqlite")
+	defaultDBJSON := filepath.ToSlash(defaultDBPath)
+	controllerPath := filepath.Join(dir, "controller.json")
+	defaultsPath := filepath.Join(dir, "defaults.json")
+
+	controllerJSON := `{
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
+  "variables": [
+    {
+      "name": {"namespace": "controller_config", "key": "main_database_driver"},
+      "type": "string",
+      "expression": "sqlite"
+    },
+    {
+      "name": {"namespace": "controller_config", "key": "main_database_connection_string"},
+      "type": "string",
+      "expression": "` + defaultDBJSON + `"
+    },
+    {
+      "name": {"namespace": "controller_config", "key": "controller_url"},
+      "type": "string",
+      "expression": "http://localhost:9091"
+    }
+  ]
+}`
+
+	defaultsJSON := `{
+  "api_version": "goet/v1alpha1",
+  "kind": "Defaults",
+  "variables": [
+    {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
+    {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 9091},
+    {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_path"}, "type": "path", "expression": "${controller_root_dir}/git_cache"},
+    {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_path"}, "type": "path", "expression": "${controller_root_dir}/artifacts"},
+    {"name": {"namespace": "controller_config", "key": "caretaker_interval_schedule_milliseconds"}, "type": "int", "expression": 60000},
+    {"name": {"namespace": "controller_config", "key": "caretaker_missed_interval_limit"}, "type": "int", "expression": 1},
+    {"name": {"namespace": "controller_config", "key": "resolver_max_depth"}, "type": "int", "expression": 10},
+    {"name": {"namespace": "controller_config", "key": "controller_log_root_path"}, "type": "path", "expression": "${controller_root_dir}/logs"},
+    {"name": {"namespace": "controller_config", "key": "controller_filesystem_logging_enabled"}, "type": "bool", "expression": true},
+    {"name": {"namespace": "controller_config", "key": "controller_log_level"}, "type": "string", "expression": "info"},
+    {"name": {"namespace": "controller_config", "key": "controller_read_header_timeout_milliseconds"}, "type": "int", "expression": 5000},
+    {"name": {"namespace": "controller_config", "key": "controller_read_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_write_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_idle_timeout_milliseconds"}, "type": "int", "expression": 120000},
+    {"name": {"namespace": "controller_config", "key": "controller_shutdown_timeout_milliseconds"}, "type": "int", "expression": 30000},
+    {"name": {"namespace": "controller_config", "key": "controller_max_request_bytes"}, "type": "int", "expression": 16777216},
+    {"name": {"namespace": "controller_config", "key": "controller_max_header_bytes"}, "type": "int", "expression": 1048576},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_git_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_git_fetch_timeout_milliseconds"}, "type": "int", "expression": 300000},
+    {"name": {"namespace": "controller_config", "key": "controller_git_fetch_concurrency"}, "type": "int", "expression": 4},
+    {"name": {"namespace": "controller_config", "key": "controller_temp_cleanup_age_milliseconds"}, "type": "int", "expression": 86400000},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_storage_min_free_mb"}, "type": "int", "expression": 1024}
+  ]
+}`
+
+	if err := os.WriteFile(controllerPath, []byte(controllerJSON), 0600); err != nil {
+		t.Fatalf("write controller config: %v", err)
+	}
+	if err := os.WriteFile(defaultsPath, []byte(defaultsJSON), 0600); err != nil {
+		t.Fatalf("write defaults config: %v", err)
+	}
+
+	return controllerPath, defaultDBPath, overrideDBPath
+}
+
+func TestResolveControllerFilesystemPaths(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	outsideRoot := filepath.Join(t.TempDir(), "shared", "artifacts")
+	controllerScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git/../git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "ignored"),
+	)
+	overrideScope := testStartupScope(t,
+		testStartupVariable(variable.NamespaceOverride, "controller_artifact_cache_path", variable.TypePath, outsideRoot),
+	)
+	resolver := variable.NewResolver(variable.NewSet(controllerScope, overrideScope), variable.ResolverConfig{})
+
+	paths, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+	if err != nil {
+		t.Fatalf("resolveControllerFilesystemPaths() error = %v", err)
+	}
+
+	want := controllerFilesystemPaths{
+		Root:          filepath.Join(workingDirectory, "state"),
+		GitCache:      filepath.Join(workingDirectory, "state", "git-cache"),
+		Temp:          filepath.Join(workingDirectory, "controller-temp"),
+		ArtifactCache: filepath.Clean(outsideRoot),
+	}
+	if paths != want {
+		t.Fatalf("resolveControllerFilesystemPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestResolveControllerFilesystemPathsRejectsInvalidWorkingDirectory(t *testing.T) {
+	resolver := testMainDatabaseResolver(t)
+	for _, workingDirectory := range []string{"", "relative"} {
+		_, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+		if err == nil || !strings.Contains(err.Error(), "working directory") {
+			t.Fatalf("working directory %q error = %v, want working-directory context", workingDirectory, err)
+		}
+	}
+}
+
+func TestResolveControllerFilesystemPathsReportsInvalidVariable(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{name: "missing", want: "controller_root_dir"},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypeString, "state"),
+			},
+			want: "controller_root_dir has type string, want path",
+		},
+		{
+			name: "empty",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, ""),
+			},
+			want: "controller_root_dir is required",
+		},
+		{
+			name: "missing dependency",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "${missing_root}"),
+			},
+			want: "missing_root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := testMainDatabaseResolver(t, tt.variables...)
+			_, err := resolveControllerFilesystemPaths(resolver, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup filesystem") {
+				t.Fatalf("error = %v, want filesystem consumer context", err)
+			}
+		})
+	}
+}
+
+func TestResolveControllerOperationalPolicy(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 12),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 60000),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 2),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 10240),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 300000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 4),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 86400000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 20480),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1024),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_level", variable.TypeString, "debug"),
+	)), variable.ResolverConfig{})
+
+	policy, err := resolveControllerOperationalPolicy(resolver, workingDirectory)
+	if err != nil {
+		t.Fatalf("resolveControllerOperationalPolicy() error = %v", err)
+	}
+
+	if policy.ResolverMaxDepth != 12 {
+		t.Fatalf("resolver max depth = %d, want 12", policy.ResolverMaxDepth)
+	}
+	if policy.CaretakerIntervalScheduleMillis != 60000 || policy.CaretakerMissedIntervalLimit != 2 {
+		t.Fatalf("caretaker policy = %+v", policy)
+	}
+	if policy.GitCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
+		t.Fatalf("git policy = %+v", policy)
+	}
+	if policy.TempCleanupAgeMillis != 86400000 || policy.StorageMinFreeMB != 1024 {
+		t.Fatalf("storage policy = %+v", policy)
+	}
+	if !policy.FilesystemLoggingEnabled {
+		t.Fatal("filesystem logging should be enabled")
+	}
+	if policy.LogRootPath != filepath.Join(workingDirectory, "logs") {
+		t.Fatalf("log root path = %q, want joined working directory", policy.LogRootPath)
+	}
+	if policy.LogLevel != "debug" {
+		t.Fatalf("log level = %q, want debug", policy.LogLevel)
+	}
+}
+
+func TestResolveControllerOperationalPolicyRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "missing",
+			want: "resolver_max_depth",
+		},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeString, "ten"),
+			},
+			want: "resolver_max_depth has type string, want int",
+		},
+		{
+			name: "not positive",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 0),
+			},
+			want: "resolver_max_depth must be greater than zero",
+		},
+		{
+			name: "log level missing",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+			},
+			want: "controller_log_level",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, tt.variables...)), variable.ResolverConfig{})
+			_, err := resolveControllerOperationalPolicy(resolver, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup policy") {
+				t.Fatalf("error = %v, want policy consumer context", err)
+			}
+		})
+	}
+}
+
+func TestResolveControllerHTTPSettings(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "0.0.0.0"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 9090),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_url", variable.TypeString, "http://controller.example"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_read_header_timeout_milliseconds", variable.TypeInt, 1000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_read_timeout_milliseconds", variable.TypeInt, 2000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_write_timeout_milliseconds", variable.TypeInt, 3000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_idle_timeout_milliseconds", variable.TypeInt, 4000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_shutdown_timeout_milliseconds", variable.TypeInt, 5000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_max_request_bytes", variable.TypeInt, 6000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_max_header_bytes", variable.TypeInt, 7000),
+	)), variable.ResolverConfig{})
+
+	settings, err := resolveControllerHTTPSettings(resolver)
+	if err != nil {
+		t.Fatalf("resolveControllerHTTPSettings() error = %v", err)
+	}
+
+	if settings.ListenHost != "0.0.0.0" || settings.ListenPort != 9090 {
+		t.Fatalf("listen settings = %+v", settings)
+	}
+	if settings.AdvertisedURL != "http://controller.example" {
+		t.Fatalf("advertised url = %q, want http://controller.example", settings.AdvertisedURL)
+	}
+	if settings.ReadHeaderTimeoutMillis != 1000 || settings.ReadTimeoutMillis != 2000 {
+		t.Fatalf("read timeouts = %+v", settings)
+	}
+	if settings.WriteTimeoutMillis != 3000 || settings.IdleTimeoutMillis != 4000 {
+		t.Fatalf("write/idle timeouts = %+v", settings)
+	}
+	if settings.ShutdownTimeoutMillis != 5000 {
+		t.Fatalf("shutdown timeout = %d, want 5000", settings.ShutdownTimeoutMillis)
+	}
+	if settings.MaxRequestBytes != 6000 || settings.MaxHeaderBytes != 7000 {
+		t.Fatalf("size limits = %+v", settings)
+	}
+}
+
+func TestResolveControllerHTTPSettingsRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "missing",
+			want: "controller_listen_host",
+		},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeInt, 8080),
+			},
+			want: "controller_listen_host has type int, want string",
+		},
+		{
+			name: "empty string",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, ""),
+			},
+			want: "controller_listen_host is required",
+		},
+		{
+			name: "invalid port",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "localhost"),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 0),
+			},
+			want: "controller_listen_port must be greater than zero",
+		},
+		{
+			name: "missing url",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "localhost"),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 8080),
+			},
+			want: "controller_url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, tt.variables...)), variable.ResolverConfig{})
+			_, err := resolveControllerHTTPSettings(resolver)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup http") {
+				t.Fatalf("error = %v, want HTTP consumer context", err)
+			}
+		})
+	}
+}
 
 func TestNextWorkHandler(t *testing.T) {
 	controller := newTestController()
@@ -165,10 +606,7 @@ func TestCompleteWorkHandler(t *testing.T) {
 
 func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 	assignNextWork(t, controller)
@@ -250,10 +688,7 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 
 func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 
@@ -304,10 +739,7 @@ func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testin
 		t.Fatalf("priorCompletedAttempt() = %+v, %v, %v; want missing nil error", attempt, ok, err)
 	}
 
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 
@@ -874,10 +1306,7 @@ func TestStatusHandlerReportsFailedWork(t *testing.T) {
 
 func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 	controller := newTestController()
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
 	assignNextWork(t, controller)
@@ -1839,6 +2268,103 @@ func TestShutdownHandlerRejectsUnavailableShutdown(t *testing.T) {
 	}
 }
 
+func TestRecoveryModeBlocksNormalAdmission(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{"workflow":{"ID":"cdl"}}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "recovery mode") {
+		t.Fatalf("response body = %q, want recovery-mode context", response.Body.String())
+	}
+}
+
+func TestRecoveryModeBlocksStatusAndShutdown(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/status", nil)
+	statusResp := httptest.NewRecorder()
+	controller.statusHandler(statusResp, statusReq)
+	if statusResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503", statusResp.Code)
+	}
+
+	shutdownReq := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	shutdownResp := httptest.NewRecorder()
+	controller.shutdownHandler(shutdownResp, shutdownReq)
+	if shutdownResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("shutdown code = %d, want 503", shutdownResp.Code)
+	}
+}
+
+func TestRecoveryModeAllowsWorkerReportEndpoints(t *testing.T) {
+	controller := newController(nil)
+	controller.enterRecoveryMode()
+	controller.assigned["test-001"] = model.WorkItem{
+		ID:             "test-001",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result.txt",
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{"id":"test-001"}`))
+	completeResp := httptest.NewRecorder()
+	controller.completeWorkHandler(completeResp, completeReq)
+	if completeResp.Code != http.StatusNoContent {
+		t.Fatalf("complete status = %d, want 204", completeResp.Code)
+	}
+
+	controller.assigned["test-002"] = model.WorkItem{
+		ID:             "test-002",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result-2.txt",
+	}
+	failReq := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-002","error":"boom"}`))
+	failResp := httptest.NewRecorder()
+	controller.failWorkHandler(failResp, failReq)
+	if failResp.Code != http.StatusNoContent {
+		t.Fatalf("fail status = %d, want 204", failResp.Code)
+	}
+}
+
+func TestHealthHandler(t *testing.T) {
+	controller := newController(nil)
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+
+	controller.healthHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+}
+
+func TestEnterRecoveryModeStampsRecoveryStartedAt(t *testing.T) {
+	controller := newController(nil)
+	if !controller.recoveryStartedAt.IsZero() {
+		t.Fatal("new controller should not start with recovery timestamp")
+	}
+
+	before := time.Now().UTC()
+	controller.enterRecoveryMode()
+
+	if controller.normalAdmission {
+		t.Fatal("recovery mode should close normal admission")
+	}
+	if controller.recoveryStartedAt.IsZero() {
+		t.Fatal("recovery timestamp should be set")
+	}
+	if controller.recoveryStartedAt.Before(before) {
+		t.Fatalf("recovery timestamp = %v, want not before %v", controller.recoveryStartedAt, before)
+	}
+}
+
 func newTestController() *Controller {
 	return newController([]model.WorkItem{
 		{
@@ -1871,10 +2397,7 @@ func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkComple
 	t.Helper()
 
 	controller := newController(nil)
-	db, err := initConfiguredLedger(context.Background(), ControllerConfig{Variables: []variable.Variable{{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "ledger_db_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypePath, Expression: filepath.Join(t.TempDir(), "ledger.sqlite")}}}})
-	if err != nil {
-		t.Fatalf("initialize ledger: %v", err)
-	}
+	db := testSQLiteMainDatabase(t)
 	t.Cleanup(func() {
 		db.Close()
 	})
