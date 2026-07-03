@@ -108,6 +108,22 @@ Plaintext secret material is never persisted in the workflow database.
   canonical inputs and computes provenance just in time. Future debug logging may
   record redacted provenance, but normal durable workflow state does not store a
   separate provenance document.
+- Fingerprints are content-addressed semantic identities. GitHub repository,
+  commit SHA, and path are source locators used to retrieve or audit known-valid
+  copies of canonical documents; they are not the primary semantic identity of
+  those documents. The project fingerprint is the canonical hash of
+  `project.json`; the workflow fingerprint is the canonical hash of
+  `workflow.json`. Many Git commits may contain the same valid file content; the
+  content hash defines what was used, while the recorded commit/path identifies
+  one known source location where that content was obtained.
+- Work-item and result fingerprints compose semantic hashes. A work-item
+  fingerprint should include the controller version, plugin version, project
+  configuration hash, workflow configuration hash, resolved input-variable hash,
+  declared or resolved output-variable hash where applicable, and the relevant
+  pre-state hash for external file/system state. A completion/result fingerprint
+  should include the work-item fingerprint plus output-variable hash and
+  post-state hash. Controller and plugin versions may themselves be represented
+  by Git commit SHAs or other immutable code-version identifiers.
 
 ## Goals
 
@@ -136,6 +152,8 @@ Plaintext secret material is never persisted in the workflow database.
   identity.
 - Compute provenance just in time from canonical resolver inputs when diagnostics
   or debugging require it, without persisting provenance as normal durable state.
+- Use content hashes, not source locations, as semantic fingerprints for project,
+  workflow, work-item, and result identity.
 - Keep variable expression evaluation inside the variable subsystem while
   keeping workflow lifecycle, assignment lifecycle, database transactions, and
   persistence inside the controller.
@@ -267,6 +285,41 @@ events. Such logs are diagnostic artifacts, not required inputs for replaying or
 continuing a workflow. Secret values must never appear in provenance output; at
 most, provenance may identify the redacted source reference that was used.
 
+## Fingerprint Model
+
+Fingerprints identify semantic content, not merely where that content was found.
+Repository, commit SHA, and path are still recorded because they provide a known
+valid source location for reload, restart, and audit, but they are locators rather
+than the primary semantic identity.
+
+The project fingerprint is the canonical hash of `project.json`. The workflow
+fingerprint is the canonical hash of `workflow.json`. If the same canonical file
+content appears in multiple Git commits, the fingerprint remains the same even
+though the recorded locator may differ.
+
+Work-item fingerprints compose the semantic inputs that define the logical unit
+of work. They should include, as applicable:
+
+- controller version;
+- plugin version;
+- project configuration hash;
+- workflow configuration hash;
+- resolved input-variable hash;
+- declared or resolved output-variable hash;
+- pre-state hash for plugin-defined external file/system state.
+
+Completion or result fingerprints compose the work-item fingerprint with the
+observed result:
+
+- work-item fingerprint;
+- output-variable hash;
+- post-state hash for plugin-defined external file/system state.
+
+Controller and plugin versions may be represented by Git commit SHAs or another
+immutable code-version identifier. Unlike project/workflow source commit SHAs,
+these code-version identifiers participate in semantic identity because changing
+controller or plugin code may change compilation or execution behavior.
+
 ## Minimum First Implementation
 
 The first implementation should prove the compilation boundary without requiring
@@ -322,6 +375,8 @@ compiled work item       = self-contained logical execution payload
 assignment finalization  = worker-specific binding and secret materialization
 workflow instance        = retained run basis for future compilation
 workflow definition      = authoritative source for future expressions
+fingerprints             = content-addressed semantic identities
+source commit/path       = source locator for a known-valid copy
 provenance               = reconstructed explanation, not durable state
 resolver                 = discarded evaluation object
 ```
@@ -520,20 +575,26 @@ Teach resolver reconstruction to optionally compute redacted provenance from
 canonical lifecycle inputs for debugging or diagnostics without adding normal
 persistent provenance records.
 
-### 008 Capture Resolved Input Snapshots
+### 008 Define Content-Addressed Fingerprints
+
+Define and test project, workflow, work-item, input, output, and result
+fingerprints as canonical content hashes. Source repository, commit SHA, and path
+remain locators for known-valid copies rather than primary semantic identities.
+
+### 009 Capture Resolved Input Snapshots
 
 Persist or otherwise expose resolved values consumed by compiled work and
 assignment finalization according to the agreed redaction and fingerprint policy.
 Provenance remains reconstructable unless a later debug/audit mode explicitly
 logs it.
 
-### 009 Add Idempotent Compilation Markers
+### 010 Add Idempotent Compilation Markers
 
 Define and test the marker that prevents the same stage from being compiled and
 published twice after retry, duplicate completion handling, or controller
 restart.
 
-### 010 Align Existing Dependency-Aware Workflow Epic
+### 011 Align Existing Dependency-Aware Workflow Epic
 
 Update `dependency-aware-workflows/README.md` so it delegates compilation details
 to this epic and focuses on dependency graph normalization, readiness, step
@@ -543,51 +604,49 @@ state, outputs, and downstream activation.
 
 1. What exact provenance shape should the resolver compute just in time to
    explain precedence without leaking sensitive values?
-2. Which resolved values participate in workflow, step, work-item, input,
-   output, assignment, and code-version fingerprints?
-3. Should compilation produce work items directly, or should it first produce an
+2. Should compilation produce work items directly, or should it first produce an
    intermediate compiled-stage representation that persistence later publishes?
-4. Does fan-out expansion belong inside the shared compilation operation, or is
+3. Does fan-out expansion belong inside the shared compilation operation, or is
    fan-out a separate compiler phase that consumes a resolver?
-5. What is the exact typed output shape made available from predecessor steps?
-6. What namespace exposes predecessor outputs to downstream expressions?
-7. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
+4. What is the exact typed output shape made available from predecessor steps?
+5. What namespace exposes predecessor outputs to downstream expressions?
+6. Are predecessor outputs read as `workflow.step[index]`, a generated runtime
    scope, a workflow read-only scope, or another typed scope?
-8. What happens when a downstream expression references a future or unavailable
+7. What happens when a downstream expression references a future or unavailable
    step output?
-9. Should empty fan-out create no work item and immediately complete the stage,
+8. Should empty fan-out create no work item and immediately complete the stage,
    or create a deterministic skipped/no-op work item?
-10. Which stage-level or step-level values may be recomputed during Case 3, and
-    which must come only from the Case 2 run snapshot?
-11. How should protected sensitive values captured at Case 2 be materialized for
+9. Which stage-level or step-level values may be recomputed during Case 3, and
+   which must come only from the Case 2 run snapshot?
+10. How should protected sensitive values captured at Case 2 be materialized for
     Case 2.5 or Case 3 without persisting plaintext?
-12. Should compilation be allowed to read current controller operational metrics,
+11. Should compilation be allowed to read current controller operational metrics,
     or must those remain outside workflow semantics unless explicitly captured?
-13. What is the boundary between compilation, assignment resolution, and database
+12. What is the boundary between compilation, assignment resolution, and database
     transaction ownership?
-14. Can the shared lifecycle context builder be pure/in-memory, with callers
+13. Can the shared lifecycle context builder be pure/in-memory, with callers
     responsible for loading and persisting state?
-15. How should compilation or assignment-resolution failures be represented:
+14. How should compilation or assignment-resolution failures be represented:
     submission rejection, blocked run, failed stage, failed assignment, or
     retryable controller error?
-16. Can a ready-stage compilation be retried safely after a crash before its
+15. Can a ready-stage compilation be retried safely after a crash before its
     transaction commits?
-17. What idempotency key uniquely identifies an already-compiled stage?
-18. How should compilation versioning and schema evolution be recorded so older
+16. What idempotency key uniquely identifies an already-compiled stage?
+17. How should compilation versioning and schema evolution be recorded so older
     runs remain explainable?
-19. Which pieces of compiled work and assignment finalization are immutable after
+18. Which pieces of compiled work and assignment finalization are immutable after
     publication?
-20. Can any compilation or assignment artifacts be cached, and if so what is the
+19. Can any compilation or assignment artifacts be cached, and if so what is the
     cache key and eviction policy?
-21. How much of the existing `internal/workflow` compiler should be reused versus
+20. How much of the existing `internal/workflow` compiler should be reused versus
     wrapped by a controller-side compilation boundary?
-22. What is the eventual boundary for plugin-provided compile-time behavior, if
+21. What is the eventual boundary for plugin-provided compile-time behavior, if
     plugins need to contribute declared outputs, package references, parameter
     schemas, or secret requirements?
-23. How should this epic divide responsibilities with
+22. How should this epic divide responsibilities with
     `workflow-execution-persistence` so neither document owns the same durable
     state twice?
-24. Should `dependency-aware-workflows` be revised immediately after this epic is
+23. Should `dependency-aware-workflows` be revised immediately after this epic is
     accepted, or after the first implementation slice proves the boundary?
 
 ## Completion Criteria
@@ -601,6 +660,12 @@ state, outputs, and downstream activation.
   persisted object.
 - Provenance is treated as a reconstructable explanation computed from canonical
   inputs, not as normal durable workflow state.
+- Fingerprints are content-addressed semantic identities; GitHub source
+  references are locators for known-valid copies.
+- Project and workflow fingerprints are canonical JSON hashes.
+- Work-item and result fingerprints compose controller/plugin versions,
+  project/workflow hashes, input/output variable hashes, and pre/post external
+  state hashes as applicable.
 - The authoritative resolver reconstruction inputs are defined for Case 1, Case
   2, Case 2.5, and Case 3.
 - The minimum first implementation publishes only initially ready work and keeps
