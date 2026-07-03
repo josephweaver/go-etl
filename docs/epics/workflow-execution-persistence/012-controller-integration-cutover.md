@@ -69,6 +69,7 @@ Recommended sequence:
 012c Persistence-backed Raw Work Submission
 012d Persistence-backed Work Claim Endpoint
 012e Persistence-backed Completion/Failure Endpoints
+012e2 Worker-observed Skip Evidence
 012f Remove In-Memory Queue Authority
 ```
 
@@ -184,6 +185,31 @@ Open issue:
 - Current worker completion payloads were designed for the old ledger path.
   The endpoint contract must carry or derive attempt ID, output JSON/hash,
   pre-state hash, post-state hash, and terminal timestamp.
+
+## 012e2 Candidate: Worker-observed Skip Evidence
+
+Revise the completion contract so workers can report observed input/output and
+state hashes, mark an attempt as skipped, and point to the prior completed
+attempt that made the local skip safe.
+
+Acceptance criteria:
+
+- Workers can use the shared `internal/fingerprint` helper boundary.
+- Completion reports can carry worker-observed input, output, pre-state, and
+  post-state hashes.
+- Completion reports can mark `skipped=true`, carry `skipped_parent_id`, and
+  include a skip reason.
+- Persisted skipped reports remain completed terminal attempts rather than
+  failures.
+- `/work/next` can include prior completed attempt candidates selected by a
+  composite execution fingerprint.
+
+Open issue:
+
+- The exact definitions of `controller_sha256`, `plugin_sha256`,
+  `input_sha256`, and `output_sha256` must be tightened before implementation.
+- The persistence schema may need explicit columns for worker-observed input
+  and output hashes rather than hiding them in `output_json`.
 
 ## 012f Candidate: Remove In-Memory Queue Authority
 
