@@ -707,18 +707,88 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 		return ClaimedWorkRecord{}, false, err
 	}
 
-	var workItemID string
-	err := s.db.QueryRowContext(ctx, `SELECT work_item_id
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("begin claim next work: %w", err)
+	}
+	defer tx.Rollback()
+
+	queued, err := scanQueuedWork(tx.QueryRowContext(ctx, `SELECT
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		queued_work.queued_at
 	FROM queued_work
-	ORDER BY queued_at, work_item_id
-	LIMIT 1`).Scan(&workItemID)
+	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
+	ORDER BY queued_work.queued_at, queued_work.work_item_id
+	LIMIT 1`))
 	if err == sql.ErrNoRows {
 		return ClaimedWorkRecord{}, false, nil
 	}
 	if err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work: %w", err)
 	}
-	return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work transition is not implemented")
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_attempts (
+		attempt_id,
+		work_item_id,
+		worker_id,
+		executor_type,
+		started_at
+	) VALUES (?, ?, ?, ?, ?)`,
+		request.AttemptID,
+		queued.ID,
+		nullString(request.WorkerID),
+		request.ExecutorType,
+		request.StartedAt,
+	); err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("insert work item attempt %s: %w", request.AttemptID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO running_work (
+		attempt_id,
+		work_item_id,
+		worker_id,
+		queued_at,
+		started_at
+	) VALUES (?, ?, ?, ?, ?)`,
+		request.AttemptID,
+		queued.ID,
+		nullString(request.WorkerID),
+		queued.QueuedAt,
+		request.StartedAt,
+	); err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("insert running work %s: %w", request.AttemptID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_work WHERE work_item_id = ?`, queued.ID)
+	if err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("delete queued work %s: %w", queued.ID, err)
+	}
+	deleted, err := rowsAffected(result)
+	if err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("delete queued work %s: %w", queued.ID, err)
+	}
+	if !deleted {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("delete queued work %s: no row deleted", queued.ID)
+	}
+
+	claimed := ClaimedWorkRecord{
+		AttemptID:    request.AttemptID,
+		WorkItem:     queued.WorkItemRecord,
+		WorkerID:     request.WorkerID,
+		ExecutorType: request.ExecutorType,
+		QueuedAt:     queued.QueuedAt,
+		StartedAt:    request.StartedAt,
+	}
+	if err := tx.Commit(); err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("commit claim next work: %w", err)
+	}
+	return claimed, true, nil
 }
 
 type queryer interface {

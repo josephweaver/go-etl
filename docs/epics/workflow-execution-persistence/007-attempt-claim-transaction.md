@@ -116,3 +116,6 @@ atoms in one cycle.
 - The third Review Atom adds the `ClaimNextWork` method boundary, including
   request validation and an empty-queue no-work result, without adding the
   successful queue-to-running transition.
+- The fourth Review Atom implements the successful claim transition for one
+  queued row: insert attempt, insert running placement with copied `queued_at`,
+  delete queue placement, commit, then return the claimed payload.

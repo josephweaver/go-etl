@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -743,6 +744,92 @@ func TestStoreClaimNextWorkValidatesRequest(t *testing.T) {
 	}
 }
 
+func TestStoreClaimNextWorkClaimsOldestQueuedWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 0)
+	older := testWorkItemRecord("work-older", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{newer, older}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{
+		{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+		{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+	}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	request := testClaimWorkRequest()
+
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+	if claimed.AttemptID != request.AttemptID {
+		t.Fatalf("attempt id = %q, want %q", claimed.AttemptID, request.AttemptID)
+	}
+	if claimed.WorkItem != older {
+		t.Fatalf("claimed work item = %+v, want %+v", claimed.WorkItem, older)
+	}
+	if claimed.WorkerID != request.WorkerID {
+		t.Fatalf("worker id = %q, want %q", claimed.WorkerID, request.WorkerID)
+	}
+	if claimed.ExecutorType != request.ExecutorType {
+		t.Fatalf("executor type = %q, want %q", claimed.ExecutorType, request.ExecutorType)
+	}
+	if claimed.QueuedAt != "2026-07-03T00:00:01Z" {
+		t.Fatalf("queued at = %q, want oldest queued_at", claimed.QueuedAt)
+	}
+	if claimed.StartedAt != request.StartedAt {
+		t.Fatalf("started at = %q, want %q", claimed.StartedAt, request.StartedAt)
+	}
+
+	assertQueuedWorkMissing(t, ctx, store, older.ID)
+	assertRunningWork(t, ctx, store, request.AttemptID, older.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
+	assertAttempt(t, ctx, store, request.AttemptID, older.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+
+	remaining, err := store.ListQueuedWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != newer.ID {
+		t.Fatalf("remaining queued work = %+v, want only newer", remaining)
+	}
+}
+
+func TestStoreClaimNextWorkUsesWorkItemIDTieBreak(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	bWork := testWorkItemRecord("work-b", run.ID, 0, 0)
+	aWork := testWorkItemRecord("work-a", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{bWork, aWork}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{
+		{WorkItemRecord: bWork, QueuedAt: "2026-07-03T00:00:00Z"},
+		{WorkItemRecord: aWork, QueuedAt: "2026-07-03T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+
+	claimed, found, err := store.ClaimNextWork(ctx, testClaimWorkRequest())
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+	if claimed.WorkItem.ID != aWork.ID {
+		t.Fatalf("claimed work item id = %q, want %q", claimed.WorkItem.ID, aWork.ID)
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -843,6 +930,78 @@ func testClaimWorkRequest() ClaimWorkRequest {
 		AttemptID:    "attempt-001",
 		ExecutorType: ExecutorTypeWorker,
 		StartedAt:    "2026-07-03T00:00:00Z",
+	}
+}
+
+func assertQueuedWorkMissing(t *testing.T, ctx context.Context, store *Store, workItemID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_work WHERE work_item_id = ?`, workItemID).Scan(&count); err != nil {
+		t.Fatalf("count queued work: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("queued work count = %d, want 0", count)
+	}
+}
+
+func assertRunningWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string, workerID string, queuedAt string, startedAt string) {
+	t.Helper()
+
+	var gotWorkItemID string
+	var gotWorkerID sql.NullString
+	var gotQueuedAt string
+	var gotStartedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		worker_id,
+		queued_at,
+		started_at
+	FROM running_work
+	WHERE attempt_id = ?`, attemptID).Scan(&gotWorkItemID, &gotWorkerID, &gotQueuedAt, &gotStartedAt); err != nil {
+		t.Fatalf("query running work: %v", err)
+	}
+	if gotWorkItemID != workItemID {
+		t.Fatalf("running work item id = %q, want %q", gotWorkItemID, workItemID)
+	}
+	if gotWorkerID.String != workerID {
+		t.Fatalf("running worker id = %q, want %q", gotWorkerID.String, workerID)
+	}
+	if gotQueuedAt != queuedAt {
+		t.Fatalf("running queued at = %q, want %q", gotQueuedAt, queuedAt)
+	}
+	if gotStartedAt != startedAt {
+		t.Fatalf("running started at = %q, want %q", gotStartedAt, startedAt)
+	}
+}
+
+func assertAttempt(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string, workerID string, executorType string, startedAt string) {
+	t.Helper()
+
+	var gotWorkItemID string
+	var gotWorkerID sql.NullString
+	var gotExecutorType string
+	var gotStartedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		worker_id,
+		executor_type,
+		started_at
+	FROM work_item_attempts
+	WHERE attempt_id = ?`, attemptID).Scan(&gotWorkItemID, &gotWorkerID, &gotExecutorType, &gotStartedAt); err != nil {
+		t.Fatalf("query attempt: %v", err)
+	}
+	if gotWorkItemID != workItemID {
+		t.Fatalf("attempt work item id = %q, want %q", gotWorkItemID, workItemID)
+	}
+	if gotWorkerID.String != workerID {
+		t.Fatalf("attempt worker id = %q, want %q", gotWorkerID.String, workerID)
+	}
+	if gotExecutorType != executorType {
+		t.Fatalf("attempt executor type = %q, want %q", gotExecutorType, executorType)
+	}
+	if gotStartedAt != startedAt {
+		t.Fatalf("attempt started at = %q, want %q", gotStartedAt, startedAt)
 	}
 }
 
