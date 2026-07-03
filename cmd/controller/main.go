@@ -77,6 +77,19 @@ type controllerOperationalPolicy struct {
 	LogLevel                        string
 }
 
+type controllerHTTPSettings struct {
+	ListenHost              string
+	ListenPort              int
+	AdvertisedURL           string
+	ReadHeaderTimeoutMillis int
+	ReadTimeoutMillis       int
+	WriteTimeoutMillis      int
+	IdleTimeoutMillis       int
+	ShutdownTimeoutMillis   int
+	MaxRequestBytes         int
+	MaxHeaderBytes          int
+}
+
 func newController(items []model.WorkItem) *Controller {
 	return &Controller{
 		pending:  items,
@@ -142,6 +155,11 @@ func main() {
 		fmt.Println("controller policy failed:", err)
 		return
 	}
+	httpSettings, err := resolveControllerHTTPSettings(resolver)
+	if err != nil {
+		fmt.Println("controller http failed:", err)
+		return
+	}
 
 	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
 	if err != nil {
@@ -154,7 +172,15 @@ func main() {
 	controller.env = executionEnvironment
 
 	mux := http.NewServeMux()
-	server := &http.Server{Addr: ":8080", Handler: mux}
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", httpSettings.ListenHost, httpSettings.ListenPort),
+		Handler:           mux,
+		ReadHeaderTimeout: time.Duration(httpSettings.ReadHeaderTimeoutMillis) * time.Millisecond,
+		ReadTimeout:       time.Duration(httpSettings.ReadTimeoutMillis) * time.Millisecond,
+		WriteTimeout:      time.Duration(httpSettings.WriteTimeoutMillis) * time.Millisecond,
+		IdleTimeout:       time.Duration(httpSettings.IdleTimeoutMillis) * time.Millisecond,
+		MaxHeaderBytes:    httpSettings.MaxHeaderBytes,
+	}
 	controller.shutdown = server.Shutdown
 
 	mux.HandleFunc("/work/next", controller.nextWorkHandler)
@@ -165,7 +191,7 @@ func main() {
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
 
-	fmt.Println("controller listening on :8080")
+	fmt.Println("controller listening on", server.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println("controller failed:", err)
 	}
@@ -476,6 +502,44 @@ func resolveControllerOperationalPolicy(resolver variable.Resolver, workingDirec
 	}
 
 	return policy, nil
+}
+
+func resolveControllerHTTPSettings(resolver variable.Resolver) (controllerHTTPSettings, error) {
+	settings := controllerHTTPSettings{}
+
+	var err error
+	if settings.ListenHost, err = resolveStringPolicy(resolver, "controller_listen_host", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ListenPort, err = resolvePositiveIntPolicy(resolver, "controller_listen_port", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.AdvertisedURL, err = resolveStringPolicy(resolver, "controller_url", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ReadHeaderTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_read_header_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ReadTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_read_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.WriteTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_write_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.IdleTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_idle_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.ShutdownTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_shutdown_timeout_milliseconds", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.MaxRequestBytes, err = resolvePositiveIntPolicy(resolver, "controller_max_request_bytes", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+	if settings.MaxHeaderBytes, err = resolvePositiveIntPolicy(resolver, "controller_max_header_bytes", "controller startup http"); err != nil {
+		return controllerHTTPSettings{}, err
+	}
+
+	return settings, nil
 }
 
 func resolvePositiveIntPolicy(resolver variable.Resolver, key string, consumer string) (int, error) {

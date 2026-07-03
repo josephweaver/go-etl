@@ -259,6 +259,12 @@ and log root/level values. The values are validated and normalized for later
 constructors but are not yet used to build the cache, caretaker, or logger
 services.
 
+The controller startup path now also resolves the HTTP listen host, listen
+port, advertised URL, timeout, and request-size/header-size settings before
+constructing the HTTP server. The resolved settings are validated as the
+startup HTTP contract and are used to configure the listener address and HTTP
+server timeouts and limits.
+
 The demo client starts the controller with:
 
 ```powershell

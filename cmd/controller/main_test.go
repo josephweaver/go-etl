@@ -209,6 +209,101 @@ func TestResolveControllerOperationalPolicyRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestResolveControllerHTTPSettings(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "0.0.0.0"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 9090),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_url", variable.TypeString, "http://controller.example"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_read_header_timeout_milliseconds", variable.TypeInt, 1000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_read_timeout_milliseconds", variable.TypeInt, 2000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_write_timeout_milliseconds", variable.TypeInt, 3000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_idle_timeout_milliseconds", variable.TypeInt, 4000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_shutdown_timeout_milliseconds", variable.TypeInt, 5000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_max_request_bytes", variable.TypeInt, 6000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_max_header_bytes", variable.TypeInt, 7000),
+	)), variable.ResolverConfig{})
+
+	settings, err := resolveControllerHTTPSettings(resolver)
+	if err != nil {
+		t.Fatalf("resolveControllerHTTPSettings() error = %v", err)
+	}
+
+	if settings.ListenHost != "0.0.0.0" || settings.ListenPort != 9090 {
+		t.Fatalf("listen settings = %+v", settings)
+	}
+	if settings.AdvertisedURL != "http://controller.example" {
+		t.Fatalf("advertised url = %q, want http://controller.example", settings.AdvertisedURL)
+	}
+	if settings.ReadHeaderTimeoutMillis != 1000 || settings.ReadTimeoutMillis != 2000 {
+		t.Fatalf("read timeouts = %+v", settings)
+	}
+	if settings.WriteTimeoutMillis != 3000 || settings.IdleTimeoutMillis != 4000 {
+		t.Fatalf("write/idle timeouts = %+v", settings)
+	}
+	if settings.ShutdownTimeoutMillis != 5000 {
+		t.Fatalf("shutdown timeout = %d, want 5000", settings.ShutdownTimeoutMillis)
+	}
+	if settings.MaxRequestBytes != 6000 || settings.MaxHeaderBytes != 7000 {
+		t.Fatalf("size limits = %+v", settings)
+	}
+}
+
+func TestResolveControllerHTTPSettingsRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "missing",
+			want: "controller_listen_host",
+		},
+		{
+			name: "wrong type",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeInt, 8080),
+			},
+			want: "controller_listen_host has type int, want string",
+		},
+		{
+			name: "empty string",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, ""),
+			},
+			want: "controller_listen_host is required",
+		},
+		{
+			name: "invalid port",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "localhost"),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 0),
+			},
+			want: "controller_listen_port must be greater than zero",
+		},
+		{
+			name: "missing url",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_host", variable.TypeString, "localhost"),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_listen_port", variable.TypeInt, 8080),
+			},
+			want: "controller_url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, tt.variables...)), variable.ResolverConfig{})
+			_, err := resolveControllerHTTPSettings(resolver)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !strings.Contains(err.Error(), "controller startup http") {
+				t.Fatalf("error = %v, want HTTP consumer context", err)
+			}
+		})
+	}
+}
+
 func TestNextWorkHandler(t *testing.T) {
 	controller := newTestController()
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
