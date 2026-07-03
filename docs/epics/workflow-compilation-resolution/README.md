@@ -4,15 +4,17 @@ Status: Proposed
 
 ## Purpose
 
-Define how the controller compiles workflow work using short-lived, stateless
-variable resolvers while retaining the durable source data, resolver recipes,
-resolved snapshots, and compilation outputs needed for later stages, retries,
-audit, and controller restart.
+Define how the controller compiles workflow work and finalizes assignment-time
+work using short-lived, stateless variable resolvers while retaining the durable
+source data, resolver recipes, resolved snapshots, and compilation outputs needed
+for later stages, retries, audit, heterogeneous workers, and controller restart.
 
-This epic owns the compilation-resolution boundary for submitted workflows and
-later ready steps. It turns workflow definitions, project/configuration scopes,
-submission overrides, generated runtime values, predecessor outputs, step
-bindings, and work-item bindings into concrete compiled work artifacts.
+This epic owns the compilation-resolution boundary for submitted workflows,
+later ready steps, and assignment-scoped finalization. It turns workflow
+definitions, project/configuration scopes, submission overrides, generated
+runtime values, predecessor outputs, step bindings, work-item bindings,
+assignment bindings, worker capabilities, and approved secret references into
+concrete compiled work and assignment artifacts.
 
 The key rule is:
 
@@ -22,6 +24,11 @@ Case 2 workflow submission and Case 3 ready-step compilation should be
 remarkably similar. They should share resolver recipe construction, scope
 assembly, validation, provenance capture, fingerprinting, and compiled artifact
 publication wherever their lifecycle inputs overlap.
+
+Case 2.5 assignment-time resolution adapts a compiled logical work item to a
+specific worker assignment. It may resolve assignment-scoped values such as
+worker-local paths, worker capabilities, lease metadata, and approved secrets.
+Plaintext secret material is never persisted in the workflow database.
 
 ## Decisions
 
@@ -38,31 +45,40 @@ publication wherever their lifecycle inputs overlap.
   Case 1 startup uses `defaults.json`, the controller environment,
   `controller.json`, and caller/client overrides. Case 2 workflow submission uses
   the Case 1 exportable inputs plus `workflow.json`, `project.json`, and
-  generated runtime records. Case 3 ready-step compilation uses the Case 2 run
-  basis plus worker-produced step `output_json` records. Given the recorded
-  source identities and runtime records for the relevant case, variable
-  resolution must be deterministic.
+  generated runtime records. Case 2.5 assignment-time resolution uses the
+  compiled work item, current assignment/attempt identity, selected worker
+  identity/capabilities, controller secret source, and approved secret
+  references. Case 3 ready-step compilation uses the Case 2 run basis plus
+  worker-produced step `output_json` records. Given the recorded source
+  identities and runtime records for the relevant case, variable resolution must
+  be deterministic within that lifecycle boundary.
 - Persistence stores exactly the durable references and records needed to
   reconstruct each resolver case. For Case 2 this includes `workflow.json` and
   `project.json` source identity, including GitHub repository, commit SHA, and
-  repository-relative path, plus runtime records. For Case 3 this additionally
-  includes completed step `output_json` records. Client environment and client
-  configuration may be added later, but are currently empty inputs.
+  repository-relative path, plus runtime records. For Case 2.5 this includes the
+  compiled work item, assignment/attempt identity, allowed secret references, and
+  any durable worker identity or capability records required for assignment
+  finalization; it does not include plaintext secrets. For Case 3 this
+  additionally includes completed step `output_json` records. Client environment
+  and client configuration may be added later, but are currently empty inputs.
 - The minimum first implementation should compile and persist only the initially
   ready stage, while preserving the run basis needed for later Case 3
   compilations. On `submit workflow`, the controller receives project/workflow
   references, resolves them through the configured GitHub cache/source-of-truth,
   loads `project.json` and `workflow.json`, assembles the Case 2 resolver from
   persisted startup configuration plus project/workflow/runtime inputs, and
-  compiles stage 0. Any unresolved variable in a compiled work item is an error.
-  Once stage 0 work items are persisted, the resolver is discarded.
-- A compiled work item is the persisted self-contained execution payload for a
-  worker. It must contain concrete resolved inputs needed for execution and must
-  not require the worker to reread controller, project, or workflow
-  configuration. The workflow instance remains the durable continuation record:
-  it keeps the project/workflow GitHub repository, commit SHA, path, runtime
-  records, and later step outputs needed to rebuild a resolver for stage 1 and
-  later Case 3 compilations.
+  compiles stage 0. Any unresolved non-secret logical variable in a compiled work
+  item is an error. Once stage 0 work items are persisted, the resolver is
+  discarded.
+- A compiled work item is the persisted self-contained logical execution payload
+  for a worker. It must contain concrete resolved non-secret inputs needed for
+  execution and must not require the worker to reread controller, project, or
+  workflow configuration. Secret-bearing inputs are represented as approved
+  secret references or required-secret declarations, not plaintext values. The
+  workflow instance remains the durable continuation record: it keeps the
+  project/workflow GitHub repository, commit SHA, path, runtime records, and
+  later step outputs needed to rebuild a resolver for stage 1 and later Case 3
+  compilations.
 - Case 2 does not persist extracted source expressions for future stages as a
   separate expression store. The workflow instance retains the authoritative
   workflow definition identity, including GitHub repository, commit SHA, and
@@ -70,6 +86,19 @@ publication wherever their lifecycle inputs overlap.
   authoritative workflow definition, optionally through a normalized workflow
   representation derived from that definition. The normalized representation is
   derived compiler state, not a second expression source of truth.
+- Assignment-time secret access is assignment-scoped. A worker may request a
+  declared secret through an endpoint such as
+  `/assignments/{assignment_id}/secrets/{name}`. The controller must authorize
+  that the requested secret name belongs to the assigned work item and that the
+  assignment/attempt is current. Secret access closes when the assignment,
+  attempt, or lease is no longer valid. Secret access metadata may be logged, but
+  secret values must not be persisted, returned through status, or included in
+  diagnostics.
+- Case 2.5 should be broader than secrets. It is the lifecycle boundary that
+  binds logical work to a concrete worker assignment. This matters for
+  heterogeneous workers: assignment-time resolution may depend on selected worker
+  capabilities, mounted paths, scratch directories, GPUs, local environment,
+  lease/attempt identity, and other values unavailable at workflow compilation.
 
 ## Goals
 
@@ -78,25 +107,33 @@ publication wherever their lifecycle inputs overlap.
 - Treat Case 2 workflow submission and Case 3 ready-step compilation as two
   lifecycle events using the same compilation model with different available
   scopes.
-- Reuse code between Case 2 and Case 3 wherever practical, especially for
-  resolver recipe construction, scope assembly, required-variable access,
-  provenance capture, fingerprint construction, and compiled-work publication.
+- Define Case 2.5 assignment-time resolution for adapting compiled logical work
+  to a specific worker assignment.
+- Reuse code between Case 2, Case 2.5, and Case 3 wherever practical, especially
+  for resolver recipe construction, scope assembly, required-variable access,
+  provenance capture, fingerprint construction, and artifact publication.
 - Retain immutable workflow-run context rather than retaining a long-running
   resolver or accumulating workflow scopes in global controller state.
-- Persist enough resolver input data to reconstruct later compilation decisions
-  after predecessor completion or controller restart.
+- Persist enough resolver input data to reconstruct later compilation and
+  assignment decisions after predecessor completion, worker assignment, or
+  controller restart.
 - Compile only the work that is ready for the current lifecycle boundary.
-- Resolve worker-facing parameters before publishing work items whenever the
-  required values are known at compilation time.
+- Resolve worker-facing non-secret logical parameters before publishing work
+  items whenever the required values are known at compilation time.
+- Preserve approved secret references during compilation and materialize
+  plaintext secrets only through an assignment-scoped boundary.
+- Support heterogeneous workers by allowing assignment-time values to depend on
+  the selected worker, worker capabilities, worker-local paths, and assignment
+  identity.
 - Capture resolved input snapshots and provenance for compiled work so errors,
   status output, fingerprints, and audit can explain which inputs were used.
 - Keep variable expression evaluation inside the variable subsystem while
-  keeping workflow lifecycle, database transactions, and persistence inside the
-  controller.
+  keeping workflow lifecycle, assignment lifecycle, database transactions, and
+  persistence inside the controller.
 - Support dependency-aware workflow execution by giving it a clean operation to
   call when a stage becomes ready.
-- Preserve workflow-instance, step-instance, work-item, and runtime identities
-  through compiled artifacts and attempt metadata.
+- Preserve workflow-instance, step-instance, work-item, attempt, assignment, and
+  runtime identities through compiled artifacts and assignment metadata.
 
 ## Non-Goals
 
@@ -105,7 +142,7 @@ publication wherever their lifecycle inputs overlap.
 - Defining dependencies between complete workflows.
 - Letting workers evaluate workflow expressions independently.
 - Making `variable.Resolver` aware of databases, workflows, controller state,
-  step lifecycle, or workers.
+  step lifecycle, assignments, secrets, or workers.
 - Designing arbitrary conditional branching, loops, or a general workflow
   programming language.
 - Implementing resource-capacity admission control.
@@ -115,6 +152,8 @@ publication wherever their lifecycle inputs overlap.
 - Implementing every persistence and restart guarantee in the first slice.
 - Designing plugin package management, Python environments, or worker artifact
   packaging except where compiled work must reference already-agreed artifacts.
+- Defining a final secret-provider implementation beyond the assignment-scoped
+  boundary and no-plaintext-persistence rule.
 
 ## Architectural Context
 
@@ -128,15 +167,16 @@ queue. That creates two related problems:
    later steps just in time.
 
 The target model separates durable lifecycle state from ephemeral resolution. A
-resolver is built for one named compilation event, resolves the required values,
-produces validated outputs, and is discarded. The controller persists or retains
-the source scopes, generated runtime scopes, resolved snapshots, provenance,
-fingerprints, and compiled artifacts needed for later decisions.
+resolver is built for one named compilation or assignment event, resolves the
+required values, produces validated outputs, and is discarded. The controller
+persists or retains the source scopes, generated runtime scopes, resolved
+snapshots, provenance, fingerprints, secret references, and compiled artifacts
+needed for later decisions.
 
 Conceptually:
 
 ```text
-durable records / immutable cached definitions
+durable records / immutable cached definitions / assignment state
               |
               v
        assemble lifecycle scopes
@@ -154,7 +194,7 @@ durable records / immutable cached definitions
  resolve required values and capture provenance
               |
               v
- validate and persist compiled artifact
+ validate and persist/return lifecycle artifact
               |
               v
         discard resolver
@@ -164,7 +204,8 @@ The variable package remains responsible for typed expression evaluation,
 precedence lookup, recursion limits, cycle detection, interpolation, and
 accessors. The controller remains responsible for deciding which scopes apply,
 when a lifecycle event occurs, which values must be resolved, what transaction
-publishes the compiled work, and which durable records are required for restart.
+publishes compiled work or assignment state, and which durable records are
+required for restart.
 
 ## Authoritative Resolver Reconstruction Inputs
 
@@ -176,12 +217,19 @@ resolve the required values, and discard the resolver.
 |---|---|---|
 | Case 1 | Controller startup | `defaults.json`, controller environment, `controller.json`, and caller/client overrides. |
 | Case 2 | Workflow submission compilation | Case 1 exportable inputs plus `workflow.json`, `project.json`, and generated runtime records. |
+| Case 2.5 | Assignment-time resolution | Compiled work item, assignment/attempt identity, selected worker identity/capabilities, assignment runtime values, approved secret references, and controller secret source. |
 | Case 3 | Ready-step compilation | Case 2 run basis plus completed worker-produced step `output_json` records. |
 
 For Case 2, persistence must record the workflow and project source identities:
 GitHub repository, resolved commit SHA, repository-relative path, and any
 fingerprint/hash required by the persistence design. It must also record the
 runtime records needed to recreate the run basis.
+
+For Case 2.5, persistence must record the compiled work item and the assignment
+or attempt identity. It may record durable worker identity/capability facts
+needed to explain assignment decisions. It records secret references and required
+secret names, not plaintext secret material. Plaintext secrets are materialized
+from the controller secret source only for the current assignment boundary.
 
 For Case 3, persistence additionally records the completed step output JSONs that
 become typed read-only inputs to downstream resolution.
@@ -213,14 +261,23 @@ The controller then assembles the Case 2 resolver from:
 - generated runtime records for the new workflow run.
 
 Using that resolver, the controller compiles only stage 0 / step 0 ready work.
-Each compiled work item must have all worker-facing variables resolved. An
-unresolved variable in a compiled work item is a submission/compilation error,
-and no partially resolved work should be published.
+Each compiled work item must have all non-secret logical worker-facing variables
+resolved. An unresolved non-secret variable in a compiled work item is a
+submission/compilation error, and no partially resolved work should be published.
+Secret-bearing values may remain as approved secret references or required-secret
+entries for Case 2.5 assignment-time materialization.
 
 After the stage 0 work items are inserted, the resolver is discarded. The work
 item is now the persisted outcome of compilation and must be a self-contained
-unit of execution. A worker executing that item should not need to read
+logical unit of execution. A worker executing that item should not need to read
 `defaults.json`, `controller.json`, `project.json`, or `workflow.json`.
+
+When a worker claims the work item, Case 2.5 constructs a fresh assignment-time
+resolver from the work item, assignment/attempt identity, selected worker facts,
+assignment runtime values, and approved secret references. It returns or exposes
+only the assignment-scoped values the worker is authorized to receive. A worker
+may request assigned secrets through an assignment-bound endpoint such as
+`/assignments/{assignment_id}/secrets/{name}`.
 
 The workflow instance still retains the source references and runtime context
 needed for continuation. Later, when stage 1 or higher becomes ready, Case 3 uses
@@ -232,10 +289,11 @@ from separately persisted extracted expressions.
 This creates the intended split:
 
 ```text
-compiled work item = self-contained execution payload
-workflow instance  = retained run basis for future compilation
-workflow definition = authoritative source for future expressions
-resolver           = discarded evaluation object
+compiled work item       = self-contained logical execution payload
+assignment finalization  = worker-specific binding and secret materialization
+workflow instance        = retained run basis for future compilation
+workflow definition      = authoritative source for future expressions
+resolver                 = discarded evaluation object
 ```
 
 ## Lifecycle Model
@@ -262,8 +320,43 @@ Typical outputs:
 - authoritative state needed to reconstruct later resolver recipes;
 - normalized stage/step plan;
 - initially ready compiled work items;
-- resolved input snapshots, provenance, and fingerprints for published work;
+- resolved non-secret input snapshots, provenance, and fingerprints for
+  published work;
+- approved secret references or required-secret declarations;
 - idempotent markers preventing duplicate publication of the same initial stage.
+
+### Case 2.5: Assignment-Time Resolution
+
+Purpose: bind one compiled logical work item to one concrete worker assignment
+and finalize values that were not known or should not be materialized at
+workflow-compilation time.
+
+Typical inputs:
+
+- the compiled work item and resolved non-secret logical inputs;
+- approved secret references or required-secret declarations from compilation;
+- current assignment ID and attempt ID;
+- selected worker identity, capabilities, and relevant worker-local facts;
+- configured worker environment for the selected execution environment;
+- controller secret source or secret-provider references;
+- generated assignment runtime values such as claim time, lease identity, and
+  assignment-scoped endpoint URLs.
+
+Typical outputs:
+
+- an assignment payload returned to the worker after claim;
+- assignment-scoped resolved values such as localized paths, worker capability
+  bindings, scratch locations, and lease metadata;
+- assignment-scoped secret handles or values made available through an approved
+  delivery mechanism;
+- redacted assignment provenance and access metadata;
+- no persisted plaintext secret material.
+
+Workers may request assigned secrets through an assignment-scoped endpoint such
+as `/assignments/{assignment_id}/secrets/{name}`. The controller must verify that
+`name` is declared by the assigned work item, that the worker holds the current
+assignment/attempt, and that the assignment or lease has not expired or reached a
+terminal state.
 
 ### Case 3: Ready-Step Compilation
 
@@ -287,6 +380,8 @@ Typical outputs:
 - newly compiled immutable work items;
 - ordered fan-out bindings when fan-out exists;
 - resolved input snapshots, provenance, and fingerprints;
+- approved secret references or required-secret declarations for newly compiled
+  work;
 - idempotent markers preventing the same ready stage from compiling twice.
 
 Case 3 must not read mutable current workflow definitions, mutable project
@@ -299,12 +394,14 @@ step/work-item identities.
 ## Shared Compilation Operation
 
 Case 2 and Case 3 should be implemented as two callers of one shared conceptual
-operation rather than as unrelated compilation paths.
+operation rather than as unrelated compilation paths. Case 2.5 should reuse the
+same resolver construction and provenance mechanics where practical, but its
+artifact is an assignment finalization rather than compiled workflow work.
 
 A candidate shape is:
 
 ```text
-BuildCompilationContext(event, run_basis, stage_basis, bindings)
+BuildLifecycleContext(event, run_basis, work_or_stage_basis, bindings)
         |
         v
 ReconstructResolverRecipe(context)
@@ -313,16 +410,16 @@ ReconstructResolverRecipe(context)
 BuildResolver(recipe)
         |
         v
-CompileReadyStage(context, resolver)
+ResolveLifecycleArtifact(context, resolver)
         |
         v
-PersistCompilationResult(result)
+PersistOrReturnLifecycleResult(result)
 ```
 
 Names are provisional. The important design point is that the shared operation
-receives explicit lifecycle inputs and returns explicit compilation outputs. It
-does not retain a resolver and does not hide workflow state inside a
-controller-global mutable object.
+receives explicit lifecycle inputs and returns explicit lifecycle outputs. It
+does not retain a resolver and does not hide workflow or assignment state inside
+a controller-global mutable object.
 
 ## Relationship To Other Epics
 
@@ -330,10 +427,10 @@ controller-global mutable object.
   is dependency-ready and calls the compilation boundary to publish work for that
   stage.
 - `workflow-execution-persistence` owns the durable database-backed run, step,
-  work-item, attempt, output, configuration-snapshot, and restart state needed to
-  make this model authoritative across restart.
+  work-item, attempt, output, configuration-snapshot, assignment, and restart
+  state needed to make this model authoritative across restart.
 - `attempt-liveness-recovery` owns worker heartbeat leases, fencing, abandoned
-  attempts, and retry/requeue behavior after work has been published.
+  attempts, and retry/requeue behavior after work has been published or assigned.
 - `resource-constraint` remains an independent assignment gate after dependency
   readiness and compilation have produced assignable work.
 - `workflow-dependency-resolution` should build cross-workflow invocation and
@@ -341,10 +438,11 @@ controller-global mutable object.
   output model supplied by dependency-aware execution and this compilation
   boundary.
 - `sensitive-variable-propagation` must define how sensitive values, protected
-  references, redaction, provenance, and persistence interact with resolved
-  snapshots.
-- `execution-observability` may expose compilation events, resolver diagnostics,
-  source identity, and readiness state without owning compilation state.
+  references, redaction, provenance, persistence, and assignment-time secret
+  materialization interact with resolved snapshots.
+- `execution-observability` may expose compilation events, assignment-resolution
+  events, resolver diagnostics, source identity, and readiness state without
+  owning compilation or assignment state.
 
 ## Candidate Slices
 
@@ -353,20 +451,20 @@ ideas only and should be revised after the open questions are answered.
 
 ### 001 Document Compilation Lifecycle Boundaries
 
-Clarify Case 2 and Case 3 terminology, shared invariants, lifecycle inputs,
-required outputs, and the create-use-discard resolver rule.
+Clarify Case 2, Case 2.5, and Case 3 terminology, shared invariants, lifecycle
+inputs, required outputs, and the create-use-discard resolver rule.
 
 ### 002 Define Resolver Recipe Reconstruction Contract
 
 Define what authoritative state must exist to reconstruct a resolver recipe for
-a compilation event. The recipe is a contract assembled by the controller, not a
-persisted object.
+a compilation or assignment event. The recipe is a contract assembled by the
+controller, not a persisted object.
 
-### 003 Extract Shared Compilation Context Builder
+### 003 Extract Shared Lifecycle Context Builder
 
 Introduce an internal controller helper for assembling scopes and constructing a
 resolver from explicit lifecycle inputs. The helper should not talk directly to
-the database or mutate workflow state.
+the database or mutate workflow/assignment state.
 
 ### 004 Compile Initial Stage Through Shared Boundary
 
@@ -378,19 +476,25 @@ initial ready stage instead of compiling all steps eagerly.
 Retool downstream activation so a newly ready stage uses the same compilation
 boundary with added predecessor-output and step/work-item binding scopes.
 
-### 006 Capture Resolved Input Snapshots and Provenance
+### 006 Add Assignment-Time Resolution Boundary
 
-Persist or otherwise expose resolved values consumed by compiled work, including
-redacted provenance sufficient for debugging, status, audit, and fingerprint
-explanation.
+Add Case 2.5 support for worker-specific assignment values, approved secret
+references, and assignment-scoped secret access. Plaintext secrets must not be
+persisted.
 
-### 007 Add Idempotent Compilation Markers
+### 007 Capture Resolved Input Snapshots and Provenance
+
+Persist or otherwise expose resolved values consumed by compiled work and
+assignment finalization, including redacted provenance sufficient for debugging,
+status, audit, and fingerprint explanation.
+
+### 008 Add Idempotent Compilation Markers
 
 Define and test the marker that prevents the same stage from being compiled and
 published twice after retry, duplicate completion handling, or controller
 restart.
 
-### 008 Align Existing Dependency-Aware Workflow Epic
+### 009 Align Existing Dependency-Aware Workflow Epic
 
 Update `dependency-aware-workflows/README.md` so it delegates compilation details
 to this epic and focuses on dependency graph normalization, readiness, step
@@ -403,7 +507,7 @@ state, outputs, and downstream activation.
 2. What exact provenance shape is needed to explain precedence without leaking
    sensitive values?
 3. Which resolved values participate in workflow, step, work-item, input,
-   output, and code-version fingerprints?
+   output, assignment, and code-version fingerprints?
 4. Should compilation produce work items directly, or should it first produce an
    intermediate compiled-stage representation that persistence later publishes?
 5. Does fan-out expansion belong inside the shared compilation operation, or is
@@ -419,27 +523,30 @@ state, outputs, and downstream activation.
 11. Which stage-level or step-level values may be recomputed during Case 3, and
     which must come only from the Case 2 run snapshot?
 12. How should protected sensitive values captured at Case 2 be materialized for
-    Case 3 without persisting plaintext?
+    Case 2.5 or Case 3 without persisting plaintext?
 13. Should compilation be allowed to read current controller operational metrics,
     or must those remain outside workflow semantics unless explicitly captured?
-14. What is the boundary between compilation and database transaction ownership?
-15. Can the shared compilation context builder be pure/in-memory, with callers
+14. What is the boundary between compilation, assignment resolution, and database
+    transaction ownership?
+15. Can the shared lifecycle context builder be pure/in-memory, with callers
     responsible for loading and persisting state?
-16. How should compilation failures be represented: submission rejection, blocked
-    run, failed stage, or retryable controller error?
+16. How should compilation or assignment-resolution failures be represented:
+    submission rejection, blocked run, failed stage, failed assignment, or
+    retryable controller error?
 17. Can a ready-stage compilation be retried safely after a crash before its
     transaction commits?
 18. What idempotency key uniquely identifies an already-compiled stage?
 19. How should compilation versioning and schema evolution be recorded so older
     runs remain explainable?
-20. Which pieces of compiled work are immutable after publication?
-21. Can any compilation artifacts be cached, and if so what is the cache key and
-    eviction policy?
+20. Which pieces of compiled work and assignment finalization are immutable after
+    publication?
+21. Can any compilation or assignment artifacts be cached, and if so what is the
+    cache key and eviction policy?
 22. How much of the existing `internal/workflow` compiler should be reused versus
     wrapped by a controller-side compilation boundary?
 23. What is the eventual boundary for plugin-provided compile-time behavior, if
-    plugins need to contribute declared outputs, package references, or parameter
-    schemas?
+    plugins need to contribute declared outputs, package references, parameter
+    schemas, or secret requirements?
 24. How should this epic divide responsibilities with
     `workflow-execution-persistence` so neither document owns the same durable
     state twice?
@@ -450,40 +557,50 @@ state, outputs, and downstream activation.
 
 - The controller has an agreed workflow compilation-resolution boundary for
   Case 2 and Case 3.
+- The controller has an agreed assignment-time resolution boundary for Case 2.5.
 - The design explicitly states that resolvers are short-lived and never retained
-  as workflow execution state.
+  as workflow execution or assignment state.
 - A resolver recipe is treated as a reconstructable controller contract, not a
   persisted object.
 - The authoritative resolver reconstruction inputs are defined for Case 1, Case
-  2, and Case 3.
+  2, Case 2.5, and Case 3.
 - The minimum first implementation publishes only initially ready work and keeps
   the workflow instance source references needed for later Case 3 compilation.
 - Case 2 retains the authoritative workflow definition identity for future
   expressions instead of persisting extracted expression records.
+- Case 2.5 supports assignment-scoped values for heterogeneous workers, including
+  worker capabilities, worker-local paths, assignment identity, and approved
+  secret references.
 - Case 2 and Case 3 share the same conceptual resolver recipe and compilation
   path wherever their inputs overlap.
+- Case 2.5 reuses resolver construction/provenance mechanics where practical
+  while producing assignment finalization rather than compiled work.
 - The design identifies which lifecycle-specific inputs distinguish submission
-  compilation from ready-step compilation.
+  compilation, assignment-time resolution, and ready-step compilation.
 - The controller can retain or reconstruct the inputs required to compile later
   ready stages without using a global resolver.
 - Initially ready work is compiled from a submission resolver context, not by
   eagerly compiling every downstream step.
 - Downstream ready work can be compiled from the retained run context plus
   predecessor outputs and new lifecycle bindings.
-- Compiled work contains concrete resolved parameters whenever values are known
-  at compilation time.
-- A compiled work item is self-contained for worker execution and does not depend
-  on configuration files at worker runtime.
+- Compiled work contains concrete resolved non-secret parameters whenever values
+  are known at compilation time.
+- A compiled work item is self-contained for logical worker execution and does
+  not depend on configuration files at worker runtime.
 - The workflow instance retains project/workflow source references and runtime
   context for later ready-step compilation.
+- Plaintext secrets are not persisted in workflow, work-item, assignment,
+  provenance, diagnostics, status, or log records.
+- Workers can receive or retrieve only secrets declared by their current assigned
+  work item through an assignment-scoped authorization boundary.
 - Resolved snapshots and provenance are captured according to the agreed
   redaction and persistence policy.
 - Compilation publication is idempotent for a workflow instance and stage.
-- Workflow-instance, step-instance, work-item, and runtime identities remain
-  attributable in compiled artifacts and attempts.
+- Workflow-instance, step-instance, work-item, attempt, assignment, and runtime
+  identities remain attributable in compiled artifacts and assignment metadata.
 - Sensitive values are not leaked through diagnostics, provenance, fingerprints,
   status, logs, or persisted resolved snapshots.
 - `dependency-aware-workflows` can delegate compilation details to this epic
   instead of owning resolver construction itself.
-- Relevant controller, workflow, variable, persistence-boundary, and integration
-  tests pass for the agreed slice scope.
+- Relevant controller, workflow, variable, persistence-boundary, assignment,
+  secret-access, and integration tests pass for the agreed slice scope.
