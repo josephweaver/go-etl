@@ -1,6 +1,6 @@
 # 012 Controller Integration Cutover
 
-Status: proposed
+Status: in progress
 
 ## Objective
 
@@ -82,12 +82,18 @@ changing endpoint behavior.
 Acceptance criteria:
 
 - Controller startup opens the workflow-execution persistence store through the
-  same configured database driver and connection string.
+  configured database driver and connection string.
 - `Controller` can hold the store handle separately from the older ledger
   handle during transition.
 - Tests can construct a controller with an injected persistence store.
 - Existing HTTP behavior remains unchanged.
 - Existing tests continue to pass.
+
+Implemented 012a note:
+
+- Live startup opens the workflow-execution store as the configured main
+  database. The older attempt ledger remains in code for legacy helper tests and
+  old skip/reuse paths, but it is not opened by live startup.
 
 Out of scope:
 

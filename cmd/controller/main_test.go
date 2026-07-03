@@ -16,6 +16,7 @@ import (
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
+	"goetl/internal/persistence"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -97,6 +98,29 @@ func TestBuildControllerServerFailsClosedBeforeBind(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "controller-startup.sqlite")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected database file created for failing startup: %v", err)
+	}
+}
+
+func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
+	ctx := context.Background()
+	store, err := persistence.OpenStore(ctx, persistence.Config{
+		Driver:           persistence.DriverSQLite,
+		ConnectionString: filepath.Join(t.TempDir(), "workflow-execution.sqlite"),
+	})
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer store.Close()
+
+	controller := newController(nil)
+	controller.workflowStore = store
+
+	version, err := controller.workflowStore.CurrentSchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("CurrentSchemaVersion() error = %v", err)
+	}
+	if version != persistence.SupportedSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, persistence.SupportedSchemaVersion)
 	}
 }
 

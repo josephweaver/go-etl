@@ -386,6 +386,11 @@ materialization have been split into the separate
 the database-owned source locator fields but does not own the source-control
 implementation.
 
+Controller cutover has started by adding a workflow-execution store handle to
+`Controller` and opening that store as the configured main database during live
+startup. The older attempt ledger remains in code for legacy skip/reuse helpers
+and tests, but live startup no longer opens it as the main database.
+
 ## SQLite Ledger
 
 `internal/ledger` contains the first SQLite-backed attempt ledger.

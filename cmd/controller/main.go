@@ -19,6 +19,7 @@ import (
 
 	"goetl/internal/ledger"
 	"goetl/internal/model"
+	"goetl/internal/persistence"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -31,6 +32,7 @@ type Controller struct {
 	assigned          map[string]model.WorkItem
 	failed            map[string]model.WorkFailure
 	ledger            *sql.DB
+	workflowStore     *persistence.Store
 	shutdown          func(context.Context) error
 	env               *ExecutionEnvironment
 	scaler            WorkerScaleState
@@ -189,13 +191,13 @@ func buildControllerServer(
 	}
 	config := sources.Controller
 
-	ledgerDB, err := initMainDatabase(context.Background(), resolver)
+	workflowStore, databasePath, err := initWorkflowExecutionStore(context.Background(), resolver)
 	if err != nil {
 		return nil, nil, fmt.Errorf("controller database failed: %w", err)
 	}
-	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnership(ledgerDB)
+	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnershipForPath(databasePath)
 	if err != nil {
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller database ownership failed: %w", err)
 	}
 	workingDirectory, err := getwd()
@@ -203,21 +205,21 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller policy failed: %w", err)
 	}
 	httpSettings, err := resolveControllerHTTPSettings(resolver)
@@ -225,7 +227,7 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller http failed: %w", err)
 	}
 
@@ -234,12 +236,12 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller execution environment failed: %w", err)
 	}
 
 	controller := newController(nil)
-	controller.ledger = ledgerDB
+	controller.workflowStore = workflowStore
 	controller.env = executionEnvironment
 	controller.enterRecoveryMode()
 
@@ -270,7 +272,7 @@ func buildControllerServer(
 				return err
 			}
 		}
-		return ledgerDB.Close()
+		return workflowStore.Close()
 	}, nil
 }
 
@@ -480,6 +482,26 @@ func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB,
 	return db, nil
 }
 
+func initWorkflowExecutionStore(ctx context.Context, resolver variable.Resolver) (*persistence.Store, string, error) {
+	driver, err := resolver.String("controller_config.main_database_driver")
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: required variable controller_config.main_database_driver: %w", err)
+	}
+	connectionString, err := resolver.String("controller_config.main_database_connection_string")
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: resolve controller_config.main_database_connection_string: %w", err)
+	}
+
+	store, err := persistence.OpenStore(ctx, persistence.Config{
+		Driver:           driver,
+		ConnectionString: connectionString,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: %w", err)
+	}
+	return store, connectionString, nil
+}
+
 func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
 	if db == nil {
 		return nil, fmt.Errorf("controller startup database ownership: database handle is required")
@@ -491,6 +513,17 @@ func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
 	}
 	if path == "" || path == ":memory:" {
 		return func() error { return nil }, nil
+	}
+
+	return acquireControllerDatabaseOwnershipForPath(path)
+}
+
+func acquireControllerDatabaseOwnershipForPath(path string) (func() error, error) {
+	if path == "" || path == ":memory:" {
+		return func() error { return nil }, nil
+	}
+	if path != filepath.Clean(path) {
+		path = filepath.Clean(path)
 	}
 
 	lockPath := path + ".controller.lock"
