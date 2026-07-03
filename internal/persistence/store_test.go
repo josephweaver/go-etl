@@ -295,6 +295,195 @@ func TestStoreUpsertWorkflowRejectsMissingProject(t *testing.T) {
 	}
 }
 
+func TestStoreCreateAndGetWorkflowRun(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := testWorkflowRunRecord("run-001", project.ID, workflow.ID)
+
+	if err := store.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("CreateWorkflowRun() error = %v", err)
+	}
+	if err := store.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("second CreateWorkflowRun() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkflowRun() found = false, want true")
+	}
+	if got != run {
+		t.Fatalf("run = %+v, want %+v", got, run)
+	}
+}
+
+func TestStoreCreateWorkflowRunRejectsConflict(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := testWorkflowRunRecord("run-001", project.ID, workflow.ID)
+	if err := store.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("CreateWorkflowRun() error = %v", err)
+	}
+
+	conflict := run
+	conflict.SubmissionContextJSON = `[{"name":"changed"}]`
+	err := store.CreateWorkflowRun(ctx, conflict)
+	if err == nil || !strings.Contains(err.Error(), "different values") {
+		t.Fatalf("CreateWorkflowRun(conflict) error = %v, want conflict", err)
+	}
+}
+
+func TestStoreCreateWorkflowRunRejectsMissingParents(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	err := store.CreateWorkflowRun(ctx, testWorkflowRunRecord("run-001", "missing-project", "missing-workflow"))
+	if err == nil || !strings.Contains(err.Error(), "insert workflow run") {
+		t.Fatalf("CreateWorkflowRun() error = %v, want insert failure", err)
+	}
+}
+
+func TestStoreGetWorkflowRunReturnsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	run, found, err := store.GetWorkflowRun(ctx, "missing")
+	if err != nil {
+		t.Fatalf("GetWorkflowRun() error = %v", err)
+	}
+	if found {
+		t.Fatalf("GetWorkflowRun() found = true with run %+v, want false", run)
+	}
+}
+
+func TestStoreInsertStagePlanAndGetStage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := insertTestWorkflowRun(t, ctx, store, "run-001", project.ID, workflow.ID)
+	stages := []WorkflowStageRecord{
+		testWorkflowStageRecord(run.ID, 0, "ready"),
+		testWorkflowStageRecord(run.ID, 1, "blocked"),
+	}
+
+	if err := store.InsertStagePlan(ctx, run.ID, stages); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+	if err := store.InsertStagePlan(ctx, run.ID, stages); err != nil {
+		t.Fatalf("second InsertStagePlan() error = %v", err)
+	}
+
+	stage, found, err := store.GetWorkflowStage(ctx, run.ID, 1)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkflowStage() found = false, want true")
+	}
+	if stage != stages[1] {
+		t.Fatalf("stage = %+v, want %+v", stage, stages[1])
+	}
+}
+
+func TestStoreInsertStagePlanRejectsConflict(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := insertTestWorkflowRun(t, ctx, store, "run-001", project.ID, workflow.ID)
+	stages := []WorkflowStageRecord{testWorkflowStageRecord(run.ID, 0, "ready")}
+	if err := store.InsertStagePlan(ctx, run.ID, stages); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+
+	conflict := []WorkflowStageRecord{testWorkflowStageRecord(run.ID, 0, "blocked")}
+	err := store.InsertStagePlan(ctx, run.ID, conflict)
+	if err == nil || !strings.Contains(err.Error(), "different values") {
+		t.Fatalf("InsertStagePlan(conflict) error = %v, want conflict", err)
+	}
+}
+
+func TestStoreInsertStagePlanRejectsMissingRun(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	err := store.InsertStagePlan(ctx, "missing-run", []WorkflowStageRecord{testWorkflowStageRecord("missing-run", 0, "ready")})
+	if err == nil || !strings.Contains(err.Error(), "insert workflow stage") {
+		t.Fatalf("InsertStagePlan() error = %v, want insert failure", err)
+	}
+}
+
+func TestStoreGetWorkflowStageReturnsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	stage, found, err := store.GetWorkflowStage(ctx, "missing", 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if found {
+		t.Fatalf("GetWorkflowStage() found = true with stage %+v, want false", stage)
+	}
+}
+
+func TestStoreListActiveWorkflowRuns(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+
+	noStageRun := insertTestWorkflowRun(t, ctx, store, "run-no-stage", project.ID, workflow.ID)
+	activeRun := insertTestWorkflowRun(t, ctx, store, "run-active", project.ID, workflow.ID)
+	terminalRun := insertTestWorkflowRun(t, ctx, store, "run-terminal", project.ID, workflow.ID)
+	failedRun := insertTestWorkflowRun(t, ctx, store, "run-failed", project.ID, workflow.ID)
+
+	if err := store.InsertStagePlan(ctx, activeRun.ID, []WorkflowStageRecord{testWorkflowStageRecord(activeRun.ID, 0, "ready")}); err != nil {
+		t.Fatalf("insert active stages: %v", err)
+	}
+	if err := store.InsertStagePlan(ctx, terminalRun.ID, []WorkflowStageRecord{
+		testWorkflowStageRecord(terminalRun.ID, 0, "completed"),
+		testWorkflowStageRecord(terminalRun.ID, 1, "skipped"),
+	}); err != nil {
+		t.Fatalf("insert terminal stages: %v", err)
+	}
+	if err := store.InsertStagePlan(ctx, failedRun.ID, []WorkflowStageRecord{testWorkflowStageRecord(failedRun.ID, 0, "failed")}); err != nil {
+		t.Fatalf("insert failed stages: %v", err)
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, run := range runs {
+		got[run.ID] = true
+	}
+	if !got[noStageRun.ID] {
+		t.Fatalf("active runs missing no-stage run: %+v", runs)
+	}
+	if !got[activeRun.ID] {
+		t.Fatalf("active runs missing active run: %+v", runs)
+	}
+	if got[terminalRun.ID] {
+		t.Fatalf("active runs included terminal run: %+v", runs)
+	}
+	if got[failedRun.ID] {
+		t.Fatalf("active runs included failed run: %+v", runs)
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -319,5 +508,50 @@ func testWorkflowRecord(id string, projectID string) WorkflowRecord {
 		SourceObjectID:     "object",
 		WorkflowSHA256:     strings.Repeat("b", 64),
 		CreatedAt:          "2026-07-03T00:00:00Z",
+	}
+}
+
+func insertTestProjectAndWorkflow(t *testing.T, ctx context.Context, store *Store) (ProjectRecord, WorkflowRecord) {
+	t.Helper()
+
+	project := testProjectRecord("project-001")
+	workflow := testWorkflowRecord("workflow-001", project.ID)
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatalf("UpsertProject() error = %v", err)
+	}
+	if err := store.UpsertWorkflow(ctx, workflow); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+	return project, workflow
+}
+
+func insertTestWorkflowRun(t *testing.T, ctx context.Context, store *Store, id string, projectID string, workflowID string) WorkflowRunRecord {
+	t.Helper()
+
+	run := testWorkflowRunRecord(id, projectID, workflowID)
+	if err := store.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("CreateWorkflowRun() error = %v", err)
+	}
+	return run
+}
+
+func testWorkflowRunRecord(id string, projectID string, workflowID string) WorkflowRunRecord {
+	return WorkflowRunRecord{
+		ID:                    id,
+		ProjectID:             projectID,
+		WorkflowID:            workflowID,
+		SubmissionContextJSON: `[{"name":{"namespace":"override","key":"code_version"},"type":"string","expression":"test"}]`,
+		CreatedAt:             "2026-07-03T00:00:00Z",
+	}
+}
+
+func testWorkflowStageRecord(runID string, stageIndex int, state string) WorkflowStageRecord {
+	return WorkflowStageRecord{
+		RunID:                runID,
+		StageIndex:           stageIndex,
+		StepID:               "step-001",
+		StageSourceReference: "workflow.json#/steps/0",
+		State:                state,
+		CreatedAt:            "2026-07-03T00:00:00Z",
 	}
 }

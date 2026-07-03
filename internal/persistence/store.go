@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 )
 
@@ -41,6 +42,29 @@ type WorkflowRecord struct {
 	SourceObjectID     string
 	WorkflowSHA256     string
 	CreatedAt          string
+}
+
+type WorkflowRunRecord struct {
+	ID                    string
+	ProjectID             string
+	WorkflowID            string
+	SubmissionContextJSON string
+	CreatedAt             string
+}
+
+type WorkflowStageRecord struct {
+	RunID                string
+	StageIndex           int
+	StepID               string
+	StageSourceReference string
+	State                string
+	CreatedAt            string
+	ReadyAt              string
+	StartedAt            string
+	CompletedAt          string
+	FailedAt             string
+	OutputJSON           string
+	OutputJSONSHA256     string
 }
 
 func OpenStore(ctx context.Context, cfg Config) (*Store, error) {
@@ -274,8 +298,190 @@ func (s *Store) DeleteWorkflowIfUnused(ctx context.Context, workflowID string) (
 	return deleted, nil
 }
 
+func (s *Store) CreateWorkflowRun(ctx context.Context, run WorkflowRunRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := run.validate(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin workflow run create: %w", err)
+	}
+	defer tx.Rollback()
+
+	existing, found, err := getWorkflowRun(ctx, tx, run.ID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if existing != run {
+			return fmt.Errorf("workflow run %s already exists with different values", run.ID)
+		}
+		return tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_instances (
+		run_id,
+		project_id,
+		workflow_id,
+		submission_context_json,
+		created_at
+	) VALUES (?, ?, ?, ?, ?)`,
+		run.ID,
+		run.ProjectID,
+		run.WorkflowID,
+		run.SubmissionContextJSON,
+		run.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert workflow run %s: %w", run.ID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit workflow run create: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetWorkflowRun(ctx context.Context, runID string) (WorkflowRunRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkflowRunRecord{}, false, err
+	}
+	return getWorkflowRun(ctx, s.db, runID)
+}
+
+func (s *Store) InsertStagePlan(ctx context.Context, runID string, stages []WorkflowStageRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if runID == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if len(stages) == 0 {
+		return fmt.Errorf("stage plan is required")
+	}
+	for index, stage := range stages {
+		if err := stage.validate(); err != nil {
+			return fmt.Errorf("stage %d: %w", index, err)
+		}
+		if stage.RunID != runID {
+			return fmt.Errorf("stage %d run id %s does not match %s", index, stage.RunID, runID)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin stage plan insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	existing, err := listStagesForRun(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if len(existing) != 0 {
+		if !sameStagePlan(existing, stages) {
+			return fmt.Errorf("stage plan for run %s already exists with different values", runID)
+		}
+		return tx.Commit()
+	}
+
+	for _, stage := range stages {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_stages (
+			run_id,
+			stage_index,
+			step_id,
+			stage_source_reference,
+			state,
+			created_at,
+			ready_at,
+			started_at,
+			completed_at,
+			failed_at,
+			output_json,
+			output_json_sha256
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			stage.RunID,
+			stage.StageIndex,
+			stage.StepID,
+			stage.StageSourceReference,
+			stage.State,
+			stage.CreatedAt,
+			nullString(stage.ReadyAt),
+			nullString(stage.StartedAt),
+			nullString(stage.CompletedAt),
+			nullString(stage.FailedAt),
+			nullString(stage.OutputJSON),
+			nullString(stage.OutputJSONSHA256),
+		); err != nil {
+			return fmt.Errorf("insert workflow stage %s/%d: %w", stage.RunID, stage.StageIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit stage plan insert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetWorkflowStage(ctx context.Context, runID string, stageIndex int) (WorkflowStageRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkflowStageRecord{}, false, err
+	}
+	return getWorkflowStage(ctx, s.db, runID, stageIndex)
+}
+
+func (s *Store) ListActiveWorkflowRuns(ctx context.Context) ([]WorkflowRunRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		run_id,
+		project_id,
+		workflow_id,
+		submission_context_json,
+		created_at
+	FROM workflow_instances
+	WHERE NOT EXISTS (
+		SELECT 1
+		FROM workflow_stages
+		WHERE workflow_stages.run_id = workflow_instances.run_id
+	)
+	OR EXISTS (
+		SELECT 1
+		FROM workflow_stages
+		WHERE workflow_stages.run_id = workflow_instances.run_id
+		AND workflow_stages.state NOT IN ('completed', 'failed', 'skipped')
+	)
+	ORDER BY created_at, run_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list active workflow runs: %w", err)
+	}
+	defer rows.Close()
+
+	runs := []WorkflowRunRecord{}
+	for rows.Next() {
+		run, err := scanWorkflowRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list active workflow runs: %w", err)
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list active workflow runs: %w", err)
+	}
+	return runs, nil
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type scanner interface {
+	Scan(...any) error
 }
 
 func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord, bool, error) {
@@ -350,11 +556,193 @@ func getWorkflow(ctx context.Context, q queryer, workflowID string) (WorkflowRec
 	return workflow, true, nil
 }
 
+func getWorkflowRun(ctx context.Context, q queryer, runID string) (WorkflowRunRecord, bool, error) {
+	if runID == "" {
+		return WorkflowRunRecord{}, false, fmt.Errorf("run id is required")
+	}
+
+	run, err := scanWorkflowRun(q.QueryRowContext(ctx, `SELECT
+		run_id,
+		project_id,
+		workflow_id,
+		submission_context_json,
+		created_at
+	FROM workflow_instances
+	WHERE run_id = ?`, runID))
+	if err == sql.ErrNoRows {
+		return WorkflowRunRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkflowRunRecord{}, false, fmt.Errorf("get workflow run %s: %w", runID, err)
+	}
+	return run, true, nil
+}
+
+func getWorkflowStage(ctx context.Context, q queryer, runID string, stageIndex int) (WorkflowStageRecord, bool, error) {
+	if runID == "" {
+		return WorkflowStageRecord{}, false, fmt.Errorf("run id is required")
+	}
+	if stageIndex < 0 {
+		return WorkflowStageRecord{}, false, fmt.Errorf("stage index must be non-negative")
+	}
+
+	stage, err := scanWorkflowStage(q.QueryRowContext(ctx, workflowStageSelectSQL()+` WHERE run_id = ? AND stage_index = ?`, runID, stageIndex))
+	if err == sql.ErrNoRows {
+		return WorkflowStageRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkflowStageRecord{}, false, fmt.Errorf("get workflow stage %s/%d: %w", runID, stageIndex, err)
+	}
+	return stage, true, nil
+}
+
+func listStagesForRun(ctx context.Context, tx *sql.Tx, runID string) ([]WorkflowStageRecord, error) {
+	rows, err := tx.QueryContext(ctx, workflowStageSelectSQL()+` WHERE run_id = ? ORDER BY stage_index`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow stages for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	stages := []WorkflowStageRecord{}
+	for rows.Next() {
+		stage, err := scanWorkflowStage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list workflow stages for run %s: %w", runID, err)
+		}
+		stages = append(stages, stage)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list workflow stages for run %s: %w", runID, err)
+	}
+	return stages, nil
+}
+
+func workflowStageSelectSQL() string {
+	return `SELECT
+		run_id,
+		stage_index,
+		step_id,
+		stage_source_reference,
+		state,
+		created_at,
+		ready_at,
+		started_at,
+		completed_at,
+		failed_at,
+		output_json,
+		output_json_sha256
+	FROM workflow_stages`
+}
+
+func scanWorkflowRun(row scanner) (WorkflowRunRecord, error) {
+	var run WorkflowRunRecord
+	err := row.Scan(
+		&run.ID,
+		&run.ProjectID,
+		&run.WorkflowID,
+		&run.SubmissionContextJSON,
+		&run.CreatedAt,
+	)
+	return run, err
+}
+
+func scanWorkflowStage(row scanner) (WorkflowStageRecord, error) {
+	var stage WorkflowStageRecord
+	var readyAt sql.NullString
+	var startedAt sql.NullString
+	var completedAt sql.NullString
+	var failedAt sql.NullString
+	var outputJSON sql.NullString
+	var outputJSONSHA256 sql.NullString
+
+	err := row.Scan(
+		&stage.RunID,
+		&stage.StageIndex,
+		&stage.StepID,
+		&stage.StageSourceReference,
+		&stage.State,
+		&stage.CreatedAt,
+		&readyAt,
+		&startedAt,
+		&completedAt,
+		&failedAt,
+		&outputJSON,
+		&outputJSONSHA256,
+	)
+	if err != nil {
+		return WorkflowStageRecord{}, err
+	}
+
+	stage.ReadyAt = readyAt.String
+	stage.StartedAt = startedAt.String
+	stage.CompletedAt = completedAt.String
+	stage.FailedAt = failedAt.String
+	stage.OutputJSON = outputJSON.String
+	stage.OutputJSONSHA256 = outputJSONSHA256.String
+	return stage, nil
+}
+
 func (s *Store) requireOpen() error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store is not open")
 	}
 	return nil
+}
+
+func (r WorkflowRunRecord) validate() error {
+	if r.ID == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if r.ProjectID == "" {
+		return fmt.Errorf("run project id is required")
+	}
+	if r.WorkflowID == "" {
+		return fmt.Errorf("run workflow id is required")
+	}
+	if r.SubmissionContextJSON == "" {
+		return fmt.Errorf("run submission context json is required")
+	}
+	if !json.Valid([]byte(r.SubmissionContextJSON)) {
+		return fmt.Errorf("run submission context json must be valid JSON")
+	}
+	if r.CreatedAt == "" {
+		return fmt.Errorf("run created at is required")
+	}
+	return nil
+}
+
+func (s WorkflowStageRecord) validate() error {
+	if s.RunID == "" {
+		return fmt.Errorf("stage run id is required")
+	}
+	if s.StageIndex < 0 {
+		return fmt.Errorf("stage index must be non-negative")
+	}
+	if s.StepID == "" {
+		return fmt.Errorf("stage step id is required")
+	}
+	if s.StageSourceReference == "" {
+		return fmt.Errorf("stage source reference is required")
+	}
+	if !validStageState(s.State) {
+		return fmt.Errorf("unsupported stage state: %s", s.State)
+	}
+	if s.CreatedAt == "" {
+		return fmt.Errorf("stage created at is required")
+	}
+	if s.OutputJSON != "" && !json.Valid([]byte(s.OutputJSON)) {
+		return fmt.Errorf("stage output json must be valid JSON")
+	}
+	return nil
+}
+
+func validStageState(state string) bool {
+	switch state {
+	case "ready", "running", "completed", "failed", "skipped", "blocked":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p ProjectRecord) validate() error {
@@ -410,4 +798,23 @@ func rowsAffected(result sql.Result) (bool, error) {
 		return false, err
 	}
 	return count != 0, nil
+}
+
+func nullString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func sameStagePlan(left []WorkflowStageRecord, right []WorkflowStageRecord) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
