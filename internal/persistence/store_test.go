@@ -484,6 +484,168 @@ func TestStoreListActiveWorkflowRuns(t *testing.T) {
 	}
 }
 
+func TestStoreInsertAndGetWorkItem(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	item := testWorkItemRecord("work-001", run.ID, 0, 0)
+
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{item}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{item}); err != nil {
+		t.Fatalf("second InsertWorkItems() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkItem() found = false, want true")
+	}
+	if got != item {
+		t.Fatalf("work item = %+v, want %+v", got, item)
+	}
+}
+
+func TestStoreInsertWorkItemsRejectsConflict(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	item := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{item}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+
+	conflict := item
+	conflict.WorkerPayloadJSON = `{"plugin":"other","parameters":{}}`
+	err := store.InsertWorkItems(ctx, []WorkItemRecord{conflict})
+	if err == nil || !strings.Contains(err.Error(), "different values") {
+		t.Fatalf("InsertWorkItems(conflict) error = %v, want conflict", err)
+	}
+}
+
+func TestStoreInsertWorkItemsRejectsMissingStage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	err := store.InsertWorkItems(ctx, []WorkItemRecord{testWorkItemRecord("work-001", "missing-run", 0, 0)})
+	if err == nil || !strings.Contains(err.Error(), "insert work item") {
+		t.Fatalf("InsertWorkItems() error = %v, want insert failure", err)
+	}
+}
+
+func TestStoreGetWorkItemReturnsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	item, found, err := store.GetWorkItem(ctx, "missing")
+	if err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	if found {
+		t.Fatalf("GetWorkItem() found = true with item %+v, want false", item)
+	}
+}
+
+func TestStoreEnqueueAndListQueuedWorkItems(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	later := testWorkItemRecord("work-later", run.ID, 0, 0)
+	earlier := testWorkItemRecord("work-earlier", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{later, earlier}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+
+	queued := []QueuedWorkRecord{
+		{WorkItemRecord: later, QueuedAt: "2026-07-03T00:00:02Z"},
+		{WorkItemRecord: earlier, QueuedAt: "2026-07-03T00:00:01Z"},
+	}
+	if err := store.EnqueueWorkItems(ctx, queued); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, queued); err != nil {
+		t.Fatalf("second EnqueueWorkItems() error = %v", err)
+	}
+
+	got, err := store.ListQueuedWorkItems(ctx)
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("queued count = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].ID != earlier.ID || got[1].ID != later.ID {
+		t.Fatalf("queued order = %+v, want earlier then later", got)
+	}
+}
+
+func TestStoreEnqueueWorkItemsRejectsConflictingQueuedAt(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	item := testWorkItemRecord("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{item}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: item, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+
+	err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: item, QueuedAt: "2026-07-03T00:00:01Z"}})
+	if err == nil || !strings.Contains(err.Error(), "different queued_at") {
+		t.Fatalf("EnqueueWorkItems(conflict) error = %v, want queued_at conflict", err)
+	}
+}
+
+func TestStoreEnqueueWorkItemsRejectsMissingWorkItem(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: WorkItemRecord{ID: "missing"}, QueuedAt: "2026-07-03T00:00:00Z"}})
+	if err == nil || !strings.Contains(err.Error(), "enqueue work item") {
+		t.Fatalf("EnqueueWorkItems() error = %v, want enqueue failure", err)
+	}
+}
+
+func TestStoreCountWorkItemsForStage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	queued := testWorkItemRecord("work-queued", run.ID, 0, 0)
+	running := testWorkItemRecord("work-running", run.ID, 0, 1)
+	completed := testWorkItemRecord("work-completed", run.ID, 0, 2)
+	failed := testWorkItemRecord("work-failed", run.ID, 0, 3)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{queued, running, completed, failed}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: queued, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-running", running.ID)
+	insertTestCompletedWork(t, ctx, store, "attempt-completed", completed.ID)
+	insertTestFailedWork(t, ctx, store, "attempt-failed", failed.ID)
+
+	counts, err := store.CountWorkItemsForStage(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("CountWorkItemsForStage() error = %v", err)
+	}
+	want := WorkItemStatusCounts{Queued: 1, Running: 1, Completed: 1, Failed: 1}
+	if counts != want {
+		t.Fatalf("counts = %+v, want %+v", counts, want)
+	}
+}
+
 func testProjectRecord(id string) ProjectRecord {
 	return ProjectRecord{
 		ID:                 id,
@@ -553,5 +715,99 @@ func testWorkflowStageRecord(runID string, stageIndex int, state string) Workflo
 		StageSourceReference: "workflow.json#/steps/0",
 		State:                state,
 		CreatedAt:            "2026-07-03T00:00:00Z",
+	}
+}
+
+func insertTestRunWithStage(t *testing.T, ctx context.Context, store *Store) WorkflowRunRecord {
+	t.Helper()
+
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	run := insertTestWorkflowRun(t, ctx, store, "run-001", project.ID, workflow.ID)
+	if err := store.InsertStagePlan(ctx, run.ID, []WorkflowStageRecord{testWorkflowStageRecord(run.ID, 0, "ready")}); err != nil {
+		t.Fatalf("InsertStagePlan() error = %v", err)
+	}
+	return run
+}
+
+func testWorkItemRecord(id string, runID string, stageIndex int, workItemIndex int) WorkItemRecord {
+	return WorkItemRecord{
+		ID:                   id,
+		RunID:                runID,
+		StageIndex:           stageIndex,
+		WorkItemIndex:        workItemIndex,
+		WorkerPayloadJSON:    `{"plugin":"plugin-name","parameters":{"param1":"param1value"}}`,
+		ResolvedInputsSHA256: strings.Repeat("c", 64),
+		CreatedAt:            "2026-07-03T00:00:00Z",
+	}
+}
+
+func insertTestRunningWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string) {
+	t.Helper()
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_attempts (
+		attempt_id,
+		work_item_id,
+		executor_type,
+		started_at
+	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO running_work (
+		attempt_id,
+		work_item_id,
+		started_at
+	) VALUES (?, ?, '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+		t.Fatalf("insert running work: %v", err)
+	}
+}
+
+func insertTestCompletedWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string) {
+	t.Helper()
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_attempts (
+		attempt_id,
+		work_item_id,
+		executor_type,
+		started_at
+	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO completed_work (
+		attempt_id,
+		work_item_id,
+		output_json,
+		output_json_sha256,
+		pre_state_sha256,
+		post_state_sha256,
+		completed_at
+	) VALUES (?, ?, '{}', ?, ?, ?, '2026-07-03T00:00:00Z')`,
+		attemptID,
+		workItemID,
+		strings.Repeat("d", 64),
+		strings.Repeat("e", 64),
+		strings.Repeat("f", 64),
+	); err != nil {
+		t.Fatalf("insert completed work: %v", err)
+	}
+}
+
+func insertTestFailedWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string) {
+	t.Helper()
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_attempts (
+		attempt_id,
+		work_item_id,
+		executor_type,
+		started_at
+	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO failed_work (
+		attempt_id,
+		work_item_id,
+		error,
+		failed_at
+	) VALUES (?, ?, 'failed', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+		t.Fatalf("insert failed work: %v", err)
 	}
 }

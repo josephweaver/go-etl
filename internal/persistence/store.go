@@ -67,6 +67,28 @@ type WorkflowStageRecord struct {
 	OutputJSONSHA256     string
 }
 
+type WorkItemRecord struct {
+	ID                   string
+	RunID                string
+	StageIndex           int
+	WorkItemIndex        int
+	WorkerPayloadJSON    string
+	ResolvedInputsSHA256 string
+	CreatedAt            string
+}
+
+type QueuedWorkRecord struct {
+	WorkItemRecord
+	QueuedAt string
+}
+
+type WorkItemStatusCounts struct {
+	Queued    int
+	Running   int
+	Completed int
+	Failed    int
+}
+
 func OpenStore(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.Driver == "" {
 		return nil, fmt.Errorf("database driver is required")
@@ -476,6 +498,188 @@ func (s *Store) ListActiveWorkflowRuns(ctx context.Context) ([]WorkflowRunRecord
 	return runs, nil
 }
 
+func (s *Store) InsertWorkItems(ctx context.Context, items []WorkItemRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("work items are required")
+	}
+	for index, item := range items {
+		if err := item.validate(); err != nil {
+			return fmt.Errorf("work item %d: %w", index, err)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin work item insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		existing, found, err := getWorkItem(ctx, tx, item.ID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existing != item {
+				return fmt.Errorf("work item %s already exists with different values", item.ID)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO work_items (
+			work_item_id,
+			run_id,
+			stage_index,
+			work_item_index,
+			worker_payload_json,
+			resolved_inputs_sha256,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			item.ID,
+			item.RunID,
+			item.StageIndex,
+			item.WorkItemIndex,
+			item.WorkerPayloadJSON,
+			item.ResolvedInputsSHA256,
+			item.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert work item %s: %w", item.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit work item insert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) EnqueueWorkItems(ctx context.Context, items []QueuedWorkRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("queued work items are required")
+	}
+	for index, item := range items {
+		if item.ID == "" {
+			return fmt.Errorf("queued work item %d id is required", index)
+		}
+		if item.QueuedAt == "" {
+			return fmt.Errorf("queued work item %d queued at is required", index)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin queued work insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		existingQueuedAt, found, err := getQueuedWork(ctx, tx, item.ID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existingQueuedAt != item.QueuedAt {
+				return fmt.Errorf("queued work item %s already exists with different queued_at", item.ID)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO queued_work (
+			work_item_id,
+			queued_at
+		) VALUES (?, ?)`,
+			item.ID,
+			item.QueuedAt,
+		); err != nil {
+			return fmt.Errorf("enqueue work item %s: %w", item.ID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit queued work insert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetWorkItem(ctx context.Context, workItemID string) (WorkItemRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkItemRecord{}, false, err
+	}
+	return getWorkItem(ctx, s.db, workItemID)
+}
+
+func (s *Store) ListQueuedWorkItems(ctx context.Context) ([]QueuedWorkRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		queued_work.queued_at
+	FROM queued_work
+	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
+	ORDER BY queued_work.queued_at, queued_work.work_item_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list queued work items: %w", err)
+	}
+	defer rows.Close()
+
+	items := []QueuedWorkRecord{}
+	for rows.Next() {
+		item, err := scanQueuedWork(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list queued work items: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued work items: %w", err)
+	}
+	return items, nil
+}
+
+func (s *Store) CountWorkItemsForStage(ctx context.Context, runID string, stageIndex int) (WorkItemStatusCounts, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkItemStatusCounts{}, err
+	}
+	if runID == "" {
+		return WorkItemStatusCounts{}, fmt.Errorf("run id is required")
+	}
+	if stageIndex < 0 {
+		return WorkItemStatusCounts{}, fmt.Errorf("stage index must be non-negative")
+	}
+
+	var counts WorkItemStatusCounts
+	queries := []struct {
+		name string
+		sql  string
+		dest *int
+	}{
+		{name: "queued", sql: `SELECT COUNT(*) FROM queued_work JOIN work_items ON work_items.work_item_id = queued_work.work_item_id WHERE work_items.run_id = ? AND work_items.stage_index = ?`, dest: &counts.Queued},
+		{name: "running", sql: `SELECT COUNT(*) FROM running_work JOIN work_items ON work_items.work_item_id = running_work.work_item_id WHERE work_items.run_id = ? AND work_items.stage_index = ?`, dest: &counts.Running},
+		{name: "completed", sql: `SELECT COUNT(*) FROM completed_work JOIN work_items ON work_items.work_item_id = completed_work.work_item_id WHERE work_items.run_id = ? AND work_items.stage_index = ?`, dest: &counts.Completed},
+		{name: "failed", sql: `SELECT COUNT(*) FROM failed_work JOIN work_items ON work_items.work_item_id = failed_work.work_item_id WHERE work_items.run_id = ? AND work_items.stage_index = ?`, dest: &counts.Failed},
+	}
+	for _, query := range queries {
+		if err := s.db.QueryRowContext(ctx, query.sql, runID, stageIndex).Scan(query.dest); err != nil {
+			return WorkItemStatusCounts{}, fmt.Errorf("count %s work items for stage %s/%d: %w", query.name, runID, stageIndex, err)
+		}
+	}
+	return counts, nil
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -596,6 +800,46 @@ func getWorkflowStage(ctx context.Context, q queryer, runID string, stageIndex i
 	return stage, true, nil
 }
 
+func getWorkItem(ctx context.Context, q queryer, workItemID string) (WorkItemRecord, bool, error) {
+	if workItemID == "" {
+		return WorkItemRecord{}, false, fmt.Errorf("work item id is required")
+	}
+
+	item, err := scanWorkItem(q.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	FROM work_items
+	WHERE work_item_id = ?`, workItemID))
+	if err == sql.ErrNoRows {
+		return WorkItemRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkItemRecord{}, false, fmt.Errorf("get work item %s: %w", workItemID, err)
+	}
+	return item, true, nil
+}
+
+func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, bool, error) {
+	if workItemID == "" {
+		return "", false, fmt.Errorf("work item id is required")
+	}
+
+	var queuedAt string
+	err := q.QueryRowContext(ctx, `SELECT queued_at FROM queued_work WHERE work_item_id = ?`, workItemID).Scan(&queuedAt)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get queued work item %s: %w", workItemID, err)
+	}
+	return queuedAt, true, nil
+}
+
 func listStagesForRun(ctx context.Context, tx *sql.Tx, runID string) ([]WorkflowStageRecord, error) {
 	rows, err := tx.QueryContext(ctx, workflowStageSelectSQL()+` WHERE run_id = ? ORDER BY stage_index`, runID)
 	if err != nil {
@@ -682,6 +926,35 @@ func scanWorkflowStage(row scanner) (WorkflowStageRecord, error) {
 	return stage, nil
 }
 
+func scanWorkItem(row scanner) (WorkItemRecord, error) {
+	var item WorkItemRecord
+	err := row.Scan(
+		&item.ID,
+		&item.RunID,
+		&item.StageIndex,
+		&item.WorkItemIndex,
+		&item.WorkerPayloadJSON,
+		&item.ResolvedInputsSHA256,
+		&item.CreatedAt,
+	)
+	return item, err
+}
+
+func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
+	var item QueuedWorkRecord
+	err := row.Scan(
+		&item.ID,
+		&item.RunID,
+		&item.StageIndex,
+		&item.WorkItemIndex,
+		&item.WorkerPayloadJSON,
+		&item.ResolvedInputsSHA256,
+		&item.CreatedAt,
+		&item.QueuedAt,
+	)
+	return item, err
+}
+
 func (s *Store) requireOpen() error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store is not open")
@@ -743,6 +1016,34 @@ func validStageState(state string) bool {
 	default:
 		return false
 	}
+}
+
+func (w WorkItemRecord) validate() error {
+	if w.ID == "" {
+		return fmt.Errorf("work item id is required")
+	}
+	if w.RunID == "" {
+		return fmt.Errorf("work item run id is required")
+	}
+	if w.StageIndex < 0 {
+		return fmt.Errorf("work item stage index must be non-negative")
+	}
+	if w.WorkItemIndex < 0 {
+		return fmt.Errorf("work item index must be non-negative")
+	}
+	if w.WorkerPayloadJSON == "" {
+		return fmt.Errorf("work item worker payload json is required")
+	}
+	if !json.Valid([]byte(w.WorkerPayloadJSON)) {
+		return fmt.Errorf("work item worker payload json must be valid JSON")
+	}
+	if w.ResolvedInputsSHA256 == "" {
+		return fmt.Errorf("work item resolved inputs sha256 is required")
+	}
+	if w.CreatedAt == "" {
+		return fmt.Errorf("work item created at is required")
+	}
+	return nil
 }
 
 func (p ProjectRecord) validate() error {

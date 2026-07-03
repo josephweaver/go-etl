@@ -335,6 +335,16 @@ reports persisted counts. The controller does not maintain a second in-memory
 pending or assigned queue, including a nominal cache that could become a
 competing source of truth.
 
+Schema alignment note: `queued_at` is durable eligibility evidence, not mutable
+scheduling metadata. The schema and persistence methods should copy `queued_at`
+from `queued_work` into `running_work` during claim, then into `completed_work`
+or `failed_work` during terminal transition. Re-enqueueing an already queued
+item with the same `queued_at` may be idempotent; re-enqueueing it with a
+different `queued_at` should be treated as a conflict unless a later slice
+explicitly defines timestamp mutation semantics. The epic README and slice
+files are the implementation authority when they differ from older working
+notes such as `docs/db-design.md`.
+
 ## Canonical JSON and SHA-256 Helpers
 
 GOET should provide a small shared helper boundary for canonical JSON and hashes.
