@@ -180,7 +180,16 @@ repository
 
 #### Budget
 
-The budget defines how much production code may change before review.
+The budget defines how much production code may change within one user prompt
+before review. It is a per-prompt interaction budget, not a requirement that an
+entire implementation slice fit within one prompt.
+
+One implementation slice may span multiple prompts. For example, if an agreed
+slice requires three production files while the active mode permits `file(1)`,
+the AI changes at most one production file, runs the narrowest useful test,
+reports the partial result, and identifies the next file or step. The human may
+then authorize the next prompt-sized portion while remaining inside the same
+slice and HCI mode.
 
 Examples:
 
@@ -276,10 +285,14 @@ AI must report all new files created and explain their purpose.
 When operating under EC-3:
 
 1. Do not exceed the declared budget.
-2. Implement the smallest coherent slice.
+2. Implement the smallest coherent portion of the active slice that fits within
+   the prompt budget.
 3. Run the narrowest relevant test.
-4. Stop after the slice.
+4. Stop when the prompt budget is exhausted or the slice is complete, whichever
+   comes first.
 5. Wait for user approval before continuing.
+6. If the slice is incomplete, report what remains and name the next production
+   file or implementation step.
 
 The user may continue by replying:
 
@@ -287,7 +300,15 @@ The user may continue by replying:
 next
 ```
 
-When the user replies `next`, first commit the current completed slice to the active local branch with a clear commit message, then start the next slice. This keeps each continuation anchored in local git history before new changes are introduced.
+When the user replies `next` and the active slice is incomplete, continue that
+same slice under a fresh prompt-sized budget. Do not represent the partial work
+as a completed slice or automatically commit it unless the user explicitly asks
+for a checkpoint commit.
+
+When the user replies `next` after the active slice is complete, first commit
+the completed slice to the active local branch with a clear commit message, then
+start the next slice. This keeps slice boundaries anchored in local git history
+without confusing prompt boundaries with slice boundaries.
 
 ### Slice Boundary Git Flow
 
