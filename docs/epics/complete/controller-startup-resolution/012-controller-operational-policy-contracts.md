@@ -13,9 +13,9 @@ constructors that need them.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/009-startup-resolver-assembly.md`
-- `docs/epics/controller-startup-resolution/011-controller-filesystem-contracts.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/009-startup-resolver-assembly.md`
+- `docs/epics/complete/controller-startup-resolution/011-controller-filesystem-contracts.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `cmd/controller/defaults.json`

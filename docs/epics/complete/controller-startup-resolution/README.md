@@ -1,6 +1,6 @@
 # Controller Startup Resolution Epic
 
-Status: Proposed
+Status: Complete
 
 ## Purpose
 

@@ -12,8 +12,8 @@ Wire the startup argument parser into the controller entry point so an explicit
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/002-startup-command-line-contract.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/002-startup-command-line-contract.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config_test.go`
 

@@ -13,8 +13,8 @@ before later controller services or the HTTP listener are constructed.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/009-startup-resolver-assembly.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/009-startup-resolver-assembly.md`
 - `docs/controller.internal.datamodel.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config_test.go`

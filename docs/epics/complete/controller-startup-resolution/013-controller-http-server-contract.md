@@ -13,8 +13,8 @@ server constructor.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/012-controller-operational-policy-contracts.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/012-controller-operational-policy-contracts.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `cmd/controller/defaults.json`

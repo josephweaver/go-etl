@@ -14,11 +14,11 @@ startup decisions.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/005-defaults-controller-layering.md`
-- `docs/epics/controller-startup-resolution/006-controller-environment-accessor.md`
-- `docs/epics/controller-startup-resolution/007-startup-override-scope.md`
-- `docs/epics/controller-startup-resolution/008-generated-startup-runtime-scope.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/005-defaults-controller-layering.md`
+- `docs/epics/complete/controller-startup-resolution/006-controller-environment-accessor.md`
+- `docs/epics/complete/controller-startup-resolution/007-startup-override-scope.md`
+- `docs/epics/complete/controller-startup-resolution/008-generated-startup-runtime-scope.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config.go`
 - `cmd/controller/config_test.go`

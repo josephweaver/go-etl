@@ -10,7 +10,6 @@ its authoritative scope.
 - [Attempt Liveness and Caretaker Recovery](attempt-liveness-recovery/README.md) — Detect workers that stop reporting, recover abandoned attempts, and requeue their logical work.
 - [Controller Resilience](controller-resilience/README.md) — Define controller process identity and restart behavior for work, reports, and orchestration state.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) — Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
-- [Controller Startup Resolution](controller-startup-resolution/README.md) — Build and validate controller startup through the standard typed-variable system and fail before normal API admission when startup requirements are not met.
 - [Dependency-Aware Workflow Execution](dependency-aware-workflows/README.md) — Compile and queue workflow steps only when their predecessor steps have completed successfully.
 - [Execution Events](execution-events/README.md) — Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
 - [Execution Observability](execution-observability/README.md) — Collect, route, stream, and store execution logs through the controller.
@@ -30,6 +29,7 @@ epic status and planning structure used by the proposed epics above.
 
 ## Completed Epics
 
+- [Controller Startup Resolution](complete/controller-startup-resolution/README.md) — Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](complete/ssh-transport/README.md) — Adds remote command execution and file transfer through controller transport implementations.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) — Adds recursively resolved, explicitly typed object and list expressions.
 
@@ -37,4 +37,3 @@ epic status and planning structure used by the proposed epics above.
 
 - [Epic procedure](epic-procedure.md) — Defines how to frame and approve an epic.
 - [Epic slice procedure](epic-slice-procedure.md) — Defines how an approved epic is decomposed into implementation slices.
-

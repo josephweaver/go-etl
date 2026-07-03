@@ -12,8 +12,8 @@ fail closed if another controller already owns the configured database.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
-- `docs/epics/controller-startup-resolution/010-main-database-contract.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/010-main-database-contract.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 

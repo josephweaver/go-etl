@@ -12,7 +12,7 @@ declarations, without loading configuration or constructing services.
 
 Read these files first:
 
-- `docs/epics/controller-startup-resolution/README.md`
+- `docs/epics/complete/controller-startup-resolution/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config_test.go`
 
