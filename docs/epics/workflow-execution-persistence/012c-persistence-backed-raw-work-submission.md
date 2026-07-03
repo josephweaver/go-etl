@@ -1,6 +1,6 @@
 # 012c Persistence-backed Raw Work Submission
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

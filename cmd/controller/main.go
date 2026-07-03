@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,11 @@ import (
 )
 
 const defaultControllerConfigFilename = "controller.json"
+const rawPersistenceProjectID = "__raw_project__"
+const rawPersistenceWorkflowID = "__raw_workflow__"
+const rawPersistenceRunID = "__raw_run__"
+const rawPersistenceStageIndex = 0
+const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 
 type Controller struct {
 	mu                sync.Mutex
@@ -898,6 +904,19 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if c.workflowStore != nil {
+		if err := c.submitRawWorkToStore(r.Context(), item, time.Now().UTC()); err != nil {
+			if isPersistenceConflict(err) {
+				http.Error(w, "work item id already exists", http.StatusConflict)
+				return
+			}
+			http.Error(w, "persist work item", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -908,6 +927,118 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 
 	c.pending = append(c.pending, item)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkItem, submittedAt time.Time) error {
+	if err := c.ensureRawPersistenceRun(ctx); err != nil {
+		return err
+	}
+
+	record, queued, err := persistenceRecordsFromRawWorkItem(item, submittedAt)
+	if err != nil {
+		return err
+	}
+	if _, found, err := c.workflowStore.GetWorkItem(ctx, record.ID); err != nil {
+		return err
+	} else if found {
+		return fmt.Errorf("work item %s already exists", record.ID)
+	}
+	if err := c.workflowStore.InsertWorkItems(ctx, []persistence.WorkItemRecord{record}); err != nil {
+		return err
+	}
+	if err := c.workflowStore.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{queued}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Controller) ensureRawPersistenceRun(ctx context.Context) error {
+	project := persistence.ProjectRecord{
+		ID:                 rawPersistenceProjectID,
+		Name:               "Raw Work",
+		RepositoryIdentity: "controller:raw",
+		SourceCommit:       "raw",
+		ConfigPath:         "raw",
+		ConfigSHA256:       sha256HexString("raw-project"),
+		CreatedAt:          rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.UpsertProject(ctx, project); err != nil {
+		return err
+	}
+	workflow := persistence.WorkflowRecord{
+		ID:                 rawPersistenceWorkflowID,
+		ProjectID:          rawPersistenceProjectID,
+		Name:               "Raw Work",
+		RepositoryIdentity: "controller:raw",
+		SourceCommit:       "raw",
+		WorkflowPath:       "raw",
+		WorkflowSHA256:     sha256HexString("raw-workflow"),
+		CreatedAt:          rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.UpsertWorkflow(ctx, workflow); err != nil {
+		return err
+	}
+	run := persistence.WorkflowRunRecord{
+		ID:                    rawPersistenceRunID,
+		ProjectID:             rawPersistenceProjectID,
+		WorkflowID:            rawPersistenceWorkflowID,
+		SubmissionContextJSON: `{"source":"raw-work"}`,
+		CreatedAt:             rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.CreateWorkflowRun(ctx, run); err != nil {
+		return err
+	}
+	stage := persistence.WorkflowStageRecord{
+		RunID:                rawPersistenceRunID,
+		StageIndex:           rawPersistenceStageIndex,
+		StepID:               "raw-work",
+		StageSourceReference: "controller:raw-work",
+		State:                "ready",
+		CreatedAt:            rawPersistenceCreatedAt,
+		ReadyAt:              rawPersistenceCreatedAt,
+	}
+	return c.workflowStore.InsertStagePlan(ctx, rawPersistenceRunID, []persistence.WorkflowStageRecord{stage})
+}
+
+func persistenceRecordsFromRawWorkItem(item model.WorkItem, submittedAt time.Time) (persistence.WorkItemRecord, persistence.QueuedWorkRecord, error) {
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return persistence.WorkItemRecord{}, persistence.QueuedWorkRecord{}, fmt.Errorf("encode raw work item: %w", err)
+	}
+	record := persistence.WorkItemRecord{
+		ID:                   item.ID,
+		RunID:                rawPersistenceRunID,
+		StageIndex:           rawPersistenceStageIndex,
+		WorkItemIndex:        rawWorkItemIndex(item.ID),
+		WorkerPayloadJSON:    string(payload),
+		ResolvedInputsSHA256: sha256HexBytes(payload),
+		CreatedAt:            submittedAt.UTC().Format(time.RFC3339),
+	}
+	return record, persistence.QueuedWorkRecord{
+		WorkItemRecord: record,
+		QueuedAt:       submittedAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func rawWorkItemIndex(id string) int {
+	sum := sha256.Sum256([]byte(id))
+	return int(sum[0]&0x7f)<<24 | int(sum[1])<<16 | int(sum[2])<<8 | int(sum[3])
+}
+
+func sha256HexString(value string) string {
+	return sha256HexBytes([]byte(value))
+}
+
+func sha256HexBytes(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func isPersistenceConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "already exists")
 }
 
 func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Request) {

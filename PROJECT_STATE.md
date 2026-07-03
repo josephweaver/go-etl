@@ -392,7 +392,10 @@ startup. The older attempt ledger remains in code for legacy skip/reuse helpers
 and tests, but live startup no longer opens it as the main database. When a
 workflow-execution store is configured, `/status` now derives pending,
 assigned, and failed-equivalent counts from persisted queued, running, and
-failed work rows instead of the in-memory queue maps.
+failed work rows instead of the in-memory queue maps. Raw `POST /work`
+submissions also persist into a synthetic raw-work run and queue row when the
+workflow-execution store is configured; the old in-memory raw submission path
+remains as fallback when no store is present.
 
 ## SQLite Ledger
 

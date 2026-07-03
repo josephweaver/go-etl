@@ -1543,6 +1543,77 @@ func TestSubmitWorkHandler(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt",
+		"parameters":{"year":{"type":"int","value":2026}}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	if len(controller.pending) != 0 {
+		t.Fatalf("in-memory pending count = %d, want 0 when workflow store is configured", len(controller.pending))
+	}
+	status := getStatus(t, controller)
+	if status.Pending != 1 {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want 1: %+v", len(queued), queued)
+	}
+	if queued[0].RunID != rawPersistenceRunID || queued[0].StageIndex != rawPersistenceStageIndex {
+		t.Fatalf("queued raw location = run %q stage %d, want raw run/stage", queued[0].RunID, queued[0].StageIndex)
+	}
+	var persisted model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &persisted); err != nil {
+		t.Fatalf("decode worker payload json: %v", err)
+	}
+	if persisted.ID != "test-001" || persisted.OutputFilename != "result.txt" {
+		t.Fatalf("persisted payload = %+v, want submitted work item", persisted)
+	}
+	if persisted.Parameters["year"].Value == nil {
+		t.Fatalf("persisted parameters = %+v, want year parameter", persisted.Parameters)
+	}
+}
+
+func TestSubmitWorkHandlerRejectsDuplicatePersistedRawWork(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	body := `{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`
+	first := httptest.NewRecorder()
+	controller.submitWorkHandler(first, httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(body)))
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first status code = %d, want 204", first.Code)
+	}
+
+	second := httptest.NewRecorder()
+	controller.submitWorkHandler(second, httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(body)))
+
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status code = %d, want 409", second.Code)
+	}
+}
+
 func TestSubmitWorkHandlerRejectsInvalidItem(t *testing.T) {
 	controller := newController(nil)
 	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{"id":"test-001"}`))
