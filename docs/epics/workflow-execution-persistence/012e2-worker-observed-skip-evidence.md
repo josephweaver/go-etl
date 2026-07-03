@@ -1,6 +1,6 @@
 # 012e2 Worker-observed Skip Evidence
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -218,3 +218,34 @@ file.
 It is still open whether this slice should add explicit database columns or
 first carry worker-observed hashes inside `output_json`. Explicit columns are
 better for queries, but they require a schema slice.
+
+## Implementation Notes
+
+This slice implemented the no-schema-expansion path.
+
+- `internal/fingerprint` remains the shared canonical JSON and SHA-256 helper.
+- `model.WorkItem` now carries optional `reuse_candidates`.
+- `model.WorkCompletion` now carries skip metadata and worker-observed
+  input/output/pre-state/post-state hashes.
+- Worker demo and summary operations compute observed hashes through the shared
+  fingerprint helper after normalizing Go structs into JSON-shaped values.
+- The demo operation can skip execution when the current pre-state and expected
+  output match a supplied reuse candidate.
+- The summary operation computes an input observation that includes the input
+  file path, size, and file-content SHA-256.
+- Persisted `/work/complete` maps `skipped_parent_id` to
+  `CompleteAttemptRequest.SkippedParentID`.
+- Persisted `/work/next` includes reuse candidates from prior completed
+  attempts in the same run when the persisted `resolved_inputs_sha256` and
+  `worker_payload_json` match.
+
+The implementation intentionally does not add explicit `completed_work`
+columns for `input_sha256`, `output_sha256`, or `skip_reason`. Those values are
+currently carried in completion transport fields and embedded in canonical
+`output_json`. A future schema slice should add explicit columns before broad
+reuse queries depend on them.
+
+The implementation also does not define final `controller_sha256` or
+`plugin_sha256` semantics. Until those are formalized, persisted candidate
+selection uses `resolved_inputs_sha256` plus exact `worker_payload_json` as a
+conservative stand-in for the larger execution fingerprint.

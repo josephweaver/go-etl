@@ -1103,6 +1103,29 @@ to:
 evidence, err := worker.Run(item)
 ```
 
+Feature 012e2 extends that contract with worker-observed skip evidence. Work
+assignments can now carry `reuse_candidates`, and completion reports can carry:
+
+- `skipped`
+- `skipped_parent_id`
+- `skip_reason`
+- `input_sha256`
+- `output_sha256`
+- `pre_state_sha256`
+- `post_state_sha256`
+
+The worker uses `internal/fingerprint` for canonical JSON and SHA-256 hashing.
+The demo worker can skip when its current pre-state and expected output match a
+prior candidate. The summary worker includes input file path, size, and content
+SHA-256 in its input observation before deciding whether reuse is safe.
+
+Persisted `/work/next` currently selects reuse candidates from prior completed
+attempts in the same run when `resolved_inputs_sha256` and
+`worker_payload_json` match. This is a conservative temporary stand-in until
+`controller_sha256` and `plugin_sha256` are precisely defined. The database
+schema still stores worker-observed input/output hashes inside canonical
+`output_json`; explicit columns are deferred to a later schema slice.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

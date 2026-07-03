@@ -116,6 +116,15 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		InputFingerprint:     "input-fingerprint",
 		OutputFingerprint:    "output-fingerprint",
 		CodeVersion:          "code-version",
+		ReuseCandidates: []WorkReuseCandidate{
+			{
+				AttemptID:        "attempt-prior",
+				InputSHA256:      "input-sha",
+				OutputSHA256:     "output-sha",
+				PostStateSHA256:  "post-state-sha",
+				OutputJSONSHA256: "output-json-sha",
+			},
+		},
 		Parameters: Parameters{
 			"input_path": {Type: "path", Value: "/data/input.tif"},
 		},
@@ -137,6 +146,9 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 
 	if decodedItem.AttemptID != item.AttemptID {
 		t.Fatalf("attempt_id = %q, want %q", decodedItem.AttemptID, item.AttemptID)
+	}
+	if len(decodedItem.ReuseCandidates) != 1 || decodedItem.ReuseCandidates[0].AttemptID != "attempt-prior" {
+		t.Fatalf("reuse_candidates = %+v, want prior attempt", decodedItem.ReuseCandidates)
 	}
 
 	if decodedItem.StepDefinitionID != item.StepDefinitionID {
@@ -160,6 +172,13 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
 		ID:                   "work-item-001",
 		AttemptID:            "attempt-001",
+		Skipped:              true,
+		SkippedParentID:      "attempt-prior",
+		SkipReason:           "matched_worker_observed_state",
+		InputSHA256:          "input-sha",
+		OutputSHA256:         "output-sha",
+		PreStateSHA256:       "pre-state-sha",
+		PostStateSHA256:      "post-state-sha",
 		OutputJSON:           `{"result":"ok"}`,
 		PreStateJSON:         `{"output_exists":false}`,
 		PostStateJSON:        `{"output_exists":true}`,
@@ -192,6 +211,12 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 
 	if decodedCompletion.AttemptID != completion.AttemptID {
 		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
+	}
+	if !decodedCompletion.Skipped || decodedCompletion.SkippedParentID != completion.SkippedParentID {
+		t.Fatalf("skip metadata = %+v, want skipped parent %q", decodedCompletion, completion.SkippedParentID)
+	}
+	if decodedCompletion.InputSHA256 != completion.InputSHA256 || decodedCompletion.OutputSHA256 != completion.OutputSHA256 {
+		t.Fatalf("observed hashes = %+v, want input/output hashes", decodedCompletion)
 	}
 
 	if decodedCompletion.OutputJSON != completion.OutputJSON {

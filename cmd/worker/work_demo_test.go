@@ -86,3 +86,40 @@ func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
 		t.Fatalf("unexpected output: %q", output)
 	}
 }
+
+func TestWorkerWriteDemoOutputSkipsMatchingReuseCandidate(t *testing.T) {
+	worker := newTestWorker(t)
+
+	item := model.WorkItem{
+		ID:             "test-001",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result.txt",
+	}
+	firstEvidence, err := worker.writeDemoOutput(item)
+	if err != nil {
+		t.Fatalf("first write error: %v", err)
+	}
+
+	item.ReuseCandidates = []model.WorkReuseCandidate{
+		{
+			AttemptID:       "attempt-prior",
+			InputSHA256:     firstEvidence.InputSHA256,
+			OutputSHA256:    firstEvidence.OutputSHA256,
+			PostStateSHA256: firstEvidence.PostStateSHA256,
+		},
+	}
+	secondEvidence, err := worker.writeDemoOutput(item)
+	if err != nil {
+		t.Fatalf("second write error: %v", err)
+	}
+
+	if !secondEvidence.Skipped {
+		t.Fatalf("expected skipped evidence: %+v", secondEvidence)
+	}
+	if secondEvidence.SkippedParentID != "attempt-prior" {
+		t.Fatalf("skipped parent = %q, want attempt-prior", secondEvidence.SkippedParentID)
+	}
+	if secondEvidence.PreStateSHA256 != firstEvidence.PostStateSHA256 {
+		t.Fatalf("pre-state hash = %q, want prior post-state %q", secondEvidence.PreStateSHA256, firstEvidence.PostStateSHA256)
+	}
+}

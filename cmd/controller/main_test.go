@@ -1763,6 +1763,36 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 	}
 }
 
+func TestCompleteAttemptRequestFromCompletionMapsWorkerObservedSkipEvidence(t *testing.T) {
+	preStateSHA256 := strings.Repeat("a", 64)
+	postStateSHA256 := strings.Repeat("b", 64)
+	request, err := completeAttemptRequestFromCompletion(model.WorkCompletion{
+		ID:              "test-001",
+		AttemptID:       "attempt-001",
+		Skipped:         true,
+		SkippedParentID: "attempt-prior",
+		SkipReason:      "matched_worker_observed_state",
+		InputSHA256:     strings.Repeat("c", 64),
+		OutputSHA256:    strings.Repeat("d", 64),
+		PreStateSHA256:  preStateSHA256,
+		PostStateSHA256: postStateSHA256,
+		OutputJSON:      `{"input_sha256":"` + strings.Repeat("c", 64) + `","output_sha256":"` + strings.Repeat("d", 64) + `"}`,
+		PreStateJSON:    `{"output_exists":true}`,
+		PostStateJSON:   `{"output_exists":true}`,
+		CompletedAt:     "2026-07-03T12:00:00Z",
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("build complete request: %v", err)
+	}
+
+	if request.SkippedParentID != "attempt-prior" {
+		t.Fatalf("skipped parent = %q, want attempt-prior", request.SkippedParentID)
+	}
+	if request.PreStateSHA256 != preStateSHA256 || request.PostStateSHA256 != postStateSHA256 {
+		t.Fatalf("state hashes = %q/%q, want reported worker hashes", request.PreStateSHA256, request.PostStateSHA256)
+	}
+}
+
 func TestCompleteWorkHandlerRejectsPersistedCompletionMissingAttemptID(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

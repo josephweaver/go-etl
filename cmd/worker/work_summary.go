@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
 )
 
@@ -33,9 +34,34 @@ func (w Worker) summarizeInputFile(item model.WorkItem) (WorkEvidence, error) {
 	if info.IsDir() {
 		return WorkEvidence{}, fmt.Errorf("input path is a directory: %s", inputPath)
 	}
+	inputFileSHA256, err := fileSHA256(inputPath)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
 
 	summary := fmt.Sprintf("input_path=%s\nsize_bytes=%d\n", inputPath, info.Size())
-	if err := os.WriteFile(tmpPath, []byte(summary), 0644); err != nil {
+	output := []byte(summary)
+	inputSHA256, err := inputObservationSHA256(item, map[string]any{
+		"path":        inputPath,
+		"size_bytes":  info.Size(),
+		"file_sha256": inputFileSHA256,
+	})
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	expectedOutputSHA256 := fp.SHA256Hex(output)
+	preStateSHA256, err := canonicalObservationSHA256(preState)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	if candidate, ok := matchingReuseCandidate(item, inputSHA256, expectedOutputSHA256, preStateSHA256); ok {
+		if err := w.log("skipped work item: " + item.ID); err != nil {
+			return WorkEvidence{}, err
+		}
+		return outputEvidence(item, dataPath, int64(len(output)), preState, preState, inputSHA256, expectedOutputSHA256, candidate)
+	}
+
+	if err := os.WriteFile(tmpPath, output, 0644); err != nil {
 		return WorkEvidence{}, fmt.Errorf("write temporary output %s: %w", tmpPath, err)
 	}
 
@@ -51,7 +77,12 @@ func (w Worker) summarizeInputFile(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 
-	return outputEvidence(item, dataPath, int64(len(summary)), preState)
+	postState, err := outputFileState(dataPath)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
+	return outputEvidence(item, dataPath, int64(len(output)), preState, postState, inputSHA256, expectedOutputSHA256, model.WorkReuseCandidate{})
 }
 
 func stringParameter(item model.WorkItem, name string) (string, error) {

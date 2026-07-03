@@ -13,21 +13,33 @@ const (
 )
 
 type WorkItem struct {
-	ID                   string       `json:"id"`
-	AttemptID            string       `json:"attempt_id,omitempty"`
-	Type                 WorkItemType `json:"type"`
-	OutputFilename       string       `json:"output_filename"`
-	Parameters           Parameters   `json:"parameters,omitempty"`
-	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
-	WorkflowFingerprint  string       `json:"workflow_fingerprint,omitempty"`
-	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
-	StepDefinitionID     string       `json:"step_definition_id,omitempty"`
-	StepFingerprint      string       `json:"step_fingerprint,omitempty"`
-	StepInstanceID       string       `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint  string       `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint     string       `json:"input_fingerprint,omitempty"`
-	OutputFingerprint    string       `json:"output_fingerprint,omitempty"`
-	CodeVersion          string       `json:"code_version,omitempty"`
+	ID                   string               `json:"id"`
+	AttemptID            string               `json:"attempt_id,omitempty"`
+	Type                 WorkItemType         `json:"type"`
+	OutputFilename       string               `json:"output_filename"`
+	Parameters           Parameters           `json:"parameters,omitempty"`
+	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
+	WorkflowDefinitionID string               `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string               `json:"workflow_fingerprint,omitempty"`
+	WorkflowInstanceID   string               `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string               `json:"step_definition_id,omitempty"`
+	StepFingerprint      string               `json:"step_fingerprint,omitempty"`
+	StepInstanceID       string               `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string               `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string               `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string               `json:"output_fingerprint,omitempty"`
+	CodeVersion          string               `json:"code_version,omitempty"`
+}
+
+type WorkReuseCandidate struct {
+	AttemptID        string `json:"attempt_id"`
+	InputSHA256      string `json:"input_sha256,omitempty"`
+	OutputSHA256     string `json:"output_sha256,omitempty"`
+	PreStateSHA256   string `json:"pre_state_sha256,omitempty"`
+	PostStateSHA256  string `json:"post_state_sha256,omitempty"`
+	OutputJSONSHA256 string `json:"output_json_sha256,omitempty"`
+	ControllerSHA256 string `json:"controller_sha256,omitempty"`
+	PluginSHA256     string `json:"plugin_sha256,omitempty"`
 }
 
 type Parameters map[string]Parameter
@@ -40,6 +52,15 @@ type Parameter struct {
 type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
+	Skipped              bool       `json:"skipped,omitempty"`
+	SkippedParentID      string     `json:"skipped_parent_id,omitempty"`
+	SkipReason           string     `json:"skip_reason,omitempty"`
+	InputSHA256          string     `json:"input_sha256,omitempty"`
+	OutputSHA256         string     `json:"output_sha256,omitempty"`
+	PreStateSHA256       string     `json:"pre_state_sha256,omitempty"`
+	PostStateSHA256      string     `json:"post_state_sha256,omitempty"`
+	ControllerSHA256     string     `json:"controller_sha256,omitempty"`
+	PluginSHA256         string     `json:"plugin_sha256,omitempty"`
 	OutputJSON           string     `json:"output_json,omitempty"`
 	PreStateJSON         string     `json:"pre_state_json,omitempty"`
 	PostStateJSON        string     `json:"post_state_json,omitempty"`

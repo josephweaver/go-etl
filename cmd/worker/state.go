@@ -14,9 +14,16 @@ import (
 )
 
 type WorkEvidence struct {
-	OutputJSON    string
-	PreStateJSON  string
-	PostStateJSON string
+	Skipped         bool
+	SkippedParentID string
+	SkipReason      string
+	InputSHA256     string
+	OutputSHA256    string
+	PreStateSHA256  string
+	PostStateSHA256 string
+	OutputJSON      string
+	PreStateJSON    string
+	PostStateJSON   string
 }
 
 func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
@@ -53,6 +60,13 @@ func workCompletion(item model.WorkItem, startedAt time.Time, evidence WorkEvide
 	completion := model.WorkCompletion{
 		ID:                   item.ID,
 		AttemptID:            attemptID,
+		Skipped:              evidence.Skipped,
+		SkippedParentID:      evidence.SkippedParentID,
+		SkipReason:           evidence.SkipReason,
+		InputSHA256:          evidence.InputSHA256,
+		OutputSHA256:         evidence.OutputSHA256,
+		PreStateSHA256:       evidence.PreStateSHA256,
+		PostStateSHA256:      evidence.PostStateSHA256,
 		OutputJSON:           evidence.OutputJSON,
 		PreStateJSON:         evidence.PreStateJSON,
 		PostStateJSON:        evidence.PostStateJSON,

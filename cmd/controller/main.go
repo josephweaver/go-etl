@@ -1668,16 +1668,27 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 	if completion.AttemptID == "" {
 		return persistence.CompleteAttemptRequest{}, fmt.Errorf("attempt_id is required")
 	}
+	if completion.Skipped && completion.SkippedParentID == "" {
+		return persistence.CompleteAttemptRequest{}, fmt.Errorf("skipped_parent_id is required when skipped is true")
+	}
 
 	outputJSON, outputJSONSHA256, err := canonicalJSONTextAndHash("output_json", completion.OutputJSON)
 	if err != nil {
 		return persistence.CompleteAttemptRequest{}, err
 	}
-	_, preStateSHA256, err := canonicalJSONTextAndHash("pre_state_json", completion.PreStateJSON)
+	_, preStateEvidenceSHA256, err := canonicalJSONTextAndHash("pre_state_json", completion.PreStateJSON)
 	if err != nil {
 		return persistence.CompleteAttemptRequest{}, err
 	}
-	_, postStateSHA256, err := canonicalJSONTextAndHash("post_state_json", completion.PostStateJSON)
+	_, postStateEvidenceSHA256, err := canonicalJSONTextAndHash("post_state_json", completion.PostStateJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	preStateSHA256, err := reportedOrEvidenceSHA256("pre_state_sha256", completion.PreStateSHA256, preStateEvidenceSHA256)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	postStateSHA256, err := reportedOrEvidenceSHA256("post_state_sha256", completion.PostStateSHA256, postStateEvidenceSHA256)
 	if err != nil {
 		return persistence.CompleteAttemptRequest{}, err
 	}
@@ -1689,12 +1700,23 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 
 	return persistence.CompleteAttemptRequest{
 		AttemptID:        completion.AttemptID,
+		SkippedParentID:  completion.SkippedParentID,
 		OutputJSON:       outputJSON,
 		OutputJSONSHA256: outputJSONSHA256,
 		PreStateSHA256:   preStateSHA256,
 		PostStateSHA256:  postStateSHA256,
 		CompletedAt:      completedAt,
 	}, nil
+}
+
+func reportedOrEvidenceSHA256(name string, reported string, evidence string) (string, error) {
+	if reported == "" {
+		return evidence, nil
+	}
+	if err := fp.ValidateSHA256Hex(reported); err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	return reported, nil
 }
 
 func canonicalJSONTextAndHash(name string, value string) (string, string, error) {
@@ -1896,6 +1918,11 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	item.AttemptID = claim.AttemptID
+	item.ReuseCandidates, err = c.persistedReuseCandidates(r.Context(), claim)
+	if err != nil {
+		http.Error(w, "load reuse candidates", http.StatusInternalServerError)
+		return
+	}
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
 		return
@@ -1905,4 +1932,56 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) persistedReuseCandidates(ctx context.Context, claim persistence.ClaimedWorkRecord) ([]model.WorkReuseCandidate, error) {
+	terminals, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, claim.WorkItem.RunID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]model.WorkReuseCandidate, 0)
+	for _, terminal := range terminals {
+		if terminal.TerminalState != "completed" {
+			continue
+		}
+		if terminal.AttemptID == claim.AttemptID {
+			continue
+		}
+		if terminal.WorkItem.ResolvedInputsSHA256 != claim.WorkItem.ResolvedInputsSHA256 {
+			continue
+		}
+		if terminal.WorkItem.WorkerPayloadJSON != claim.WorkItem.WorkerPayloadJSON {
+			continue
+		}
+		candidate := model.WorkReuseCandidate{
+			AttemptID:        terminal.AttemptID,
+			OutputJSONSHA256: terminal.OutputJSONSHA256,
+			PreStateSHA256:   terminal.PreStateSHA256,
+			PostStateSHA256:  terminal.PostStateSHA256,
+		}
+		hashes, err := workerObservedHashesFromOutputJSON(terminal.OutputJSON)
+		if err != nil {
+			return nil, err
+		}
+		candidate.InputSHA256 = hashes.InputSHA256
+		candidate.OutputSHA256 = hashes.OutputSHA256
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+type workerObservedHashes struct {
+	InputSHA256  string `json:"input_sha256"`
+	OutputSHA256 string `json:"output_sha256"`
+}
+
+func workerObservedHashesFromOutputJSON(outputJSON string) (workerObservedHashes, error) {
+	if outputJSON == "" {
+		return workerObservedHashes{}, nil
+	}
+	var hashes workerObservedHashes
+	if err := json.Unmarshal([]byte(outputJSON), &hashes); err != nil {
+		return workerObservedHashes{}, fmt.Errorf("decode worker observed hashes: %w", err)
+	}
+	return hashes, nil
 }
