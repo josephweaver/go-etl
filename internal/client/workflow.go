@@ -19,6 +19,18 @@ type WorkflowSubmission struct {
 	Variables []variable.Variable `json:"variables"`
 }
 
+type WorkflowRunSubmission struct {
+	Project   SourceDocumentReference `json:"project"`
+	Workflow  SourceDocumentReference `json:"workflow"`
+	Variables []variable.Variable     `json:"variables,omitempty"`
+}
+
+type SourceDocumentReference struct {
+	Repository string `json:"repository"`
+	Ref        string `json:"ref"`
+	Path       string `json:"path"`
+}
+
 type WorkflowClient struct {
 	httpClient *http.Client
 	resolver   variable.Resolver
@@ -45,7 +57,16 @@ func NewWorkflowClientWithStarter(httpClient *http.Client, resolver variable.Res
 	}
 }
 
+func (c WorkflowClient) SubmitWorkflowRun(submission WorkflowRunSubmission) error {
+	return c.submitWorkflowPayload(submission)
+}
+
+// SubmitWorkflow submits a legacy inline workflow payload. Prefer SubmitWorkflowRun.
 func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
+	return c.submitWorkflowPayload(submission)
+}
+
+func (c WorkflowClient) submitWorkflowPayload(submission any) error {
 	controllerURL, err := c.controllerURL()
 	if err != nil {
 		return err
@@ -57,7 +78,7 @@ func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
 
 	body, err := json.Marshal(submission)
 	if err != nil {
-		return fmt.Errorf("encode workflow submission: %w", err)
+		return fmt.Errorf("encode workflow run submission: %w", err)
 	}
 
 	url := strings.TrimRight(controllerURL, "/") + "/workflow"
@@ -74,6 +95,16 @@ func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
 	return nil
 }
 
+func (c WorkflowClient) SubmitWorkflowRunFile(path string) error {
+	submission, err := LoadWorkflowRunSubmissionFile(path)
+	if err != nil {
+		return err
+	}
+
+	return c.SubmitWorkflowRun(submission)
+}
+
+// SubmitWorkflowFile submits a legacy inline workflow file. Prefer SubmitWorkflowRunFile.
 func (c WorkflowClient) SubmitWorkflowFile(path string) error {
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
@@ -83,6 +114,22 @@ func (c WorkflowClient) SubmitWorkflowFile(path string) error {
 	return c.SubmitWorkflow(submission)
 }
 
+// LoadWorkflowRunSubmissionFile loads the source-reference workflow-run submission format.
+func LoadWorkflowRunSubmissionFile(path string) (WorkflowRunSubmission, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorkflowRunSubmission{}, fmt.Errorf("read workflow run submission file: %w", err)
+	}
+
+	var submission WorkflowRunSubmission
+	if err := json.Unmarshal(data, &submission); err != nil {
+		return WorkflowRunSubmission{}, fmt.Errorf("decode workflow run submission file: %w", err)
+	}
+
+	return submission, nil
+}
+
+// LoadWorkflowSubmissionFile loads the legacy inline workflow submission format.
 func LoadWorkflowSubmissionFile(path string) (WorkflowSubmission, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

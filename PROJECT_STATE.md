@@ -1133,6 +1133,14 @@ Implemented` instead of compiling it into `Controller.pending`. The no-store
 fallback still supports inline workflow JSON for existing tests. Source-reference
 workflow admission remains the next required controller/client boundary.
 
+Feature 012f2 updates the Go client side of that boundary. `internal/client`
+now has a `WorkflowRunSubmission` envelope with project and workflow
+`SourceDocumentReference` values, and `cmd/demo-client` now submits
+`demo-workflow-run.json` through `SubmitWorkflowRunFile`. The old inline
+workflow submission helpers remain as legacy compatibility methods, but they
+are no longer the demo client's normal path. Controller-side source-reference
+admission is still pending.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

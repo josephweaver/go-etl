@@ -1,6 +1,6 @@
 # 012f2 Client Source-reference Workflow Submission
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -193,3 +193,21 @@ transport explicit and avoids hidden inheritance rules in the first cut.
 It is also open what local demo repository identity should look like before the
 source-control resolver exists. Use an opaque placeholder in the client fixture
 and let the controller/source-reference slice define how it is resolved.
+
+## Implementation Notes
+
+- `internal/client` now defines `WorkflowRunSubmission` and
+  `SourceDocumentReference`.
+- `WorkflowClient.SubmitWorkflowRun` and `SubmitWorkflowRunFile` post the
+  source-reference envelope to `/workflow`.
+- `LoadWorkflowRunSubmissionFile` loads a source-reference submission file.
+- The old inline workflow methods remain as legacy helpers and are marked in
+  comments.
+- `cmd/demo-client` now defaults to `demo-workflow-run.json` and calls
+  `SubmitWorkflowRunFile`.
+- `demo-workflow-run.json` uses opaque `local:demo` repository references for
+  the project and workflow documents.
+
+Controller-side source-reference admission remains out of scope for this slice,
+so the demo client now sends the new form but the persisted controller still
+needs a follow-up slice to accept and resolve it.

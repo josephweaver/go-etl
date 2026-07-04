@@ -76,6 +76,64 @@ func TestWorkflowClientSubmitWorkflow(t *testing.T) {
 	}
 }
 
+func TestWorkflowClientSubmitWorkflowRun(t *testing.T) {
+	var received WorkflowRunSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+
+		if r.URL.Path != "/workflow" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	err := client.SubmitWorkflowRun(WorkflowRunSubmission{
+		Project: SourceDocumentReference{
+			Repository: "local:demo",
+			Ref:        "main",
+			Path:       "project.json",
+		},
+		Workflow: SourceDocumentReference{
+			Repository: "local:demo",
+			Ref:        "main",
+			Path:       "demo-workflow.json",
+		},
+		Variables: []variable.Variable{
+			{
+				Name:            variable.Name{Namespace: variable.NamespaceOverride, Key: "code_version"},
+				TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "test-version"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if received.Workflow.Path != "demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want demo-workflow.json", received.Workflow.Path)
+	}
+	if received.Project.Repository != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", received.Project.Repository)
+	}
+	if len(received.Variables) != 1 {
+		t.Fatalf("variables count = %d, want 1", len(received.Variables))
+	}
+}
+
 func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
 	path := filepath.Join("..", "..", "demo-workflow.json")
 
@@ -94,6 +152,25 @@ func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
 
 	if len(submission.Workflow.Steps) != 1 {
 		t.Fatalf("unexpected workflow step count: %d", len(submission.Workflow.Steps))
+	}
+}
+
+func TestWorkflowClientLoadsWorkflowRunSubmissionFile(t *testing.T) {
+	path := filepath.Join("..", "..", "demo-workflow-run.json")
+
+	submission, err := LoadWorkflowRunSubmissionFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if submission.Project.Repository != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", submission.Project.Repository)
+	}
+	if submission.Project.Path != "project.json" {
+		t.Fatalf("project path = %q, want project.json", submission.Project.Path)
+	}
+	if submission.Workflow.Path != "demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want demo-workflow.json", submission.Workflow.Path)
 	}
 }
 
@@ -125,6 +202,34 @@ func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
 
 	if template.ParameterAccessors["input_path"] != ".input_path" {
 		t.Fatalf("unexpected input_path parameter accessor: %s", template.ParameterAccessors["input_path"])
+	}
+}
+
+func TestWorkflowClientSubmitWorkflowRunFile(t *testing.T) {
+	var received WorkflowRunSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	err := client.SubmitWorkflowRunFile(filepath.Join("..", "..", "demo-workflow-run.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if received.Workflow.Path != "demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want demo-workflow.json", received.Workflow.Path)
 	}
 }
 

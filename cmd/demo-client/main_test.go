@@ -6,13 +6,13 @@ import (
 	"goetl/internal/model"
 )
 
-func TestDemoWorkflowPath(t *testing.T) {
-	if got := demoWorkflowPath([]string{"demo-client"}); got != "demo-workflow.json" {
-		t.Fatalf("unexpected default workflow path: %s", got)
+func TestDemoWorkflowRunPath(t *testing.T) {
+	if got := demoWorkflowRunPath([]string{"demo-client"}); got != "demo-workflow-run.json" {
+		t.Fatalf("unexpected default workflow run path: %s", got)
 	}
 
-	if got := demoWorkflowPath([]string{"demo-client", "custom-workflow.json"}); got != "custom-workflow.json" {
-		t.Fatalf("unexpected custom workflow path: %s", got)
+	if got := demoWorkflowRunPath([]string{"demo-client", "custom-workflow-run.json"}); got != "custom-workflow-run.json" {
+		t.Fatalf("unexpected custom workflow run path: %s", got)
 	}
 }
 

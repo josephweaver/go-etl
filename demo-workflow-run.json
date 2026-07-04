@@ -1,0 +1,13 @@
+{
+  "project": {
+    "repository": "local:demo",
+    "ref": "main",
+    "path": "project.json"
+  },
+  "workflow": {
+    "repository": "local:demo",
+    "ref": "main",
+    "path": "demo-workflow.json"
+  },
+  "variables": []
+}

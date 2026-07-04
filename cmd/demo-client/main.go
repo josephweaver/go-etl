@@ -19,7 +19,7 @@ func main() {
 	starter := client.NewLocalControllerStarter(resolver)
 	workflowClient := client.NewWorkflowClientWithStarter(nil, resolver, starter)
 
-	if err := workflowClient.SubmitWorkflowFile(demoWorkflowPath(os.Args)); err != nil {
+	if err := workflowClient.SubmitWorkflowRunFile(demoWorkflowRunPath(os.Args)); err != nil {
 		fmt.Println("submit workflow:", err)
 		return
 	}
@@ -44,12 +44,12 @@ func formatFinalStatus(status model.ControllerStatus) string {
 	)
 }
 
-func demoWorkflowPath(args []string) string {
+func demoWorkflowRunPath(args []string) string {
 	if len(args) > 1 {
 		return args[1]
 	}
 
-	return "demo-workflow.json"
+	return "demo-workflow-run.json"
 }
 
 func demoResolver() (variable.Resolver, error) {
