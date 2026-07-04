@@ -136,8 +136,9 @@ and a reusable `internal/reposource` package now exists for the shared model,
 path validation, provider reads, admitted source manifest construction, and
 deterministic repository cache path derivation. It can also publish admitted
 files into that cache and read cached files back with manifest verification.
+It can materialize admitted cached files into a local destination directory.
 The remaining controller-facing repository-source boundary still does not own
-materialization, cache pin reconstruction, or controller admission integration.
+cache pin reconstruction or controller admission integration.
 
 Operationally, controller source handling still lives near controller workflow
 admission code. The repository has `cmd/controller/source_control.go` and
@@ -145,9 +146,9 @@ admission code. The repository has `cmd/controller/source_control.go` and
 package now provides the shared model, GitHub provider reads, local filesystem
 provider reads, manifest construction, and cache access path derivation that
 later slices will use. It also provides cache publication and verified cached
-file reads for admitted manifests. There is still no materialization behavior,
-cache pin reconstruction, or controller admission integration through
-`internal/reposource`.
+file reads for admitted manifests, plus local filesystem materialization from
+the verified cache reader. There is still no cache pin reconstruction or
+controller admission integration through `internal/reposource`.
 
 ## Target State
 
@@ -254,7 +255,7 @@ OS implementation order and status:
 002 Provider Reads And Admission Manifest         [implemented]
 003 Repository Cache Access Layer And Layout       [implemented]
 004 Cached Admission And Verified Reads            [implemented]
-005 Manifest Materialization
+005 Manifest Materialization                       [implemented]
 006 Cache Pin Reconstruction
 007 Controller Repo Cache Config Rename
 008 Workflow Source Manifest Declaration

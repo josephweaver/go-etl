@@ -1,6 +1,6 @@
 # 005 Manifest Materialization
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -14,19 +14,19 @@ structure, and does not decide worker packaging policy.
 
 ## Current State
 
-After Operational Slice 001, `internal/reposource` is expected to define the
+After Operational Slice 001, `internal/reposource` defined the
 repository-source model and path validation helpers.
 
-After Operational Slice 003, `internal/reposource` is expected to define cache
-layout and path derivation.
+After Operational Slice 003, `internal/reposource` defined cache layout and
+path derivation.
 
-After Operational Slice 004, `internal/reposource` is expected to publish
-admitted files into the repository cache and read them back with verification.
+After Operational Slice 004, `internal/reposource` published admitted files into
+the repository cache and read them back with verification.
 
-There is no manifest materialization behavior. Worker runtime code has no
-repository-source helper that can take an admitted source manifest and produce a
-local filesystem tree containing the declared Python scripts, Python
-environment specification, and support files.
+`internal/reposource` now has manifest materialization behavior. Worker runtime
+code is still not wired to this helper, but repository-source code can take an
+admitted source manifest and produce a local filesystem tree containing the
+declared Python scripts, Python environment specification, and support files.
 
 ## Target State
 
