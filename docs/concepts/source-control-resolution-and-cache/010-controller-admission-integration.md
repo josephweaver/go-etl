@@ -1,6 +1,6 @@
 # 010 Controller Admission Integration
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -15,8 +15,8 @@ workflow from admitted cached bytes.
 
 ## Current State
 
-`cmd/controller/main.go` currently admits source-reference workflow runs through
-`Controller.sourceControl`, `SourceControlAdapter`, and
+Before this slice, `cmd/controller/main.go` admitted source-reference workflow
+runs through `Controller.sourceControl`, `SourceControlAdapter`, and
 `ResolvedSourceDocument` in the controller `main` package.
 
 That path:
@@ -95,7 +95,6 @@ Read these files first:
 - `cmd/controller/main.go`
 - `cmd/controller/source_control.go`
 - `cmd/controller/main_test.go`
-- `cmd/controller/source_control_test.go`
 - `internal/persistence/store.go`
 
 Do not read unrelated controller runtime, scheduler, transport, or worker files
@@ -111,7 +110,6 @@ unless compile or test failures directly require it.
 ## Allowed Test Files
 
 - `cmd/controller/main_test.go`
-- `cmd/controller/source_control_test.go`
 - `internal/reposource/provider_test.go`
 - `internal/reposource/manifest_test.go`
 

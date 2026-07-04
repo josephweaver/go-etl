@@ -39,17 +39,18 @@ const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
 type Controller struct {
-	mu                sync.Mutex
-	ledger            *sql.DB
-	workflowStore     *persistence.Store
-	sourceControl     SourceControlAdapter
-	workerStarter     WorkerStarter
-	shutdown          func(context.Context) error
-	env               *ExecutionEnvironment
-	scaler            WorkerScaleState
-	scaleCfg          WorkerScaleConfig
-	recoveryStartedAt time.Time
-	normalAdmission   bool
+	mu                  sync.Mutex
+	ledger              *sql.DB
+	workflowStore       *persistence.Store
+	repoSourceProviders map[string]reposource.Provider
+	repoCacheLayout     reposource.CacheLayout
+	workerStarter       WorkerStarter
+	shutdown            func(context.Context) error
+	env                 *ExecutionEnvironment
+	scaler              WorkerScaleState
+	scaleCfg            WorkerScaleConfig
+	recoveryStartedAt   time.Time
+	normalAdmission     bool
 }
 
 type WorkflowSubmission struct {
@@ -238,7 +239,8 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
-	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
+	paths, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+	if err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
@@ -272,7 +274,15 @@ func buildControllerServer(
 
 	controller := newController()
 	controller.workflowStore = workflowStore
-	controller.sourceControl = initSourceControlAdapter(workingDirectory)
+	controller.repoSourceProviders = initRepositorySourceProviders(workingDirectory)
+	controller.repoCacheLayout, err = reposource.NewCacheLayout(paths.RepoCache)
+	if err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		workflowStore.Close()
+		return nil, nil, fmt.Errorf("controller repository cache failed: %w", err)
+	}
 	controller.env = executionEnvironment
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
@@ -494,10 +504,11 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 	return &env, nil
 }
 
-func initSourceControlAdapter(workingDirectory string) SourceControlAdapter {
-	return NewLocalSourceControlAdapter(map[string]string{
-		"local:demo": filepath.Join(workingDirectory, "..", "go-etl-demo-project"),
-	})
+func initRepositorySourceProviders(workingDirectory string) map[string]reposource.Provider {
+	repository := reposource.RepositoryIdentity{Value: "local:demo", DisplayName: "Demo"}
+	return map[string]reposource.Provider{
+		repository.Value: reposource.NewLocalProvider(repository, filepath.Join(workingDirectory, "..", "go-etl-demo-project")),
+	}
 }
 
 func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
@@ -1131,40 +1142,106 @@ func (r SourceDocumentReference) validate(name string) error {
 }
 
 func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) error {
-	if c.sourceControl == nil {
-		return fmt.Errorf("source control adapter is required")
-	}
-	projectDocument, err := c.sourceControl.Resolve(ctx, submission.Project)
+	provider, err := c.repositorySourceProvider(submission.Project)
 	if err != nil {
-		return fmt.Errorf("resolve project source: %w", err)
+		return err
 	}
-	workflowDocument, err := c.sourceControl.Resolve(ctx, submission.Workflow)
+	if submission.Workflow.Repository != submission.Project.Repository {
+		return fmt.Errorf("workflow repository %s does not match project repository %s", submission.Workflow.Repository, submission.Project.Repository)
+	}
+	if submission.Workflow.Ref != submission.Project.Ref {
+		return fmt.Errorf("workflow ref %s does not match project ref %s", submission.Workflow.Ref, submission.Project.Ref)
+	}
+	resolved, err := provider.Resolve(ctx, submission.Project.Ref)
 	if err != nil {
-		return fmt.Errorf("resolve workflow source: %w", err)
+		return fmt.Errorf("resolve repository source: %w", err)
 	}
 
-	_, projectHash, err := canonicalSourceDocument(projectDocument.Data)
+	initialReads, err := provider.ReadFiles(ctx, resolved, []string{submission.Project.Path, submission.Workflow.Path})
+	if err != nil {
+		return fmt.Errorf("read project/workflow source: %w", err)
+	}
+	projectRead, err := requiredReadByPath(initialReads, submission.Project.Path)
+	if err != nil {
+		return err
+	}
+	workflowRead, err := requiredReadByPath(initialReads, submission.Workflow.Path)
+	if err != nil {
+		return err
+	}
+	_, projectHash, err := canonicalSourceDocument(projectRead.Content.Data)
 	if err != nil {
 		return fmt.Errorf("canonicalize project source: %w", err)
 	}
-	_, workflowHash, err := canonicalSourceDocument(workflowDocument.Data)
+	_, workflowHash, err := canonicalSourceDocument(workflowRead.Content.Data)
 	if err != nil {
 		return fmt.Errorf("canonicalize workflow source: %w", err)
 	}
+	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowRead.Content.Data)
+	if err != nil {
+		return fmt.Errorf("decode workflow source: %w", err)
+	}
+	declared, err := declaredSourceFiles(submission.Project.Path, projectHash, submission.Workflow.Path, workflowHash, workflowSubmission.SourceManifest)
+	if err != nil {
+		return err
+	}
+	supplementalPaths := supplementalSourcePaths(declared)
+	supplementalReads, err := provider.ReadFiles(ctx, resolved, supplementalPaths)
+	if err != nil {
+		return fmt.Errorf("read supplemental source: %w", err)
+	}
+	allReads := append(append([]reposource.ReadFileResult{}, initialReads...), supplementalReads...)
 
-	projectRecord := projectRecordFromSource(projectDocument, projectHash, submittedAt)
+	runID := "run-" + randomHex(16)
+	manifest, err := reposource.BuildAdmittedSourceManifest(runID, resolved, declared, allReads)
+	if err != nil {
+		return fmt.Errorf("build admitted source manifest: %w", err)
+	}
+	if err := reposource.PublishAdmittedSource(c.repoCacheLayout, manifest, allReads); err != nil {
+		return fmt.Errorf("publish admitted source: %w", err)
+	}
+	cacheAccess, err := reposource.NewCacheAccess(c.repoCacheLayout, manifest)
+	if err != nil {
+		return fmt.Errorf("open admitted source cache: %w", err)
+	}
+	cachedProjectData, err := cacheAccess.ReadFile(submission.Project.Path)
+	if err != nil {
+		return fmt.Errorf("read cached project source: %w", err)
+	}
+	cachedWorkflowData, err := cacheAccess.ReadFile(submission.Workflow.Path)
+	if err != nil {
+		return fmt.Errorf("read cached workflow source: %w", err)
+	}
+	_, projectHash, err = canonicalSourceDocument(cachedProjectData)
+	if err != nil {
+		return fmt.Errorf("canonicalize cached project source: %w", err)
+	}
+	_, workflowHash, err = canonicalSourceDocument(cachedWorkflowData)
+	if err != nil {
+		return fmt.Errorf("canonicalize cached workflow source: %w", err)
+	}
+	workflowSubmission, err = decodeWorkflowSourceSubmission(cachedWorkflowData)
+	if err != nil {
+		return fmt.Errorf("decode cached workflow source: %w", err)
+	}
+
+	projectFile, err := manifestFileByRole(manifest, reposource.FileRoleProject)
+	if err != nil {
+		return err
+	}
+	workflowFile, err := manifestFileByRole(manifest, reposource.FileRoleWorkflow)
+	if err != nil {
+		return err
+	}
+	projectRecord := projectRecordFromAdmittedSource(manifest.Source, projectFile, projectHash)
 	if err := c.workflowStore.UpsertProject(ctx, projectRecord); err != nil {
 		return fmt.Errorf("upsert project: %w", err)
 	}
-	workflowRecord := workflowRecordFromSource(projectRecord.ID, workflowDocument, workflowHash, submittedAt)
+	workflowRecord := workflowRecordFromAdmittedSource(projectRecord.ID, manifest.Source, workflowFile, workflowHash)
 	if err := c.workflowStore.UpsertWorkflow(ctx, workflowRecord); err != nil {
 		return fmt.Errorf("upsert workflow: %w", err)
 	}
 
-	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowDocument.Data)
-	if err != nil {
-		return fmt.Errorf("decode workflow source: %w", err)
-	}
 	workflowScope, err := variable.NewScope(workflowSubmission.Workflow.Variables...)
 	if err != nil {
 		return err
@@ -1187,14 +1264,14 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return err
 	}
 
-	runRecord, err := workflowRunRecordFromSource(projectRecord.ID, workflowRecord.ID, projectDocument, projectHash, workflowDocument, workflowHash, workflowSubmission.SourceManifest, submission.Variables, submittedAt)
+	runRecord, err := workflowRunRecordFromAdmittedManifest(runID, projectRecord.ID, workflowRecord.ID, manifest, submission.Variables, submittedAt, c.repoCacheLayout)
 	if err != nil {
 		return err
 	}
 	if err := c.workflowStore.CreateWorkflowRun(ctx, runRecord); err != nil {
 		return fmt.Errorf("create workflow run: %w", err)
 	}
-	stages := stageRecordsFromWorkflow(runRecord.ID, workflowDocument.Path, workflowSubmission.Workflow, submittedAt)
+	stages := stageRecordsFromWorkflow(runRecord.ID, workflowFile.SourcePath, workflowSubmission.Workflow, submittedAt)
 	if len(stages) != 0 {
 		if err := c.workflowStore.InsertStagePlan(ctx, runRecord.ID, stages); err != nil {
 			return fmt.Errorf("insert stage plan: %w", err)
@@ -1297,30 +1374,113 @@ func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
 	return submission, nil
 }
 
-func projectRecordFromSource(source ResolvedSourceDocument, configSHA256 string, createdAt time.Time) persistence.ProjectRecord {
+func (c *Controller) repositorySourceProvider(ref SourceDocumentReference) (reposource.Provider, error) {
+	if c.repoSourceProviders != nil {
+		if provider, ok := c.repoSourceProviders[ref.Repository]; ok {
+			return provider, nil
+		}
+	}
+	if strings.HasPrefix(ref.Repository, "github.com/") {
+		parts := strings.Split(ref.Repository, "/")
+		if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+			return nil, fmt.Errorf("github repository identity must be github.com/<owner>/<repo>")
+		}
+		return reposource.NewGitHubProvider(parts[1], parts[2]), nil
+	}
+	return nil, fmt.Errorf("unknown source repository: %s", ref.Repository)
+}
+
+func requiredReadByPath(reads []reposource.ReadFileResult, path string) (reposource.ReadFileResult, error) {
+	clean, err := reposource.ValidateRepositoryRelativePath(path)
+	if err != nil {
+		return reposource.ReadFileResult{}, err
+	}
+	for _, read := range reads {
+		if read.Request.SourcePath == clean {
+			return read, nil
+		}
+	}
+	return reposource.ReadFileResult{}, fmt.Errorf("source file %s was not read", clean)
+}
+
+func declaredSourceFiles(projectPath string, projectSHA256 string, workflowPath string, workflowSHA256 string, sourceManifest reposource.SourceManifestDeclaration) ([]reposource.DeclaredSourceFile, error) {
+	projectPath, err := reposource.ValidateRepositoryRelativePath(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("project path: %w", err)
+	}
+	workflowPath, err = reposource.ValidateRepositoryRelativePath(workflowPath)
+	if err != nil {
+		return nil, fmt.Errorf("workflow path: %w", err)
+	}
+	declared := []reposource.DeclaredSourceFile{
+		{
+			Role:                reposource.FileRoleProject,
+			SourcePath:          projectPath,
+			CachePath:           projectPath,
+			ContentType:         "application/json",
+			CanonicalJSONSHA256: stringPtr(projectSHA256),
+		},
+		{
+			Role:                reposource.FileRoleWorkflow,
+			SourcePath:          workflowPath,
+			CachePath:           workflowPath,
+			ContentType:         "application/json",
+			CanonicalJSONSHA256: stringPtr(workflowSHA256),
+		},
+	}
+	supplemental, err := sourceManifest.DeclaredSourceFiles()
+	if err != nil {
+		return nil, err
+	}
+	return append(declared, supplemental...), nil
+}
+
+func supplementalSourcePaths(declared []reposource.DeclaredSourceFile) []string {
+	paths := make([]string, 0, len(declared))
+	for _, file := range declared {
+		switch file.Role {
+		case reposource.FileRoleProject, reposource.FileRoleWorkflow:
+			continue
+		default:
+			paths = append(paths, file.SourcePath)
+		}
+	}
+	return paths
+}
+
+func manifestFileByRole(manifest reposource.AdmittedSourceManifest, role reposource.FileRole) (reposource.AdmittedSourceManifestFile, error) {
+	for _, file := range manifest.Files {
+		if file.Role == role {
+			return file, nil
+		}
+	}
+	return reposource.AdmittedSourceManifestFile{}, fmt.Errorf("admitted manifest missing %s file", role)
+}
+
+func projectRecordFromAdmittedSource(source reposource.ResolvedSourceReference, file reposource.AdmittedSourceManifestFile, configSHA256 string) persistence.ProjectRecord {
 	return persistence.ProjectRecord{
-		ID:                 deterministicSourceID("project", source.RepositoryIdentity, source.ResolvedCommit, source.Path, configSHA256),
-		Name:               source.Path,
-		RepositoryIdentity: source.RepositoryIdentity,
-		SourceRevisionID:   sourceRevisionIDFromSource(source),
-		ConfigPath:         source.Path,
-		SourceObjectID:     source.SourceObjectID,
+		ID:                 deterministicSourceID("project", source.Repository.Value, sourceRevisionIDValue(source.RevisionID), file.SourcePath, configSHA256),
+		Name:               file.SourcePath,
+		RepositoryIdentity: source.Repository.Value,
+		SourceRevisionID:   source.RevisionID,
+		ConfigPath:         file.SourcePath,
+		SourceObjectID:     stringValue(file.ObjectID),
 		ConfigSHA256:       configSHA256,
-		CreatedAt:          sourceRecordCreatedAt(source),
+		CreatedAt:          sourceRecordCreatedAt(source.RevisionID),
 	}
 }
 
-func workflowRecordFromSource(projectID string, source ResolvedSourceDocument, workflowSHA256 string, createdAt time.Time) persistence.WorkflowRecord {
+func workflowRecordFromAdmittedSource(projectID string, source reposource.ResolvedSourceReference, file reposource.AdmittedSourceManifestFile, workflowSHA256 string) persistence.WorkflowRecord {
 	return persistence.WorkflowRecord{
-		ID:                 deterministicSourceID("workflow", projectID, source.RepositoryIdentity, source.ResolvedCommit, source.Path, workflowSHA256),
+		ID:                 deterministicSourceID("workflow", projectID, source.Repository.Value, sourceRevisionIDValue(source.RevisionID), file.SourcePath, workflowSHA256),
 		ProjectID:          projectID,
-		Name:               source.Path,
-		RepositoryIdentity: source.RepositoryIdentity,
-		SourceRevisionID:   sourceRevisionIDFromSource(source),
-		WorkflowPath:       source.Path,
-		SourceObjectID:     source.SourceObjectID,
+		Name:               file.SourcePath,
+		RepositoryIdentity: source.Repository.Value,
+		SourceRevisionID:   source.RevisionID,
+		WorkflowPath:       file.SourcePath,
+		SourceObjectID:     stringValue(file.ObjectID),
 		WorkflowSHA256:     workflowSHA256,
-		CreatedAt:          sourceRecordCreatedAt(source),
+		CreatedAt:          sourceRecordCreatedAt(source.RevisionID),
 	}
 }
 
@@ -1332,18 +1492,25 @@ func stringPtr(value string) *string {
 	return &value
 }
 
-func sourceRevisionIDFromSource(source ResolvedSourceDocument) *string {
-	if source.ResolvedCommit == "" || source.ResolvedCommit == localUnversionedCommit {
-		return nil
+func sourceRevisionIDValue(value *string) string {
+	if value == nil {
+		return ""
 	}
-	return stringPtr(source.ResolvedCommit)
+	return *value
 }
 
-func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
-	if source.ResolvedCommit == localUnversionedCommit {
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func sourceRecordCreatedAt(revisionID *string) string {
+	if revisionID == nil || *revisionID == "" {
 		return localUnversionedCommit
 	}
-	return "git:" + source.ResolvedCommit
+	return "source:" + *revisionID
 }
 
 const workflowRunSubmissionContextSchemaV1 = "goet/workflow-run-submission-context/v1"
@@ -1365,6 +1532,7 @@ type workflowRunSourceAdmissionContext struct {
 type workflowRunSourceIdentity struct {
 	RepositoryIdentity string `json:"repository_identity"`
 	RequestedRef       string `json:"requested_ref,omitempty"`
+	ProvenanceWarning  string `json:"provenance_warning,omitempty"`
 }
 
 type workflowRunSourceAdmissionFile struct {
@@ -1375,35 +1543,33 @@ type workflowRunSourceAdmissionFile struct {
 	SHA256         string `json:"sha256,omitempty"`
 }
 
-func workflowRunRecordFromSource(projectID string, workflowID string, projectSource ResolvedSourceDocument, projectSHA256 string, workflowSource ResolvedSourceDocument, workflowSHA256 string, sourceManifest reposource.SourceManifestDeclaration, variables []variable.Variable, createdAt time.Time) (persistence.WorkflowRunRecord, error) {
-	admissionContext := workflowRunSourceAdmissionContext{
-		Schema:      reposource.AdmittedSourceManifestSchemaV1,
-		ManifestRef: workflowSource.Path + "#source_manifest",
-		Source: workflowRunSourceIdentity{
-			RepositoryIdentity: workflowSource.RepositoryIdentity,
-			RequestedRef:       workflowSource.RequestedRef,
-		},
-		SourceRevisionID: sourceRevisionIDFromSource(workflowSource),
-		Files: []workflowRunSourceAdmissionFile{
-			{
-				Role:           "project_config",
-				SourcePath:     projectSource.Path,
-				SourceObjectID: projectSource.SourceObjectID,
-				SHA256:         projectSHA256,
-			},
-			{
-				Role:           "workflow",
-				SourcePath:     workflowSource.Path,
-				SourceObjectID: workflowSource.SourceObjectID,
-				SHA256:         workflowSHA256,
-			},
-		},
+func workflowRunRecordFromAdmittedManifest(runID string, projectID string, workflowID string, manifest reposource.AdmittedSourceManifest, variables []variable.Variable, createdAt time.Time, layout reposource.CacheLayout) (persistence.WorkflowRunRecord, error) {
+	paths, err := layout.PathsForManifest(manifest)
+	if err != nil {
+		return persistence.WorkflowRunRecord{}, err
 	}
-	for _, file := range sourceManifest.Files {
+	admissionContext := workflowRunSourceAdmissionContext{
+		Schema:      manifest.Schema,
+		ManifestRef: filepath.ToSlash(paths.ManifestPath),
+		Source: workflowRunSourceIdentity{
+			RepositoryIdentity: manifest.Source.Repository.Value,
+			RequestedRef:       manifest.Source.RequestedRef,
+			ProvenanceWarning:  sourceProvenanceWarning(manifest.Source),
+		},
+		SourceRevisionID: manifest.Source.RevisionID,
+		Files:            make([]workflowRunSourceAdmissionFile, 0, len(manifest.Files)),
+	}
+	for _, file := range manifest.Files {
+		sha := stringValue(file.RawSHA256)
+		if file.CanonicalJSONSHA256 != nil {
+			sha = *file.CanonicalJSONSHA256
+		}
 		admissionContext.Files = append(admissionContext.Files, workflowRunSourceAdmissionFile{
-			Role:       string(file.Role),
-			SourcePath: file.Path,
-			CachePath:  file.Path,
+			Role:           string(file.Role),
+			SourcePath:     file.SourcePath,
+			CachePath:      file.CachePath,
+			SourceObjectID: stringValue(file.ObjectID),
+			SHA256:         sha,
 		})
 	}
 	submissionContext := workflowRunSubmissionContext{
@@ -1416,12 +1582,19 @@ func workflowRunRecordFromSource(projectID string, workflowID string, projectSou
 		return persistence.WorkflowRunRecord{}, fmt.Errorf("encode submission context: %w", err)
 	}
 	return persistence.WorkflowRunRecord{
-		ID:                    "run-" + randomHex(16),
+		ID:                    runID,
 		ProjectID:             projectID,
 		WorkflowID:            workflowID,
 		SubmissionContextJSON: string(contextJSON),
 		CreatedAt:             createdAt.UTC().Format(time.RFC3339),
 	}, nil
+}
+
+func sourceProvenanceWarning(source reposource.ResolvedSourceReference) string {
+	if source.RevisionID == nil {
+		return reposource.LocalProvenanceWarning
+	}
+	return ""
 }
 
 func stageRecordsFromWorkflow(runID string, workflowPath string, workflowDefinition workflow.Workflow, createdAt time.Time) []persistence.WorkflowStageRecord {

@@ -137,27 +137,24 @@ path validation, provider reads, admitted source manifest construction, and
 deterministic repository cache path derivation. It can also publish admitted
 files into that cache and read cached files back with manifest verification.
 It can materialize admitted cached files into a local destination directory.
-It can write reconstructable workflow-run cache pin files. The remaining
-controller-facing repository-source boundary still does not own controller
-admission integration that consumes the workflow-declared source manifest.
+It can write reconstructable workflow-run cache pin files. Source-reference
+`/workflow` admission now uses `internal/reposource` to read project, workflow,
+and workflow-declared supplemental source files, publish them into the
+repository cache, and compile from verified cached workflow bytes.
 Workflow-execution persistence now uses nullable `source_revision_id` fields for
 project and workflow rows, and workflow-run submission context now has a
 repository-source admission context with source identity, nullable revision
 identity, a manifest reference, and admitted file roles/paths.
 
-Operationally, controller source handling still lives near controller workflow
-admission code. The repository has `cmd/controller/source_control.go` and
-`cmd/controller/source_control_test.go`, and the new `internal/reposource`
-package now provides the shared model, GitHub provider reads, local filesystem
-provider reads, manifest construction, and cache access path derivation that
-later slices will use. It also provides cache publication and verified cached
-file reads for admitted manifests, plus local filesystem materialization from
-the verified cache reader. It also provides deterministic workflow-run cache pin
-files and reconstruction from admitted-manifest paths. There is still no
-controller admission integration through `internal/reposource`, but workflow
-source documents can now declare supplemental source files through a validated
-top-level `source_manifest`, and persistence no longer requires fake commit
-identity for local filesystem source rows.
+Operationally, `cmd/controller/source_control.go` now only defines the
+source-reference request shape. The old controller-local source adapter path has
+been removed. The controller has a repository-source provider registry and a
+repository cache layout; local demo admission uses `reposource.LocalProvider`,
+which does not infer local Git provenance and records the local provenance
+warning in workflow-run submission context. Workflow source documents can
+declare supplemental source files through a validated top-level
+`source_manifest`, and persistence no longer requires fake commit identity for
+local filesystem source rows.
 
 ## Target State
 

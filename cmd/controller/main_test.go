@@ -125,24 +125,28 @@ func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
 	}
 }
 
-func TestInitSourceControlAdapterResolvesDemoProject(t *testing.T) {
-	adapter := initSourceControlAdapter(filepath.Join(mustGetwd(t), "..", ".."))
+func TestInitRepositorySourceProvidersResolvesDemoProject(t *testing.T) {
+	providers := initRepositorySourceProviders(filepath.Join(mustGetwd(t), "..", ".."))
+	provider, ok := providers["local:demo"]
+	if !ok {
+		t.Fatal("local:demo provider missing")
+	}
 
-	resolved, err := adapter.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "project.json",
-	})
+	resolved, err := provider.Resolve(context.Background(), "main")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if resolved.RepositoryIdentity != "local:demo" {
-		t.Fatalf("repository identity = %q, want local:demo", resolved.RepositoryIdentity)
+	if resolved.Repository.Value != "local:demo" {
+		t.Fatalf("repository identity = %q, want local:demo", resolved.Repository.Value)
 	}
-	if resolved.Path != "project.json" {
-		t.Fatalf("path = %q, want project.json", resolved.Path)
+	if resolved.RevisionID != nil {
+		t.Fatalf("revision id = %q, want nil", *resolved.RevisionID)
 	}
-	if len(resolved.Data) == 0 {
+	reads, err := provider.ReadFiles(context.Background(), resolved, []string{"project.json"})
+	if err != nil {
+		t.Fatalf("ReadFiles() error = %v", err)
+	}
+	if len(reads) != 1 || len(reads[0].Content.Data) == 0 {
 		t.Fatal("resolved project data is empty")
 	}
 }
@@ -1862,9 +1866,7 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = store
 	controller.workerStarter = &testWorkerStarter{}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
-		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
-	})
+	configureTestLocalRepoSource(t, controller, "local:demo", filepath.Join("..", "..", "..", "go-etl-demo-project"))
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"project": {
@@ -1887,54 +1889,6 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 		t.Fatalf("status code = %d, want 204", response.Code)
 	}
 
-	projectSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "project.json",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, projectHash, err := canonicalSourceDocument(projectSource.Data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := projectRecordFromSource(projectSource, projectHash, time.Now().UTC())
-	gotProject, found, err := store.GetProject(context.Background(), project.ID)
-	if err != nil {
-		t.Fatalf("GetProject() error = %v", err)
-	}
-	if !found {
-		t.Fatal("project was not persisted")
-	}
-	if gotProject.ConfigSHA256 != projectHash {
-		t.Fatalf("project hash = %q, want %q", gotProject.ConfigSHA256, projectHash)
-	}
-
-	workflowSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "workflows/demo-workflow.json",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, workflowHash, err := canonicalSourceDocument(workflowSource.Data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflowRecord := workflowRecordFromSource(project.ID, workflowSource, workflowHash, time.Now().UTC())
-	gotWorkflow, found, err := store.GetWorkflow(context.Background(), workflowRecord.ID)
-	if err != nil {
-		t.Fatalf("GetWorkflow() error = %v", err)
-	}
-	if !found {
-		t.Fatal("workflow was not persisted")
-	}
-	if gotWorkflow.WorkflowSHA256 != workflowHash {
-		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
-	}
-
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
 	if err != nil {
 		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
@@ -1942,11 +1896,52 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("active run count = %d, want 1", len(runs))
 	}
-	if runs[0].ProjectID != project.ID {
-		t.Fatalf("run project id = %q, want %q", runs[0].ProjectID, project.ID)
+
+	gotProject, found, err := store.GetProject(context.Background(), runs[0].ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
 	}
-	if runs[0].WorkflowID != workflowRecord.ID {
-		t.Fatalf("run workflow id = %q, want %q", runs[0].WorkflowID, workflowRecord.ID)
+	if !found {
+		t.Fatal("project was not persisted")
+	}
+	if gotProject.RepositoryIdentity != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", gotProject.RepositoryIdentity)
+	}
+	if gotProject.SourceRevisionID != nil {
+		t.Fatalf("project source revision id = %q, want nil", *gotProject.SourceRevisionID)
+	}
+	projectBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "project.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, projectHash, err := canonicalSourceDocument(projectBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProject.ConfigSHA256 != projectHash {
+		t.Fatalf("project hash = %q, want %q", gotProject.ConfigSHA256, projectHash)
+	}
+
+	gotWorkflow, found, err := store.GetWorkflow(context.Background(), runs[0].WorkflowID)
+	if err != nil {
+		t.Fatalf("GetWorkflow() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow was not persisted")
+	}
+	if gotWorkflow.SourceRevisionID != nil {
+		t.Fatalf("workflow source revision id = %q, want nil", *gotWorkflow.SourceRevisionID)
+	}
+	workflowBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "workflows", "demo-workflow.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWorkflow.WorkflowSHA256 != workflowHash {
+		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
 	}
 
 	stage, found, err := store.GetWorkflowStage(context.Background(), runs[0].ID, 0)
@@ -2026,36 +2021,53 @@ func TestDecodeWorkflowSourceSubmissionRejectsInvalidSourceManifest(t *testing.T
 	}
 }
 
-func TestWorkflowRunRecordFromSourceRecordsAdmissionContext(t *testing.T) {
-	run, err := workflowRunRecordFromSource(
-		"project-001",
-		"workflow-001",
-		ResolvedSourceDocument{
-			RepositoryIdentity: "github:owner/repo",
-			RequestedRef:       "main",
-			ResolvedCommit:     "abc123",
-			Path:               "project.json",
-			SourceObjectID:     "blob-project",
+func TestWorkflowRunRecordFromAdmittedManifestRecordsAdmissionContext(t *testing.T) {
+	revisionID := "abc123"
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reposource.AdmittedSourceManifest{
+		Schema: reposource.AdmittedSourceManifestSchemaV1,
+		RunID:  "run-001",
+		Source: reposource.ResolvedSourceReference{
+			Repository:   reposource.RepositoryIdentity{Value: "github.com/owner/repo"},
+			RequestedRef: "main",
+			RevisionID:   &revisionID,
 		},
-		strings.Repeat("a", 64),
-		ResolvedSourceDocument{
-			RepositoryIdentity: "github:owner/repo",
-			RequestedRef:       "main",
-			ResolvedCommit:     "abc123",
-			Path:               "workflows/demo.json",
-			SourceObjectID:     "blob-workflow",
-		},
-		strings.Repeat("b", 64),
-		reposource.SourceManifestDeclaration{
-			Files: []reposource.SourceManifestFileDeclaration{
-				{Role: reposource.FileRoleSupportFile, Path: "data/input.csv"},
+		Files: []reposource.AdmittedSourceManifestFile{
+			{
+				Role:                reposource.FileRoleProject,
+				SourcePath:          "project.json",
+				CachePath:           "project.json",
+				ObjectID:            stringPtr("blob-project"),
+				CanonicalJSONSHA256: stringPtr(strings.Repeat("a", 64)),
+			},
+			{
+				Role:                reposource.FileRoleWorkflow,
+				SourcePath:          "workflows/demo.json",
+				CachePath:           "workflows/demo.json",
+				ObjectID:            stringPtr("blob-workflow"),
+				CanonicalJSONSHA256: stringPtr(strings.Repeat("b", 64)),
+			},
+			{
+				Role:       reposource.FileRoleSupportFile,
+				SourcePath: "data/input.csv",
+				CachePath:  "data/input.csv",
 			},
 		},
+	}
+	run, err := workflowRunRecordFromAdmittedManifest(
+		"run-001",
+		"project-001",
+		"workflow-001",
+		manifest,
 		[]variable.Variable{},
 		time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC),
+		layout,
 	)
 	if err != nil {
-		t.Fatalf("workflowRunRecordFromSource() error = %v", err)
+		t.Fatalf("workflowRunRecordFromAdmittedManifest() error = %v", err)
 	}
 
 	var context workflowRunSubmissionContext
@@ -2065,11 +2077,11 @@ func TestWorkflowRunRecordFromSourceRecordsAdmissionContext(t *testing.T) {
 	if context.Schema != workflowRunSubmissionContextSchemaV1 {
 		t.Fatalf("schema = %q, want %q", context.Schema, workflowRunSubmissionContextSchemaV1)
 	}
-	if context.SourceAdmission.ManifestRef != "workflows/demo.json#source_manifest" {
-		t.Fatalf("manifest ref = %q, want workflow manifest ref", context.SourceAdmission.ManifestRef)
+	if !strings.HasSuffix(context.SourceAdmission.ManifestRef, "/github/repos/github.com_owner_repo/abc123/manifests/run-001.json") {
+		t.Fatalf("manifest ref = %q, want admitted manifest ref", context.SourceAdmission.ManifestRef)
 	}
-	if context.SourceAdmission.Source.RepositoryIdentity != "github:owner/repo" {
-		t.Fatalf("source repository identity = %q, want github:owner/repo", context.SourceAdmission.Source.RepositoryIdentity)
+	if context.SourceAdmission.Source.RepositoryIdentity != "github.com/owner/repo" {
+		t.Fatalf("source repository identity = %q, want github.com/owner/repo", context.SourceAdmission.Source.RepositoryIdentity)
 	}
 	if context.SourceAdmission.SourceRevisionID == nil || *context.SourceAdmission.SourceRevisionID != "abc123" {
 		t.Fatalf("source revision id = %v, want abc123", context.SourceAdmission.SourceRevisionID)
@@ -2089,9 +2101,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	controller.workflowStore = store
 	starter := &testWorkerStarter{}
 	controller.workerStarter = starter
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
-		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
-	})
+	configureTestLocalRepoSource(t, controller, "local:demo", filepath.Join("..", "..", "..", "go-etl-demo-project"))
 
 	submissionPath := filepath.Join("..", "..", "..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
 	submissionBody, err := os.ReadFile(submissionPath)
@@ -2129,7 +2139,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if project.ConfigPath != "project.json" {
 		t.Fatalf("project config path = %q, want project.json", project.ConfigPath)
 	}
-	if project.SourceObjectID == "" || project.ConfigSHA256 == "" {
+	if project.ConfigSHA256 == "" {
 		t.Fatalf("project provenance is incomplete: %+v", project)
 	}
 
@@ -2146,16 +2156,19 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if workflowRecord.WorkflowPath != "workflows/demo-workflow.json" {
 		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", workflowRecord.WorkflowPath)
 	}
-	if workflowRecord.SourceObjectID == "" || workflowRecord.WorkflowSHA256 == "" {
+	if workflowRecord.WorkflowSHA256 == "" {
 		t.Fatalf("workflow provenance is incomplete: %+v", workflowRecord)
 	}
 
-	var submissionContext map[string]any
+	var submissionContext workflowRunSubmissionContext
 	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &submissionContext); err != nil {
 		t.Fatalf("submission context is not valid JSON: %v", err)
 	}
-	if submissionContext["source_admission"] == nil {
+	if submissionContext.SourceAdmission.Schema == "" {
 		t.Fatalf("submission context missing source facts: %s", run.SubmissionContextJSON)
+	}
+	if submissionContext.SourceAdmission.Source.ProvenanceWarning != reposource.LocalProvenanceWarning {
+		t.Fatalf("provenance warning = %q, want local warning", submissionContext.SourceAdmission.Source.ProvenanceWarning)
 	}
 
 	stage, found, err := store.GetWorkflowStage(context.Background(), run.ID, 0)
@@ -2256,7 +2269,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+	configureTestLocalRepoSource(t, controller, "local:test", root)
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"project": {
@@ -2320,6 +2333,102 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 
 	if item.CodeVersion != "test-version" {
 		t.Fatalf("code version = %q, want test-version", item.CodeVersion)
+	}
+}
+
+func TestSubmitWorkflowHandlerPublishesSupplementalSourceManifestFiles(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	if err := os.Mkdir(filepath.Join(root, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "input.csv"), []byte("value\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workflowJSON := `{
+		"workflow": {"ID": "cdl", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "support_file", "path": "data/input.csv", "content_type": "text/csv"}
+			]
+		},
+		"variables": []
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	var submissionContext workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runs[0].SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.FromSlash(submissionContext.SourceAdmission.ManifestRef))
+	if err != nil {
+		t.Fatalf("read admitted manifest: %v", err)
+	}
+	var manifest reposource.AdmittedSourceManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("decode admitted manifest: %v", err)
+	}
+	access, err := reposource.NewCacheAccess(controller.repoCacheLayout, manifest)
+	if err != nil {
+		t.Fatalf("NewCacheAccess() error = %v", err)
+	}
+	cached, err := access.ReadFile("data/input.csv")
+	if err != nil {
+		t.Fatalf("ReadFile(data/input.csv) error = %v", err)
+	}
+	if string(cached) != "value\n1\n" {
+		t.Fatalf("cached supplemental data = %q, want input csv", string(cached))
+	}
+	if len(submissionContext.SourceAdmission.Files) != 3 {
+		t.Fatalf("submission context admitted files = %d, want 3", len(submissionContext.SourceAdmission.Files))
+	}
+}
+
+func TestSubmitWorkflowHandlerRejectsUnsafeSupplementalSourceManifestPathBeforeRunCreation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	workflowJSON := `{
+		"workflow": {"ID": "cdl", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "support_file", "path": "../secret.txt"}
+			]
+		},
+		"variables": []
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code == http.StatusNoContent {
+		t.Fatal("status code = 204, want rejection")
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("active run count = %d, want 0", len(runs))
 	}
 }
 
@@ -2649,8 +2758,21 @@ func setupLocalWorkflowSource(t *testing.T, controller *Controller) string {
 	if err := os.Mkdir(filepath.Join(root, "workflows"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+	configureTestLocalRepoSource(t, controller, "local:test", root)
 	return root
+}
+
+func configureTestLocalRepoSource(t *testing.T, controller *Controller, repository string, root string) {
+	t.Helper()
+
+	controller.repoSourceProviders = map[string]reposource.Provider{
+		repository: reposource.NewLocalProvider(reposource.RepositoryIdentity{Value: repository}, root),
+	}
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
 }
 
 func submitLocalWorkflowYears(t *testing.T, controller *Controller, root string, year int) {
