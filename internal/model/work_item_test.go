@@ -44,6 +44,52 @@ func TestWorkItemValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "python script with source is valid",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.txt",
+				Source: &WorkItemSource{
+					Schema:       "goet/work-item-source/v1alpha1",
+					RunID:        "run-001",
+					ManifestPath: "sources/workflow.manifest.json",
+				},
+			},
+		},
+		{
+			name: "python script missing source",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.txt",
+			},
+			wantErr: true,
+		},
+		{
+			name: "python script missing source run id",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.txt",
+				Source: &WorkItemSource{
+					ManifestPath: "sources/workflow.manifest.json",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "python script missing source manifest path",
+			item: WorkItem{
+				ID:             "local-demo-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.txt",
+				Source: &WorkItemSource{
+					RunID: "run-001",
+				},
+			},
+			wantErr: true,
+		},
+		{
 			name: "missing output filename",
 			item: WorkItem{
 				ID:   "local-demo-001",
@@ -100,11 +146,77 @@ func TestWorkItemValidate(t *testing.T) {
 	}
 }
 
+func TestWorkItemSourceValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  WorkItemSource
+		wantErr bool
+	}{
+		{
+			name: "valid source",
+			source: WorkItemSource{
+				Schema:       "goet/work-item-source/v1alpha1",
+				RunID:        "run-001",
+				ManifestPath: "sources/workflow.manifest.json",
+			},
+		},
+		{
+			name: "schema may be omitted",
+			source: WorkItemSource{
+				RunID:        "run-001",
+				ManifestPath: "sources/workflow.manifest.json",
+			},
+		},
+		{
+			name: "schema must not be whitespace only",
+			source: WorkItemSource{
+				Schema:       " ",
+				RunID:        "run-001",
+				ManifestPath: "sources/workflow.manifest.json",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing run id",
+			source: WorkItemSource{
+				ManifestPath: "sources/workflow.manifest.json",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing manifest path",
+			source: WorkItemSource{
+				RunID: "run-001",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.source.Validate()
+
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:                   "work-item-001",
 		AttemptID:            "attempt-001",
 		Type:                 WorkItemTypeWriteDemoOutput,
+		Source: &WorkItemSource{
+			Schema:       "goet/work-item-source/v1alpha1",
+			RunID:        "run-001",
+			ManifestPath: "sources/workflow.manifest.json",
+		},
 		OutputFilename:       "output.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
 		WorkflowFingerprint:  "workflow-fingerprint",
@@ -142,6 +254,18 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 
 	if decodedItem.WorkflowInstanceID != item.WorkflowInstanceID {
 		t.Fatalf("workflow_instance_id = %q, want %q", decodedItem.WorkflowInstanceID, item.WorkflowInstanceID)
+	}
+	if decodedItem.Source == nil {
+		t.Fatal("source = nil, want source")
+	}
+	if decodedItem.Source.RunID != item.Source.RunID {
+		t.Fatalf("source.run_id = %q, want %q", decodedItem.Source.RunID, item.Source.RunID)
+	}
+	if decodedItem.Source.ManifestPath != item.Source.ManifestPath {
+		t.Fatalf("source.manifest_path = %q, want %q", decodedItem.Source.ManifestPath, item.Source.ManifestPath)
+	}
+	if decodedItem.Source.Schema != item.Source.Schema {
+		t.Fatalf("source.schema = %q, want %q", decodedItem.Source.Schema, item.Source.Schema)
 	}
 
 	if decodedItem.AttemptID != item.AttemptID {

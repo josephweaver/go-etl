@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type WorkItemType string
@@ -10,12 +11,14 @@ type WorkItemType string
 const (
 	WorkItemTypeWriteDemoOutput    WorkItemType = "write_demo_output"
 	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
+	WorkItemTypePythonScript       WorkItemType = "python_script"
 )
 
 type WorkItem struct {
 	ID                   string               `json:"id"`
 	AttemptID            string               `json:"attempt_id,omitempty"`
 	Type                 WorkItemType         `json:"type"`
+	Source               *WorkItemSource      `json:"source,omitempty"`
 	OutputFilename       string               `json:"output_filename"`
 	Parameters           Parameters           `json:"parameters,omitempty"`
 	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
@@ -29,6 +32,12 @@ type WorkItem struct {
 	InputFingerprint     string               `json:"input_fingerprint,omitempty"`
 	OutputFingerprint    string               `json:"output_fingerprint,omitempty"`
 	CodeVersion          string               `json:"code_version,omitempty"`
+}
+
+type WorkItemSource struct {
+	Schema       string `json:"schema,omitempty"`
+	RunID        string `json:"run_id"`
+	ManifestPath string `json:"manifest_path"`
 }
 
 type WorkReuseCandidate struct {
@@ -101,6 +110,20 @@ type ControllerStatus struct {
 	AttemptVariables       int `json:"attempt_variables"`
 }
 
+func (source WorkItemSource) Validate() error {
+	if strings.TrimSpace(source.RunID) == "" {
+		return fmt.Errorf("work item source run id is required")
+	}
+	if strings.TrimSpace(source.ManifestPath) == "" {
+		return fmt.Errorf("work item source manifest path is required")
+	}
+	if strings.TrimSpace(source.Schema) == "" && source.Schema != "" {
+		return fmt.Errorf("work item source schema must not be empty when set")
+	}
+
+	return nil
+}
+
 func (item WorkItem) Validate() error {
 	if item.ID == "" {
 		return fmt.Errorf("work item id is required")
@@ -116,6 +139,15 @@ func (item WorkItem) Validate() error {
 
 	if filepath.Base(item.OutputFilename) != item.OutputFilename {
 		return fmt.Errorf("output filename must not contain a directory: %s", item.OutputFilename)
+	}
+
+	if item.Type == WorkItemTypePythonScript {
+		if item.Source == nil {
+			return fmt.Errorf("work item source is required for %s", item.Type)
+		}
+		if err := item.Source.Validate(); err != nil {
+			return err
+		}
 	}
 
 	for name, parameter := range item.Parameters {
