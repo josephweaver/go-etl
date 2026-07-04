@@ -52,6 +52,24 @@ func TestSourceBundleHandlerReturnsZipOfAdmittedPythonFiles(t *testing.T) {
 	if strings.Contains(manifestJSON, submissionContext.SourceAdmission.ManifestRef) {
 		t.Fatalf("metadata unexpectedly contains manifest filesystem path %q", submissionContext.SourceAdmission.ManifestRef)
 	}
+	if strings.Contains(manifestJSON, "cache_path") || strings.Contains(manifestJSON, "CachePath") {
+		t.Fatalf("metadata unexpectedly contains cache path fields: %s", manifestJSON)
+	}
+	var manifest bundleManifestFixture
+	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
+		t.Fatalf("decode source bundle manifest: %v", err)
+	}
+	if manifest.Schema == "" || manifest.RunID != runID {
+		t.Fatalf("manifest header = %+v, want schema and run id", manifest)
+	}
+	if len(manifest.Files) != 3 {
+		t.Fatalf("manifest file count = %d, want 3", len(manifest.Files))
+	}
+	for _, file := range manifest.Files {
+		if file.SourcePath == "" || file.Role == "" {
+			t.Fatalf("manifest file missing safe metadata: %+v", file)
+		}
+	}
 }
 
 func TestSourceBundleHandlerReturnsNotFoundForMissingRun(t *testing.T) {
@@ -353,4 +371,17 @@ func createWorkflowRunWithoutSourceAdmissionContext(t *testing.T, store *persist
 		t.Fatalf("CreateWorkflowRun() error = %v", err)
 	}
 	return run.ID
+}
+
+type bundleManifestFixture struct {
+	Schema string `json:"schema"`
+	RunID  string `json:"run_id"`
+	Files  []struct {
+		Role                string  `json:"role"`
+		SourcePath          string  `json:"source_path"`
+		ContentType         string  `json:"content_type,omitempty"`
+		SizeBytes           int64   `json:"size_bytes"`
+		RawSHA256           *string `json:"raw_sha256,omitempty"`
+		CanonicalJSONSHA256 *string `json:"canonical_json_sha256,omitempty"`
+	} `json:"files"`
 }

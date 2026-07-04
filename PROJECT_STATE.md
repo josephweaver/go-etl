@@ -53,7 +53,9 @@ controller-owned cache reference, and returns a zip containing only
 worker-stageable `source_manifest` files (`python_entrypoint`,
 `python_environment`, and `support_file`) using verified repository-cache reads.
 It does not reread provider source files or expose controller cache filesystem
-paths in the HTTP response.
+paths in the HTTP response. The bundle's `.goet/source-manifest.json` entry is
+now a worker-facing sanitized manifest that omits `CachePath` and other
+controller filesystem details.
 `internal/model/work_item.go` now also carries `WorkItemTypePythonScript = "python_script"` and the optional `WorkItem.Source` / `WorkItemSource` locator used for admitted Python execution. `WorkItem.Validate()` now requires a source locator for `python_script` items while keeping the existing demo and summary work items structurally valid.
 
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`

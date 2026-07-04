@@ -88,7 +88,7 @@ func sourceBundleRunIDFromPath(path string) (string, bool) {
 }
 
 func (c *Controller) buildSourceBundle(ctx context.Context, runID string) ([]byte, error) {
-	manifest, manifestData, err := c.loadRunAdmittedManifest(ctx, runID)
+	manifest, _, err := c.loadRunAdmittedManifest(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (c *Controller) buildSourceBundle(ctx context.Context, runID string) ([]byt
 			cause:   err,
 		}
 	}
-	entries, err := sourceBundleEntries(manifest, manifestData, access)
+	entries, err := sourceBundleEntries(manifest, access)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func missingSourceAdmissionContext(admission workflowRunSourceAdmissionContext) 
 		len(admission.Files) == 0
 }
 
-func sourceBundleEntries(manifest reposource.AdmittedSourceManifest, manifestData []byte, access reposource.CacheAccess) ([]sourceBundleEntry, error) {
+func sourceBundleEntries(manifest reposource.AdmittedSourceManifest, access reposource.CacheAccess) ([]sourceBundleEntry, error) {
 	stageable := make([]reposource.AdmittedSourceManifestFile, 0, len(manifest.Files))
 	for _, file := range manifest.Files {
 		switch file.Role {
@@ -200,7 +200,11 @@ func sourceBundleEntries(manifest reposource.AdmittedSourceManifest, manifestDat
 
 	seen := map[string]struct{}{}
 	entries := make([]sourceBundleEntry, 0, len(stageable)+1)
-	if err := appendSourceBundleEntry(&entries, seen, sourceBundleManifestZipPath, manifestData); err != nil {
+	safeManifestData, err := marshalSourceBundleManifest(manifest, stageable)
+	if err != nil {
+		return nil, err
+	}
+	if err := appendSourceBundleEntry(&entries, seen, sourceBundleManifestZipPath, safeManifestData); err != nil {
 		return nil, err
 	}
 	for _, file := range stageable {
@@ -232,6 +236,41 @@ func sourceBundleEntries(manifest reposource.AdmittedSourceManifest, manifestDat
 		}
 	}
 	return entries, nil
+}
+
+type sourceBundleManifest struct {
+	Schema string                     `json:"schema"`
+	RunID  string                     `json:"run_id"`
+	Files  []sourceBundleManifestFile `json:"files"`
+}
+
+type sourceBundleManifestFile struct {
+	Role                string  `json:"role"`
+	SourcePath          string  `json:"source_path"`
+	ContentType         string  `json:"content_type,omitempty"`
+	SizeBytes           int64   `json:"size_bytes"`
+	RawSHA256           *string `json:"raw_sha256,omitempty"`
+	CanonicalJSONSHA256 *string `json:"canonical_json_sha256,omitempty"`
+}
+
+func marshalSourceBundleManifest(manifest reposource.AdmittedSourceManifest, files []reposource.AdmittedSourceManifestFile) ([]byte, error) {
+	safeFiles := make([]sourceBundleManifestFile, 0, len(files))
+	for _, file := range files {
+		safeFiles = append(safeFiles, sourceBundleManifestFile{
+			Role:                string(file.Role),
+			SourcePath:          file.SourcePath,
+			ContentType:         file.ContentType,
+			SizeBytes:           file.SizeBytes,
+			RawSHA256:           file.RawSHA256,
+			CanonicalJSONSHA256: file.CanonicalJSONSHA256,
+		})
+	}
+	safeManifest := sourceBundleManifest{
+		Schema: manifest.Schema,
+		RunID:  manifest.RunID,
+		Files:  safeFiles,
+	}
+	return json.Marshal(safeManifest)
 }
 
 func appendSourceBundleEntry(entries *[]sourceBundleEntry, seen map[string]struct{}, entryPath string, data []byte) error {
