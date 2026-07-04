@@ -184,30 +184,29 @@ Shared controller-worker JSON contracts live in `internal/model`.
 The local runtime flow is:
 
 1. Start the controller on `:8080`.
-2. The controller creates an in-memory queue with one demo work item.
-3. Start the worker from `cmd/worker`.
-4. The worker loads `demo-config.json`.
-5. The worker validates required runtime directories.
-6. The worker requests `GET /work/next`.
-7. The controller moves one item from `pending` to `assigned`.
-8. The worker validates and dispatches the item by `Type`.
-9. The demo handler writes temporary output under `TmpDir`.
-10. The demo handler renames completed output into `DataDir`.
-11. The worker reports success with `POST /work/complete`, or failure with `POST /work/fail`.
-12. The worker asks for more work.
-13. The worker exits cleanly when `GET /work/next` returns `204 No Content`.
+2. A client submits a source-reference workflow run to `POST /workflow`.
+3. The controller resolves the referenced project/workflow JSON, persists
+   provenance, compiles initially ready work, and stores queued work in the
+   workflow-execution database.
+4. Start the worker from `cmd/worker`.
+5. The worker loads `demo-config.json`.
+6. The worker validates required runtime directories.
+7. The worker requests `GET /work/next`.
+8. The controller claims one queued row into running work and returns the worker
+   payload JSON.
+9. The worker validates and dispatches the item by `Type`.
+10. The demo handler writes temporary output under `TmpDir`.
+11. The demo handler renames completed output into `DataDir`.
+12. The worker reports success with `POST /work/complete`, or failure with
+    `POST /work/fail`, including the assigned `attempt_id`.
+13. The worker asks for more work.
+14. The worker exits cleanly when `GET /work/next` returns `204 No Content`.
 
 ## Controller
 
-The controller stores three in-memory collections:
-
-```text
-pending    work that can be assigned
-assigned   work currently owned by a worker
-failed     failed work and its error text
-```
-
-Access is protected by `sync.Mutex` so later concurrent workers can safely use the queue.
+The controller stores queue state in the workflow-execution database. A
+controller without a workflow store rejects queue endpoints instead of falling
+back to process-local state.
 
 Current endpoints:
 
@@ -216,12 +215,13 @@ GET  /work/next      assign the next pending item, or return 204
 POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
-POST /workflow       submit one tiny workflow and variables
+POST /workflow       submit source references for project and workflow JSON
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
 
-Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
+Completed and failed items move through persisted running, completed, and failed
+work records.
 
 If started with `--config`, the controller loads that variable document and normalizes all variables into `controller_config`. A relative explicit path remains relative to the process working directory. If no config path is supplied, the controller loads:
 
@@ -406,15 +406,10 @@ Each commit directory has a `manifest.json` for raw file-byte integrity and a
 workflow execution database records. The cache uses immutable commit IDs for
 execution lookup; mutable refs are only admission inputs.
 
-The persistence epic now has a designed `012f4` cleanup slice for guard and
-demotion work. Its goal is to make `pending`, `assigned`, and `failed` explicit
-legacy no-store fallback state while proving store-configured endpoints use the
-workflow-execution database as queue authority.
-
-The first 012f4 implementation atom labels `Controller.pending`,
-`Controller.assigned`, and `Controller.failed` as legacy no-store fallback queue
-state in code. They are not renamed or removed yet; guard tests are the next
-step before broader demotion.
+The persistence epic now has a `012f4` cleanup slice for guard and demotion
+work. The first implementation removed `Controller.pending`,
+`Controller.assigned`, and `Controller.failed` entirely so the controller no
+longer exposes a process-local queue authority.
 
 Controller cutover has started by adding a workflow-execution store handle to
 `Controller` and opening that store as the configured main database during live
@@ -425,10 +420,11 @@ assigned, and failed-equivalent counts from persisted queued, running, and
 failed work rows instead of the in-memory queue maps. Raw `POST /work`
 submissions also persist into a synthetic raw-work run and queue row when the
 workflow-execution store is configured; the old in-memory raw submission path
-remains as fallback when no store is present. `/work/next` claims persisted
+has been removed. `/work/next` claims persisted
 queued work through the workflow-execution store and decodes the stored worker
 payload back into the existing worker response shape when the store is
-configured; the old in-memory assignment path remains as fallback.
+configured. Queue endpoints return service unavailable when no workflow store is
+configured.
 
 ## SQLite Ledger
 
@@ -1159,9 +1155,8 @@ schema still stores worker-observed input/output hashes inside canonical
 Feature 012f has started by blocking the remaining live persisted path that
 could create in-memory queue authority. When `Controller.workflowStore` is
 configured, `/workflow` now rejects the legacy inline JSON payload with `501 Not
-Implemented` instead of compiling it into `Controller.pending`. The no-store
-fallback still supports inline workflow JSON for existing tests. Source-reference
-workflow admission remains the next required controller/client boundary.
+Implemented` instead of compiling it into a process-local queue. Source-reference
+workflow admission is now the controller/client boundary.
 
 Feature 012f2 updates the Go client side of that boundary. `internal/client`
 now has a `WorkflowRunSubmission` envelope with project and workflow
@@ -1175,7 +1170,7 @@ Feature 012f3 is designed as the controller-side source-reference admission
 slice. The target `/workflow` path loads project/workflow JSON through a
 source-control adapter, persists source identity and canonical hashes, creates a
 workflow run, compiles initially ready work, and queues that work without using
-`Controller.pending`. The first concrete adapter should be `local`, for cases
+process-local controller state. The first concrete adapter should be `local`, for cases
 where the controller has filesystem access to the referenced repository or
 cache.
 
@@ -1217,9 +1212,7 @@ can claim.
 The fifth 012f3 atom wires worker scaling for source-reference admission.
 After persisted work is enqueued, the controller derives demand from
 `ListQueuedWorkItems` and `ListRunningWork`, then uses the existing
-`WorkerScaleState` and `startConfiguredWorkers` path. The legacy no-store
-workflow submission path still plans starts from in-memory pending/assigned
-counts.
+`WorkerScaleState` and `startConfiguredWorkers` path.
 
 Persisted source-reference admission can now also start local command-backed
 workers when no configured `ExecutionEnvironment` is present. It uses the
@@ -1233,8 +1226,7 @@ demo project. The test loads
 to `../go-etl-demo-project`, submits the real source-reference body to
 `/workflow`, verifies persisted project/workflow/run/stage/queued-work state,
 checks that queued worker payload JSON decodes as `model.WorkItem`, claims one
-item through persisted `/work/next`, and confirms the in-memory queue fields
-remain empty.
+item through persisted `/work/next`.
 
 The local demo source adapter is now wired into live controller startup. When
 the controller starts from the `go-etl` working directory, `local:demo` maps to
@@ -1255,7 +1247,11 @@ final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=
 
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
-The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
+The controller queue is now database-backed through the workflow-execution
+store. The older SQLite ledger remains an attempt snapshot helper for legacy
+skip/reuse code, but it is no longer the queue authority. Do not add retry rules
+or broad workflow parsing until the workflow-execution store boundary remains
+clear.
 
 For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 

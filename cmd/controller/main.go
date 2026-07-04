@@ -38,14 +38,7 @@ const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
 type Controller struct {
-	mu sync.Mutex
-
-	// Legacy no-store fallback queue state. When workflowStore is configured,
-	// queued_work/running_work/completed_work/failed_work are the queue authority.
-	pending  []model.WorkItem
-	assigned map[string]model.WorkItem
-	failed   map[string]model.WorkFailure
-
+	mu                sync.Mutex
 	ledger            *sql.DB
 	workflowStore     *persistence.Store
 	sourceControl     SourceControlAdapter
@@ -121,11 +114,8 @@ type controllerHTTPSettings struct {
 	MaxHeaderBytes          int
 }
 
-func newController(items []model.WorkItem) *Controller {
+func newController() *Controller {
 	return &Controller{
-		pending:         items,
-		assigned:        make(map[string]model.WorkItem),
-		failed:          make(map[string]model.WorkFailure),
 		workerStarter:   LocalWorkerStarter{},
 		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
@@ -278,7 +268,7 @@ func buildControllerServer(
 		return nil, nil, fmt.Errorf("controller execution environment failed: %w", err)
 	}
 
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = workflowStore
 	controller.sourceControl = initSourceControlAdapter(workingDirectory)
 	controller.env = executionEnvironment
@@ -950,28 +940,19 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if c.workflowStore != nil {
-		if err := c.submitRawWorkToStore(r.Context(), item, time.Now().UTC()); err != nil {
-			if isPersistenceConflict(err) {
-				http.Error(w, "work item id already exists", http.StatusConflict)
-				return
-			}
-			http.Error(w, "persist work item", http.StatusInternalServerError)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := c.submitRawWorkToStore(r.Context(), item, time.Now().UTC()); err != nil {
+		if isPersistenceConflict(err) {
+			http.Error(w, "work item id already exists", http.StatusConflict)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, "persist work item", http.StatusInternalServerError)
 		return
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.hasWorkItemID(item.ID) {
-		http.Error(w, "work item id already exists", http.StatusConflict)
-		return
-	}
-
-	c.pending = append(c.pending, item)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1099,91 +1080,28 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
 		return
 	}
-	if c.workflowStore != nil {
-		var submission WorkflowRunSubmission
-		if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
-			http.Error(w, "decode workflow run submission", http.StatusBadRequest)
-			return
-		}
-		if err := submission.validate(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC()); err != nil {
-			if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
-				http.Error(w, err.Error(), http.StatusNotImplemented)
-				return
-			}
-			http.Error(w, "persist workflow run", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	var submission WorkflowSubmission
+	var submission WorkflowRunSubmission
 	if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
-		http.Error(w, "decode workflow submission", http.StatusBadRequest)
+		http.Error(w, "decode workflow run submission", http.StatusBadRequest)
 		return
 	}
-
-	workflowScope, err := variable.NewScope(submission.Workflow.Variables...)
-	if err != nil {
+	if err := submission.validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	submissionScope, err := variable.NewScope(submission.Variables...)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
-	codeVersion, err := controllerCodeVersion(resolver)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
-
-	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	c.mu.Lock()
-
-	for _, item := range items {
-		if c.hasWorkItemID(item.ID) {
-			c.mu.Unlock()
-			http.Error(w, "work item id already exists", http.StatusConflict)
+	if err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC()); err != nil {
+		if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
+			http.Error(w, err.Error(), http.StatusNotImplemented)
 			return
 		}
-	}
-
-	startCount := 0
-	assignedCount := len(c.assigned)
-	c.pending = append(c.pending, items...)
-	if c.env != nil {
-		now := time.Now()
-		startCount = c.scaler.PlanStarts(now, len(c.pending), assignedCount, scaleCfg)
-		c.scaler.RecordStart(now, startCount, assignedCount)
-	}
-	c.mu.Unlock()
-
-	if err := c.startConfiguredWorkers(r.Context(), resolver, startCount); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "persist workflow run", http.StatusInternalServerError)
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1775,24 +1693,6 @@ func (c *Controller) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (c *Controller) hasWorkItemID(id string) bool {
-	for _, item := range c.pending {
-		if item.ID == id {
-			return true
-		}
-	}
-
-	if _, ok := c.assigned[id]; ok {
-		return true
-	}
-
-	if _, ok := c.failed[id]; ok {
-		return true
-	}
-
-	return false
-}
-
 func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1815,33 +1715,11 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
-	if c.workflowStore != nil {
-		return c.persistenceControllerStatus(ctx)
+	if c.workflowStore == nil {
+		return model.ControllerStatus{}, fmt.Errorf("workflow store required")
 	}
 
-	c.mu.Lock()
-	pendingItems := append([]model.WorkItem(nil), c.pending...)
-	status := model.ControllerStatus{
-		Pending:  len(c.pending),
-		Assigned: len(c.assigned),
-		Failed:   len(c.failed),
-	}
-	c.mu.Unlock()
-
-	reuseReasons, err := c.pendingReuseDecisionReasons(ctx, pendingItems)
-	if err != nil {
-		return model.ControllerStatus{}, fmt.Errorf("query reuse candidates: %w", err)
-	}
-	status.PendingReuseCandidates = reuseReasons["matched_prior_completed_attempt"]
-
-	attempts, attemptVariables, err := c.ledgerStatusCounts(ctx)
-	if err != nil {
-		return model.ControllerStatus{}, fmt.Errorf("query ledger status: %w", err)
-	}
-	status.Attempts = attempts
-	status.AttemptVariables = attemptVariables
-
-	return status, nil
+	return c.persistenceControllerStatus(ctx)
 }
 
 func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.ControllerStatus, error) {
@@ -1927,23 +1805,12 @@ func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "work item id and error are required", http.StatusBadRequest)
 		return
 	}
-	if c.workflowStore != nil {
-		c.failPersistedWorkHandler(w, r, failure)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.assigned[failure.ID]; !ok {
-		http.Error(w, "work item not assigned", http.StatusNotFound)
-		return
-	}
-
-	delete(c.assigned, failure.ID)
-	c.failed[failure.ID] = failure
-	fmt.Println("work item failed:", failure.ID, failure.Error)
-	w.WriteHeader(http.StatusNoContent)
+	c.failPersistedWorkHandler(w, r, failure)
 }
 
 func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -1962,34 +1829,12 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "work item id is required", http.StatusBadRequest)
 		return
 	}
-	if c.workflowStore != nil {
-		c.completePersistedWorkHandler(w, r, completion)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.assigned[completion.ID]; !ok {
-		http.Error(w, "work item not assigned", http.StatusNotFound)
-		return
-	}
-
-	attempt, hasAttempt, err := attemptFromCompletion(completion)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if hasAttempt {
-		if err := c.recordAttempt(r.Context(), attempt); err != nil {
-			http.Error(w, "record completion", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	delete(c.assigned, completion.ID)
-	fmt.Println("work item completed:", completion.ID)
-	w.WriteHeader(http.StatusNoContent)
+	c.completePersistedWorkHandler(w, r, completion)
 }
 
 func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Request, failure model.WorkFailure) {
@@ -2242,45 +2087,12 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if !c.requireNormalAdmission(w) {
 		return
 	}
-	if c.workflowStore != nil {
-		c.nextPersistedWorkHandler(w, r)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	for {
-		c.mu.Lock()
-		if len(c.pending) == 0 {
-			c.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		item := c.pending[0]
-		c.pending = c.pending[1:]
-		c.mu.Unlock()
-
-		_, skipped, err := c.recordSkippedAttempt(r.Context(), item, time.Now().UTC())
-		if err != nil {
-			c.mu.Lock()
-			c.pending = append([]model.WorkItem{item}, c.pending...)
-			c.mu.Unlock()
-			http.Error(w, "record skipped attempt", http.StatusInternalServerError)
-			return
-		}
-		if skipped {
-			fmt.Println("work item skipped:", item.ID)
-			continue
-		}
-
-		c.mu.Lock()
-		c.assigned[item.ID] = item
-		c.mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(item); err != nil {
-			http.Error(w, "encode work item", http.StatusInternalServerError)
-		}
-		return
-	}
+	c.nextPersistedWorkHandler(w, r)
 }
 
 func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {

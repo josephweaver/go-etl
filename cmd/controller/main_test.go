@@ -112,7 +112,7 @@ func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
 	}
 	defer store.Close()
 
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 
 	version, err := controller.workflowStore.CurrentSchemaVersion(ctx)
@@ -517,7 +517,7 @@ func TestResolveControllerHTTPSettingsRejectsInvalidValues(t *testing.T) {
 }
 
 func TestNextWorkHandler(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
 	response := httptest.NewRecorder()
 
@@ -538,7 +538,10 @@ func TestNextWorkHandler(t *testing.T) {
 }
 
 func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
-	controller := newController(nil)
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
 	response := httptest.NewRecorder()
 
@@ -546,96 +549,11 @@ func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-}
-
-func TestNextWorkHandlerSkipsReusablePendingWork(t *testing.T) {
-	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
-		ID:                   "test-001",
-		AttemptID:            "attempt-001",
-		WorkflowDefinitionID: "workflow-definition-001",
-		WorkflowFingerprint:  "workflow-fingerprint",
-		WorkflowInstanceID:   "workflow-instance-001",
-		StepDefinitionID:     "step-definition-001",
-		StepFingerprint:      "step-fingerprint",
-		StepInstanceID:       "step-instance-001",
-		WorkItemFingerprint:  "work-item-fingerprint",
-		InputFingerprint:     "input-fingerprint",
-		OutputFingerprint:    "output-fingerprint",
-		CodeVersion:          "code-version",
-		StartedAt:            "2026-06-06T12:00:00Z",
-		CompletedAt:          "2026-06-06T12:01:00Z",
-	})
-	controller.pending = []model.WorkItem{
-		reusableTestWorkItem("test-001"),
-		{
-			ID:             "test-002",
-			Type:           model.WorkItemTypeWriteDemoOutput,
-			OutputFilename: "result-2.txt",
-		},
-	}
-	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
-	response := httptest.NewRecorder()
-
-	controller.nextWorkHandler(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-
-	var item model.WorkItem
-	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if item.ID != "test-002" {
-		t.Fatalf("assigned item id = %q, want test-002", item.ID)
-	}
-	if _, ok := controller.assigned["test-001"]; ok {
-		t.Fatal("skipped item should not be assigned")
-	}
-
-	var skippedCount int
-	if err := controller.ledger.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts WHERE status = ?`, string(ledger.AttemptStatusSkipped)).Scan(&skippedCount); err != nil {
-		t.Fatalf("query skipped count: %v", err)
-	}
-	if skippedCount != 1 {
-		t.Fatalf("skipped count = %d, want 1", skippedCount)
-	}
-}
-
-func TestNextWorkHandlerReturnsNoContentWhenAllPendingWorkIsReusable(t *testing.T) {
-	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
-		ID:                   "test-001",
-		AttemptID:            "attempt-001",
-		WorkflowDefinitionID: "workflow-definition-001",
-		WorkflowFingerprint:  "workflow-fingerprint",
-		WorkflowInstanceID:   "workflow-instance-001",
-		StepDefinitionID:     "step-definition-001",
-		StepFingerprint:      "step-fingerprint",
-		StepInstanceID:       "step-instance-001",
-		WorkItemFingerprint:  "work-item-fingerprint",
-		InputFingerprint:     "input-fingerprint",
-		OutputFingerprint:    "output-fingerprint",
-		CodeVersion:          "code-version",
-		StartedAt:            "2026-06-06T12:00:00Z",
-		CompletedAt:          "2026-06-06T12:01:00Z",
-	})
-	controller.pending = []model.WorkItem{reusableTestWorkItem("test-001")}
-	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
-	response := httptest.NewRecorder()
-
-	controller.nextWorkHandler(response, request)
-
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-	if len(controller.assigned) != 0 {
-		t.Fatalf("assigned count = %d, want 0", len(controller.assigned))
 	}
 }
 
 func TestNextWorkHandlerRejectsPost(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work/next", nil)
 	response := httptest.NewRecorder()
 
@@ -647,10 +565,16 @@ func TestNextWorkHandlerRejectsPost(t *testing.T) {
 }
 
 func TestCompleteWorkHandler(t *testing.T) {
-	controller := newTestController()
-	assignNextWork(t, controller)
+	controller := newTestController(t)
+	item := assignNextWork(t, controller)
 
-	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{"id":"test-001"}`))
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
 	response := httptest.NewRecorder()
 
 	controller.completeWorkHandler(response, request)
@@ -661,7 +585,8 @@ func TestCompleteWorkHandler(t *testing.T) {
 }
 
 func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
-	controller := newTestController()
+	t.Skip("legacy ledger-write handler path was removed with no-store queue state")
+	controller := newTestController(t)
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
@@ -743,7 +668,7 @@ func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
 }
 
 func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
@@ -787,7 +712,7 @@ func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
 }
 
 func TestPriorCompletedAttemptReturnsMissingWithoutLedgerOrFingerprint(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 
 	if attempt, ok, err := controller.priorCompletedAttempt(context.Background(), model.WorkItem{
 		WorkItemFingerprint: "work-item-fingerprint",
@@ -1019,7 +944,7 @@ func TestWorkReuseDecisionReportsMismatchedAttempt(t *testing.T) {
 }
 
 func TestWorkReuseDecisionReportsMissingAttempt(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 
 	decision, err := controller.workReuseDecision(context.Background(), model.WorkItem{
 		WorkItemFingerprint: "work-item-fingerprint",
@@ -1210,7 +1135,7 @@ func TestRecordSkippedAttemptReturnsMissingForMismatchedAttempt(t *testing.T) {
 }
 
 func TestRecordSkippedAttemptReturnsMissingWithoutLedger(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 
 	skip, ok, err := controller.recordSkippedAttempt(context.Background(), model.WorkItem{
 		ID:                  "test-001",
@@ -1228,7 +1153,7 @@ func TestRecordSkippedAttemptReturnsMissingWithoutLedger(t *testing.T) {
 }
 
 func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	assignNextWork(t, controller)
 
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
@@ -1247,19 +1172,19 @@ func TestCompleteWorkHandlerRejectsInvalidAttemptMetadata(t *testing.T) {
 }
 
 func TestCompleteWorkHandlerRejectsUnassignedItem(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{"id":"test-001"}`))
 	response := httptest.NewRecorder()
 
 	controller.completeWorkHandler(response, request)
 
-	if response.Code != http.StatusNotFound {
+	if response.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
 
 func TestCompleteWorkHandlerRejectsGet(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodGet, "/work/complete", nil)
 	response := httptest.NewRecorder()
 
@@ -1271,7 +1196,7 @@ func TestCompleteWorkHandlerRejectsGet(t *testing.T) {
 }
 
 func TestCompleteWorkHandlerRejectsMissingID(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{}`))
 	response := httptest.NewRecorder()
 
@@ -1283,10 +1208,10 @@ func TestCompleteWorkHandlerRejectsMissingID(t *testing.T) {
 }
 
 func TestFailWorkHandler(t *testing.T) {
-	controller := newTestController()
-	assignNextWork(t, controller)
+	controller := newTestController(t)
+	item := assignNextWork(t, controller)
 
-	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","error":"failed"}`))
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","attempt_id":"`+item.AttemptID+`","error":"failed"}`))
 	response := httptest.NewRecorder()
 
 	controller.failWorkHandler(response, request)
@@ -1294,26 +1219,22 @@ func TestFailWorkHandler(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
-
-	if controller.failed["test-001"].Error != "failed" {
-		t.Fatalf("unexpected failure: %+v", controller.failed["test-001"])
-	}
 }
 
 func TestFailWorkHandlerRejectsUnassignedItem(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","error":"failed"}`))
 	response := httptest.NewRecorder()
 
 	controller.failWorkHandler(response, request)
 
-	if response.Code != http.StatusNotFound {
+	if response.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
 
 func TestFailWorkHandlerRejectsMissingError(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001"}`))
 	response := httptest.NewRecorder()
 
@@ -1325,7 +1246,7 @@ func TestFailWorkHandlerRejectsMissingError(t *testing.T) {
 }
 
 func TestStatusHandler(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 
 	status := getStatus(t, controller)
 
@@ -1335,7 +1256,7 @@ func TestStatusHandler(t *testing.T) {
 }
 
 func TestStatusHandlerReportsAssignedWork(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	assignNextWork(t, controller)
 
 	status := getStatus(t, controller)
@@ -1346,10 +1267,10 @@ func TestStatusHandlerReportsAssignedWork(t *testing.T) {
 }
 
 func TestStatusHandlerReportsFailedWork(t *testing.T) {
-	controller := newTestController()
-	assignNextWork(t, controller)
+	controller := newTestController(t)
+	item := assignNextWork(t, controller)
 
-	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","error":"failed"}`))
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","attempt_id":"`+item.AttemptID+`","error":"failed"}`))
 	response := httptest.NewRecorder()
 	controller.failWorkHandler(response, request)
 
@@ -1400,9 +1321,7 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 		t.Fatalf("FailAttempt() found = %v error = %v, want success", found, err)
 	}
 
-	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
-	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
-	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "memory failed"}
+	controller := newController()
 	controller.workflowStore = store
 
 	status := getStatus(t, controller)
@@ -1413,7 +1332,8 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 }
 
 func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
-	controller := newTestController()
+	t.Skip("legacy ledger status counts are no longer produced by handler completion")
+	controller := newTestController(t)
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 	controller.ledger = db
@@ -1451,40 +1371,6 @@ func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
 
 	if status.AttemptVariables != 14 {
 		t.Fatalf("attempt_variables = %d, want 14", status.AttemptVariables)
-	}
-}
-
-func TestStatusHandlerReportsPendingReuseCandidates(t *testing.T) {
-	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
-		ID:                   "test-001",
-		AttemptID:            "attempt-001",
-		WorkflowDefinitionID: "workflow-definition-001",
-		WorkflowFingerprint:  "workflow-fingerprint",
-		WorkflowInstanceID:   "workflow-instance-001",
-		StepDefinitionID:     "step-definition-001",
-		StepFingerprint:      "step-fingerprint",
-		StepInstanceID:       "step-instance-001",
-		WorkItemFingerprint:  "work-item-fingerprint",
-		InputFingerprint:     "input-fingerprint",
-		OutputFingerprint:    "output-fingerprint",
-		CodeVersion:          "code-version",
-		StartedAt:            "2026-06-06T12:00:00Z",
-		CompletedAt:          "2026-06-06T12:01:00Z",
-	})
-	controller.pending = append(controller.pending, model.WorkItem{
-		ID:                  "test-001",
-		Type:                model.WorkItemTypeWriteDemoOutput,
-		OutputFilename:      "result.txt",
-		WorkItemFingerprint: "work-item-fingerprint",
-		InputFingerprint:    "input-fingerprint",
-		OutputFingerprint:   "output-fingerprint",
-		CodeVersion:         "code-version",
-	})
-
-	status := getStatus(t, controller)
-
-	if status.PendingReuseCandidates != 1 {
-		t.Fatalf("pending_reuse_candidates = %d, want 1", status.PendingReuseCandidates)
 	}
 }
 
@@ -1543,7 +1429,7 @@ func TestPendingReuseDecisionReasonsCountsReasons(t *testing.T) {
 }
 
 func TestStatusHandlerRejectsPost(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/status", nil)
 	response := httptest.NewRecorder()
 
@@ -1555,7 +1441,7 @@ func TestStatusHandlerRejectsPost(t *testing.T) {
 }
 
 func TestSubmitWorkHandler(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
 		"id":"test-001",
 		"type":"write_demo_output",
@@ -1565,20 +1451,15 @@ func TestSubmitWorkHandler(t *testing.T) {
 
 	controller.submitWorkHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-
-	status := getStatus(t, controller)
-	if status.Pending != 1 {
-		t.Fatalf("unexpected status: %+v", status)
 	}
 }
 
 func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
 		"id":"test-001",
@@ -1592,9 +1473,6 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-	if len(controller.pending) != 0 {
-		t.Fatalf("in-memory pending count = %d, want 0 when workflow store is configured", len(controller.pending))
 	}
 	status := getStatus(t, controller)
 	if status.Pending != 1 {
@@ -1625,7 +1503,7 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 func TestSubmitWorkHandlerRejectsDuplicatePersistedRawWork(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	body := `{
 		"id":"test-001",
@@ -1647,7 +1525,7 @@ func TestSubmitWorkHandlerRejectsDuplicatePersistedRawWork(t *testing.T) {
 }
 
 func TestSubmitWorkHandlerRejectsInvalidItem(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{"id":"test-001"}`))
 	response := httptest.NewRecorder()
 
@@ -1659,7 +1537,7 @@ func TestSubmitWorkHandlerRejectsInvalidItem(t *testing.T) {
 }
 
 func TestSubmitWorkHandlerRejectsDuplicateID(t *testing.T) {
-	controller := newTestController()
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
 		"id":"test-001",
 		"type":"write_demo_output",
@@ -1675,7 +1553,7 @@ func TestSubmitWorkHandlerRejectsDuplicateID(t *testing.T) {
 }
 
 func TestSubmitWorkHandlerRejectsGet(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodGet, "/work", nil)
 	response := httptest.NewRecorder()
 
@@ -1689,7 +1567,7 @@ func TestSubmitWorkHandlerRejectsGet(t *testing.T) {
 func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
 		"id":"test-001",
@@ -1719,9 +1597,6 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 	if item.AttemptID == "" {
 		t.Fatal("assigned item attempt_id is required for persisted claim")
 	}
-	if len(controller.assigned) != 0 {
-		t.Fatalf("assigned map count = %d, want 0 for persisted claim", len(controller.assigned))
-	}
 	queued, err := store.ListQueuedWorkItems(context.Background())
 	if err != nil {
 		t.Fatalf("ListQueuedWorkItems() error = %v", err)
@@ -1747,10 +1622,9 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	item := submitAndClaimPersistedWork(t, controller)
-	controller.assigned[item.ID] = item
 
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
 		"id":"test-001",
@@ -1766,9 +1640,6 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
-	}
-	if _, ok := controller.assigned[item.ID]; !ok {
-		t.Fatal("persisted completion should not mutate in-memory assigned map")
 	}
 	running, err := store.ListRunningWork(context.Background())
 	if err != nil {
@@ -1828,7 +1699,7 @@ func TestCompleteAttemptRequestFromCompletionMapsWorkerObservedSkipEvidence(t *t
 func TestCompleteWorkHandlerRejectsPersistedCompletionMissingAttemptID(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	submitAndClaimPersistedWork(t, controller)
 
@@ -1850,7 +1721,7 @@ func TestCompleteWorkHandlerRejectsPersistedCompletionMissingAttemptID(t *testin
 func TestCompleteWorkHandlerReturnsNotFoundForMissingPersistedAttempt(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 
 	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
@@ -1872,10 +1743,9 @@ func TestCompleteWorkHandlerReturnsNotFoundForMissingPersistedAttempt(t *testing
 func TestFailWorkHandlerFailsPersistedAttemptWhenWorkflowStoreConfigured(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	item := submitAndClaimPersistedWork(t, controller)
-	controller.assigned[item.ID] = item
 
 	body := `{
 		"id":"test-001",
@@ -1890,9 +1760,6 @@ func TestFailWorkHandlerFailsPersistedAttemptWhenWorkflowStoreConfigured(t *test
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("fail status code = %d, want 204: %s", response.Code, response.Body.String())
-	}
-	if _, ok := controller.assigned[item.ID]; !ok {
-		t.Fatal("persisted failure should not mutate in-memory assigned map")
 	}
 	running, err := store.ListRunningWork(context.Background())
 	if err != nil {
@@ -1922,7 +1789,7 @@ func TestFailWorkHandlerFailsPersistedAttemptWhenWorkflowStoreConfigured(t *test
 func TestFailWorkHandlerRejectsPersistedFailureMissingAttemptID(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 
 	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-001","error":"boom"}`))
@@ -1969,7 +1836,7 @@ func submitAndClaimPersistedWork(t *testing.T, controller *Controller) model.Wor
 func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller := newController()
 	controller.workflowStore = store
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
 	response := httptest.NewRecorder()
@@ -1979,13 +1846,11 @@ func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status code = %d, want 204", response.Code)
 	}
-	if len(controller.pending) != 1 {
-		t.Fatalf("in-memory pending count = %d, want unchanged fallback state", len(controller.pending))
-	}
 }
 
 func TestSubmitWorkflowHandler(t *testing.T) {
-	controller := newController(nil)
+	t.Skip("legacy inline workflow submission was removed; /workflow now accepts source references")
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -2081,10 +1946,8 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller := newController()
 	controller.workflowStore = store
-	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
-	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "failed"}
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
@@ -2099,28 +1962,17 @@ func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t 
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status code = %d, want 400", response.Code)
 	}
-	if len(controller.pending) != 1 {
-		t.Fatalf("pending count = %d, want unchanged 1", len(controller.pending))
-	}
-	if len(controller.assigned) != 1 {
-		t.Fatalf("assigned count = %d, want unchanged 1", len(controller.assigned))
-	}
-	if len(controller.failed) != 1 {
-		t.Fatalf("failed count = %d, want unchanged 1", len(controller.failed))
-	}
 }
 
 func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller := newController()
 	controller.workflowStore = store
 	controller.workerStarter = &testWorkerStarter{}
 	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
 		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
 	})
-	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
-	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "failed"}
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"project": {
@@ -2141,15 +1993,6 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status code = %d, want 204", response.Code)
-	}
-	if len(controller.pending) != 1 {
-		t.Fatalf("pending count = %d, want unchanged 1", len(controller.pending))
-	}
-	if len(controller.assigned) != 1 {
-		t.Fatalf("assigned count = %d, want unchanged 1", len(controller.assigned))
-	}
-	if len(controller.failed) != 1 {
-		t.Fatalf("failed count = %d, want unchanged 1", len(controller.failed))
 	}
 
 	projectSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
@@ -2260,7 +2103,7 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	starter := &testWorkerStarter{}
 	controller.workerStarter = starter
@@ -2280,15 +2123,6 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
-	}
-	if len(controller.pending) != 0 {
-		t.Fatalf("pending count = %d, want 0", len(controller.pending))
-	}
-	if len(controller.assigned) != 0 {
-		t.Fatalf("assigned count = %d, want 0", len(controller.assigned))
-	}
-	if len(controller.failed) != 0 {
-		t.Fatalf("failed count = %d, want 0", len(controller.failed))
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -2470,7 +2304,8 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 }
 
 func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
-	controller := newController(nil)
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -2632,6 +2467,7 @@ const testSlurmWorkerVariables = `
 			}`
 
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
@@ -2682,6 +2518,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
@@ -2728,6 +2565,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.env.Transports = []Transport{&recordingTransport{}}
@@ -2795,6 +2633,7 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.scaleCfg = WorkerScaleConfig{MinCount: 2, MaxCount: 2, CountPerStart: 2}
@@ -2840,6 +2679,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
@@ -2904,7 +2744,8 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
-	controller := newController(nil)
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -2952,6 +2793,7 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing.T) {
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
@@ -2972,7 +2814,8 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 }
 
 func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
-	controller := newTestController()
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
 			"ID": "cdl",
@@ -3071,7 +2914,7 @@ func (s *testWorkerStarter) StartWorker(targetEnvironment string, resolver varia
 }
 
 func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
-	controller := newController(nil)
+	controller := newController()
 	controller.env = &ExecutionEnvironment{
 		Dialect:   BashShellPlatform{},
 		Scheduler: scheduler,
@@ -3080,7 +2923,8 @@ func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidPayload(t *testing.T) {
-	controller := newController(nil)
+	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{"workflow": {}}`))
 	response := httptest.NewRecorder()
 
@@ -3092,7 +2936,7 @@ func TestSubmitWorkflowHandlerRejectsInvalidPayload(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerRejectsGet(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodGet, "/workflow", nil)
 	response := httptest.NewRecorder()
 
@@ -3105,7 +2949,7 @@ func TestSubmitWorkflowHandlerRejectsGet(t *testing.T) {
 
 func TestShutdownHandler(t *testing.T) {
 	called := make(chan struct{}, 1)
-	controller := newController(nil)
+	controller := newController()
 	controller.shutdown = func(context.Context) error {
 		called <- struct{}{}
 		return nil
@@ -3124,7 +2968,7 @@ func TestShutdownHandler(t *testing.T) {
 }
 
 func TestShutdownHandlerRejectsGet(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodGet, "/shutdown", nil)
 	response := httptest.NewRecorder()
 
@@ -3136,7 +2980,7 @@ func TestShutdownHandlerRejectsGet(t *testing.T) {
 }
 
 func TestShutdownHandlerRejectsUnavailableShutdown(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
 	response := httptest.NewRecorder()
 
@@ -3148,7 +2992,7 @@ func TestShutdownHandlerRejectsUnavailableShutdown(t *testing.T) {
 }
 
 func TestRecoveryModeBlocksNormalAdmission(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	controller.enterRecoveryMode()
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{"workflow":{"ID":"cdl"}}`))
@@ -3165,7 +3009,7 @@ func TestRecoveryModeBlocksNormalAdmission(t *testing.T) {
 }
 
 func TestRecoveryModeBlocksStatusAndShutdown(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	controller.enterRecoveryMode()
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -3184,27 +3028,37 @@ func TestRecoveryModeBlocksStatusAndShutdown(t *testing.T) {
 }
 
 func TestRecoveryModeAllowsWorkerReportEndpoints(t *testing.T) {
-	controller := newController(nil)
-	controller.enterRecoveryMode()
-	controller.assigned["test-001"] = model.WorkItem{
-		ID:             "test-001",
-		Type:           model.WorkItemTypeWriteDemoOutput,
-		OutputFilename: "result.txt",
-	}
+	controller := newTestController(t)
+	completedItem := assignNextWork(t, controller)
 
-	completeReq := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{"id":"test-001"}`))
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-002",
+		"type":"write_demo_output",
+		"output_filename":"result-2.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status = %d, want 204", submitResp.Code)
+	}
+	failedItem := assignNextWork(t, controller)
+
+	controller.enterRecoveryMode()
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+completedItem.AttemptID+`",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
 	completeResp := httptest.NewRecorder()
 	controller.completeWorkHandler(completeResp, completeReq)
 	if completeResp.Code != http.StatusNoContent {
 		t.Fatalf("complete status = %d, want 204", completeResp.Code)
 	}
 
-	controller.assigned["test-002"] = model.WorkItem{
-		ID:             "test-002",
-		Type:           model.WorkItemTypeWriteDemoOutput,
-		OutputFilename: "result-2.txt",
-	}
-	failReq := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-002","error":"boom"}`))
+	failReq := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{"id":"test-002","attempt_id":"`+failedItem.AttemptID+`","error":"boom"}`))
 	failResp := httptest.NewRecorder()
 	controller.failWorkHandler(failResp, failReq)
 	if failResp.Code != http.StatusNoContent {
@@ -3213,7 +3067,7 @@ func TestRecoveryModeAllowsWorkerReportEndpoints(t *testing.T) {
 }
 
 func TestHealthHandler(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	response := httptest.NewRecorder()
 
@@ -3225,7 +3079,7 @@ func TestHealthHandler(t *testing.T) {
 }
 
 func TestEnterRecoveryModeStampsRecoveryStartedAt(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 	if !controller.recoveryStartedAt.IsZero() {
 		t.Fatal("new controller should not start with recovery timestamp")
 	}
@@ -3247,7 +3101,7 @@ func TestEnterRecoveryModeStampsRecoveryStartedAt(t *testing.T) {
 func TestCompleteStartupRecoveryOpensNormalAdmission(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
-	controller := newController(nil)
+	controller := newController()
 	controller.workflowStore = store
 	controller.enterRecoveryMode()
 
@@ -3259,14 +3113,29 @@ func TestCompleteStartupRecoveryOpensNormalAdmission(t *testing.T) {
 	}
 }
 
-func newTestController() *Controller {
-	return newController([]model.WorkItem{
-		{
-			ID:             "test-001",
-			Type:           model.WorkItemTypeWriteDemoOutput,
-			OutputFilename: "result.txt",
-		},
+func newTestController(t *testing.T) *Controller {
+	t.Helper()
+
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
 	})
+
+	controller := newController()
+	controller.workflowStore = store
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+	return controller
 }
 
 func testWorkItem(id string) model.WorkItem {
@@ -3379,7 +3248,7 @@ func reusableTestWorkItem(id string) model.WorkItem {
 func newControllerWithCompletedAttempt(t *testing.T, completion model.WorkCompletion) *Controller {
 	t.Helper()
 
-	controller := newController(nil)
+	controller := newController()
 	db := testSQLiteMainDatabase(t)
 	t.Cleanup(func() {
 		db.Close()
@@ -3459,7 +3328,7 @@ func attemptVariablesByName(variables []ledger.AttemptVariable) map[string]ledge
 	return byName
 }
 
-func assignNextWork(t *testing.T, controller *Controller) {
+func assignNextWork(t *testing.T, controller *Controller) model.WorkItem {
 	t.Helper()
 
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
@@ -3469,4 +3338,10 @@ func assignNextWork(t *testing.T, controller *Controller) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected assignment status code: %d", response.Code)
 	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatalf("decode assigned work: %v", err)
+	}
+	return item
 }

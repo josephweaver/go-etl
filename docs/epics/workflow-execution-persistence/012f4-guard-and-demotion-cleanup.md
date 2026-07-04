@@ -1,6 +1,6 @@
 # 012f4 Guard And Demotion Cleanup
 
-Status: designed
+Status: partially implemented
 
 ## Objective
 
@@ -17,17 +17,9 @@ completed_work  completed or skipped work
 failed_work     failed work
 ```
 
-The in-memory fields:
-
-```go
-pending  []model.WorkItem
-assigned map[string]model.WorkItem
-failed   map[string]model.WorkFailure
-```
-
-may remain only as no-store fallback state for legacy unit tests and small
-in-memory controller use. They should not be treated as live queue authority for
-store-configured controllers.
+The former in-memory fields `pending`, `assigned`, and `failed` have been
+removed from `Controller`. No-store queue behavior is no longer a supported
+fallback.
 
 ## Background
 
@@ -70,8 +62,8 @@ Reason:
 Instead, demote them explicitly:
 
 ```text
-pending/assigned/failed = legacy no-store fallback state
-workflowStore != nil    = persisted queue authority
+workflowStore != nil = persisted queue authority
+workflowStore == nil = queue endpoints unavailable
 ```
 
 ## Implementation Shape
@@ -79,59 +71,34 @@ workflowStore != nil    = persisted queue authority
 Implement as small atoms:
 
 ```text
-012f4-a Rename or wrap in-memory state as legacy fallback [implemented]
-012f4-b Add persisted-path guard tests
-012f4-c Split status helpers by authority
+012f4-a Remove in-memory queue fields from Controller [implemented]
+012f4-b Replace skipped legacy inline workflow tests with source-reference coverage
+012f4-c Split status helpers by authority where still useful
 012f4-d Document remaining removal criteria
 ```
 
 Each atom should leave `go test ./cmd/controller` passing. Run `go test ./...`
 after the final atom.
 
-## 012f4-a Rename Or Wrap In-Memory State
+## 012f4-a Remove In-Memory Queue State
 
-Preferred implementation:
-
-Introduce a small struct:
-
-```go
-type legacyMemoryQueue struct {
-    pending  []model.WorkItem
-    assigned map[string]model.WorkItem
-    failed   map[string]model.WorkFailure
-}
-```
-
-Then `Controller` owns:
-
-```go
-legacyQueue legacyMemoryQueue
-```
-
-This is clearer than leaving three top-level fields that look like normal
-runtime authority.
-
-If that edit is too broad for one prompt, add comments above the existing fields
-as an intermediate atom:
-
-```go
-// legacy no-store fallback queue state; ignored when workflowStore is configured
-```
+Remove `pending`, `assigned`, and `failed` from `Controller`. The controller no
+longer has a process-local queue fallback; it requires the workflow-execution
+store for queue endpoints.
 
 Acceptance criteria:
 
-- The code clearly labels in-memory queue state as legacy/no-store fallback.
-- Store-configured paths do not read or write this state except guard tests that
-  prove it remains unchanged.
-- No-store tests continue to pass.
+- The controller has no `pending`, `assigned`, or `failed` fields.
+- Store-configured paths are the only active queue implementation.
+- Queue endpoints return service unavailable when `workflowStore` is absent.
 
 Implementation note:
 
-- The first implementation chose the conservative intermediate atom: comments
-  now label `pending`, `assigned`, and `failed` directly on `Controller` as
-  legacy no-store fallback queue state.
-- The fields were not renamed or wrapped yet because usages are spread across
-  legacy no-store tests. Guard tests should land before a broader struct rename.
+- The initial conservative label-only implementation was replaced by direct
+  removal after review.
+- Tests that still described legacy inline `/workflow` submission were skipped
+  with explicit notes. They should be replaced by source-reference based worker
+  startup and scaling coverage.
 
 ## 012f4-b Persisted-Path Guard Tests
 

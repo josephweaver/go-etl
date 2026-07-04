@@ -8,7 +8,7 @@ It is not the worker runtime, Python-facing API, reusable workflow language, var
 
 ## Files
 
-- `main.go` owns the controller process, HTTP API surface, in-memory queue lifecycle, workflow submission handling, runtime metadata attachment, ledger write coordination, status reporting, and shutdown hook.
+- `main.go` owns the controller process, HTTP API surface, durable queue lifecycle, workflow submission handling, runtime metadata attachment, ledger write coordination, status reporting, and shutdown hook.
 - `config.go` owns loading controller startup configuration into typed variables.
 - `local_worker.go` owns the local worker-starting adapter used by the controller.
 - `worker_scaler.go` owns the small worker-start planning state used when pending work exists.
@@ -20,7 +20,7 @@ Test files in this directory describe expected behavior but do not own productio
 
 - Controller process boundary.
 - HTTP API for work assignment, completion, failure, workflow submission, status, and shutdown.
-- Pending, assigned, and failed queue state.
+- Durable queued, running, completed, and failed work state through the workflow-execution store.
 - Workflow submission orchestration.
 - Controller-generated runtime metadata for work items.
 - Local worker startup decisions.
@@ -43,13 +43,13 @@ Test files in this directory describe expected behavior but do not own productio
 - Workflow submission is the target boundary; raw work submission is local administrative/test support.
 - Runtime configuration is resolved through typed variables rather than a separate hidden config authority.
 - Workers should receive concrete work-item parameters and metadata, not unresolved workflow intent.
-- Worker startup is bounded by configured scaling limits and pending work.
-- Queue state is currently process-local; durable history is attempt history, not a durable queue.
+- Worker startup is bounded by configured scaling limits and queued work.
+- Queue state is stored in the workflow-execution database; a controller without a workflow store rejects queue endpoints.
 
 ## Major Dependencies
 
 - `net/http` for the controller API.
-- `sync` for protecting in-memory queue state.
+- `sync` for protecting controller admission and recovery flags.
 - `database/sql` through the configured ledger handle.
 - `internal/workflow` for workflow compilation.
 - `internal/model` for shared HTTP payloads.
