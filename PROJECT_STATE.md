@@ -272,10 +272,11 @@ constructing the HTTP server. The resolved settings are validated as the
 startup HTTP contract and are used to configure the listener address and HTTP
 server timeouts and limits.
 
-The controller startup path now stamps a recovery-start timestamp and enters a
-recovery-only admission mode before serving requests. During this phase the
-controller keeps normal workflow and raw-work submission closed while still
-serving the dedicated health endpoint and the existing worker report endpoints.
+The controller startup path now stamps a recovery-start timestamp, enters a
+recovery-only admission mode, performs the current read-only startup recovery
+check against active workflow runs, and opens normal admission before serving
+requests. The dedicated health endpoint remains available independently of
+normal admission.
 
 The demo client starts the controller with:
 
@@ -1067,7 +1068,7 @@ cmd/worker/.run/data/cdl-demo-2025.txt
 Expected local ledger output:
 
 ```text
-.run/controller/ledger.sqlite
+.run/controller/workflow-execution.sqlite
 ```
 
 The current verified demo run records two attempt rows and four attempt-variable rows.
@@ -1198,6 +1199,12 @@ After persisted work is enqueued, the controller derives demand from
 workflow submission path still plans starts from in-memory pending/assigned
 counts.
 
+Persisted source-reference admission can now also start local command-backed
+workers when no configured `ExecutionEnvironment` is present. It uses the
+existing `LocalWorkerStarter` path and worker configuration variables from the
+resolved workflow source. This keeps the local demo path working while the
+configured execution-environment model remains the preferred HPCC-facing path.
+
 The sixth 012f3 atom adds an end-to-end controller test for the migrated sibling
 demo project. The test loads
 `../go-etl-demo-project/submissions/demo-workflow-run.json`, maps `local:demo`
@@ -1210,12 +1217,19 @@ remain empty.
 The local demo source adapter is now wired into live controller startup. When
 the controller starts from the `go-etl` working directory, `local:demo` maps to
 `../go-etl-demo-project`. This is a development/demo bridge so the current
-demo-client source-reference submission has a resolver once normal admission is
-opened. Live startup still enters recovery mode and does not yet include a
-recovery-complete transition, so an end-to-end demo-client run remains blocked
-by admission state rather than source resolution. Future source-control work
-should replace the hard-coded mapping with controller configuration and
-source-control-cache-backed resolution.
+demo-client source-reference submission has a resolver during live admission.
+Future source-control work should replace the hard-coded mapping with
+controller configuration and source-control-cache-backed resolution.
+
+The local demo controller config now writes to
+`.run/controller/workflow-execution.sqlite` instead of the old
+`.run/controller/ledger.sqlite` path. The old file was created by an earlier
+ledger shape and is not automatically replaced. The source-reference demo client
+has been smoke-tested successfully with the new path:
+
+```text
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=0 attempt_variables=0
+```
 
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 

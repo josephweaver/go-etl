@@ -410,6 +410,8 @@ Implementation note:
   `ListRunningWork`.
 - Store-configured admission uses the same scaler state and worker-start path as
   the legacy in-memory path, but passes persisted queued/running counts.
+- When no configured `ExecutionEnvironment` is present, persisted admission can
+  start command-backed local workers through `LocalWorkerStarter`.
 - Tests cover the no-env persisted admission case and a configured execution
   environment case that starts one scheduled worker from persisted demand.
 
@@ -517,9 +519,10 @@ local:demo -> <controller working directory>/../go-etl-demo-project
   and eventually source-control-cache-backed adapters.
 - `TestInitSourceControlAdapterResolvesDemoProject` verifies the startup helper
   can resolve `local:demo/project.json` from the sibling demo repo.
-- Live startup still enters recovery mode. This wiring supplies the source
-  adapter for live admission, but an end-to-end demo-client run still requires a
-  recovery-complete transition that opens normal admission.
+- Live startup enters recovery mode, performs the current read-only recovery
+  check, then opens normal admission before serving requests.
+- The local demo has been smoke-tested through `go run ./cmd/demo-client` using
+  `.run/controller/workflow-execution.sqlite`.
 
 Ambiguity:
 

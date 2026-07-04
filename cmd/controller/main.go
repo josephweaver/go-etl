@@ -45,6 +45,7 @@ type Controller struct {
 	ledger            *sql.DB
 	workflowStore     *persistence.Store
 	sourceControl     SourceControlAdapter
+	workerStarter     WorkerStarter
 	shutdown          func(context.Context) error
 	env               *ExecutionEnvironment
 	scaler            WorkerScaleState
@@ -62,6 +63,10 @@ type WorkflowRunSubmission struct {
 	Project   SourceDocumentReference `json:"project"`
 	Workflow  SourceDocumentReference `json:"workflow"`
 	Variables []variable.Variable     `json:"variables,omitempty"`
+}
+
+type WorkerStarter interface {
+	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
 type WorkReuseDecision struct {
@@ -117,6 +122,7 @@ func newController(items []model.WorkItem) *Controller {
 		pending:         items,
 		assigned:        make(map[string]model.WorkItem),
 		failed:          make(map[string]model.WorkFailure),
+		workerStarter:   LocalWorkerStarter{},
 		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
 			MaxCount:                2,
@@ -137,6 +143,16 @@ func (c *Controller) allowNormalAdmission() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.normalAdmission = true
+}
+
+func (c *Controller) completeStartupRecovery(ctx context.Context) error {
+	if c.workflowStore != nil {
+		if _, err := c.workflowStore.ListActiveWorkflowRuns(ctx); err != nil {
+			return fmt.Errorf("list active workflow runs: %w", err)
+		}
+	}
+	c.allowNormalAdmission()
+	return nil
 }
 
 func (c *Controller) recoveryAdmissionClosed() bool {
@@ -263,6 +279,13 @@ func buildControllerServer(
 	controller.sourceControl = initSourceControlAdapter(workingDirectory)
 	controller.env = executionEnvironment
 	controller.enterRecoveryMode()
+	if err := controller.completeStartupRecovery(context.Background()); err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		workflowStore.Close()
+		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -1266,20 +1289,18 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		}
 	}
 
-	if c.env != nil {
-		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-		if err != nil {
-			return err
-		}
-		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
-		if err != nil {
-			return err
-		}
-		startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
-		c.scaler.RecordStart(submittedAt, startCount, runningCount)
-		if err := c.startConfiguredWorkers(ctx, resolver, startCount); err != nil {
-			return err
-		}
+	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+	if err != nil {
+		return err
+	}
+	queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
+	if err != nil {
+		return err
+	}
+	startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
+	c.scaler.RecordStart(submittedAt, startCount, runningCount)
+	if err := c.startWorkers(ctx, resolver, startCount); err != nil {
+		return err
 	}
 
 	return nil
@@ -1295,6 +1316,32 @@ func (c *Controller) persistedWorkDemand(ctx context.Context) (int, int, error) 
 		return 0, 0, fmt.Errorf("list running work: %w", err)
 	}
 	return len(queued), len(running), nil
+}
+
+func (c *Controller) startWorkers(ctx context.Context, resolver variable.Resolver, count int) error {
+	if count == 0 {
+		return nil
+	}
+	if c.env != nil {
+		return c.startConfiguredWorkers(ctx, resolver, count)
+	}
+
+	targetEnvironment, err := workerTargetEnvironment(resolver)
+	if err != nil {
+		return err
+	}
+	if targetEnvironment == "" {
+		return nil
+	}
+	if c.workerStarter == nil {
+		return fmt.Errorf("worker starter is required")
+	}
+	for i := 0; i < count; i++ {
+		if err := c.workerStarter.StartWorker(targetEnvironment, resolver); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func canonicalSourceDocument(data []byte) ([]byte, string, error) {

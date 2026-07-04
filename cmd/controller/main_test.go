@@ -53,8 +53,8 @@ func TestBuildControllerServerUsesStartupPrecedenceAndRecoveryMode(t *testing.T)
 
 	statusResp := httptest.NewRecorder()
 	server.Handler.ServeHTTP(statusResp, httptest.NewRequest(http.MethodGet, "/status", nil))
-	if statusResp.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want 503 in recovery mode", statusResp.Code)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200 after startup recovery", statusResp.Code)
 	}
 
 	healthResp := httptest.NewRecorder()
@@ -2115,6 +2115,7 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	defer store.Close()
 	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
 	controller.workflowStore = store
+	controller.workerStarter = &testWorkerStarter{}
 	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
 		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
 	})
@@ -2261,6 +2262,8 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	defer store.Close()
 	controller := newController(nil)
 	controller.workflowStore = store
+	starter := &testWorkerStarter{}
+	controller.workerStarter = starter
 	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
 		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
 	})
@@ -2383,6 +2386,12 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	}
 	if claimed.ID == "" || claimed.AttemptID == "" {
 		t.Fatalf("claimed work is incomplete: %+v", claimed)
+	}
+	if starter.calls != 2 {
+		t.Fatalf("worker starter calls = %d, want 2", starter.calls)
+	}
+	if starter.targets[0] != "local" {
+		t.Fatalf("worker starter target = %q, want local", starter.targets[0])
 	}
 }
 
@@ -3050,6 +3059,17 @@ func (s *testScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, err
 	return JobHandle{ID: strconv.Itoa(s.calls)}, nil
 }
 
+type testWorkerStarter struct {
+	calls   int
+	targets []string
+}
+
+func (s *testWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
+	s.calls++
+	s.targets = append(s.targets, targetEnvironment)
+	return nil
+}
+
 func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
 	controller := newController(nil)
 	controller.env = &ExecutionEnvironment{
@@ -3221,6 +3241,21 @@ func TestEnterRecoveryModeStampsRecoveryStartedAt(t *testing.T) {
 	}
 	if controller.recoveryStartedAt.Before(before) {
 		t.Fatalf("recovery timestamp = %v, want not before %v", controller.recoveryStartedAt, before)
+	}
+}
+
+func TestCompleteStartupRecoveryOpensNormalAdmission(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	controller.enterRecoveryMode()
+
+	if err := controller.completeStartupRecovery(context.Background()); err != nil {
+		t.Fatalf("completeStartupRecovery() error = %v", err)
+	}
+	if controller.recoveryAdmissionClosed() {
+		t.Fatal("normal admission should be open after startup recovery")
 	}
 }
 

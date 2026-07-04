@@ -222,3 +222,17 @@ First implementation prompt:
   legacy fallback for existing tests.
 - Source-reference `/workflow` admission remains unimplemented and should be
   handled by the source-reference admission/client follow-up slices.
+
+Current cleanup follow-up:
+
+- Source-reference `/workflow` admission is now implemented through the
+  `012f3` atoms.
+- Live startup wires a local demo source adapter, performs a read-only recovery
+  check, and opens normal admission before serving requests.
+- Persisted source-reference admission can start local command-backed workers
+  through `LocalWorkerStarter` when no configured `ExecutionEnvironment` is
+  present.
+- The local demo config now uses `.run/controller/workflow-execution.sqlite`,
+  avoiding the older incompatible `.run/controller/ledger.sqlite` file.
+- The next 012f cleanup step should focus on guard tests and demotion of
+  `pending`, `assigned`, and `failed` as no-store fallback state.
