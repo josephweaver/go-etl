@@ -1,6 +1,6 @@
 # 012f4 Epic Closure And Boundary Cleanup
 
-Status: in progress
+Status: implemented
 
 ## Objective
 
@@ -38,7 +38,7 @@ The earlier 012f cleanup plan named these atoms:
 The 012f3 source-reference admission work has now implemented the practical
 equivalents of `012f-a`, `012f-b`, and `012f-c`.
 
-This slice owns the remaining guard/demotion work.
+This slice owned the remaining guard/demotion work.
 
 ## Required Context
 
@@ -68,9 +68,9 @@ Implement as small atoms:
 
 ```text
 012f4-a Remove in-memory queue fields from Controller [implemented]
-012f4-b Replace skipped legacy inline workflow tests with source-reference coverage [in progress]
-012f4-c Reconcile epic and slice statuses [pending]
-012f4-d Document moved/deferred follow-up epics [pending]
+012f4-b Replace skipped legacy inline workflow tests with source-reference coverage [implemented]
+012f4-c Reconcile epic and slice statuses [implemented]
+012f4-d Document moved/deferred follow-up epics [implemented]
 ```
 
 Each atom should leave `go test ./cmd/controller` passing. Run `go test ./...`
@@ -134,6 +134,10 @@ Implementation note:
   `TestStatusHandlerReportsPersistedCountsWhenWorkflowStoreConfigured` covers
   the active status authority. Handler-written ledger attempt-variable counts
   are no longer part of controller behavior.
+- The final inline cleanup converted the remaining skipped tests for general
+  workflow submission, submitted code version, Singularity runtime, invalid
+  worker scale config, and duplicate generated IDs. `cmd/controller/main_test.go`
+  now has no skipped tests.
 
 ## 012f4-c Reconcile Epic And Slice Statuses
 
@@ -184,7 +188,7 @@ Acceptance criteria:
 
 ## Closure Recommendation
 
-After the skipped legacy inline workflow tests are either replaced or explicitly
-retired, mark this epic ready for implementation review. The recommended next
+The skipped legacy inline workflow tests have been replaced or explicitly
+retired, so this epic is ready for implementation review. The recommended next
 epic is `source-control-resolution-and-cache`, because current live admission
 still depends on the temporary local source adapter and hard-coded demo mapping.

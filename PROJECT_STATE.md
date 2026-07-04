@@ -1267,6 +1267,13 @@ rows, and status no longer reports ledger attempt or attempt-variable counts.
 Active coverage for those surfaces is now the persisted terminal-attempt test
 and the persisted status-count test.
 
+The final 012f4 cleanup converted the remaining skipped inline `/workflow`
+tests to source-reference coverage for general workflow admission, submitted
+code version, Singularity runtime, invalid worker scale config, and duplicate
+generated work-item IDs. `cmd/controller/main_test.go` now has no skipped tests,
+and the persistence epic is ready for implementation review rather than further
+feature expansion.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The controller queue is now database-backed through the workflow-execution

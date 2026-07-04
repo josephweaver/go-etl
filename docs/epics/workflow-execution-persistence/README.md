@@ -1,6 +1,6 @@
 # Workflow Execution Persistence Epic
 
-Status: Proposed
+Status: Ready for implementation review
 
 ## Purpose
 
@@ -16,8 +16,8 @@ submission context, and resolver recipes.
 
 This epic also establishes the first controller-owned persistence boundary for
 bootstrapping the main database, reading and writing execution tables, computing
-canonical JSON SHA-256 values, and loading pinned project/workflow files from a
-source-control implementation.
+canonical JSON SHA-256 values, and storing source locator facts produced by a
+source-control boundary.
 
 ## Goals
 
@@ -44,11 +44,9 @@ source-control implementation.
 - Provide canonical JSON-to-SHA-256 helpers for project config, workflow config,
   resolved-input hashes, work-item payloads, output JSON, state observations, and
   future fingerprint records.
-- Provide a source-control abstraction for resolving repository revisions,
-  reading pinned files, obtaining source commit/object identities, and checking
-  out or materializing required files.
-- Provide a GitHub-backed source-control implementation as the first concrete
-  source-control adapter.
+- Persist source locator facts supplied by a source-control boundary, including
+  repository identity, resolved commit, path, source object identity when
+  available, and canonical GOET SHA-256.
 - Support transactional completion, stage-state updates, and creation of newly
   ready work.
 - Reconstruct runnable, blocked, running, failed, and completed workflow state
@@ -65,9 +63,9 @@ source-control implementation.
 - Defining sequential or `parallel_with` dependency semantics.
 - Defining heartbeat intervals, leases, fencing, or abandonment policy.
 - Implementing a general artifact storage service.
-- Implementing source-control support for providers other than GitHub.
-- Implementing full Git cache retention, eviction, repacking, or garbage
-  collection policy.
+- Implementing the source-control abstraction, GitHub behavior, local cache
+  layout, cache pins, materialization, retention, eviction, repacking, or
+  garbage collection policy.
 - Implementing secret storage or plaintext credential persistence.
 - Moving workflow resolution or scheduling decisions into SQL triggers.
 - Coordinating multiple active controllers before a concrete high-availability
@@ -386,11 +384,13 @@ Project and workflow source locators are recorded separately from their semantic
 fingerprints. Repository, commit SHA, and path answer where GOET obtained one
 known-valid copy. Canonical SHA-256 answers what semantic content GOET used.
 
-## Source-Control Abstraction
+## Source-Control Boundary
 
 The controller needs a source-control boundary because project/workflow
 configuration and execution components should be loaded from pinned source
-revisions, not from whichever branch happens to be current at restart.
+revisions, not from whichever branch happens to be current at restart. The
+implementation of that boundary moved to the separate
+`source-control-resolution-and-cache` epic.
 
 The abstraction should support:
 
@@ -424,7 +424,9 @@ and unable to escape the repository root.
 
 ## GitHub Source-Control Implementation
 
-GitHub is the first concrete source-control implementation.
+GitHub remains the intended first remote source-control implementation, but it
+is no longer part of this persistence epic. It belongs to
+`source-control-resolution-and-cache`.
 
 The GitHub implementation should:
 
@@ -921,9 +923,11 @@ specific implementation slices that first need them:
 - A shared canonical JSON and SHA-256 helper is used by persistence code.
 - Project and workflow configuration hashes are computed from canonical content,
   not from source locator strings.
-- GitHub repository, commit/object ID, path, Git blob identity when available,
-  and GOET canonical SHA-256 are recorded as distinct concepts.
-- A source-control abstraction exists and has a GitHub implementation.
+- Repository identity, commit/object ID, path, source object identity when
+  available, and GOET canonical SHA-256 are recorded as distinct concepts.
+- Source-control abstraction, GitHub implementation, local cache, cache pins,
+  and materialization are explicitly moved to
+  `source-control-resolution-and-cache`.
 - A submitted workflow run and its resolver recipe survive controller restart.
 - A completed work item can be traced through stage instance, workflow run,
   workflow definition, and project identity.

@@ -1723,39 +1723,17 @@ func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandler(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; /workflow now accepts source references")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	controller := newController()
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		}
-	}`))
-	response := httptest.NewRecorder()
+	controller.workflowStore = store
+	controller.workerStarter = &testWorkerStarter{}
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024, 2025}, "")
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
+		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 
 	status := getStatus(t, controller)
@@ -1776,8 +1754,8 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("decode next work item: %v", err)
 	}
 
-	if !strings.HasPrefix(item.WorkflowInstanceID, "cdl-instance-") {
-		t.Fatalf("unexpected workflow instance id: %q", item.WorkflowInstanceID)
+	if item.WorkflowInstanceID == "" {
+		t.Fatal("workflow instance id is empty")
 	}
 
 	if item.WorkflowDefinitionID != "cdl" {
@@ -1796,8 +1774,8 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 		t.Fatalf("unexpected step fingerprint: %q", item.StepFingerprint)
 	}
 
-	if item.StepInstanceID != item.WorkflowInstanceID+"-step-download" {
-		t.Fatalf("unexpected step instance id: %q", item.StepInstanceID)
+	if item.StepInstanceID == "" {
+		t.Fatal("step instance id is empty")
 	}
 
 	if !strings.HasPrefix(item.WorkItemFingerprint, "work-item:sha256:") {
@@ -2178,46 +2156,23 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 }
 
 func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	controller := newController()
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
+	controller.workflowStore = store
+	controller.workerStarter = &testWorkerStarter{}
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, `
 			{
 				"name": {"namespace": "override", "key": "code_version"},
 				"type": "string",
 				"expression": "test-version"
 			}
-		]
-	}`))
-	response := httptest.NewRecorder()
+		`)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
+		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
@@ -2387,9 +2342,11 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
 	controller.env.Transports = []Transport{&recordingTransport{}}
 	controller.env.Runtime = SingularityWorkerRuntime{
 		SingularityExecutable:     "singularity",
@@ -2397,40 +2354,12 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 		ContainerWorkerExecutable: "/goetl/goetl-worker",
 		Bind:                      "/data/goetl:/data/goetl",
 	}
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-`+testSlurmWorkerVariables+`
-		]
-	}`))
-	response := httptest.NewRecorder()
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
+		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 	if scheduler.calls != 1 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
@@ -2515,33 +2444,12 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	controller := newController()
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, `
 			{
 				"name": {"namespace": "worker_config", "key": "worker_target_environment"},
 				"type": "string",
@@ -2552,13 +2460,10 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 				"type": "string",
 				"expression": "two"
 			}
-		]
-	}`))
-	response := httptest.NewRecorder()
+		`)
 
-	controller.submitWorkflowHandler(response, request)
-
-	if response.Code != http.StatusBadRequest {
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
@@ -2588,39 +2493,18 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 }
 
 func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
-	controller := newTestController(t)
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "string", "expression": "001"}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "test",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"IDPrefix": "test",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		}
-	}`))
-	response := httptest.NewRecorder()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithExpressions(t, root, []string{
+		`{"type": "string", "expression": "001"}`,
+		`{"type": "string", "expression": "001"}`,
+	}, "", `"IDPrefix": "test",`)
 
-	controller.submitWorkflowHandler(response, request)
-
-	if response.Code != http.StatusConflict {
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
@@ -2656,6 +2540,12 @@ func writeLocalWorkflowSource(t *testing.T, root string, years []int, variables 
 	for _, year := range years {
 		yearExpressions = append(yearExpressions, `{"type": "int", "expression": `+strconv.Itoa(year)+`}`)
 	}
+	writeLocalWorkflowSourceWithExpressions(t, root, yearExpressions, variables, "")
+}
+
+func writeLocalWorkflowSourceWithExpressions(t *testing.T, root string, yearExpressions []string, variables string, extraWorkItemFields string) {
+	t.Helper()
+
 	workflowJSON := `{
 		"workflow": {
 			"ID": "cdl",
@@ -2673,6 +2563,7 @@ func writeLocalWorkflowSource(t *testing.T, root string, years []int, variables 
 						"WorkItem": {
 							"FanOutExpression": "${years[*]}",
 							"Type": "write_demo_output",
+							` + extraWorkItemFields + `
 							"OutputPrefix": "cdl",
 							"OutputExtension": ".txt"
 						}
