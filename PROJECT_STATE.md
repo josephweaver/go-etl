@@ -45,7 +45,15 @@ recomputes canonical JSON SHA-256, and compares those hashes with persisted
 project/workflow rows. GitHub-backed cache misses or corruptions are repaired by
 reading the recorded immutable revision and admitted source paths. Local-backed
 cache misses or corruptions fail recovery with a provenance error and do not
-reread local filesystem source files.
+reread local filesystem source files. The controller can now also serve a
+read-only source bundle for an admitted workflow run at
+`GET /workflow-runs/{run_id}/source-bundle.zip`. That endpoint reads the run's
+persisted source-admission context, reloads the admitted manifest from the
+controller-owned cache reference, and returns a zip containing only
+worker-stageable `source_manifest` files (`python_entrypoint`,
+`python_environment`, and `support_file`) using verified repository-cache reads.
+It does not reread provider source files or expose controller cache filesystem
+paths in the HTTP response.
 
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
@@ -269,6 +277,7 @@ POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
 POST /workflow       submit source references for project and workflow JSON
+GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
@@ -1004,6 +1013,9 @@ Current coverage includes:
 - Worker failure reporting.
 - Controller assignment, completion, and failure endpoints.
 - Controller raw work submission and status endpoint behavior.
+- Controller source-bundle endpoint behavior for admitted Python source files,
+  including missing-run, missing-source-context, unsafe-path, and cache
+  miss/corruption errors.
 - Controller workflow submission into the pending queue.
 - Controller worker-start hook selection from submitted variables.
 - Controller local worker command resolution.
