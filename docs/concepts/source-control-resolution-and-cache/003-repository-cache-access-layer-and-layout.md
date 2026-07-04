@@ -1,6 +1,6 @@
 # 003 Repository Cache Access Layer and Layout
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -14,24 +14,27 @@ materialize files into worker staging directories.
 
 ## Current State
 
-After Operational Slice 001, `internal/reposource` is expected to define the
+After Operational Slice 001, `internal/reposource` defined the
 repository-source model and path validation helpers.
 
-After Operational Slice 002, `internal/reposource` is expected to define
-provider reads and admitted source manifest construction, but provider reads
-remain independent from cache layout.
+After Operational Slice 002, `internal/reposource` defined provider reads and
+admitted source manifest construction, but provider reads remain independent
+from cache layout.
 
-There is no repository cache access layer. The controller startup code still has
-older Git-cache configuration names such as `controller_git_cache_path`, and
-existing source-reference behavior in `cmd/controller/source_control.go` reads
-local files directly. There is no shared code that maps:
+`internal/reposource` now has a repository cache layout and access layer. The
+controller startup code still has older Git-cache configuration names such as
+`controller_git_cache_path`, and existing source-reference behavior in
+`cmd/controller/source_control.go` reads local files directly. The new shared
+code maps:
 
 ```text
 cache root + admitted source manifest + manifest file path -> internal cache path
 ```
 
-There is also no shared repository-key sanitizer or provider-content directory
-rule for GitHub commit-backed cache entries.
+The new code also defines the GitHub repository-key sanitizer and
+provider-content directory rule for GitHub commit-backed cache entries. It does
+not create directories, write cache files, verify cache files, or change
+controller admission.
 
 ## Target State
 

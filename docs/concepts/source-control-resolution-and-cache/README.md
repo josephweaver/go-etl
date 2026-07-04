@@ -133,18 +133,18 @@ segregated cache destination for admitted bytes.
 
 Strategically, GOET has planned persistence fields for repository-source facts,
 and a reusable `internal/reposource` package now exists for the shared model,
-path validation, provider reads, and admitted source manifest construction. The
-remaining controller-facing repository-source boundary still does not own cache
-layout, cached pinned reads, materialization, cache pin reconstruction, or
-controller admission integration.
+path validation, provider reads, admitted source manifest construction, and
+deterministic repository cache path derivation. The remaining controller-facing
+repository-source boundary still does not own cached pinned reads,
+materialization, cache pin reconstruction, or controller admission integration.
 
 Operationally, controller source handling still lives near controller workflow
 admission code. The repository has `cmd/controller/source_control.go` and
 `cmd/controller/source_control_test.go`, and the new `internal/reposource`
 package now provides the shared model, GitHub provider reads, local filesystem
-provider reads, and manifest construction that later slices will use. There is
-still no controller-owned repository cache layout, verified cache read path, or
-materialization behavior.
+provider reads, manifest construction, and cache access path derivation that
+later slices will use. There is still no verified cache read path, cache
+publication behavior, or materialization behavior.
 
 ## Target State
 
@@ -249,7 +249,7 @@ OS implementation order and status:
 ```text
 001 Repository Source Model And Path Safety        [implemented]
 002 Provider Reads And Admission Manifest         [implemented]
-003 Repository Cache Access Layer And Layout
+003 Repository Cache Access Layer And Layout       [implemented]
 004 Cached Admission And Verified Reads
 005 Manifest Materialization
 006 Cache Pin Reconstruction

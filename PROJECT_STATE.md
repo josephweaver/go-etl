@@ -23,12 +23,14 @@ The target product still has a reusable Python interface that submits external p
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
-The repository-source model and provider-read slices now exist in
+The repository-source model, provider-read, and cache-layout slices now exist in
 `internal/reposource`. That package defines repository identity, resolved
 source references, admitted source manifest records, file roles,
 slash-separated repository/path validation, a narrow source `Provider`
 interface, GitHub and local filesystem providers, raw file-byte SHA-256
-evidence, and admitted manifest construction for caller-declared file sets.
+evidence, admitted manifest construction for caller-declared file sets,
+deterministic repository cache path derivation, and manifest-file lookup under
+controller-owned cache roots.
 Controller call sites still remain on the old `cmd/controller/source_control.go`
 path for now.
 
@@ -97,6 +99,10 @@ internal/
     work_item.go
     work_item_test.go
   reposource/
+    cache_access.go
+    cache_access_test.go
+    cache_layout.go
+    cache_layout_test.go
     github_provider.go
     github_provider_test.go
     local_provider.go
