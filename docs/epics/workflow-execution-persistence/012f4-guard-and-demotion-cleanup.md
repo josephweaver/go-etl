@@ -121,6 +121,13 @@ Implementation note:
 
 - `TestSubmitWorkflowHandlerRejectsInvalidPayload` now covers an incomplete
   source-reference payload instead of skipped legacy inline JSON.
+- The first worker startup/scaling cleanup converted these legacy inline tests
+  to source-reference fixtures backed by `LocalSourceControlAdapter`:
+  `TestSubmitWorkflowHandlerStartsConfiguredWorker`,
+  `TestSubmitWorkflowHandlerUsesConfiguredSlurmJob`,
+  `TestSubmitWorkflowHandlerStartsPlannedWorkerCount`,
+  `TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig`, and
+  `TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp`.
 
 ## 012f4-c Reconcile Epic And Slice Statuses
 

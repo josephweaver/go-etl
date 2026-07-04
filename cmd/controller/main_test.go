@@ -2467,41 +2467,15 @@ const testSlurmWorkerVariables = `
 			}`
 
 func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-`+testSlurmWorkerVariables+`
-		]
-	}`))
-	response := httptest.NewRecorder()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
@@ -2518,41 +2492,15 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-`+testSlurmWorkerVariables+`
-		]
-	}`))
-	response := httptest.NewRecorder()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
@@ -2633,42 +2581,16 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
 	controller.scaleCfg = WorkerScaleConfig{MinCount: 2, MaxCount: 2, CountPerStart: 2}
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-`+testSlurmWorkerVariables+`
-		]
-	}`))
-	response := httptest.NewRecorder()
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
@@ -2679,35 +2601,13 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
-		"workflow": {
-			"ID": "cdl",
-			"Variables": [
-				{
-					"name": {"namespace": "workflow", "key": "years"},
-					"type": "list",
-					"expression": [{"type": "int", "expression": 2024}, {"type": "int", "expression": 2025}]
-				}
-			],
-			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
-			]
-		},
-		"variables": [
-`+testSlurmWorkerVariables+`,
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables+`,
 			{
 				"name": {"namespace": "worker_config", "key": "worker_min_count"},
 				"type": "int",
@@ -2728,12 +2628,9 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 				"type": "string",
 				"expression": "0s"
 			}
-		]
-	}`))
-	response := httptest.NewRecorder()
+		`)
 
-	controller.submitWorkflowHandler(response, request)
-
+	response := submitLocalWorkflowSource(t, controller)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
@@ -2793,20 +2690,23 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 }
 
 func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
 	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
+	root := setupLocalWorkflowSource(t, controller)
 
-	submitWorkflowYears(t, controller, 2024)
-	submitWorkflowYears(t, controller, 2025)
+	submitLocalWorkflowYears(t, controller, root, 2024)
+	submitLocalWorkflowYears(t, controller, root, 2025)
 
 	if scheduler.calls != 1 {
 		t.Fatalf("unexpected scheduler calls before claim: %d", scheduler.calls)
 	}
 
 	assignNextWork(t, controller)
-	submitWorkflowYears(t, controller, 2026)
+	submitLocalWorkflowYears(t, controller, root, 2026)
 
 	if scheduler.calls != 2 {
 		t.Fatalf("unexpected scheduler calls after claim: %d", scheduler.calls)
@@ -2851,17 +2751,45 @@ func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
 	}
 }
 
-func submitWorkflowYears(t *testing.T, controller *Controller, year int) {
+func setupLocalWorkflowSource(t *testing.T, controller *Controller) string {
 	t.Helper()
 
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "project.json"), []byte(`{"id":"demo"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "workflows"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+	return root
+}
+
+func submitLocalWorkflowYears(t *testing.T, controller *Controller, root string, year int) {
+	t.Helper()
+
+	writeLocalWorkflowSource(t, root, []int{year}, testSlurmWorkerVariables)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+}
+
+func writeLocalWorkflowSource(t *testing.T, root string, years []int, variables string) {
+	t.Helper()
+
+	var yearExpressions []string
+	for _, year := range years {
+		yearExpressions = append(yearExpressions, `{"type": "int", "expression": `+strconv.Itoa(year)+`}`)
+	}
+	workflowJSON := `{
 		"workflow": {
 			"ID": "cdl",
 			"Variables": [
 				{
 					"name": {"namespace": "workflow", "key": "years"},
 					"type": "list",
-					"expression": [{"type": "int", "expression": `+strconv.Itoa(year)+`}]
+					"expression": [` + strings.Join(yearExpressions, ", ") + `]
 				}
 			],
 			"Steps": [
@@ -2879,16 +2807,32 @@ func submitWorkflowYears(t *testing.T, controller *Controller, year int) {
 			]
 		},
 		"variables": [
-`+testSlurmWorkerVariables+`
+` + variables + `
 		]
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func submitLocalWorkflowSource(t *testing.T, controller *Controller) *httptest.ResponseRecorder {
+	t.Helper()
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"repository": "local:test",
+			"ref": "main",
+			"path": "project.json"
+		},
+		"workflow": {
+			"repository": "local:test",
+			"ref": "main",
+			"path": "workflows/demo-workflow.json"
+		}
 	}`))
 	response := httptest.NewRecorder()
-
 	controller.submitWorkflowHandler(response, request)
-
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
+	return response
 }
 
 type testScheduler struct {

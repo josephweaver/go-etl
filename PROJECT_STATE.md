@@ -1254,6 +1254,13 @@ replace or explicitly retire the other skipped legacy inline-workflow tests and
 to reconcile the epic README/status trail before marking the persistence epic
 ready for review.
 
+The next 012f4 cleanup pass replaced the legacy inline worker startup and
+worker-scaling `/workflow` tests with source-reference fixtures backed by
+`LocalSourceControlAdapter`. The converted coverage now exercises persisted
+workflow admission before asserting configured Slurm worker submission, planned
+worker count, submitted worker-scale configuration, and organic scale-up after a
+worker claim.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The controller queue is now database-backed through the workflow-execution
