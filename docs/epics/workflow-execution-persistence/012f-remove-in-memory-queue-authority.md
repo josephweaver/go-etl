@@ -236,3 +236,4 @@ Current cleanup follow-up:
   avoiding the older incompatible `.run/controller/ledger.sqlite` file.
 - The next 012f cleanup step should focus on guard tests and demotion of
   `pending`, `assigned`, and `failed` as no-store fallback state.
+- `012f4-guard-and-demotion-cleanup.md` defines that cleanup slice.

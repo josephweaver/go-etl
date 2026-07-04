@@ -406,6 +406,11 @@ Each commit directory has a `manifest.json` for raw file-byte integrity and a
 workflow execution database records. The cache uses immutable commit IDs for
 execution lookup; mutable refs are only admission inputs.
 
+The persistence epic now has a designed `012f4` cleanup slice for guard and
+demotion work. Its goal is to make `pending`, `assigned`, and `failed` explicit
+legacy no-store fallback state while proving store-configured endpoints use the
+workflow-execution database as queue authority.
+
 Controller cutover has started by adding a workflow-execution store handle to
 `Controller` and opening that store as the configured main database during live
 startup. The older attempt ledger remains in code for legacy skip/reuse helpers
