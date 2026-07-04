@@ -124,6 +124,38 @@ func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
 	}
 }
 
+func TestInitSourceControlAdapterResolvesDemoProject(t *testing.T) {
+	adapter := initSourceControlAdapter(filepath.Join(mustGetwd(t), "..", ".."))
+
+	resolved, err := adapter.Resolve(context.Background(), SourceDocumentReference{
+		Repository: "local:demo",
+		Ref:        "main",
+		Path:       "project.json",
+	})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if resolved.RepositoryIdentity != "local:demo" {
+		t.Fatalf("repository identity = %q, want local:demo", resolved.RepositoryIdentity)
+	}
+	if resolved.Path != "project.json" {
+		t.Fatalf("path = %q, want project.json", resolved.Path)
+	}
+	if len(resolved.Data) == 0 {
+		t.Fatal("resolved project data is empty")
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
 func writeControllerStartupFiles(t *testing.T, dir string) (string, string, string) {
 	t.Helper()
 

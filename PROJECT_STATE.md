@@ -1207,6 +1207,16 @@ checks that queued worker payload JSON decodes as `model.WorkItem`, claims one
 item through persisted `/work/next`, and confirms the in-memory queue fields
 remain empty.
 
+The local demo source adapter is now wired into live controller startup. When
+the controller starts from the `go-etl` working directory, `local:demo` maps to
+`../go-etl-demo-project`. This is a development/demo bridge so the current
+demo-client source-reference submission has a resolver once normal admission is
+opened. Live startup still enters recovery mode and does not yet include a
+recovery-complete transition, so an end-to-end demo-client run remains blocked
+by admission state rather than source resolution. Future source-control work
+should replace the hard-coded mapping with controller configuration and
+source-control-cache-backed resolution.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

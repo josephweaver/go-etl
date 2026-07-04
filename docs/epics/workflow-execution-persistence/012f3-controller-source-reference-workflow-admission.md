@@ -73,6 +73,7 @@ the existing epic branch:
 012f3-d Compile workflow source into persisted stage/work/queue rows [implemented]
 012f3-e Persisted scaling demand after workflow admission [implemented]
 012f3-f End-to-end demo submission test [implemented]
+012f3-g Local source adapter startup wiring [implemented]
 ```
 
 Each atom should leave `go test ./cmd/controller ./internal/client ./internal/persistence`
@@ -495,6 +496,36 @@ Implementation note:
   in-memory queue fields.
 
 ## Persistence Mapping
+
+## 012f3-g Local Source Adapter Startup Wiring
+
+Purpose: make the implemented source-reference admission path usable by the
+live development controller, not just tests that manually inject
+`Controller.sourceControl`.
+
+Implementation note:
+
+- `buildControllerServer` now assigns `Controller.sourceControl` during startup.
+- The first live mapping is:
+
+```text
+local:demo -> <controller working directory>/../go-etl-demo-project
+```
+
+- This is intentionally a development/demo mapping. A later source-control
+  configuration slice should replace the hard-coded map with controller config
+  and eventually source-control-cache-backed adapters.
+- `TestInitSourceControlAdapterResolvesDemoProject` verifies the startup helper
+  can resolve `local:demo/project.json` from the sibling demo repo.
+- Live startup still enters recovery mode. This wiring supplies the source
+  adapter for live admission, but an end-to-end demo-client run still requires a
+  recovery-complete transition that opens normal admission.
+
+Ambiguity:
+
+- The mapping assumes the controller process working directory is the `go-etl`
+  repo root, which is true for the current demo-client startup path. It is not a
+  general installation rule.
 
 Project source document:
 

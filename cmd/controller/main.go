@@ -260,6 +260,7 @@ func buildControllerServer(
 
 	controller := newController(nil)
 	controller.workflowStore = workflowStore
+	controller.sourceControl = initSourceControlAdapter(workingDirectory)
 	controller.env = executionEnvironment
 	controller.enterRecoveryMode()
 
@@ -472,6 +473,12 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 		return nil, err
 	}
 	return &env, nil
+}
+
+func initSourceControlAdapter(workingDirectory string) SourceControlAdapter {
+	return NewLocalSourceControlAdapter(map[string]string{
+		"local:demo": filepath.Join(workingDirectory, "..", "go-etl-demo-project"),
+	})
 }
 
 func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
