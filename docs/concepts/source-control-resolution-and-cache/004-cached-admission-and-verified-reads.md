@@ -1,6 +1,6 @@
 # 004 Cached Admission and Verified Reads
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -16,19 +16,20 @@ owned by OS 002.
 
 ## Current State
 
-After Operational Slice 001, `internal/reposource` is expected to define the
+After Operational Slice 001, `internal/reposource` defined the
 repository-source model and path validation helpers.
 
-After Operational Slice 002, `internal/reposource` is expected to define
-provider reads and admitted source manifest construction.
+After Operational Slice 002, `internal/reposource` defined provider reads and
+admitted source manifest construction.
 
-After Operational Slice 003, `internal/reposource` is expected to define cache
-layout and path derivation for local filesystem and GitHub cache entries.
+After Operational Slice 003, `internal/reposource` defined cache layout and
+path derivation for local filesystem and GitHub cache entries.
 
-There is no cache publisher or verified cache reader. Admitted source manifests
-are not written to disk, admitted file bytes are not copied into the repository
-cache, and there is no shared behavior for checking raw file SHA-256 or GOET
-canonical JSON SHA-256 before a cached file is used.
+`internal/reposource` now has a cache publisher and verified cache reader.
+Admitted source manifests can be written to disk, manifest-declared file bytes
+can be copied into the repository cache, and cached bytes are checked against
+raw file SHA-256, GOET canonical JSON SHA-256, and recorded byte size before
+use.
 
 ## Target State
 

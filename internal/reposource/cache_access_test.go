@@ -1,6 +1,7 @@
 package reposource
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -77,5 +78,22 @@ func TestCacheAccessRejectsInvalidManifest(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected missing run id error")
+	}
+}
+
+func TestCacheAccessReadFileReportsCacheMiss(t *testing.T) {
+	layout, err := NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	manifest, _ := testCacheManifest(t, "local", "run-1", "project.json", []byte(`{"name":"demo"}`))
+	access, err := NewCacheAccess(layout, manifest)
+	if err != nil {
+		t.Fatalf("NewCacheAccess() error = %v", err)
+	}
+
+	_, err = access.ReadFile("project.json")
+	if !errors.Is(err, ErrCacheMiss) {
+		t.Fatalf("ReadFile() error = %v, want cache miss", err)
 	}
 }
