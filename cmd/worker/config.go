@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	LogDir        string `json:"log_dir"`
-	TmpDir        string `json:"tmp_dir"`
-	DataDir       string `json:"data_dir"`
-	ControllerURL string `json:"controller_url"`
+	LogDir           string `json:"log_dir"`
+	TmpDir           string `json:"tmp_dir"`
+	DataDir          string `json:"data_dir"`
+	ControllerURL    string `json:"controller_url"`
+	PythonExecutable string `json:"python_executable,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
