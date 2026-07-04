@@ -148,7 +148,7 @@ func TestOpenStoreCreatesSQLiteCoreConstraints(t *testing.T) {
 		workflow_id,
 		project_id,
 		repository_identity,
-		source_commit,
+		source_revision_id,
 		workflow_path,
 		workflow_sha256,
 		created_at
@@ -371,7 +371,7 @@ func insertMinimalStage(t *testing.T, ctx context.Context, db *sql.DB) {
 			query: `INSERT INTO projects (
 				project_id,
 				repository_identity,
-				source_commit,
+				source_revision_id,
 				config_path,
 				config_sha256,
 				created_at
@@ -383,7 +383,7 @@ func insertMinimalStage(t *testing.T, ctx context.Context, db *sql.DB) {
 				workflow_id,
 				project_id,
 				repository_identity,
-				source_commit,
+				source_revision_id,
 				workflow_path,
 				workflow_sha256,
 				created_at

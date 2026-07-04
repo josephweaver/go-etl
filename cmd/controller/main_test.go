@@ -17,6 +17,7 @@ import (
 	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/persistence"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -124,24 +125,28 @@ func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
 	}
 }
 
-func TestInitSourceControlAdapterResolvesDemoProject(t *testing.T) {
-	adapter := initSourceControlAdapter(filepath.Join(mustGetwd(t), "..", ".."))
+func TestInitRepositorySourceProvidersResolvesDemoProject(t *testing.T) {
+	providers := initRepositorySourceProviders(filepath.Join(mustGetwd(t), "..", ".."))
+	provider, ok := providers["local:demo"]
+	if !ok {
+		t.Fatal("local:demo provider missing")
+	}
 
-	resolved, err := adapter.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "project.json",
-	})
+	resolved, err := provider.Resolve(context.Background(), "main")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if resolved.RepositoryIdentity != "local:demo" {
-		t.Fatalf("repository identity = %q, want local:demo", resolved.RepositoryIdentity)
+	if resolved.Repository.Value != "local:demo" {
+		t.Fatalf("repository identity = %q, want local:demo", resolved.Repository.Value)
 	}
-	if resolved.Path != "project.json" {
-		t.Fatalf("path = %q, want project.json", resolved.Path)
+	if resolved.RevisionID != nil {
+		t.Fatalf("revision id = %q, want nil", *resolved.RevisionID)
 	}
-	if len(resolved.Data) == 0 {
+	reads, err := provider.ReadFiles(context.Background(), resolved, []string{"project.json"})
+	if err != nil {
+		t.Fatalf("ReadFiles() error = %v", err)
+	}
+	if len(reads) != 1 || len(reads[0].Content.Data) == 0 {
 		t.Fatal("resolved project data is empty")
 	}
 }
@@ -194,7 +199,7 @@ func writeControllerStartupFiles(t *testing.T, dir string) (string, string, stri
     {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
     {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 9091},
     {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_path"}, "type": "path", "expression": "${controller_root_dir}/git_cache"},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_path"}, "type": "path", "expression": "${controller_root_dir}/repo_cache"},
     {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},
     {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_path"}, "type": "path", "expression": "${controller_root_dir}/artifacts"},
     {"name": {"namespace": "controller_config", "key": "caretaker_interval_schedule_milliseconds"}, "type": "int", "expression": 60000},
@@ -210,8 +215,8 @@ func writeControllerStartupFiles(t *testing.T, dir string) (string, string, stri
     {"name": {"namespace": "controller_config", "key": "controller_shutdown_timeout_milliseconds"}, "type": "int", "expression": 30000},
     {"name": {"namespace": "controller_config", "key": "controller_max_request_bytes"}, "type": "int", "expression": 16777216},
     {"name": {"namespace": "controller_config", "key": "controller_max_header_bytes"}, "type": "int", "expression": 1048576},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_max_size_mb"}, "type": "int", "expression": 10240},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
     {"name": {"namespace": "controller_config", "key": "controller_git_fetch_timeout_milliseconds"}, "type": "int", "expression": 300000},
     {"name": {"namespace": "controller_config", "key": "controller_git_fetch_concurrency"}, "type": "int", "expression": 4},
     {"name": {"namespace": "controller_config", "key": "controller_temp_cleanup_age_milliseconds"}, "type": "int", "expression": 86400000},
@@ -236,7 +241,7 @@ func TestResolveControllerFilesystemPaths(t *testing.T) {
 	outsideRoot := filepath.Join(t.TempDir(), "shared", "artifacts")
 	controllerScope := testStartupScope(t,
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git/../git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_path", variable.TypePath, "${controller_root_dir}/repo/../repo-cache"),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "ignored"),
 	)
@@ -252,12 +257,27 @@ func TestResolveControllerFilesystemPaths(t *testing.T) {
 
 	want := controllerFilesystemPaths{
 		Root:          filepath.Join(workingDirectory, "state"),
-		GitCache:      filepath.Join(workingDirectory, "state", "git-cache"),
+		RepoCache:     filepath.Join(workingDirectory, "state", "repo-cache"),
 		Temp:          filepath.Join(workingDirectory, "controller-temp"),
 		ArtifactCache: filepath.Clean(outsideRoot),
 	}
 	if paths != want {
 		t.Fatalf("resolveControllerFilesystemPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestResolveControllerFilesystemPathsDoesNotAcceptOldGitCacheName(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "artifacts"),
+	)), variable.ResolverConfig{})
+
+	_, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+	if err == nil || !strings.Contains(err.Error(), "controller_repo_cache_path") {
+		t.Fatalf("error = %v, want missing controller_repo_cache_path", err)
 	}
 }
 
@@ -321,8 +341,8 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 12),
 		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 60000),
 		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 2),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 10240),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_max_size_mb", variable.TypeInt, 10240),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_retention_milliseconds", variable.TypeInt, 604800000),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 300000),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 4),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 86400000),
@@ -345,8 +365,8 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 	if policy.CaretakerIntervalScheduleMillis != 60000 || policy.CaretakerMissedIntervalLimit != 2 {
 		t.Fatalf("caretaker policy = %+v", policy)
 	}
-	if policy.GitCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
-		t.Fatalf("git policy = %+v", policy)
+	if policy.RepoCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
+		t.Fatalf("repository cache or git fetch policy = %+v", policy)
 	}
 	if policy.TempCleanupAgeMillis != 86400000 || policy.StorageMinFreeMB != 1024 {
 		t.Fatalf("storage policy = %+v", policy)
@@ -359,6 +379,30 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 	}
 	if policy.LogLevel != "debug" {
 		t.Fatalf("log level = %q, want debug", policy.LogLevel)
+	}
+}
+
+func TestResolveControllerOperationalPolicyDoesNotAcceptOldGitCacheNames(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_level", variable.TypeString, "debug"),
+	)), variable.ResolverConfig{})
+
+	_, err := resolveControllerOperationalPolicy(resolver, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "controller_repo_cache_max_size_mb") {
+		t.Fatalf("error = %v, want missing controller_repo_cache_max_size_mb", err)
 	}
 }
 
@@ -392,8 +436,8 @@ func TestResolveControllerOperationalPolicyRejectsInvalidValues(t *testing.T) {
 				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
-				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
-				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_retention_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),
@@ -1822,9 +1866,7 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = store
 	controller.workerStarter = &testWorkerStarter{}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
-		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
-	})
+	configureTestLocalRepoSource(t, controller, "local:demo", filepath.Join("..", "..", "..", "go-etl-demo-project"))
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"project": {
@@ -1847,54 +1889,6 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 		t.Fatalf("status code = %d, want 204", response.Code)
 	}
 
-	projectSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "project.json",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, projectHash, err := canonicalSourceDocument(projectSource.Data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := projectRecordFromSource(projectSource, projectHash, time.Now().UTC())
-	gotProject, found, err := store.GetProject(context.Background(), project.ID)
-	if err != nil {
-		t.Fatalf("GetProject() error = %v", err)
-	}
-	if !found {
-		t.Fatal("project was not persisted")
-	}
-	if gotProject.ConfigSHA256 != projectHash {
-		t.Fatalf("project hash = %q, want %q", gotProject.ConfigSHA256, projectHash)
-	}
-
-	workflowSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
-		Repository: "local:demo",
-		Ref:        "main",
-		Path:       "workflows/demo-workflow.json",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, workflowHash, err := canonicalSourceDocument(workflowSource.Data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflowRecord := workflowRecordFromSource(project.ID, workflowSource, workflowHash, time.Now().UTC())
-	gotWorkflow, found, err := store.GetWorkflow(context.Background(), workflowRecord.ID)
-	if err != nil {
-		t.Fatalf("GetWorkflow() error = %v", err)
-	}
-	if !found {
-		t.Fatal("workflow was not persisted")
-	}
-	if gotWorkflow.WorkflowSHA256 != workflowHash {
-		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
-	}
-
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
 	if err != nil {
 		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
@@ -1902,11 +1896,52 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("active run count = %d, want 1", len(runs))
 	}
-	if runs[0].ProjectID != project.ID {
-		t.Fatalf("run project id = %q, want %q", runs[0].ProjectID, project.ID)
+
+	gotProject, found, err := store.GetProject(context.Background(), runs[0].ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
 	}
-	if runs[0].WorkflowID != workflowRecord.ID {
-		t.Fatalf("run workflow id = %q, want %q", runs[0].WorkflowID, workflowRecord.ID)
+	if !found {
+		t.Fatal("project was not persisted")
+	}
+	if gotProject.RepositoryIdentity != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", gotProject.RepositoryIdentity)
+	}
+	if gotProject.SourceRevisionID != nil {
+		t.Fatalf("project source revision id = %q, want nil", *gotProject.SourceRevisionID)
+	}
+	projectBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "project.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, projectHash, err := canonicalSourceDocument(projectBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProject.ConfigSHA256 != projectHash {
+		t.Fatalf("project hash = %q, want %q", gotProject.ConfigSHA256, projectHash)
+	}
+
+	gotWorkflow, found, err := store.GetWorkflow(context.Background(), runs[0].WorkflowID)
+	if err != nil {
+		t.Fatalf("GetWorkflow() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow was not persisted")
+	}
+	if gotWorkflow.SourceRevisionID != nil {
+		t.Fatalf("workflow source revision id = %q, want nil", *gotWorkflow.SourceRevisionID)
+	}
+	workflowBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "workflows", "demo-workflow.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotWorkflow.WorkflowSHA256 != workflowHash {
+		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
 	}
 
 	stage, found, err := store.GetWorkflowStage(context.Background(), runs[0].ID, 0)
@@ -1952,6 +1987,113 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 }
 
+func TestDecodeWorkflowSourceSubmissionAcceptsSourceManifest(t *testing.T) {
+	submission, err := decodeWorkflowSourceSubmission([]byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "scripts/train.py", "content_type": "text/x-python"},
+				{"role": "support_file", "path": "scripts/lib/helpers.py", "content_type": "text/x-python"}
+			]
+		},
+		"variables": []
+	}`))
+	if err != nil {
+		t.Fatalf("decodeWorkflowSourceSubmission() error = %v", err)
+	}
+	if len(submission.SourceManifest.Files) != 2 {
+		t.Fatalf("source manifest file count = %d, want 2", len(submission.SourceManifest.Files))
+	}
+}
+
+func TestDecodeWorkflowSourceSubmissionRejectsInvalidSourceManifest(t *testing.T) {
+	_, err := decodeWorkflowSourceSubmission([]byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "../train.py"}
+			]
+		},
+		"variables": []
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "source_manifest") {
+		t.Fatalf("error = %v, want source_manifest validation error", err)
+	}
+}
+
+func TestWorkflowRunRecordFromAdmittedManifestRecordsAdmissionContext(t *testing.T) {
+	revisionID := "abc123"
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reposource.AdmittedSourceManifest{
+		Schema: reposource.AdmittedSourceManifestSchemaV1,
+		RunID:  "run-001",
+		Source: reposource.ResolvedSourceReference{
+			Repository:   reposource.RepositoryIdentity{Value: "github.com/owner/repo"},
+			RequestedRef: "main",
+			RevisionID:   &revisionID,
+		},
+		Files: []reposource.AdmittedSourceManifestFile{
+			{
+				Role:                reposource.FileRoleProject,
+				SourcePath:          "project.json",
+				CachePath:           "project.json",
+				ObjectID:            stringPtr("blob-project"),
+				CanonicalJSONSHA256: stringPtr(strings.Repeat("a", 64)),
+			},
+			{
+				Role:                reposource.FileRoleWorkflow,
+				SourcePath:          "workflows/demo.json",
+				CachePath:           "workflows/demo.json",
+				ObjectID:            stringPtr("blob-workflow"),
+				CanonicalJSONSHA256: stringPtr(strings.Repeat("b", 64)),
+			},
+			{
+				Role:       reposource.FileRoleSupportFile,
+				SourcePath: "data/input.csv",
+				CachePath:  "data/input.csv",
+			},
+		},
+	}
+	run, err := workflowRunRecordFromAdmittedManifest(
+		"run-001",
+		"project-001",
+		"workflow-001",
+		manifest,
+		[]variable.Variable{},
+		time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC),
+		layout,
+	)
+	if err != nil {
+		t.Fatalf("workflowRunRecordFromAdmittedManifest() error = %v", err)
+	}
+
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("submission context is not valid JSON: %v", err)
+	}
+	if context.Schema != workflowRunSubmissionContextSchemaV1 {
+		t.Fatalf("schema = %q, want %q", context.Schema, workflowRunSubmissionContextSchemaV1)
+	}
+	if !strings.HasSuffix(context.SourceAdmission.ManifestRef, "/github/repos/github.com_owner_repo/abc123/manifests/run-001.json") {
+		t.Fatalf("manifest ref = %q, want admitted manifest ref", context.SourceAdmission.ManifestRef)
+	}
+	if context.SourceAdmission.Source.RepositoryIdentity != "github.com/owner/repo" {
+		t.Fatalf("source repository identity = %q, want github.com/owner/repo", context.SourceAdmission.Source.RepositoryIdentity)
+	}
+	if context.SourceAdmission.SourceRevisionID == nil || *context.SourceAdmission.SourceRevisionID != "abc123" {
+		t.Fatalf("source revision id = %v, want abc123", context.SourceAdmission.SourceRevisionID)
+	}
+	if len(context.SourceAdmission.Files) != 3 {
+		t.Fatalf("admitted files = %d, want 3", len(context.SourceAdmission.Files))
+	}
+	if context.SourceAdmission.Files[2].Role != string(reposource.FileRoleSupportFile) || context.SourceAdmission.Files[2].SourcePath != "data/input.csv" || context.SourceAdmission.Files[2].CachePath != "data/input.csv" {
+		t.Fatalf("declared file = %+v, want data/input.csv admission", context.SourceAdmission.Files[2])
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -1959,9 +2101,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	controller.workflowStore = store
 	starter := &testWorkerStarter{}
 	controller.workerStarter = starter
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
-		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
-	})
+	configureTestLocalRepoSource(t, controller, "local:demo", filepath.Join("..", "..", "..", "go-etl-demo-project"))
 
 	submissionPath := filepath.Join("..", "..", "..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
 	submissionBody, err := os.ReadFile(submissionPath)
@@ -1999,7 +2139,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if project.ConfigPath != "project.json" {
 		t.Fatalf("project config path = %q, want project.json", project.ConfigPath)
 	}
-	if project.SourceCommit == "" || project.SourceObjectID == "" || project.ConfigSHA256 == "" {
+	if project.ConfigSHA256 == "" {
 		t.Fatalf("project provenance is incomplete: %+v", project)
 	}
 
@@ -2016,16 +2156,19 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if workflowRecord.WorkflowPath != "workflows/demo-workflow.json" {
 		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", workflowRecord.WorkflowPath)
 	}
-	if workflowRecord.SourceCommit == "" || workflowRecord.SourceObjectID == "" || workflowRecord.WorkflowSHA256 == "" {
+	if workflowRecord.WorkflowSHA256 == "" {
 		t.Fatalf("workflow provenance is incomplete: %+v", workflowRecord)
 	}
 
-	var submissionContext map[string]any
+	var submissionContext workflowRunSubmissionContext
 	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &submissionContext); err != nil {
 		t.Fatalf("submission context is not valid JSON: %v", err)
 	}
-	if submissionContext["project"] == nil || submissionContext["workflow"] == nil {
+	if submissionContext.SourceAdmission.Schema == "" {
 		t.Fatalf("submission context missing source facts: %s", run.SubmissionContextJSON)
+	}
+	if submissionContext.SourceAdmission.Source.ProvenanceWarning != reposource.LocalProvenanceWarning {
+		t.Fatalf("provenance warning = %q, want local warning", submissionContext.SourceAdmission.Source.ProvenanceWarning)
 	}
 
 	stage, found, err := store.GetWorkflowStage(context.Background(), run.ID, 0)
@@ -2126,7 +2269,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+	configureTestLocalRepoSource(t, controller, "local:test", root)
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"project": {
@@ -2190,6 +2333,102 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 
 	if item.CodeVersion != "test-version" {
 		t.Fatalf("code version = %q, want test-version", item.CodeVersion)
+	}
+}
+
+func TestSubmitWorkflowHandlerPublishesSupplementalSourceManifestFiles(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	if err := os.Mkdir(filepath.Join(root, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "input.csv"), []byte("value\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workflowJSON := `{
+		"workflow": {"ID": "cdl", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "support_file", "path": "data/input.csv", "content_type": "text/csv"}
+			]
+		},
+		"variables": []
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	var submissionContext workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runs[0].SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.FromSlash(submissionContext.SourceAdmission.ManifestRef))
+	if err != nil {
+		t.Fatalf("read admitted manifest: %v", err)
+	}
+	var manifest reposource.AdmittedSourceManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("decode admitted manifest: %v", err)
+	}
+	access, err := reposource.NewCacheAccess(controller.repoCacheLayout, manifest)
+	if err != nil {
+		t.Fatalf("NewCacheAccess() error = %v", err)
+	}
+	cached, err := access.ReadFile("data/input.csv")
+	if err != nil {
+		t.Fatalf("ReadFile(data/input.csv) error = %v", err)
+	}
+	if string(cached) != "value\n1\n" {
+		t.Fatalf("cached supplemental data = %q, want input csv", string(cached))
+	}
+	if len(submissionContext.SourceAdmission.Files) != 3 {
+		t.Fatalf("submission context admitted files = %d, want 3", len(submissionContext.SourceAdmission.Files))
+	}
+}
+
+func TestSubmitWorkflowHandlerRejectsUnsafeSupplementalSourceManifestPathBeforeRunCreation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	workflowJSON := `{
+		"workflow": {"ID": "cdl", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "support_file", "path": "../secret.txt"}
+			]
+		},
+		"variables": []
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code == http.StatusNoContent {
+		t.Fatal("status code = 204, want rejection")
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("active run count = %d, want 0", len(runs))
 	}
 }
 
@@ -2519,8 +2758,21 @@ func setupLocalWorkflowSource(t *testing.T, controller *Controller) string {
 	if err := os.Mkdir(filepath.Join(root, "workflows"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+	configureTestLocalRepoSource(t, controller, "local:test", root)
 	return root
+}
+
+func configureTestLocalRepoSource(t *testing.T, controller *Controller, repository string, root string) {
+	t.Helper()
+
+	controller.repoSourceProviders = map[string]reposource.Provider{
+		repository: reposource.NewLocalProvider(reposource.RepositoryIdentity{Value: repository}, root),
+	}
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
 }
 
 func submitLocalWorkflowYears(t *testing.T, controller *Controller, root string, year int) {
@@ -2887,7 +3139,7 @@ func insertTestPersistenceRunWithStage(t *testing.T, ctx context.Context, store 
 		ID:                 "project-001",
 		Name:               "Project",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		ConfigPath:         "project.json",
 		SourceObjectID:     "object",
 		ConfigSHA256:       strings.Repeat("a", 64),
@@ -2901,7 +3153,7 @@ func insertTestPersistenceRunWithStage(t *testing.T, ctx context.Context, store 
 		ProjectID:          project.ID,
 		Name:               "Workflow",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		WorkflowPath:       "workflow.json",
 		SourceObjectID:     "object",
 		WorkflowSHA256:     strings.Repeat("b", 64),

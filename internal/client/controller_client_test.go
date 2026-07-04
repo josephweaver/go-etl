@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"goetl/internal/model"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -62,6 +64,11 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 				},
 			},
 		},
+		SourceManifest: reposource.SourceManifestDeclaration{
+			Files: []reposource.SourceManifestFileDeclaration{
+				{Role: reposource.FileRolePythonEntrypoint, Path: "scripts/train.py", ContentType: "text/x-python"},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -73,6 +80,9 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 
 	if len(received.Workflow.Variables) != 1 {
 		t.Fatalf("unexpected workflow variable count: %d", len(received.Workflow.Variables))
+	}
+	if len(received.SourceManifest.Files) != 1 {
+		t.Fatalf("source manifest file count = %d, want 1", len(received.SourceManifest.Files))
 	}
 }
 
@@ -152,6 +162,51 @@ func TestControllerClientLoadsWorkflowSubmissionFile(t *testing.T) {
 
 	if len(submission.Workflow.Steps) != 1 {
 		t.Fatalf("unexpected workflow step count: %d", len(submission.Workflow.Steps))
+	}
+}
+
+func TestControllerClientLoadsWorkflowSubmissionFileWithSourceManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow.json")
+	content := []byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "scripts/train.py", "content_type": "text/x-python"},
+				{"role": "python_environment", "path": "environments/python.json", "content_type": "application/json"}
+			]
+		},
+		"variables": []
+	}`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	submission, err := LoadWorkflowSubmissionFile(path)
+	if err != nil {
+		t.Fatalf("LoadWorkflowSubmissionFile() error = %v", err)
+	}
+	if len(submission.SourceManifest.Files) != 2 {
+		t.Fatalf("source manifest file count = %d, want 2", len(submission.SourceManifest.Files))
+	}
+}
+
+func TestControllerClientRejectsInvalidWorkflowSourceManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow.json")
+	content := []byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "project", "path": "project.json"}
+			]
+		},
+		"variables": []
+	}`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if _, err := LoadWorkflowSubmissionFile(path); err == nil {
+		t.Fatal("expected source manifest validation error")
 	}
 }
 

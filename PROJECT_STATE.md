@@ -23,6 +23,30 @@ The target product still has a reusable Python interface that submits external p
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
+The repository-source model, provider-read, cache-layout, cached-admission,
+manifest-materialization, cache-pin, and source-declaration slices now exist in `internal/reposource`. That
+package defines repository identity, resolved source references, admitted
+source manifest records, file roles, slash-separated repository/path
+validation, a narrow source `Provider` interface, GitHub and local filesystem
+providers, raw file-byte SHA-256 evidence, admitted manifest construction for
+caller-declared file sets, deterministic repository cache path derivation,
+manifest-file lookup under controller-owned cache roots, cache publication,
+verified cached reads, and local filesystem materialization from verified
+cache reads. It also defines reconstructable workflow-run cache pin files under
+local and GitHub cache entries. Workflow source documents can now include a
+validated top-level `source_manifest` for supplemental Python entrypoint,
+Python environment, and support files. Source-reference `/workflow` admission
+now uses `internal/reposource` provider reads, admitted manifests, cache
+publication, and verified cached reads before compiling workflow work.
+Controller startup recovery now verifies active run source caches before opening
+normal admission: it reloads the admitted manifest from the persisted run
+context, reads cached project/workflow files through `reposource.CacheAccess`,
+recomputes canonical JSON SHA-256, and compares those hashes with persisted
+project/workflow rows. GitHub-backed cache misses or corruptions are repaired by
+reading the recorded immutable revision and admitted source paths. Local-backed
+cache misses or corruptions fail recovery with a provenance error and do not
+reread local filesystem source files.
+
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
 `project.json`, workflow documents under `workflows/`, demo run submissions under
@@ -87,6 +111,35 @@ internal/
   model/
     work_item.go
     work_item_test.go
+  reposource/
+    cache_access.go
+    cache_access_test.go
+    cache_layout.go
+    cache_layout_test.go
+    cache_pin.go
+    cache_pin_reconstruction.go
+    cache_pin_reconstruction_test.go
+    cache_pin_test.go
+    cache_publish.go
+    cache_publish_test.go
+    cache_verify.go
+    cache_verify_test.go
+    github_provider.go
+    github_provider_test.go
+    local_provider.go
+    local_provider_test.go
+    manifest.go
+    manifest_test.go
+    materialize.go
+    materialize_test.go
+    model.go
+    model_test.go
+    path.go
+    path_test.go
+    provider.go
+    provider_test.go
+    source_declaration.go
+    source_declaration_test.go
   workflow/
     fanout.go
     fanout_test.go
@@ -260,11 +313,11 @@ resolver.
 
 The controller startup path now also resolves the agreed operational policy
 variables after filesystem resolution and before HTTP construction. The policy
-contract covers resolver depth, caretaker cadence, Git-cache sizing and
-timeouts, temp and artifact cleanup, free-space reserve, filesystem logging,
-and log root/level values. The values are validated and normalized for later
-constructors but are not yet used to build the cache, caretaker, or logger
-services.
+contract covers resolver depth, caretaker cadence, repository-cache sizing and
+retention, Git fetch timeout/concurrency, temp and artifact cleanup, free-space
+reserve, filesystem logging, and log root/level values. The values are
+validated and normalized for later constructors but are not yet used to build
+the cache, caretaker, or logger services.
 
 The controller startup path now also resolves the HTTP listen host, listen
 port, advertised URL, timeout, and request-size/header-size settings before
@@ -314,7 +367,7 @@ not retained. The controller remains the only process that talks directly to
 SQLite. Clients and workers interact through HTTP APIs.
 
 After the main database is ready, controller startup resolves
-`controller_root_dir`, `controller_git_cache_path`, `controller_temp_path`, and
+`controller_root_dir`, `controller_repo_cache_path`, `controller_temp_path`, and
 `controller_artifact_cache_path` as typed paths through the bounded startup
 resolver. Relative values are anchored to the controller process working
 directory and cleaned before execution-environment or HTTP construction;
@@ -366,6 +419,12 @@ The controller has small read, comparison, decision, marker, and skipped-attempt
 store for the `workflow-execution-persistence` epic. The schema currently
 tracks projects, workflows, workflow runs, stage plans, work items, queued
 work, attempts, running work, completed work, failed work, and worker records.
+Schema version 2 stores project and workflow source revision identity as
+nullable `source_revision_id` columns, represented in Go as `*string`
+`SourceRevisionID` fields. GitHub-backed rows can store the resolved immutable
+commit ID; local filesystem rows can leave revision identity null while still
+recording repository identity, source path, canonical JSON SHA-256, and
+created-at evidence.
 
 The store can insert workflow/run/stage/work-item records, enqueue work,
 derive per-stage queued/running/completed/failed counts, atomically claim the
@@ -393,6 +452,15 @@ materialization have been split into the separate
 `source-control-resolution-and-cache` epic. Workflow execution persistence keeps
 the database-owned source locator fields but does not own the source-control
 implementation.
+Workflow-run `SubmissionContextJSON` now includes a structured
+`goet/workflow-run-submission-context/v1` source-admission context with
+repository identity, requested ref, nullable source revision identity, a
+manifest reference, and admitted file roles/paths. Controller admission now
+stores the concrete admitted source manifest path produced by the repository
+cache layout. Local filesystem admissions store null source revision identity
+and include the local provenance warning in run submission context.
+Startup recovery uses that context as the authority for source-cache reload
+verification and GitHub-only repair.
 
 The source-control epic now defines the first local cache directory contract.
 The intended cache shape is provider/repository/commit based:
@@ -1166,20 +1234,15 @@ workflow submission helpers remain as legacy compatibility methods, but they
 are no longer the demo client's normal path. Controller-side source-reference
 admission is still pending.
 
-Feature 012f3 is designed as the controller-side source-reference admission
-slice. The target `/workflow` path loads project/workflow JSON through a
-source-control adapter, persists source identity and canonical hashes, creates a
-workflow run, compiles initially ready work, and queues that work without using
-process-local controller state. The first concrete adapter should be `local`, for cases
-where the controller has filesystem access to the referenced repository or
-cache.
+Feature 012f3 was designed as the controller-side source-reference admission
+slice. The target `/workflow` path loads project/workflow JSON through a source
+provider, persists source identity and canonical hashes, creates a workflow run,
+compiles initially ready work, and queues that work without using process-local
+controller state.
 
-The first 012f3 implementation atom adds `LocalSourceControlAdapter` in
-`cmd/controller`. It can resolve configured local repository identities such as
-`local:demo` to repository-relative source documents, rejects unsafe paths, uses
-Git commit/object IDs when the root is a Git repo, and falls back to a
-`local-unversioned` identity for plain directories. `/workflow` is not wired to
-this adapter yet.
+Earlier 012f3 implementation atoms used a controller-local source adapter as a
+bridge. That bridge has now been removed in favor of `internal/reposource`
+providers.
 
 The second 012f3 atom updates store-configured `/workflow` to decode the
 source-reference `WorkflowRunSubmission` envelope and validate project/workflow
@@ -1187,15 +1250,11 @@ repository, ref, and path fields. Valid source-reference submissions currently
 reach a not-yet-implemented admission helper; legacy inline workflow JSON is
 rejected in persisted mode without mutating `pending`, `assigned`, or `failed`.
 
-The third 012f3 atom wires provenance persistence into that helper. The
-controller resolves project and workflow source references through
-`Controller.sourceControl`, decodes and canonicalizes the JSON documents through
+The third 012f3 atom wired provenance persistence into that helper using the
+then-current source adapter. Current admission now resolves through
+`internal/reposource`, decodes and canonicalizes JSON documents through
 `internal/fingerprint`, computes canonical SHA-256 values, and upserts
-`projects` and `workflows` rows with deterministic source-derived IDs. The
-helper still returns the not-yet-implemented sentinel after provenance
-persistence; workflow run creation, stage planning, work insertion, and queueing
-remain the next atoms. Current source-document rows use stable source-derived
-`created_at` tokens because the existing upsert methods compare the whole row.
+`projects` and `workflows` rows with deterministic source-derived IDs.
 
 The fourth 012f3 atom now decodes the resolved workflow source as the existing
 `WorkflowSubmission` JSON shape, builds the resolver from workflow variables,
@@ -1228,12 +1287,12 @@ to `../go-etl-demo-project`, submits the real source-reference body to
 checks that queued worker payload JSON decodes as `model.WorkItem`, claims one
 item through persisted `/work/next`.
 
-The local demo source adapter is now wired into live controller startup. When
-the controller starts from the `go-etl` working directory, `local:demo` maps to
-`../go-etl-demo-project`. This is a development/demo bridge so the current
-demo-client source-reference submission has a resolver during live admission.
-Future source-control work should replace the hard-coded mapping with
-controller configuration and source-control-cache-backed resolution.
+The local demo repository-source provider is now wired into live controller
+startup. When the controller starts from the `go-etl` working directory,
+`local:demo` maps to `../go-etl-demo-project`. This is a development/demo bridge
+so the current demo-client source-reference submission has a provider during
+live admission. Future source-control work should replace the hard-coded mapping
+with controller configuration.
 
 The local demo controller config now writes to
 `.run/controller/workflow-execution.sqlite` instead of the old
@@ -1255,8 +1314,8 @@ to reconcile the epic README/status trail before marking the persistence epic
 ready for review.
 
 The next 012f4 cleanup pass replaced the legacy inline worker startup and
-worker-scaling `/workflow` tests with source-reference fixtures backed by
-`LocalSourceControlAdapter`. The converted coverage now exercises persisted
+worker-scaling `/workflow` tests with source-reference fixtures backed by the
+local repository-source provider. The converted coverage now exercises persisted
 workflow admission before asserting configured Slurm worker submission, planned
 worker count, submitted worker-scale configuration, and organic scale-up after a
 worker claim.

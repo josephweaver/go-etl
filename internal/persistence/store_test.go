@@ -68,7 +68,34 @@ func TestStoreUpsertAndGetProject(t *testing.T) {
 	if !found {
 		t.Fatal("GetProject() found = false, want true")
 	}
-	if got != project {
+	if !sameProjectRecord(got, project) {
+		t.Fatalf("project = %+v, want %+v", got, project)
+	}
+}
+
+func TestStoreUpsertAndGetProjectAllowsNilSourceRevision(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project := testProjectRecord("project-001")
+	project.RepositoryIdentity = "local:demo"
+	project.SourceRevisionID = nil
+
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatalf("UpsertProject() error = %v", err)
+	}
+
+	got, found, err := store.GetProject(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetProject() found = false, want true")
+	}
+	if got.SourceRevisionID != nil {
+		t.Fatalf("source revision id = %q, want nil", *got.SourceRevisionID)
+	}
+	if !sameProjectRecord(got, project) {
 		t.Fatalf("project = %+v, want %+v", got, project)
 	}
 }
@@ -184,7 +211,40 @@ func TestStoreUpsertAndGetWorkflow(t *testing.T) {
 	if !found {
 		t.Fatal("GetWorkflow() found = false, want true")
 	}
-	if got != workflow {
+	if !sameWorkflowRecord(got, workflow) {
+		t.Fatalf("workflow = %+v, want %+v", got, workflow)
+	}
+}
+
+func TestStoreUpsertAndGetWorkflowAllowsNilSourceRevision(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	project := testProjectRecord("project-001")
+	project.RepositoryIdentity = "local:demo"
+	project.SourceRevisionID = nil
+	workflow := testWorkflowRecord("workflow-001", project.ID)
+	workflow.RepositoryIdentity = "local:demo"
+	workflow.SourceRevisionID = nil
+	if err := store.UpsertProject(ctx, project); err != nil {
+		t.Fatalf("UpsertProject() error = %v", err)
+	}
+
+	if err := store.UpsertWorkflow(ctx, workflow); err != nil {
+		t.Fatalf("UpsertWorkflow() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkflow() found = false, want true")
+	}
+	if got.SourceRevisionID != nil {
+		t.Fatalf("source revision id = %q, want nil", *got.SourceRevisionID)
+	}
+	if !sameWorkflowRecord(got, workflow) {
 		t.Fatalf("workflow = %+v, want %+v", got, workflow)
 	}
 }
@@ -1490,7 +1550,7 @@ func testProjectRecord(id string) ProjectRecord {
 		ID:                 id,
 		Name:               "Project",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		ConfigPath:         "project.json",
 		SourceObjectID:     "object",
 		ConfigSHA256:       strings.Repeat("a", 64),
@@ -1504,12 +1564,16 @@ func testWorkflowRecord(id string, projectID string) WorkflowRecord {
 		ProjectID:          projectID,
 		Name:               "Workflow",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		WorkflowPath:       "workflow.json",
 		SourceObjectID:     "object",
 		WorkflowSHA256:     strings.Repeat("b", 64),
 		CreatedAt:          "2026-07-03T00:00:00Z",
 	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func insertTestProjectAndWorkflow(t *testing.T, ctx context.Context, store *Store) (ProjectRecord, WorkflowRecord) {
