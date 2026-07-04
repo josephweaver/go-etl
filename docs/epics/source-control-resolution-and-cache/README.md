@@ -1,6 +1,8 @@
-# Source-Control Resolution and Cache Epic
+# Source-Control Resolution and Cache Strategic Concept
 
 Status: Proposed
+
+Cadence: CSxIx
 
 ## Purpose
 
@@ -10,9 +12,10 @@ content, and materialize explicitly requested files into local cache or staging
 directories.
 
 Workflow execution persistence records source locators and semantic hashes, but
-source-control behavior is broader than database persistence. This epic owns
-ref resolution, repository-relative path safety, GitHub-backed retrieval, local
-cache layout, cache pins, materialization, and offline restart behavior.
+source-control behavior is broader than database persistence. This Strategic
+Concept owns ref resolution, repository-relative path safety, GitHub-backed
+retrieval, local cache layout, cache pins, materialization, and offline restart
+behavior.
 
 ## Goals
 
@@ -40,6 +43,18 @@ cache layout, cache pins, materialization, and offline restart behavior.
 - Supporting non-GitHub providers before GitHub behavior is proven.
 - Replacing GOET canonical JSON hashes with Git object IDs.
 
+## Architectural Context
+
+The controller admits workflow runs from source-controlled project and workflow
+documents. The `workflow-execution-persistence` Strategic Concept stores the
+durable source facts for admitted runs, but it deliberately does not implement
+remote source-control behavior or a local source cache.
+
+This Strategic Concept adds the source-control boundary that runs before and
+beside workflow admission. The boundary resolves mutable source references into
+immutable commit identities, reads pinned files, and provides local cached bytes
+for already admitted source documents when remote source control is unavailable.
+
 ## Relationship To Workflow Execution Persistence
 
 `workflow-execution-persistence` stores source-control references as durable
@@ -52,14 +67,38 @@ facts:
 - canonical GOET SHA-256;
 - document schema/version metadata.
 
-This epic owns how those references are created, refreshed, verified, cached,
-and materialized. Persistence remains the database authority for admitted runs;
-source control remains the provenance and file-retrieval authority for pinned
-source documents.
+This Strategic Concept owns how those references are created, refreshed,
+verified, cached, and materialized. Persistence remains the database authority
+for admitted runs; source control remains the provenance and file-retrieval
+authority for pinned source documents.
 
 Remote source control is needed to create or refresh pins. It is not required to
 resume an already admitted run when the local cache has verified content for the
 recorded repository, commit, path, and canonical hash.
+
+## Current State
+
+Strategically, GOET has planned persistence fields for source-control facts, but
+no reusable source-control boundary that owns ref resolution, pinned file reads,
+GitHub retrieval, cache layout, or materialization.
+
+Operationally, controller source handling currently lives near controller
+workflow admission code. The repository has `cmd/controller/source_control.go`
+and `cmd/controller/source_control_test.go`, and the existing local source path
+behavior is useful for local-only execution and tests. There is no dedicated
+`internal/sourcecontrol` package, no GitHub-backed source-control provider, and
+no controller-owned source cache layout.
+
+## Target State
+
+Strategically, GOET has a controller-facing source-control boundary that keeps
+source provenance separate from workflow persistence while still producing the
+immutable facts persistence needs for admitted runs.
+
+Operationally, implementation will introduce a small source-control package,
+GitHub-backed ref and file reads, a deterministic local cache layout, cached
+pinned reads with verification, explicit manifest materialization, and cache pin
+reconstruction from durable workflow execution state.
 
 ## Design Principles
 
@@ -74,10 +113,10 @@ recorded repository, commit, path, and canonical hash.
 - Cache cleanup must not remove files required by active or recoverable admitted
   runs.
 
-## Proposed Slices
+## Proposed Operational Slices
 
-These are candidate slices. They are not implementation authorization until
-explicitly selected.
+These are candidate Operational Slices. They are not implementation
+authorization until explicitly selected.
 
 ```text
 001 Source-Control Abstraction
@@ -113,7 +152,7 @@ Reconstruct active cache pins from durable workflow execution state after
 controller restart.
 ```
 
-## Slice 001 Candidate: Source-Control Abstraction
+## Operational Slice 001 Candidate: Source-Control Abstraction
 
 ### Objective
 
@@ -121,7 +160,7 @@ Define the controller-facing source-control boundary used to resolve mutable
 repository references into immutable source identities, read pinned files, and
 materialize explicitly requested files into a local cache or staging directory.
 
-This slice creates the abstraction that later GitHub and local-cache
+This Operational Slice creates the abstraction that later GitHub and local-cache
 implementations must satisfy. It does not contact GitHub, run `git`, clone
 repositories, or decide which project/workflow files a submission needs.
 
@@ -191,7 +230,7 @@ The helper must reject:
 - empty paths;
 - absolute paths;
 - drive-qualified Windows paths;
-- paths containing `..` segments after cleaning;
+- paths containing any original `..` segment;
 - paths that clean to `.` or escape the repository root;
 - paths with backslashes if repository paths are standardized on `/`.
 
@@ -230,7 +269,7 @@ fail before reaching GitHub, `git`, or filesystem copy code.
 - Cache directory naming and collision policy.
 - Retention cleanup.
 
-## Slice 003 Candidate: Local Source-Control Cache Layout
+## Operational Slice 003 Candidate: Local Source-Control Cache Layout
 
 ### Objective
 
@@ -493,3 +532,20 @@ local adapter returns today.
   operational table?
 - How should cache corruption be detected and repaired before retrying remote
   fetch?
+
+## Completion Criteria
+
+- All agreed Operational Slices for this Strategic Concept are written and
+  approved before implementation begins.
+- The implemented source-control boundary resolves mutable refs into immutable
+  commit IDs before workflow admission.
+- Pinned file reads preserve the distinction between source locator identity,
+  provider object identity, raw file-byte hashes, and GOET canonical JSON
+  SHA-256 values.
+- Unsafe source and destination paths are rejected before provider or filesystem
+  operations.
+- Already admitted pinned files can be read from verified local cache content
+  after controller restart without requiring remote source control.
+- Source-control cache pins can be reconstructed from durable workflow execution
+  state.
+- Documentation describes the completed current state after implementation.
