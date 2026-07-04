@@ -1054,6 +1054,10 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
 		return
 	}
+	if c.workflowStore != nil {
+		http.Error(w, "source-reference workflow admission is not implemented", http.StatusNotImplemented)
+		return
+	}
 
 	var submission WorkflowSubmission
 	if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {

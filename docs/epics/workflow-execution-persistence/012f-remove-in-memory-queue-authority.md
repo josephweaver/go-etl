@@ -1,6 +1,6 @@
 # 012f Remove In-memory Queue Authority
 
-Status: proposed
+Status: in progress
 
 ## Objective
 
@@ -209,3 +209,16 @@ Another ambiguity is how far to remove in-memory fields in this slice. Because
 many tests still rely on them and no-store fallback behavior is still useful for
 small unit tests, full removal should be a separate cleanup atom after persisted
 workflow submission is proven.
+
+## Implementation Notes
+
+First implementation prompt:
+
+- Store-configured `/workflow` now rejects the legacy inline JSON submission
+  path with `501 Not Implemented`.
+- This prevents the persisted live controller from writing workflow-submitted
+  work into `Controller.pending`.
+- No-store controllers still support the old inline workflow handler as a
+  legacy fallback for existing tests.
+- Source-reference `/workflow` admission remains unimplemented and should be
+  handled by the source-reference admission/client follow-up slices.
