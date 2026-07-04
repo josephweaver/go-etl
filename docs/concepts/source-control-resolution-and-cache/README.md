@@ -140,6 +140,10 @@ It can materialize admitted cached files into a local destination directory.
 It can write reconstructable workflow-run cache pin files. The remaining
 controller-facing repository-source boundary still does not own controller
 admission integration that consumes the workflow-declared source manifest.
+Workflow-execution persistence now uses nullable `source_revision_id` fields for
+project and workflow rows, and workflow-run submission context now has a
+repository-source admission context with source identity, nullable revision
+identity, a manifest reference, and admitted file roles/paths.
 
 Operationally, controller source handling still lives near controller workflow
 admission code. The repository has `cmd/controller/source_control.go` and
@@ -152,7 +156,8 @@ the verified cache reader. It also provides deterministic workflow-run cache pin
 files and reconstruction from admitted-manifest paths. There is still no
 controller admission integration through `internal/reposource`, but workflow
 source documents can now declare supplemental source files through a validated
-top-level `source_manifest`.
+top-level `source_manifest`, and persistence no longer requires fake commit
+identity for local filesystem source rows.
 
 ## Target State
 

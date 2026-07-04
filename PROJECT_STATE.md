@@ -411,6 +411,12 @@ The controller has small read, comparison, decision, marker, and skipped-attempt
 store for the `workflow-execution-persistence` epic. The schema currently
 tracks projects, workflows, workflow runs, stage plans, work items, queued
 work, attempts, running work, completed work, failed work, and worker records.
+Schema version 2 stores project and workflow source revision identity as
+nullable `source_revision_id` columns, represented in Go as `*string`
+`SourceRevisionID` fields. GitHub-backed rows can store the resolved immutable
+commit ID; local filesystem rows can leave revision identity null while still
+recording repository identity, source path, canonical JSON SHA-256, and
+created-at evidence.
 
 The store can insert workflow/run/stage/work-item records, enqueue work,
 derive per-stage queued/running/completed/failed counts, atomically claim the
@@ -438,6 +444,13 @@ materialization have been split into the separate
 `source-control-resolution-and-cache` epic. Workflow execution persistence keeps
 the database-owned source locator fields but does not own the source-control
 implementation.
+Workflow-run `SubmissionContextJSON` now includes a structured
+`goet/workflow-run-submission-context/v1` source-admission context with
+repository identity, requested ref, nullable source revision identity, a
+manifest reference, and admitted file roles/paths. The current controller still
+uses its transitional source-control adapter for admission; the next
+repository-source integration slice is expected to replace the transitional
+manifest reference with the concrete admitted cache manifest path.
 
 The source-control epic now defines the first local cache directory contract.
 The intended cache shape is provider/repository/commit based:

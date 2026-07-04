@@ -986,7 +986,7 @@ func (c *Controller) ensureRawPersistenceRun(ctx context.Context) error {
 		ID:                 rawPersistenceProjectID,
 		Name:               "Raw Work",
 		RepositoryIdentity: "controller:raw",
-		SourceCommit:       "raw",
+		SourceRevisionID:   stringPtr("raw"),
 		ConfigPath:         "raw",
 		ConfigSHA256:       sha256HexString("raw-project"),
 		CreatedAt:          rawPersistenceCreatedAt,
@@ -999,7 +999,7 @@ func (c *Controller) ensureRawPersistenceRun(ctx context.Context) error {
 		ProjectID:          rawPersistenceProjectID,
 		Name:               "Raw Work",
 		RepositoryIdentity: "controller:raw",
-		SourceCommit:       "raw",
+		SourceRevisionID:   stringPtr("raw"),
 		WorkflowPath:       "raw",
 		WorkflowSHA256:     sha256HexString("raw-workflow"),
 		CreatedAt:          rawPersistenceCreatedAt,
@@ -1187,7 +1187,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return err
 	}
 
-	runRecord, err := workflowRunRecordFromSource(projectRecord.ID, workflowRecord.ID, projectDocument, projectHash, workflowDocument, workflowHash, submission.Variables, submittedAt)
+	runRecord, err := workflowRunRecordFromSource(projectRecord.ID, workflowRecord.ID, projectDocument, projectHash, workflowDocument, workflowHash, workflowSubmission.SourceManifest, submission.Variables, submittedAt)
 	if err != nil {
 		return err
 	}
@@ -1302,7 +1302,7 @@ func projectRecordFromSource(source ResolvedSourceDocument, configSHA256 string,
 		ID:                 deterministicSourceID("project", source.RepositoryIdentity, source.ResolvedCommit, source.Path, configSHA256),
 		Name:               source.Path,
 		RepositoryIdentity: source.RepositoryIdentity,
-		SourceCommit:       source.ResolvedCommit,
+		SourceRevisionID:   sourceRevisionIDFromSource(source),
 		ConfigPath:         source.Path,
 		SourceObjectID:     source.SourceObjectID,
 		ConfigSHA256:       configSHA256,
@@ -1316,7 +1316,7 @@ func workflowRecordFromSource(projectID string, source ResolvedSourceDocument, w
 		ProjectID:          projectID,
 		Name:               source.Path,
 		RepositoryIdentity: source.RepositoryIdentity,
-		SourceCommit:       source.ResolvedCommit,
+		SourceRevisionID:   sourceRevisionIDFromSource(source),
 		WorkflowPath:       source.Path,
 		SourceObjectID:     source.SourceObjectID,
 		WorkflowSHA256:     workflowSHA256,
@@ -1328,6 +1328,17 @@ func deterministicSourceID(kind string, parts ...string) string {
 	return kind + ":" + sha256HexString(strings.Join(parts, "\n"))
 }
 
+func stringPtr(value string) *string {
+	return &value
+}
+
+func sourceRevisionIDFromSource(source ResolvedSourceDocument) *string {
+	if source.ResolvedCommit == "" || source.ResolvedCommit == localUnversionedCommit {
+		return nil
+	}
+	return stringPtr(source.ResolvedCommit)
+}
+
 func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
 	if source.ResolvedCommit == localUnversionedCommit {
 		return localUnversionedCommit
@@ -1335,25 +1346,70 @@ func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
 	return "git:" + source.ResolvedCommit
 }
 
-func workflowRunRecordFromSource(projectID string, workflowID string, projectSource ResolvedSourceDocument, projectSHA256 string, workflowSource ResolvedSourceDocument, workflowSHA256 string, variables []variable.Variable, createdAt time.Time) (persistence.WorkflowRunRecord, error) {
-	submissionContext := map[string]any{
-		"project": map[string]any{
-			"repository_identity": projectSource.RepositoryIdentity,
-			"requested_ref":       projectSource.RequestedRef,
-			"resolved_commit":     projectSource.ResolvedCommit,
-			"path":                projectSource.Path,
-			"source_object_id":    projectSource.SourceObjectID,
-			"config_sha256":       projectSHA256,
+const workflowRunSubmissionContextSchemaV1 = "goet/workflow-run-submission-context/v1"
+
+type workflowRunSubmissionContext struct {
+	Schema          string                            `json:"schema"`
+	SourceAdmission workflowRunSourceAdmissionContext `json:"source_admission"`
+	Variables       []variable.Variable               `json:"variables"`
+}
+
+type workflowRunSourceAdmissionContext struct {
+	Schema           string                           `json:"schema"`
+	ManifestRef      string                           `json:"manifest_ref"`
+	Source           workflowRunSourceIdentity        `json:"source"`
+	SourceRevisionID *string                          `json:"source_revision_id"`
+	Files            []workflowRunSourceAdmissionFile `json:"files"`
+}
+
+type workflowRunSourceIdentity struct {
+	RepositoryIdentity string `json:"repository_identity"`
+	RequestedRef       string `json:"requested_ref,omitempty"`
+}
+
+type workflowRunSourceAdmissionFile struct {
+	Role           string `json:"role"`
+	SourcePath     string `json:"source_path"`
+	CachePath      string `json:"cache_path,omitempty"`
+	SourceObjectID string `json:"source_object_id,omitempty"`
+	SHA256         string `json:"sha256,omitempty"`
+}
+
+func workflowRunRecordFromSource(projectID string, workflowID string, projectSource ResolvedSourceDocument, projectSHA256 string, workflowSource ResolvedSourceDocument, workflowSHA256 string, sourceManifest reposource.SourceManifestDeclaration, variables []variable.Variable, createdAt time.Time) (persistence.WorkflowRunRecord, error) {
+	admissionContext := workflowRunSourceAdmissionContext{
+		Schema:      reposource.AdmittedSourceManifestSchemaV1,
+		ManifestRef: workflowSource.Path + "#source_manifest",
+		Source: workflowRunSourceIdentity{
+			RepositoryIdentity: workflowSource.RepositoryIdentity,
+			RequestedRef:       workflowSource.RequestedRef,
 		},
-		"workflow": map[string]any{
-			"repository_identity": workflowSource.RepositoryIdentity,
-			"requested_ref":       workflowSource.RequestedRef,
-			"resolved_commit":     workflowSource.ResolvedCommit,
-			"path":                workflowSource.Path,
-			"source_object_id":    workflowSource.SourceObjectID,
-			"workflow_sha256":     workflowSHA256,
+		SourceRevisionID: sourceRevisionIDFromSource(workflowSource),
+		Files: []workflowRunSourceAdmissionFile{
+			{
+				Role:           "project_config",
+				SourcePath:     projectSource.Path,
+				SourceObjectID: projectSource.SourceObjectID,
+				SHA256:         projectSHA256,
+			},
+			{
+				Role:           "workflow",
+				SourcePath:     workflowSource.Path,
+				SourceObjectID: workflowSource.SourceObjectID,
+				SHA256:         workflowSHA256,
+			},
 		},
-		"variables": variables,
+	}
+	for _, file := range sourceManifest.Files {
+		admissionContext.Files = append(admissionContext.Files, workflowRunSourceAdmissionFile{
+			Role:       string(file.Role),
+			SourcePath: file.Path,
+			CachePath:  file.Path,
+		})
+	}
+	submissionContext := workflowRunSubmissionContext{
+		Schema:          workflowRunSubmissionContextSchemaV1,
+		SourceAdmission: admissionContext,
+		Variables:       variables,
 	}
 	contextJSON, err := json.Marshal(submissionContext)
 	if err != nil {

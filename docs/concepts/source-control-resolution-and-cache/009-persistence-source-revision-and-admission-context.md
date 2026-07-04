@@ -1,6 +1,6 @@
 # 009 Persistence Source Revision and Admission Context
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -14,17 +14,20 @@ non-empty `source_commit` value.
 
 ## Current State
 
-The current persistence schema stores project and workflow source revision data
-in `source_commit TEXT NOT NULL` columns. `ProjectRecord` and `WorkflowRecord`
-also expose `SourceCommit string`, and validation rejects empty values.
+Before this slice, the persistence schema stored project and workflow source
+revision data in `source_commit TEXT NOT NULL` columns. `ProjectRecord` and
+`WorkflowRecord` exposed `SourceCommit string`, and validation rejected empty
+values.
 
 That shape works for Git commits, but it does not match this Strategic Concept:
 GitHub-backed source has a resolved source revision identity, while local
 filesystem source must use null source revision identity.
 
-Workflow runs currently persist `SubmissionContextJSON`. That JSON can carry
-source facts, but the repository-source cache plan has not yet defined the
-durable shape OS 010 must write and OS 011 must reload.
+Workflow runs persist `SubmissionContextJSON`. This slice adds a structured
+repository-source admission context with a schema, manifest reference, source
+identity, nullable source revision identity, and admitted file roles/paths. OS
+010 still owns replacing the transitional manifest reference with the concrete
+cache manifest written by `internal/reposource`.
 
 ## Target State
 
@@ -42,33 +45,31 @@ Workflow-run submission context stores a repository-source admission context
 with enough information to locate the admitted manifest and retry GitHub repair
 without resolving a mutable ref.
 
-Recommended submission context shape:
+Implemented submission context shape:
 
 ```json
 {
   "schema": "goet/workflow-run-submission-context/v1",
   "source_admission": {
-    "manifest_schema": "goet/admitted-source-manifest/v1",
-    "manifest_path": "github/repos/github.com_owner_repo/<commit>/manifests/<run-id>.json",
+    "schema": "goet/admitted-source-manifest/v1",
+    "manifest_ref": "workflows/demo.json#source_manifest",
     "source": {
-      "provider": "github",
-      "repository_identity": "github.com/owner/repo",
-      "repository_key": "github.com_owner_repo",
-      "requested_ref": "main",
-      "revision_id": "3f2b0a7..."
+      "repository_identity": "github:owner/repo",
+      "requested_ref": "main"
     },
+    "source_revision_id": "3f2b0a7...",
     "files": [
       {
-        "role": "project",
+        "role": "project_config",
         "source_path": "project.json",
-        "cache_path": "project.json",
-        "canonical_json_sha256": "..."
+        "source_object_id": "...",
+        "sha256": "..."
       },
       {
         "role": "workflow",
         "source_path": "workflows/demo.json",
-        "cache_path": "workflows/demo.json",
-        "canonical_json_sha256": "..."
+        "source_object_id": "...",
+        "sha256": "..."
       }
     ]
   },
@@ -76,9 +77,9 @@ Recommended submission context shape:
 }
 ```
 
-The context may omit repeated evidence already present in the admitted manifest
-as long as it stores a durable manifest lookup reference and the source identity
-facts needed for OS 011 reload and GitHub repair.
+The current `manifest_ref` is a transitional workflow-source manifest reference.
+OS 010 must replace it with the concrete admitted cache manifest reference once
+controller admission publishes files through `internal/reposource`.
 
 ## Concept Decision
 
@@ -167,6 +168,5 @@ compile or test failures directly require it.
   deliberately chooses to add a small migration.
 - If the schema version is bumped, update strict schema-version tests and
   `PROJECT_STATE.md` in the same slice.
-- Prefer source revision identity names in new structs and JSON. Keep
-  `source_commit` only where temporary compatibility with old helper code is
-  unavoidable inside the slice.
+- Prefer source revision identity names in new structs, schema columns, and
+  JSON.

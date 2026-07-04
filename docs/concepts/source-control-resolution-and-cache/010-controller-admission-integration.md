@@ -149,9 +149,9 @@ unless compile or test failures directly require it.
   repository cache.
 - Admission reads project and workflow bytes back through the verified cache
   reader before decoding/compiling.
-- Project and workflow rows continue to persist repository identity, source
-  revision identity using the current persistence field names, path, source
-  object ID where available, and canonical JSON SHA-256.
+- Project and workflow rows continue to persist repository identity, nullable
+  source revision identity, path, source object ID where available, and
+  canonical JSON SHA-256.
 - Workflow run submission context records the source-admission context defined
   by OS 009, including the admitted manifest reference needed by restart reload.
 - Existing source-reference demo workflow submission still admits successfully.
@@ -167,9 +167,9 @@ unless compile or test failures directly require it.
 ## Notes
 
 - Keep this slice focused on admission. Restart behavior belongs to OS 011.
-- It is acceptable to keep persistence field names such as `SourceCommit` while
-  mapping them from repository-source `RevisionID`; schema cleanup belongs to a
-  later persistence migration.
+- Persistence now uses nullable `SourceRevisionID`/`source_revision_id`.
+  Controller admission should map repository-source `RevisionID` into that
+  field and leave it null for local filesystem admissions.
 - The controller should not let a client submit cache paths. Submitted paths
   remain provider repository-relative paths.
 - Compilation should use cached workflow bytes after verification so the

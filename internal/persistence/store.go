@@ -9,7 +9,7 @@ import (
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 1
+	SupportedSchemaVersion = 2
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -28,7 +28,7 @@ type ProjectRecord struct {
 	ID                 string
 	Name               string
 	RepositoryIdentity string
-	SourceCommit       string
+	SourceRevisionID   *string
 	ConfigPath         string
 	SourceObjectID     string
 	ConfigSHA256       string
@@ -40,7 +40,7 @@ type WorkflowRecord struct {
 	ProjectID          string
 	Name               string
 	RepositoryIdentity string
-	SourceCommit       string
+	SourceRevisionID   *string
 	WorkflowPath       string
 	SourceObjectID     string
 	WorkflowSHA256     string
@@ -249,7 +249,7 @@ func (s *Store) UpsertProject(ctx context.Context, project ProjectRecord) error 
 		return err
 	}
 	if found {
-		if existing != project {
+		if !sameProjectRecord(existing, project) {
 			return fmt.Errorf("project %s already exists with different values", project.ID)
 		}
 		return tx.Commit()
@@ -259,7 +259,7 @@ func (s *Store) UpsertProject(ctx context.Context, project ProjectRecord) error 
 		project_id,
 		project_name,
 		repository_identity,
-		source_commit,
+		source_revision_id,
 		config_path,
 		source_object_id,
 		config_sha256,
@@ -268,7 +268,7 @@ func (s *Store) UpsertProject(ctx context.Context, project ProjectRecord) error 
 		project.ID,
 		project.Name,
 		project.RepositoryIdentity,
-		project.SourceCommit,
+		nullStringPtr(project.SourceRevisionID),
 		project.ConfigPath,
 		project.SourceObjectID,
 		project.ConfigSHA256,
@@ -346,7 +346,7 @@ func (s *Store) UpsertWorkflow(ctx context.Context, workflow WorkflowRecord) err
 		return err
 	}
 	if found {
-		if existing != workflow {
+		if !sameWorkflowRecord(existing, workflow) {
 			return fmt.Errorf("workflow %s already exists with different values", workflow.ID)
 		}
 		return tx.Commit()
@@ -357,7 +357,7 @@ func (s *Store) UpsertWorkflow(ctx context.Context, workflow WorkflowRecord) err
 		project_id,
 		workflow_name,
 		repository_identity,
-		source_commit,
+		source_revision_id,
 		workflow_path,
 		source_object_id,
 		workflow_sha256,
@@ -367,7 +367,7 @@ func (s *Store) UpsertWorkflow(ctx context.Context, workflow WorkflowRecord) err
 		workflow.ProjectID,
 		workflow.Name,
 		workflow.RepositoryIdentity,
-		workflow.SourceCommit,
+		nullStringPtr(workflow.SourceRevisionID),
 		workflow.WorkflowPath,
 		workflow.SourceObjectID,
 		workflow.WorkflowSHA256,
@@ -1351,11 +1351,12 @@ func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord
 	}
 
 	var project ProjectRecord
+	var sourceRevisionID sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT
 		project_id,
 		project_name,
 		repository_identity,
-		source_commit,
+		source_revision_id,
 		config_path,
 		source_object_id,
 		config_sha256,
@@ -1365,7 +1366,7 @@ func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord
 		&project.ID,
 		&project.Name,
 		&project.RepositoryIdentity,
-		&project.SourceCommit,
+		&sourceRevisionID,
 		&project.ConfigPath,
 		&project.SourceObjectID,
 		&project.ConfigSHA256,
@@ -1377,6 +1378,7 @@ func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord
 	if err != nil {
 		return ProjectRecord{}, false, fmt.Errorf("get project %s: %w", projectID, err)
 	}
+	project.SourceRevisionID = stringPtrFromNull(sourceRevisionID)
 	return project, true, nil
 }
 
@@ -1386,12 +1388,13 @@ func getWorkflow(ctx context.Context, q queryer, workflowID string) (WorkflowRec
 	}
 
 	var workflow WorkflowRecord
+	var sourceRevisionID sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT
 		workflow_id,
 		project_id,
 		workflow_name,
 		repository_identity,
-		source_commit,
+		source_revision_id,
 		workflow_path,
 		source_object_id,
 		workflow_sha256,
@@ -1402,7 +1405,7 @@ func getWorkflow(ctx context.Context, q queryer, workflowID string) (WorkflowRec
 		&workflow.ProjectID,
 		&workflow.Name,
 		&workflow.RepositoryIdentity,
-		&workflow.SourceCommit,
+		&sourceRevisionID,
 		&workflow.WorkflowPath,
 		&workflow.SourceObjectID,
 		&workflow.WorkflowSHA256,
@@ -1414,6 +1417,7 @@ func getWorkflow(ctx context.Context, q queryer, workflowID string) (WorkflowRec
 	if err != nil {
 		return WorkflowRecord{}, false, fmt.Errorf("get workflow %s: %w", workflowID, err)
 	}
+	workflow.SourceRevisionID = stringPtrFromNull(sourceRevisionID)
 	return workflow, true, nil
 }
 
@@ -2050,9 +2054,6 @@ func (p ProjectRecord) validate() error {
 	if p.RepositoryIdentity == "" {
 		return fmt.Errorf("project repository identity is required")
 	}
-	if p.SourceCommit == "" {
-		return fmt.Errorf("project source commit is required")
-	}
 	if p.ConfigPath == "" {
 		return fmt.Errorf("project config path is required")
 	}
@@ -2074,9 +2075,6 @@ func (w WorkflowRecord) validate() error {
 	}
 	if w.RepositoryIdentity == "" {
 		return fmt.Errorf("workflow repository identity is required")
-	}
-	if w.SourceCommit == "" {
-		return fmt.Errorf("workflow source commit is required")
 	}
 	if w.WorkflowPath == "" {
 		return fmt.Errorf("workflow path is required")
@@ -2103,6 +2101,50 @@ func nullString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func nullStringPtr(value *string) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
+}
+
+func stringPtrFromNull(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func sameStringPtr(left *string, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func sameProjectRecord(left ProjectRecord, right ProjectRecord) bool {
+	return left.ID == right.ID &&
+		left.Name == right.Name &&
+		left.RepositoryIdentity == right.RepositoryIdentity &&
+		sameStringPtr(left.SourceRevisionID, right.SourceRevisionID) &&
+		left.ConfigPath == right.ConfigPath &&
+		left.SourceObjectID == right.SourceObjectID &&
+		left.ConfigSHA256 == right.ConfigSHA256 &&
+		left.CreatedAt == right.CreatedAt
+}
+
+func sameWorkflowRecord(left WorkflowRecord, right WorkflowRecord) bool {
+	return left.ID == right.ID &&
+		left.ProjectID == right.ProjectID &&
+		left.Name == right.Name &&
+		left.RepositoryIdentity == right.RepositoryIdentity &&
+		sameStringPtr(left.SourceRevisionID, right.SourceRevisionID) &&
+		left.WorkflowPath == right.WorkflowPath &&
+		left.SourceObjectID == right.SourceObjectID &&
+		left.WorkflowSHA256 == right.WorkflowSHA256 &&
+		left.CreatedAt == right.CreatedAt
 }
 
 func sameStagePlan(left []WorkflowStageRecord, right []WorkflowStageRecord) bool {

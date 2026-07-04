@@ -17,6 +17,7 @@ import (
 	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/persistence"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -2025,6 +2026,62 @@ func TestDecodeWorkflowSourceSubmissionRejectsInvalidSourceManifest(t *testing.T
 	}
 }
 
+func TestWorkflowRunRecordFromSourceRecordsAdmissionContext(t *testing.T) {
+	run, err := workflowRunRecordFromSource(
+		"project-001",
+		"workflow-001",
+		ResolvedSourceDocument{
+			RepositoryIdentity: "github:owner/repo",
+			RequestedRef:       "main",
+			ResolvedCommit:     "abc123",
+			Path:               "project.json",
+			SourceObjectID:     "blob-project",
+		},
+		strings.Repeat("a", 64),
+		ResolvedSourceDocument{
+			RepositoryIdentity: "github:owner/repo",
+			RequestedRef:       "main",
+			ResolvedCommit:     "abc123",
+			Path:               "workflows/demo.json",
+			SourceObjectID:     "blob-workflow",
+		},
+		strings.Repeat("b", 64),
+		reposource.SourceManifestDeclaration{
+			Files: []reposource.SourceManifestFileDeclaration{
+				{Role: reposource.FileRoleSupportFile, Path: "data/input.csv"},
+			},
+		},
+		[]variable.Variable{},
+		time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("workflowRunRecordFromSource() error = %v", err)
+	}
+
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("submission context is not valid JSON: %v", err)
+	}
+	if context.Schema != workflowRunSubmissionContextSchemaV1 {
+		t.Fatalf("schema = %q, want %q", context.Schema, workflowRunSubmissionContextSchemaV1)
+	}
+	if context.SourceAdmission.ManifestRef != "workflows/demo.json#source_manifest" {
+		t.Fatalf("manifest ref = %q, want workflow manifest ref", context.SourceAdmission.ManifestRef)
+	}
+	if context.SourceAdmission.Source.RepositoryIdentity != "github:owner/repo" {
+		t.Fatalf("source repository identity = %q, want github:owner/repo", context.SourceAdmission.Source.RepositoryIdentity)
+	}
+	if context.SourceAdmission.SourceRevisionID == nil || *context.SourceAdmission.SourceRevisionID != "abc123" {
+		t.Fatalf("source revision id = %v, want abc123", context.SourceAdmission.SourceRevisionID)
+	}
+	if len(context.SourceAdmission.Files) != 3 {
+		t.Fatalf("admitted files = %d, want 3", len(context.SourceAdmission.Files))
+	}
+	if context.SourceAdmission.Files[2].Role != string(reposource.FileRoleSupportFile) || context.SourceAdmission.Files[2].SourcePath != "data/input.csv" || context.SourceAdmission.Files[2].CachePath != "data/input.csv" {
+		t.Fatalf("declared file = %+v, want data/input.csv admission", context.SourceAdmission.Files[2])
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -2072,7 +2129,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if project.ConfigPath != "project.json" {
 		t.Fatalf("project config path = %q, want project.json", project.ConfigPath)
 	}
-	if project.SourceCommit == "" || project.SourceObjectID == "" || project.ConfigSHA256 == "" {
+	if project.SourceObjectID == "" || project.ConfigSHA256 == "" {
 		t.Fatalf("project provenance is incomplete: %+v", project)
 	}
 
@@ -2089,7 +2146,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if workflowRecord.WorkflowPath != "workflows/demo-workflow.json" {
 		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", workflowRecord.WorkflowPath)
 	}
-	if workflowRecord.SourceCommit == "" || workflowRecord.SourceObjectID == "" || workflowRecord.WorkflowSHA256 == "" {
+	if workflowRecord.SourceObjectID == "" || workflowRecord.WorkflowSHA256 == "" {
 		t.Fatalf("workflow provenance is incomplete: %+v", workflowRecord)
 	}
 
@@ -2097,7 +2154,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &submissionContext); err != nil {
 		t.Fatalf("submission context is not valid JSON: %v", err)
 	}
-	if submissionContext["project"] == nil || submissionContext["workflow"] == nil {
+	if submissionContext["source_admission"] == nil {
 		t.Fatalf("submission context missing source facts: %s", run.SubmissionContextJSON)
 	}
 
@@ -2960,7 +3017,7 @@ func insertTestPersistenceRunWithStage(t *testing.T, ctx context.Context, store 
 		ID:                 "project-001",
 		Name:               "Project",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		ConfigPath:         "project.json",
 		SourceObjectID:     "object",
 		ConfigSHA256:       strings.Repeat("a", 64),
@@ -2974,7 +3031,7 @@ func insertTestPersistenceRunWithStage(t *testing.T, ctx context.Context, store 
 		ProjectID:          project.ID,
 		Name:               "Workflow",
 		RepositoryIdentity: "repo",
-		SourceCommit:       "commit",
+		SourceRevisionID:   stringPtr("commit"),
 		WorkflowPath:       "workflow.json",
 		SourceObjectID:     "object",
 		WorkflowSHA256:     strings.Repeat("b", 64),
