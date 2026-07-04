@@ -411,6 +411,11 @@ demotion work. Its goal is to make `pending`, `assigned`, and `failed` explicit
 legacy no-store fallback state while proving store-configured endpoints use the
 workflow-execution database as queue authority.
 
+The first 012f4 implementation atom labels `Controller.pending`,
+`Controller.assigned`, and `Controller.failed` as legacy no-store fallback queue
+state in code. They are not renamed or removed yet; guard tests are the next
+step before broader demotion.
+
 Controller cutover has started by adding a workflow-execution store handle to
 `Controller` and opening that store as the configured main database during live
 startup. The older attempt ledger remains in code for legacy skip/reuse helpers

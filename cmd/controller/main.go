@@ -38,10 +38,14 @@ const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
 type Controller struct {
-	mu                sync.Mutex
-	pending           []model.WorkItem
-	assigned          map[string]model.WorkItem
-	failed            map[string]model.WorkFailure
+	mu sync.Mutex
+
+	// Legacy no-store fallback queue state. When workflowStore is configured,
+	// queued_work/running_work/completed_work/failed_work are the queue authority.
+	pending  []model.WorkItem
+	assigned map[string]model.WorkItem
+	failed   map[string]model.WorkFailure
+
 	ledger            *sql.DB
 	workflowStore     *persistence.Store
 	sourceControl     SourceControlAdapter

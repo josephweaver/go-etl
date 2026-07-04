@@ -79,7 +79,7 @@ workflowStore != nil    = persisted queue authority
 Implement as small atoms:
 
 ```text
-012f4-a Rename or wrap in-memory state as legacy fallback
+012f4-a Rename or wrap in-memory state as legacy fallback [implemented]
 012f4-b Add persisted-path guard tests
 012f4-c Split status helpers by authority
 012f4-d Document remaining removal criteria
@@ -124,6 +124,14 @@ Acceptance criteria:
 - Store-configured paths do not read or write this state except guard tests that
   prove it remains unchanged.
 - No-store tests continue to pass.
+
+Implementation note:
+
+- The first implementation chose the conservative intermediate atom: comments
+  now label `pending`, `assigned`, and `failed` directly on `Controller` as
+  legacy no-store fallback queue state.
+- The fields were not renamed or wrapped yet because usages are spread across
+  legacy no-store tests. Guard tests should land before a broader struct rename.
 
 ## 012f4-b Persisted-Path Guard Tests
 
