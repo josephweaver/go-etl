@@ -71,7 +71,7 @@ the existing epic branch:
 012f3-b Source-reference request decode and persisted-mode guard tests [implemented]
 012f3-c Source document canonicalization and provenance records [implemented]
 012f3-d Compile workflow source into persisted stage/work/queue rows [implemented]
-012f3-e Persisted scaling demand after workflow admission
+012f3-e Persisted scaling demand after workflow admission [implemented]
 012f3-f End-to-end demo submission test
 ```
 
@@ -401,6 +401,16 @@ Acceptance criteria for 012f3-e:
   counts.
 - Tests cover at least the no-env case and one injected-env/scaler case if the
   current test seams make that practical.
+
+Implementation note:
+
+- After source-reference workflow admission inserts and enqueues persisted work,
+  the controller now derives demand from `ListQueuedWorkItems` and
+  `ListRunningWork`.
+- Store-configured admission uses the same scaler state and worker-start path as
+  the legacy in-memory path, but passes persisted queued/running counts.
+- Tests cover the no-env persisted admission case and a configured execution
+  environment case that starts one scheduled worker from persisted demand.
 
 ## 012f3-f End-To-End Demo Submission Test
 

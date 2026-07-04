@@ -1259,7 +1259,35 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		}
 	}
 
+	if c.env != nil {
+		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+		if err != nil {
+			return err
+		}
+		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
+		if err != nil {
+			return err
+		}
+		startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
+		c.scaler.RecordStart(submittedAt, startCount, runningCount)
+		if err := c.startConfiguredWorkers(ctx, resolver, startCount); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func (c *Controller) persistedWorkDemand(ctx context.Context) (int, int, error) {
+	queued, err := c.workflowStore.ListQueuedWorkItems(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list queued work: %w", err)
+	}
+	running, err := c.workflowStore.ListRunningWork(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list running work: %w", err)
+	}
+	return len(queued), len(running), nil
 }
 
 func canonicalSourceDocument(data []byte) ([]byte, string, error) {

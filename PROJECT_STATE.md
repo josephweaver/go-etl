@@ -1191,6 +1191,13 @@ contains the original `model.WorkItem` JSON. Store-configured `/workflow` can
 now create queued persisted work that the existing persisted `/work/next` path
 can claim.
 
+The fifth 012f3 atom wires worker scaling for source-reference admission.
+After persisted work is enqueued, the controller derives demand from
+`ListQueuedWorkItems` and `ListRunningWork`, then uses the existing
+`WorkerScaleState` and `startConfiguredWorkers` path. The legacy no-store
+workflow submission path still plans starts from in-memory pending/assigned
+counts.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

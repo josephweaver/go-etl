@@ -2224,6 +2224,80 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "project.json"), []byte(`{"id":"demo"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "workflows"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workflowJSON := `{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [
+				{
+					"name": {"namespace": "workflow", "key": "years"},
+					"type": "list",
+					"expression": [{"type": "int", "expression": 2024}]
+				}
+			],
+			"Steps": [
+				{
+					"ID": "download",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${years[*]}",
+							"Type": "write_demo_output",
+							"OutputPrefix": "cdl",
+							"OutputExtension": ".txt"
+						}
+					}
+				}
+			]
+		},
+		"variables": [
+` + testSlurmWorkerVariables + `
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{"local:test": root})
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"repository": "local:test",
+			"ref": "main",
+			"path": "project.json"
+		},
+		"workflow": {
+			"repository": "local:test",
+			"ref": "main",
+			"path": "workflows/demo-workflow.json"
+		}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if scheduler.calls != 1 {
+		t.Fatalf("scheduler calls = %d, want 1", scheduler.calls)
+	}
+	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
+		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
+	}
+}
+
 func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 	controller := newController(nil)
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
