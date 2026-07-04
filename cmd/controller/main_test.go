@@ -194,7 +194,7 @@ func writeControllerStartupFiles(t *testing.T, dir string) (string, string, stri
     {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
     {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 9091},
     {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_path"}, "type": "path", "expression": "${controller_root_dir}/git_cache"},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_path"}, "type": "path", "expression": "${controller_root_dir}/repo_cache"},
     {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},
     {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_path"}, "type": "path", "expression": "${controller_root_dir}/artifacts"},
     {"name": {"namespace": "controller_config", "key": "caretaker_interval_schedule_milliseconds"}, "type": "int", "expression": 60000},
@@ -210,8 +210,8 @@ func writeControllerStartupFiles(t *testing.T, dir string) (string, string, stri
     {"name": {"namespace": "controller_config", "key": "controller_shutdown_timeout_milliseconds"}, "type": "int", "expression": 30000},
     {"name": {"namespace": "controller_config", "key": "controller_max_request_bytes"}, "type": "int", "expression": 16777216},
     {"name": {"namespace": "controller_config", "key": "controller_max_header_bytes"}, "type": "int", "expression": 1048576},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_max_size_mb"}, "type": "int", "expression": 10240},
-    {"name": {"namespace": "controller_config", "key": "controller_git_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_max_size_mb"}, "type": "int", "expression": 10240},
+    {"name": {"namespace": "controller_config", "key": "controller_repo_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
     {"name": {"namespace": "controller_config", "key": "controller_git_fetch_timeout_milliseconds"}, "type": "int", "expression": 300000},
     {"name": {"namespace": "controller_config", "key": "controller_git_fetch_concurrency"}, "type": "int", "expression": 4},
     {"name": {"namespace": "controller_config", "key": "controller_temp_cleanup_age_milliseconds"}, "type": "int", "expression": 86400000},
@@ -236,7 +236,7 @@ func TestResolveControllerFilesystemPaths(t *testing.T) {
 	outsideRoot := filepath.Join(t.TempDir(), "shared", "artifacts")
 	controllerScope := testStartupScope(t,
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git/../git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_path", variable.TypePath, "${controller_root_dir}/repo/../repo-cache"),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "ignored"),
 	)
@@ -252,12 +252,27 @@ func TestResolveControllerFilesystemPaths(t *testing.T) {
 
 	want := controllerFilesystemPaths{
 		Root:          filepath.Join(workingDirectory, "state"),
-		GitCache:      filepath.Join(workingDirectory, "state", "git-cache"),
+		RepoCache:     filepath.Join(workingDirectory, "state", "repo-cache"),
 		Temp:          filepath.Join(workingDirectory, "controller-temp"),
 		ArtifactCache: filepath.Clean(outsideRoot),
 	}
 	if paths != want {
 		t.Fatalf("resolveControllerFilesystemPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestResolveControllerFilesystemPathsDoesNotAcceptOldGitCacheName(t *testing.T) {
+	workingDirectory := filepath.Join(t.TempDir(), "working")
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_root_dir", variable.TypePath, "./state"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_path", variable.TypePath, "${controller_root_dir}/git-cache"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_path", variable.TypePath, "controller-temp"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_path", variable.TypePath, "artifacts"),
+	)), variable.ResolverConfig{})
+
+	_, err := resolveControllerFilesystemPaths(resolver, workingDirectory)
+	if err == nil || !strings.Contains(err.Error(), "controller_repo_cache_path") {
+		t.Fatalf("error = %v, want missing controller_repo_cache_path", err)
 	}
 }
 
@@ -321,8 +336,8 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 12),
 		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 60000),
 		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 2),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 10240),
-		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 604800000),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_max_size_mb", variable.TypeInt, 10240),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_retention_milliseconds", variable.TypeInt, 604800000),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 300000),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 4),
 		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 86400000),
@@ -345,8 +360,8 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 	if policy.CaretakerIntervalScheduleMillis != 60000 || policy.CaretakerMissedIntervalLimit != 2 {
 		t.Fatalf("caretaker policy = %+v", policy)
 	}
-	if policy.GitCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
-		t.Fatalf("git policy = %+v", policy)
+	if policy.RepoCacheMaxSizeMB != 10240 || policy.GitFetchConcurrency != 4 {
+		t.Fatalf("repository cache or git fetch policy = %+v", policy)
 	}
 	if policy.TempCleanupAgeMillis != 86400000 || policy.StorageMinFreeMB != 1024 {
 		t.Fatalf("storage policy = %+v", policy)
@@ -359,6 +374,30 @@ func TestResolveControllerOperationalPolicy(t *testing.T) {
 	}
 	if policy.LogLevel != "debug" {
 		t.Fatalf("log level = %q, want debug", policy.LogLevel)
+	}
+}
+
+func TestResolveControllerOperationalPolicyDoesNotAcceptOldGitCacheNames(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_max_size_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_artifact_cache_retention_milliseconds", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_storage_min_free_mb", variable.TypeInt, 1),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_filesystem_logging_enabled", variable.TypeBool, true),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_root_path", variable.TypePath, "./logs"),
+		testStartupVariable(variable.NamespaceControllerConfig, "controller_log_level", variable.TypeString, "debug"),
+	)), variable.ResolverConfig{})
+
+	_, err := resolveControllerOperationalPolicy(resolver, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "controller_repo_cache_max_size_mb") {
+		t.Fatalf("error = %v, want missing controller_repo_cache_max_size_mb", err)
 	}
 }
 
@@ -392,8 +431,8 @@ func TestResolveControllerOperationalPolicyRejectsInvalidValues(t *testing.T) {
 				testStartupVariable(variable.NamespaceControllerConfig, "resolver_max_depth", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_interval_schedule_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "caretaker_missed_interval_limit", variable.TypeInt, 1),
-				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_max_size_mb", variable.TypeInt, 1),
-				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_cache_retention_milliseconds", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_max_size_mb", variable.TypeInt, 1),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_repo_cache_retention_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_timeout_milliseconds", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_git_fetch_concurrency", variable.TypeInt, 1),
 				testStartupVariable(variable.NamespaceControllerConfig, "controller_temp_cleanup_age_milliseconds", variable.TypeInt, 1),

@@ -22,10 +22,9 @@ admitted source manifest construction, but provider reads remain independent
 from cache layout.
 
 `internal/reposource` now has a repository cache layout and access layer. The
-controller startup code still has older Git-cache configuration names such as
-`controller_git_cache_path`, and existing source-reference behavior in
-`cmd/controller/source_control.go` reads local files directly. The new shared
-code maps:
+controller startup code now uses `controller_repo_cache_path`, and existing
+source-reference behavior in `cmd/controller/source_control.go` reads local
+files directly. The new shared code maps:
 
 ```text
 cache root + admitted source manifest + manifest file path -> internal cache path

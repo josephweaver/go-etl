@@ -301,11 +301,11 @@ resolver.
 
 The controller startup path now also resolves the agreed operational policy
 variables after filesystem resolution and before HTTP construction. The policy
-contract covers resolver depth, caretaker cadence, Git-cache sizing and
-timeouts, temp and artifact cleanup, free-space reserve, filesystem logging,
-and log root/level values. The values are validated and normalized for later
-constructors but are not yet used to build the cache, caretaker, or logger
-services.
+contract covers resolver depth, caretaker cadence, repository-cache sizing and
+retention, Git fetch timeout/concurrency, temp and artifact cleanup, free-space
+reserve, filesystem logging, and log root/level values. The values are
+validated and normalized for later constructors but are not yet used to build
+the cache, caretaker, or logger services.
 
 The controller startup path now also resolves the HTTP listen host, listen
 port, advertised URL, timeout, and request-size/header-size settings before
@@ -355,7 +355,7 @@ not retained. The controller remains the only process that talks directly to
 SQLite. Clients and workers interact through HTTP APIs.
 
 After the main database is ready, controller startup resolves
-`controller_root_dir`, `controller_git_cache_path`, `controller_temp_path`, and
+`controller_root_dir`, `controller_repo_cache_path`, `controller_temp_path`, and
 `controller_artifact_cache_path` as typed paths through the bounded startup
 resolver. Relative values are anchored to the controller process working
 directory and cleaned before execution-environment or HTTP construction;

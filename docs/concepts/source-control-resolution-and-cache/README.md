@@ -259,7 +259,7 @@ OS implementation order and status:
 004 Cached Admission And Verified Reads            [implemented]
 005 Manifest Materialization                       [implemented]
 006 Cache Pin Reconstruction                       [implemented]
-007 Controller Repo Cache Config Rename
+007 Controller Repo Cache Config Rename            [implemented]
 008 Workflow Source Manifest Declaration
 009 Persistence Source Revision and Admission Context
 010 Controller Admission Integration

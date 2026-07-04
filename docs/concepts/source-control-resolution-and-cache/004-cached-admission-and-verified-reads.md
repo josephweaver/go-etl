@@ -118,8 +118,8 @@ This slice needs new production files. If the active HCI mode does not include
 - Fetching missing files from GitHub or local filesystem providers.
 - Changing `/workflow` admission behavior.
 - Replacing `cmd/controller/source_control.go` call sites.
-- Renaming controller startup config fields from `controller_git_cache_*` to
-  `controller_repo_cache_*`.
+- Renaming controller startup config fields. OS 007 owns the completed
+  `controller_repo_cache_*` names.
 - Materializing files into worker staging directories.
 - Creating, deleting, or reconstructing cache pin files.
 - Retention cleanup.

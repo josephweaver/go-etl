@@ -1,6 +1,6 @@
 # 007 Controller Repo Cache Config Rename
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -20,21 +20,22 @@ No compatibility aliases are added because GOET is still pre-production.
 The Strategic Concept now treats GitHub and local filesystem inputs as
 repository sources. The controller cache is no longer Git-only.
 
-Current startup code and defaults still use Git-specific names:
+Startup code and defaults now use repository-cache names instead of the old
+Git-specific names:
 
-- `controller_git_cache_path`;
-- `controller_git_cache_max_size_mb`;
-- `controller_git_cache_retention_milliseconds`.
+- `controller_repo_cache_path`;
+- `controller_repo_cache_max_size_mb`;
+- `controller_repo_cache_retention_milliseconds`.
 
-The current Go structs also use Git-specific field names:
+The current Go structs also use repository-cache field names:
 
-- `controllerFilesystemPaths.GitCache`;
-- `controllerOperationalPolicy.GitCacheMaxSizeMB`;
-- `controllerOperationalPolicy.GitCacheRetentionMillis`.
+- `controllerFilesystemPaths.RepoCache`;
+- `controllerOperationalPolicy.RepoCacheMaxSizeMB`;
+- `controllerOperationalPolicy.RepoCacheRetentionMillis`.
 
-Checked-in defaults and tests still expect the old names. `PROJECT_STATE.md`
-also describes the current startup filesystem paths using
-`controller_git_cache_path`.
+Checked-in defaults and tests expect the new names. `PROJECT_STATE.md` also
+describes the current startup filesystem paths using
+`controller_repo_cache_path`.
 
 ## Target State
 

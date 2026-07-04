@@ -79,7 +79,7 @@ type controllerStartupOptions struct {
 
 type controllerFilesystemPaths struct {
 	Root          string
-	GitCache      string
+	RepoCache     string
 	Temp          string
 	ArtifactCache string
 }
@@ -88,8 +88,8 @@ type controllerOperationalPolicy struct {
 	ResolverMaxDepth                int
 	CaretakerIntervalScheduleMillis int
 	CaretakerMissedIntervalLimit    int
-	GitCacheMaxSizeMB               int
-	GitCacheRetentionMillis         int
+	RepoCacheMaxSizeMB              int
+	RepoCacheRetentionMillis        int
 	GitFetchTimeoutMillis           int
 	GitFetchConcurrency             int
 	TempCleanupAgeMillis            int
@@ -600,7 +600,7 @@ func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirecto
 	if err != nil {
 		return controllerFilesystemPaths{}, err
 	}
-	gitCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_git_cache_path")
+	repoCache, err := resolveControllerFilesystemPath(resolver, workingDirectory, "controller_repo_cache_path")
 	if err != nil {
 		return controllerFilesystemPaths{}, err
 	}
@@ -615,7 +615,7 @@ func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirecto
 
 	return controllerFilesystemPaths{
 		Root:          root,
-		GitCache:      gitCache,
+		RepoCache:     repoCache,
 		Temp:          temp,
 		ArtifactCache: artifactCache,
 	}, nil
@@ -652,10 +652,10 @@ func resolveControllerOperationalPolicy(resolver variable.Resolver, workingDirec
 	if policy.CaretakerMissedIntervalLimit, err = resolvePositiveIntPolicy(resolver, "caretaker_missed_interval_limit", "controller startup policy"); err != nil {
 		return controllerOperationalPolicy{}, err
 	}
-	if policy.GitCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_max_size_mb", "controller startup policy"); err != nil {
+	if policy.RepoCacheMaxSizeMB, err = resolvePositiveIntPolicy(resolver, "controller_repo_cache_max_size_mb", "controller startup policy"); err != nil {
 		return controllerOperationalPolicy{}, err
 	}
-	if policy.GitCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_cache_retention_milliseconds", "controller startup policy"); err != nil {
+	if policy.RepoCacheRetentionMillis, err = resolvePositiveIntPolicy(resolver, "controller_repo_cache_retention_milliseconds", "controller startup policy"); err != nil {
 		return controllerOperationalPolicy{}, err
 	}
 	if policy.GitFetchTimeoutMillis, err = resolvePositiveIntPolicy(resolver, "controller_git_fetch_timeout_milliseconds", "controller startup policy"); err != nil {
