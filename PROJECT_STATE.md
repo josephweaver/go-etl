@@ -54,6 +54,7 @@ worker-stageable `source_manifest` files (`python_entrypoint`,
 `python_environment`, and `support_file`) using verified repository-cache reads.
 It does not reread provider source files or expose controller cache filesystem
 paths in the HTTP response.
+`internal/model/work_item.go` now also carries `WorkItemTypePythonScript = "python_script"` and the optional `WorkItem.Source` / `WorkItemSource` locator used for admitted Python execution. `WorkItem.Validate()` now requires a source locator for `python_script` items while keeping the existing demo and summary work items structurally valid.
 
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
@@ -571,9 +572,12 @@ The local paths are relative to the directory where the worker is run.
 ```go
 type WorkItem struct {
 	ID                   string       `json:"id"`
+	AttemptID            string       `json:"attempt_id,omitempty"`
 	Type                 WorkItemType `json:"type"`
+	Source               *WorkItemSource `json:"source,omitempty"`
 	OutputFilename       string       `json:"output_filename"`
 	Parameters           Parameters   `json:"parameters,omitempty"`
+	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
 	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string       `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
@@ -586,9 +590,27 @@ type WorkItem struct {
 	CodeVersion          string       `json:"code_version,omitempty"`
 }
 
+type WorkItemSource struct {
+	Schema       string `json:"schema,omitempty"`
+	RunID        string `json:"run_id"`
+	ManifestPath string `json:"manifest_path"`
+}
+
 type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
+	Skipped              bool       `json:"skipped,omitempty"`
+	SkippedParentID      string     `json:"skipped_parent_id,omitempty"`
+	SkipReason           string     `json:"skip_reason,omitempty"`
+	InputSHA256          string     `json:"input_sha256,omitempty"`
+	OutputSHA256         string     `json:"output_sha256,omitempty"`
+	PreStateSHA256       string     `json:"pre_state_sha256,omitempty"`
+	PostStateSHA256      string     `json:"post_state_sha256,omitempty"`
+	ControllerSHA256     string     `json:"controller_sha256,omitempty"`
+	PluginSHA256         string     `json:"plugin_sha256,omitempty"`
+	OutputJSON           string     `json:"output_json,omitempty"`
+	PreStateJSON         string     `json:"pre_state_json,omitempty"`
+	PostStateJSON        string     `json:"post_state_json,omitempty"`
 	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string     `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
@@ -643,6 +665,7 @@ Workflow-generated assignments set `code_version` from the resolved variable `co
 - A non-empty type.
 - A non-empty output filename.
 - An output filename without directory components.
+- A valid `source` object for `python_script` work items.
 - Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
