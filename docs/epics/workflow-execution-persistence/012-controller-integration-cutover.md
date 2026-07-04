@@ -71,6 +71,7 @@ Recommended sequence:
 012e Persistence-backed Completion/Failure Endpoints
 012e2 Worker-observed Skip Evidence
 012f2 Client Source-reference Workflow Submission
+012f3 Controller Source-reference Workflow Admission
 012f Remove In-Memory Queue Authority
 ```
 
@@ -234,6 +235,32 @@ Out of scope:
 - GitHub/cache implementation.
 - Ref resolution to immutable commits.
 
+## 012f3 Candidate: Controller Source-reference Workflow Admission
+
+Implement persisted `/workflow` admission for project/workflow source
+references. The controller should load referenced project/workflow JSON through
+a source-control adapter boundary, persist source identity and canonical hashes,
+create a workflow run, compile initially ready work, and enqueue it without
+mutating `Controller.pending`.
+
+Acceptance criteria:
+
+- `/workflow` accepts the source-reference envelope used by the client.
+- `/workflow` rejects legacy inline workflow JSON when `workflowStore` is
+  configured.
+- A first `local` source-control adapter can resolve fixture/local repository
+  references when the controller has local filesystem access.
+- Project/workflow source identity and canonical SHA-256 values are persisted.
+- A workflow run and initially ready queued work are persisted.
+- Store-configured `/workflow` derives scaling demand from persisted
+  queued/running state.
+
+Out of scope:
+
+- GitHub source-control adapter.
+- Full source-control cache retention.
+- Full project semantic model.
+
 ## 012f Candidate: Remove In-Memory Queue Authority
 
 After status, submission, assignment, and terminal reports use persistence, the
@@ -249,8 +276,8 @@ Acceptance criteria:
 Implementation should proceed in smaller atoms:
 
 ```text
-012f-a Define workflow admission payload and provenance bridge
-012f-b Persist admitted workflow run and initially ready compiled work
+012f2 Client Source-reference Workflow Submission
+012f3 Controller Source-reference Workflow Admission
 012f-c Make persisted workflow scaling demand derive from queued/running store counts
 012f-d Add guard tests proving persisted paths do not mutate pending/assigned/failed
 012f-e Remove or demote in-memory queue authority after no live store path uses it
