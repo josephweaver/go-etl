@@ -1,6 +1,6 @@
 # 006 Cache Pin Reconstruction
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -13,16 +13,16 @@ require; pin files only protect cache entries from future cleanup.
 
 ## Current State
 
-After Operational Slice 004, `internal/reposource` is expected to publish
-admitted source manifests into the repository cache and read cached files with
-verification.
+After Operational Slice 004, `internal/reposource` published admitted source
+manifests into the repository cache and read cached files with verification.
 
-After Operational Slice 005, `internal/reposource` is expected to materialize
-admitted manifests into local staging directories.
+After Operational Slice 005, `internal/reposource` materialized admitted
+manifests into local staging directories.
 
 The Strategic Concept defines cache pin files as operational state under cache
-entries. There is not yet behavior that reconstructs those pin files from the
-workflow execution database after restart.
+entries. `internal/reposource` can now write deterministic workflow-run cache
+pin files from admitted manifests and reconstruct pins from admitted-manifest
+paths. Controller startup still does not call this behavior.
 
 The current persistence package already has recovery-oriented methods and
 records:
@@ -35,9 +35,9 @@ records:
 - `WorkflowRunRecord`.
 
 Those records still use `SourceCommit`/`source_commit` vocabulary. This slice
-does not rename persistence schema fields. It should map the current durable
-field to the repository-source `RevisionID` concept when constructing pin
-inputs.
+does not rename persistence schema fields. Future controller wiring should map
+the current durable field to the repository-source `RevisionID` concept when
+constructing pin inputs.
 
 ## Target State
 
