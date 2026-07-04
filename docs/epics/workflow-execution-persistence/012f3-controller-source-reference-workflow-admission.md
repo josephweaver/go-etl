@@ -414,6 +414,10 @@ Implementation note:
 
 ## 012f3-f End-To-End Demo Submission Test
 
+Purpose: verify the implemented 012f3 path against the real consumer-facing
+demo repo layout. This is a verification slice, not a new runtime capability
+slice.
+
 Add a focused controller test that uses the real sibling demo project files:
 
 ```text
@@ -422,20 +426,63 @@ Add a focused controller test that uses the real sibling demo project files:
 ../go-etl-demo-project/workflows/demo-workflow.json
 ```
 
-The test should create a temporary persistence store, configure the controller
-with the local source adapter mapping, POST the run submission to `/workflow`,
-then assert:
+Test setup:
+
+- load the workflow-run submission JSON from the sibling demo project;
+- create a temporary workflow-execution persistence store;
+- create a controller with that store and a `LocalSourceControlAdapter`;
+- map `local:demo` to `../go-etl-demo-project`;
+- do not configure an execution environment for this test, so worker scaling is
+  not part of the assertion;
+- POST the loaded submission body to `/workflow`.
+
+Assertions:
 
 - HTTP response is `204 No Content`;
-- project row exists;
-- workflow row exists;
-- one workflow run exists;
-- queued work exists;
+- exactly one active workflow run exists;
+- project row exists and has:
+  - `repository_identity = "local:demo"`;
+  - `config_path = "project.json"`;
+  - non-empty `source_commit`, `source_object_id`, and `config_sha256`;
+- workflow row exists and has:
+  - `repository_identity = "local:demo"`;
+  - `workflow_path = "workflows/demo-workflow.json"`;
+  - non-empty `source_commit`, `source_object_id`, and `workflow_sha256`;
+- submission context JSON is valid and includes project/workflow source facts;
+- one ready stage exists for `write-demo`;
+- two queued work rows exist for the two years in `demo-workflow.json`;
+- queued persisted work item IDs are run-scoped;
+- queued worker payload JSON decodes as `model.WorkItem`;
+- one queued item can be claimed through `/work/next`;
 - `Controller.pending`, `assigned`, and `failed` remain empty.
 
-If reading sibling project files from a unit test feels too coupled, keep that
-as an integration-style controller test and also include smaller pure fixture
-tests.
+Recommended test name:
+
+```go
+func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T)
+```
+
+Out of scope for 012f3-f:
+
+- Starting a real controller process.
+- Starting workers.
+- Running the demo client executable.
+- Completing the claimed work.
+- Verifying output files.
+- GitHub/cache download behavior.
+- Retrying the same workflow run submission for idempotency.
+
+Ambiguity:
+
+- This test intentionally depends on the sibling `../go-etl-demo-project`
+  checkout. If that coupling becomes too brittle, convert it to an integration
+  test behind an environment flag and keep the existing temp-directory source
+  adapter tests as the default unit coverage.
+- The current local adapter reads the working tree and resolves the requested
+  ref through Git when possible. If `go-etl-demo-project` has uncommitted edits,
+  the canonical JSON hash reflects the working-tree file while
+  `source_commit` reflects `main`. That is acceptable for the local adapter
+  smoke test but is not the final remote source-control pinning semantics.
 
 ## Persistence Mapping
 
