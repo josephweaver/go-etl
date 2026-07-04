@@ -1163,6 +1163,12 @@ Git commit/object IDs when the root is a Git repo, and falls back to a
 `local-unversioned` identity for plain directories. `/workflow` is not wired to
 this adapter yet.
 
+The second 012f3 atom updates store-configured `/workflow` to decode the
+source-reference `WorkflowRunSubmission` envelope and validate project/workflow
+repository, ref, and path fields. Valid source-reference submissions currently
+reach a not-yet-implemented admission helper; legacy inline workflow JSON is
+rejected in persisted mode without mutating `pending`, `assigned`, or `failed`.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

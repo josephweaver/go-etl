@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,6 +34,8 @@ const rawPersistenceRunID = "__raw_run__"
 const rawPersistenceStageIndex = 0
 const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 
+var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
+
 type Controller struct {
 	mu                sync.Mutex
 	pending           []model.WorkItem
@@ -51,6 +54,12 @@ type Controller struct {
 type WorkflowSubmission struct {
 	Workflow  workflow.Workflow   `json:"workflow"`
 	Variables []variable.Variable `json:"variables"`
+}
+
+type WorkflowRunSubmission struct {
+	Project   SourceDocumentReference `json:"project"`
+	Workflow  SourceDocumentReference `json:"workflow"`
+	Variables []variable.Variable     `json:"variables,omitempty"`
 }
 
 type WorkReuseDecision struct {
@@ -1055,7 +1064,24 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if c.workflowStore != nil {
-		http.Error(w, "source-reference workflow admission is not implemented", http.StatusNotImplemented)
+		var submission WorkflowRunSubmission
+		if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
+			http.Error(w, "decode workflow run submission", http.StatusBadRequest)
+			return
+		}
+		if err := submission.validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC()); err != nil {
+			if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
+				http.Error(w, err.Error(), http.StatusNotImplemented)
+				return
+			}
+			http.Error(w, "persist workflow run", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -1123,6 +1149,33 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s WorkflowRunSubmission) validate() error {
+	if err := s.Project.validate("project"); err != nil {
+		return err
+	}
+	if err := s.Workflow.validate("workflow"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r SourceDocumentReference) validate(name string) error {
+	if strings.TrimSpace(r.Repository) == "" {
+		return fmt.Errorf("%s repository is required", name)
+	}
+	if strings.TrimSpace(r.Ref) == "" {
+		return fmt.Errorf("%s ref is required", name)
+	}
+	if strings.TrimSpace(r.Path) == "" {
+		return fmt.Errorf("%s path is required", name)
+	}
+	return nil
+}
+
+func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) error {
+	return errSourceReferenceAdmissionNotImplemented
 }
 
 func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {

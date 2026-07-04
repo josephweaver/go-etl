@@ -68,7 +68,7 @@ the existing epic branch:
 
 ```text
 012f3-a Local source document adapter [implemented]
-012f3-b Source-reference request decode and persisted-mode guard tests
+012f3-b Source-reference request decode and persisted-mode guard tests [implemented]
 012f3-c Source document canonicalization and provenance records
 012f3-d Compile workflow source into persisted stage/work/queue rows
 012f3-e Persisted scaling demand after workflow admission
@@ -194,6 +194,18 @@ Acceptance criteria for 012f3-b:
 - No-store `/workflow` behavior remains unchanged.
 - Tests assert that persisted-mode decode does not mutate
   `pending`, `assigned`, or `failed`.
+
+Implementation note:
+
+- Store-configured `/workflow` now decodes `WorkflowRunSubmission` instead of
+  immediately returning `501`.
+- Valid source-reference payloads reach `submitWorkflowRunToStore`, which still
+  returns the explicit not-implemented sentinel until later atoms wire
+  resolution and persistence.
+- Legacy inline workflow JSON is rejected as an invalid source-reference shape
+  in persisted mode.
+- Tests cover both valid source-reference decode and legacy inline rejection
+  while proving in-memory queue fields stay unchanged.
 
 ## 012f3-c Canonicalization And Provenance Records
 

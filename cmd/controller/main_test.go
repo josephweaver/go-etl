@@ -2064,6 +2064,45 @@ func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t 
 
 	controller.submitWorkflowHandler(response, request)
 
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", response.Code)
+	}
+	if len(controller.pending) != 1 {
+		t.Fatalf("pending count = %d, want unchanged 1", len(controller.pending))
+	}
+	if len(controller.assigned) != 1 {
+		t.Fatalf("assigned count = %d, want unchanged 1", len(controller.assigned))
+	}
+	if len(controller.failed) != 1 {
+		t.Fatalf("failed count = %d, want unchanged 1", len(controller.failed))
+	}
+}
+
+func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConfigured(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
+	controller.workflowStore = store
+	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
+	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "failed"}
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"repository": "local:demo",
+			"ref": "main",
+			"path": "project.json"
+		},
+		"workflow": {
+			"repository": "local:demo",
+			"ref": "main",
+			"path": "workflows/demo-workflow.json"
+		},
+		"variables": []
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
 	if response.Code != http.StatusNotImplemented {
 		t.Fatalf("status code = %d, want 501", response.Code)
 	}
