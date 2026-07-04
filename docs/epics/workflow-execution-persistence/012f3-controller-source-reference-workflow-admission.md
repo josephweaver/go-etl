@@ -72,7 +72,7 @@ the existing epic branch:
 012f3-c Source document canonicalization and provenance records [implemented]
 012f3-d Compile workflow source into persisted stage/work/queue rows [implemented]
 012f3-e Persisted scaling demand after workflow admission [implemented]
-012f3-f End-to-end demo submission test
+012f3-f End-to-end demo submission test [implemented]
 ```
 
 Each atom should leave `go test ./cmd/controller ./internal/client ./internal/persistence`
@@ -483,6 +483,16 @@ Ambiguity:
   the canonical JSON hash reflects the working-tree file while
   `source_commit` reflects `main`. That is acceptable for the local adapter
   smoke test but is not the final remote source-control pinning semantics.
+
+Implementation note:
+
+- `TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun` loads the real
+  sibling `../go-etl-demo-project/submissions/demo-workflow-run.json` file and
+  submits it to the controller handler.
+- The test verifies source provenance rows, valid submission context JSON, one
+  active run, one ready `write-demo` stage, two queued work rows, decodable
+  worker payload JSON, persisted `/work/next` claim behavior, and unchanged
+  in-memory queue fields.
 
 ## Persistence Mapping
 

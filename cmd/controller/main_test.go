@@ -2224,6 +2224,136 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController(nil)
+	controller.workflowStore = store
+	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
+		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
+	})
+
+	submissionPath := filepath.Join("..", "..", "..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
+	submissionBody, err := os.ReadFile(submissionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewReader(submissionBody))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if len(controller.pending) != 0 {
+		t.Fatalf("pending count = %d, want 0", len(controller.pending))
+	}
+	if len(controller.assigned) != 0 {
+		t.Fatalf("assigned count = %d, want 0", len(controller.assigned))
+	}
+	if len(controller.failed) != 0 {
+		t.Fatalf("failed count = %d, want 0", len(controller.failed))
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	run := runs[0]
+
+	project, found, err := store.GetProject(context.Background(), run.ProjectID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !found {
+		t.Fatal("project row was not persisted")
+	}
+	if project.RepositoryIdentity != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", project.RepositoryIdentity)
+	}
+	if project.ConfigPath != "project.json" {
+		t.Fatalf("project config path = %q, want project.json", project.ConfigPath)
+	}
+	if project.SourceCommit == "" || project.SourceObjectID == "" || project.ConfigSHA256 == "" {
+		t.Fatalf("project provenance is incomplete: %+v", project)
+	}
+
+	workflowRecord, found, err := store.GetWorkflow(context.Background(), run.WorkflowID)
+	if err != nil {
+		t.Fatalf("GetWorkflow() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow row was not persisted")
+	}
+	if workflowRecord.RepositoryIdentity != "local:demo" {
+		t.Fatalf("workflow repository = %q, want local:demo", workflowRecord.RepositoryIdentity)
+	}
+	if workflowRecord.WorkflowPath != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", workflowRecord.WorkflowPath)
+	}
+	if workflowRecord.SourceCommit == "" || workflowRecord.SourceObjectID == "" || workflowRecord.WorkflowSHA256 == "" {
+		t.Fatalf("workflow provenance is incomplete: %+v", workflowRecord)
+	}
+
+	var submissionContext map[string]any
+	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("submission context is not valid JSON: %v", err)
+	}
+	if submissionContext["project"] == nil || submissionContext["workflow"] == nil {
+		t.Fatalf("submission context missing source facts: %s", run.SubmissionContextJSON)
+	}
+
+	stage, found, err := store.GetWorkflowStage(context.Background(), run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 was not persisted")
+	}
+	if stage.StepID != "write-demo" {
+		t.Fatalf("stage step id = %q, want write-demo", stage.StepID)
+	}
+	if stage.State != "ready" {
+		t.Fatalf("stage state = %q, want ready", stage.State)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	if !strings.HasPrefix(queued[0].ID, run.ID+":") {
+		t.Fatalf("queued work id = %q, want run-scoped id", queued[0].ID)
+	}
+	var queuedPayload model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &queuedPayload); err != nil {
+		t.Fatalf("queued worker payload is not a work item: %v", err)
+	}
+	if queuedPayload.ID == "" {
+		t.Fatal("queued worker payload id is empty")
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("next work status = %d, want 200", nextResponse.Code)
+	}
+	var claimed model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&claimed); err != nil {
+		t.Fatalf("decode claimed work: %v", err)
+	}
+	if claimed.ID == "" || claimed.AttemptID == "" {
+		t.Fatalf("claimed work is incomplete: %+v", claimed)
+	}
+}
+
 func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

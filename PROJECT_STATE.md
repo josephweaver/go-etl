@@ -1198,6 +1198,15 @@ After persisted work is enqueued, the controller derives demand from
 workflow submission path still plans starts from in-memory pending/assigned
 counts.
 
+The sixth 012f3 atom adds an end-to-end controller test for the migrated sibling
+demo project. The test loads
+`../go-etl-demo-project/submissions/demo-workflow-run.json`, maps `local:demo`
+to `../go-etl-demo-project`, submits the real source-reference body to
+`/workflow`, verifies persisted project/workflow/run/stage/queued-work state,
+checks that queued worker payload JSON decodes as `model.WorkItem`, claims one
+item through persisted `/work/next`, and confirms the in-memory queue fields
+remain empty.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
