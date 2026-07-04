@@ -2,7 +2,6 @@ package reposource
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -110,7 +109,7 @@ func TestPublishAdmittedSourceAllowsGitHubAppendOnlyNewFiles(t *testing.T) {
 	}
 }
 
-func TestPublishAdmittedSourceRejectsExistingGitHubFileConflict(t *testing.T) {
+func TestPublishAdmittedSourceReplacesCorruptExistingGitHubFile(t *testing.T) {
 	layout, err := NewCacheLayout(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewCacheLayout() error = %v", err)
@@ -131,8 +130,14 @@ func TestPublishAdmittedSourceRejectsExistingGitHubFileConflict(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	err = PublishAdmittedSource(layout, manifest, reads)
-	if !errors.Is(err, ErrCacheCorruption) {
-		t.Fatalf("PublishAdmittedSource() error = %v, want cache corruption", err)
+	if err := PublishAdmittedSource(layout, manifest, reads); err != nil {
+		t.Fatalf("PublishAdmittedSource() error = %v", err)
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != `{"name":"demo"}` {
+		t.Fatalf("cached data = %q, want repaired data", string(data))
 	}
 }

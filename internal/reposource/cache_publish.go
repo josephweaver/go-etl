@@ -44,10 +44,12 @@ func PublishAdmittedSource(layout CacheLayout, manifest AdmittedSourceManifest, 
 func publishCacheFile(path string, file AdmittedSourceManifestFile, data []byte) error {
 	existing, err := os.ReadFile(path)
 	if err == nil {
-		if err := VerifyCachedFile(file, existing); err != nil {
-			return err
+		if err := VerifyCachedFile(file, existing); err == nil {
+			return nil
 		}
-		return nil
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove corrupt cached file %s: %w", file.CachePath, err)
+		}
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read existing cached file %s: %w", file.CachePath, err)

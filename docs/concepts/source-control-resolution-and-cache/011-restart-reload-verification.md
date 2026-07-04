@@ -1,6 +1,6 @@
 # 011 Restart Reload Source Verification
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -10,20 +10,18 @@ when the recorded source revision can be reimported.
 
 ## Current State
 
-The controller persists project, workflow, and workflow-run records with enough
-source metadata to identify the submitted project and workflow documents.
-OS 009 defines the persistence contract for nullable source revision identity
-and durable source-admission context.
+Before this slice, the controller persisted project, workflow, and workflow-run
+records with enough source metadata to identify the submitted project and
+workflow documents. OS 009 defines the persistence contract for nullable source
+revision identity and durable source-admission context.
 
-The controller also stores canonical JSON SHA-256 evidence for project and
-workflow documents after loading them. The source cache Strategic Concept
-requires the controller to use cached source files for repeatable reads, but no
-slice has yet defined the reload-time comparison between persisted canonical
-hashes and cached bytes.
+The controller also stored canonical JSON SHA-256 evidence for project and
+workflow documents after loading them. This slice adds the reload-time
+comparison between persisted canonical hashes and cached bytes.
 
 OS 010 admits source-reference workflow submissions into the repository cache
 and persists the workflow run after reading project and workflow JSON back from
-verified cache. OS 011 starts from that admitted state.
+verified cache. OS 011 verifies that admitted state during startup recovery.
 
 ## Target State
 

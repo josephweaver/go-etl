@@ -143,10 +143,8 @@ func (c *Controller) allowNormalAdmission() {
 }
 
 func (c *Controller) completeStartupRecovery(ctx context.Context) error {
-	if c.workflowStore != nil {
-		if _, err := c.workflowStore.ListActiveWorkflowRuns(ctx); err != nil {
-			return fmt.Errorf("list active workflow runs: %w", err)
-		}
+	if err := c.verifyActiveRunSources(ctx); err != nil {
+		return err
 	}
 	c.allowNormalAdmission()
 	return nil

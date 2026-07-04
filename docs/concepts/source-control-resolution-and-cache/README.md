@@ -141,6 +141,14 @@ It can write reconstructable workflow-run cache pin files. Source-reference
 `/workflow` admission now uses `internal/reposource` to read project, workflow,
 and workflow-declared supplemental source files, publish them into the
 repository cache, and compile from verified cached workflow bytes.
+Controller startup recovery now verifies active workflow runs by reading the
+admitted source manifest from the persisted run context, reading cached project
+and workflow files through `reposource.CacheAccess`, recomputing canonical JSON
+SHA-256, and comparing those hashes with durable project/workflow rows. Missing
+or corrupted GitHub-backed cache entries are repaired from the recorded
+immutable revision and admitted source paths. Missing or corrupted local-backed
+cache entries fail reload with a local provenance error instead of rereading
+local source files.
 Workflow-execution persistence now uses nullable `source_revision_id` fields for
 project and workflow rows, and workflow-run submission context now has a
 repository-source admission context with source identity, nullable revision
@@ -265,9 +273,9 @@ OS implementation order and status:
 006 Cache Pin Reconstruction                       [implemented]
 007 Controller Repo Cache Config Rename            [implemented]
 008 Workflow Source Manifest Declaration           [implemented]
-009 Persistence Source Revision and Admission Context
-010 Controller Admission Integration
-011 Restart Reload Source Verification
+009 Persistence Source Revision and Admission Context [implemented]
+010 Controller Admission Integration                 [implemented]
+011 Restart Reload Source Verification              [implemented]
 ```
 
 The approved Operational Slice charters are separate files in this directory

@@ -38,6 +38,14 @@ validated top-level `source_manifest` for supplemental Python entrypoint,
 Python environment, and support files. Source-reference `/workflow` admission
 now uses `internal/reposource` provider reads, admitted manifests, cache
 publication, and verified cached reads before compiling workflow work.
+Controller startup recovery now verifies active run source caches before opening
+normal admission: it reloads the admitted manifest from the persisted run
+context, reads cached project/workflow files through `reposource.CacheAccess`,
+recomputes canonical JSON SHA-256, and compares those hashes with persisted
+project/workflow rows. GitHub-backed cache misses or corruptions are repaired by
+reading the recorded immutable revision and admitted source paths. Local-backed
+cache misses or corruptions fail recovery with a provenance error and do not
+reread local filesystem source files.
 
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
@@ -451,6 +459,8 @@ manifest reference, and admitted file roles/paths. Controller admission now
 stores the concrete admitted source manifest path produced by the repository
 cache layout. Local filesystem admissions store null source revision identity
 and include the local provenance warning in run submission context.
+Startup recovery uses that context as the authority for source-cache reload
+verification and GitHub-only repair.
 
 The source-control epic now defines the first local cache directory contract.
 The intended cache shape is provider/repository/commit based:
