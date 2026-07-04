@@ -6,7 +6,7 @@ It is not the workflow compiler, scheduler, ledger, or worker runtime. Its job i
 
 ## Files
 
-- `workflow.go` owns source-reference workflow-run submission, submission file loading, controller reachability checks, status polling, and client-initiated shutdown after the controller becomes idle.
+- `controller_client.go` owns source-reference workflow-run submission, submission file loading, controller reachability checks, status polling, and client-initiated shutdown after the controller becomes idle.
 - `local_controller.go` owns the local process-starting adapter used when a client is allowed to start a controller on the same machine.
 
 Test files in this directory describe expected behavior but do not own production concepts.
