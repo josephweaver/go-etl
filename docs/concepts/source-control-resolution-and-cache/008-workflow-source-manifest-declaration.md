@@ -1,6 +1,6 @@
 # 008 Workflow Source Manifest Declaration
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -14,17 +14,17 @@ directories, or execute Python work.
 
 ## Current State
 
-Source-reference workflow run submissions currently name only:
+Source-reference workflow run submissions name:
 
 - project document repository/ref/path;
 - workflow document repository/ref/path;
 - optional override variables.
 
-The workflow source document currently decodes into `WorkflowSubmission`, which
-contains `workflow.Workflow` and variables. There is no user-facing declaration
-for supplemental repository files. OS 002 therefore assumes a caller-supplied
-declared file set, but no slice has defined how a workflow author supplies that
-set.
+The workflow source document now decodes into `WorkflowSubmission`, which
+contains `workflow.Workflow`, optional `source_manifest`, and variables.
+`internal/reposource` defines and validates the user-facing declaration for
+supplemental repository files. Later admission behavior still needs to consume
+that declaration when building the admitted source manifest.
 
 The first intended Python executor needs at least:
 

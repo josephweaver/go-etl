@@ -1991,6 +1991,40 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 }
 
+func TestDecodeWorkflowSourceSubmissionAcceptsSourceManifest(t *testing.T) {
+	submission, err := decodeWorkflowSourceSubmission([]byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "scripts/train.py", "content_type": "text/x-python"},
+				{"role": "support_file", "path": "scripts/lib/helpers.py", "content_type": "text/x-python"}
+			]
+		},
+		"variables": []
+	}`))
+	if err != nil {
+		t.Fatalf("decodeWorkflowSourceSubmission() error = %v", err)
+	}
+	if len(submission.SourceManifest.Files) != 2 {
+		t.Fatalf("source manifest file count = %d, want 2", len(submission.SourceManifest.Files))
+	}
+}
+
+func TestDecodeWorkflowSourceSubmissionRejectsInvalidSourceManifest(t *testing.T) {
+	_, err := decodeWorkflowSourceSubmission([]byte(`{
+		"workflow": {"ID": "python-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "../train.py"}
+			]
+		},
+		"variables": []
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "source_manifest") {
+		t.Fatalf("error = %v, want source_manifest validation error", err)
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

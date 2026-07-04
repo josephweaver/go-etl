@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"goetl/internal/model"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
 type WorkflowSubmission struct {
-	Workflow  workflow.Workflow   `json:"workflow"`
-	Variables []variable.Variable `json:"variables"`
+	Workflow       workflow.Workflow                    `json:"workflow"`
+	SourceManifest reposource.SourceManifestDeclaration `json:"source_manifest,omitempty"`
+	Variables      []variable.Variable                  `json:"variables"`
 }
 
 type WorkflowRunSubmission struct {
@@ -63,6 +65,9 @@ func (c ControllerClient) SubmitWorkflowRun(submission WorkflowRunSubmission) er
 
 // SubmitWorkflow submits a legacy inline workflow payload. Prefer SubmitWorkflowRun.
 func (c ControllerClient) SubmitWorkflow(submission WorkflowSubmission) error {
+	if err := submission.SourceManifest.Validate(); err != nil {
+		return err
+	}
 	return c.submitWorkflowPayload(submission)
 }
 
@@ -139,6 +144,9 @@ func LoadWorkflowSubmissionFile(path string) (WorkflowSubmission, error) {
 	var submission WorkflowSubmission
 	if err := json.Unmarshal(data, &submission); err != nil {
 		return WorkflowSubmission{}, fmt.Errorf("decode workflow submission file: %w", err)
+	}
+	if err := submission.SourceManifest.Validate(); err != nil {
+		return WorkflowSubmission{}, fmt.Errorf("validate workflow source manifest: %w", err)
 	}
 
 	return submission, nil

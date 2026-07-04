@@ -24,7 +24,7 @@ The target product still has a reusable Python interface that submits external p
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
 The repository-source model, provider-read, cache-layout, cached-admission,
-manifest-materialization, and cache-pin slices now exist in `internal/reposource`. That
+manifest-materialization, cache-pin, and source-declaration slices now exist in `internal/reposource`. That
 package defines repository identity, resolved source references, admitted
 source manifest records, file roles, slash-separated repository/path
 validation, a narrow source `Provider` interface, GitHub and local filesystem
@@ -33,7 +33,9 @@ caller-declared file sets, deterministic repository cache path derivation,
 manifest-file lookup under controller-owned cache roots, cache publication,
 verified cached reads, and local filesystem materialization from verified
 cache reads. It also defines reconstructable workflow-run cache pin files under
-local and GitHub cache entries.
+local and GitHub cache entries. Workflow source documents can now include a
+validated top-level `source_manifest` for supplemental Python entrypoint,
+Python environment, and support files.
 Controller call sites still remain on the old `cmd/controller/source_control.go`
 path for now.
 
@@ -128,6 +130,8 @@ internal/
     path_test.go
     provider.go
     provider_test.go
+    source_declaration.go
+    source_declaration_test.go
   workflow/
     fanout.go
     fanout_test.go

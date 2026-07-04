@@ -24,6 +24,7 @@ import (
 	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/persistence"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -52,8 +53,9 @@ type Controller struct {
 }
 
 type WorkflowSubmission struct {
-	Workflow  workflow.Workflow   `json:"workflow"`
-	Variables []variable.Variable `json:"variables"`
+	Workflow       workflow.Workflow                    `json:"workflow"`
+	SourceManifest reposource.SourceManifestDeclaration `json:"source_manifest,omitempty"`
+	Variables      []variable.Variable                  `json:"variables"`
 }
 
 type WorkflowRunSubmission struct {
@@ -1288,6 +1290,9 @@ func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
 	}
 	if submission.Workflow.ID == "" {
 		return WorkflowSubmission{}, fmt.Errorf("workflow id is required")
+	}
+	if err := submission.SourceManifest.Validate(); err != nil {
+		return WorkflowSubmission{}, err
 	}
 	return submission, nil
 }
