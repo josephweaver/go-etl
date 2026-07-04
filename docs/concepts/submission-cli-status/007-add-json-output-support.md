@@ -14,11 +14,11 @@ This slice establishes JSON as the stable machine interface for CLI output.
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
-* docs/epics/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
-* docs/epics/submission-cli-status/003-return-submission-acknowledgement.md
-* docs/epics/submission-cli-status/004-add-submission-status-api.md
-* docs/epics/submission-cli-status/005-add-cli-status-command.md
+* docs/concepts/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
+* docs/concepts/submission-cli-status/003-return-submission-acknowledgement.md
+* docs/concepts/submission-cli-status/004-add-submission-status-api.md
+* docs/concepts/submission-cli-status/005-add-cli-status-command.md
 * docs/CUSTOMER_API.md
 * cmd/demo-client/main.go
 * internal/client/local_controller.go

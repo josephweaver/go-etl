@@ -21,10 +21,10 @@ completed_work for every stage work item
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/005-workflow-run-and-stage-persistence-methods.md`
-- `docs/epics/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/005-workflow-run-and-stage-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
 - `internal/persistence/store.go`
 - `internal/persistence/store_test.go`
 
@@ -41,7 +41,7 @@ it.
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
+- `docs/concepts/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
 - `PROJECT_STATE.md`
 - `epi_ctl/20260703.md`
 

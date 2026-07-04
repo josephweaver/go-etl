@@ -17,9 +17,9 @@ fully implemented and reviewed.
 
 Read these files first:
 
-- `docs/epics/AGENT_INSTRUCTIONS.md`
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
+- `docs/concepts/AGENT_INSTRUCTIONS.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/db_adapter_sqlite_test.go`
 - `internal/persistence/store.go`
@@ -81,7 +81,7 @@ Allowed Test Files:
 
 Documentation Files:
 
-- `docs/epics/workflow-execution-persistence/007-attempt-claim-transaction.md`
+- `docs/concepts/workflow-execution-persistence/007-attempt-claim-transaction.md`
 - `epi_ctl/20260703.md`
 
 ## Later Review Atoms

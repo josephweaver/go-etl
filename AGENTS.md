@@ -16,8 +16,7 @@ This repository is changing planning terminology:
 
 - "Epic" now means **Strategic Concept**.
 - "Feature" or "feature slice" now means **Operational Slice**.
-- Existing directory names such as `docs/epics/...` may remain until a separate
-  repository cleanup renames them.
+- Strategic Concept planning documents live under `docs/concepts/...`.
 
 ## Shared Procedure References
 

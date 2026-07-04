@@ -16,7 +16,7 @@ into persistence tables yet.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
 - `docs/fingerprints.md`
 - `internal/variable/expression.go`
 - `internal/variable/literal.go`

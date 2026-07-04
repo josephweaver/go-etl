@@ -16,11 +16,11 @@ query boundaries that later restart and controller-integration code can call.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
-- `docs/epics/workflow-execution-persistence/007-attempt-claim-transaction.md`
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
-- `docs/epics/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/007-attempt-claim-transaction.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
 - `internal/persistence/store.go`
 - `internal/persistence/store_test.go`
 
@@ -37,7 +37,7 @@ require it.
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/011-restart-reconstruction-queries.md`
+- `docs/concepts/workflow-execution-persistence/011-restart-reconstruction-queries.md`
 - `PROJECT_STATE.md`
 - `epi_ctl/20260703.md`
 

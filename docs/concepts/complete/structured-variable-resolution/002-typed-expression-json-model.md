@@ -12,8 +12,8 @@ same `{ "type": ..., "expression": ... }` shape at every layer.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/001-generic-list-type.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/001-generic-list-type.md`
 - `internal/variable/type.go`
 - `internal/variable/type_test.go`
 

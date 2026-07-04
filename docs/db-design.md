@@ -2,9 +2,9 @@
 
 SQLite schema notes for durable workflow execution.
 
-This is a working design note. The active epic README and numbered feature
-slices under `docs/epics/` are closer to implementation and take precedence
-when they differ from this file.
+This is a working design note. The active Strategic Concept README and numbered
+Operational Slices under `docs/concepts/` are closer to implementation and take
+precedence when they differ from this file.
 
 ## `projects`
 

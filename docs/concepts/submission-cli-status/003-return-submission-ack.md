@@ -14,9 +14,9 @@ Any internal controller structures required to support this acknowledgement shou
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
-* docs/epics/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
-* docs/epics/submission-cli-status/002-deserialize-cli-json-inputs.md
+* docs/concepts/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
+* docs/concepts/submission-cli-status/002-deserialize-cli-json-inputs.md
 * docs/CUSTOMER_API.md
 * cmd/controller/main.go
 * internal/client/local_controller.go

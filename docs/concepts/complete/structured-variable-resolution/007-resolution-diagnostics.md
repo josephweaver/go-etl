@@ -12,9 +12,9 @@ maximum-depth failures, and preserve the underlying resolution cause.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/005-recursive-whole-value-references.md`
-- `docs/epics/structured-variable-resolution/006-string-path-interpolation.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/005-recursive-whole-value-references.md`
+- `docs/concepts/structured-variable-resolution/006-string-path-interpolation.md`
 - `internal/variable/resolver.go`
 - `internal/variable/resolver_test.go`
 

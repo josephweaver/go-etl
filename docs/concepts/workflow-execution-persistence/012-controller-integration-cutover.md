@@ -26,12 +26,12 @@ decomposed into smaller controller-integration slices after review.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
-- `docs/epics/workflow-execution-persistence/007-attempt-claim-transaction.md`
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
-- `docs/epics/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
-- `docs/epics/workflow-execution-persistence/011-restart-reconstruction-queries.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/006-work-item-and-queue-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/007-attempt-claim-transaction.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/009-stage-completion-and-ready-work-publication.md`
+- `docs/concepts/workflow-execution-persistence/011-restart-reconstruction-queries.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `internal/persistence/store.go`

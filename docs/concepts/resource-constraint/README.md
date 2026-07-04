@@ -4,7 +4,7 @@ Status: Proposed
 
 ## Depends On
 
-`docs/epics/dependency-aware-workflows/README.md` defines when a workflow step
+`docs/concepts/dependency-aware-workflows/README.md` defines when a workflow step
 is eligible to enter the assignable queue. That execution model is a
 prerequisite for resource admission: a resource constraint may further block
 an eligible work item, but it must never make a dependency-blocked downstream

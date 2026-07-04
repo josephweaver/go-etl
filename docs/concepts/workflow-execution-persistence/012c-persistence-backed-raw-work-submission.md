@@ -15,8 +15,8 @@ is cut over.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012-controller-integration-cutover.md`
-- `docs/epics/workflow-execution-persistence/012b-persistence-backed-status.md`
+- `docs/concepts/workflow-execution-persistence/012-controller-integration-cutover.md`
+- `docs/concepts/workflow-execution-persistence/012b-persistence-backed-status.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `internal/model/work_item.go`
@@ -32,7 +32,7 @@ Read these files first:
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/012c-persistence-backed-raw-work-submission.md`
+- `docs/concepts/workflow-execution-persistence/012c-persistence-backed-raw-work-submission.md`
 - `PROJECT_STATE.md`
 - `epi_ctl/20260703.md`
 

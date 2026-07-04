@@ -15,9 +15,9 @@ the controller-owned `attempt_id`.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012-controller-integration-cutover.md`
-- `docs/epics/workflow-execution-persistence/012d-persistence-backed-work-claim.md`
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/012-controller-integration-cutover.md`
+- `docs/concepts/workflow-execution-persistence/012d-persistence-backed-work-claim.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `cmd/worker/state.go`
@@ -44,7 +44,7 @@ Read these files first:
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
+- `docs/concepts/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
 - `PROJECT_STATE.md`
 - `epi_ctl/20260703.md`
 

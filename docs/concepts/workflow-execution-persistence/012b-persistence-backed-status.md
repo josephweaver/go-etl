@@ -16,8 +16,8 @@ new store.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012-controller-integration-cutover.md`
-- `docs/epics/workflow-execution-persistence/011-restart-reconstruction-queries.md`
+- `docs/concepts/workflow-execution-persistence/012-controller-integration-cutover.md`
+- `docs/concepts/workflow-execution-persistence/011-restart-reconstruction-queries.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `internal/persistence/store.go`
@@ -33,7 +33,7 @@ Read these files first:
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/012b-persistence-backed-status.md`
+- `docs/concepts/workflow-execution-persistence/012b-persistence-backed-status.md`
 - `PROJECT_STATE.md`
 - `epi_ctl/20260703.md`
 

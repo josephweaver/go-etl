@@ -14,8 +14,8 @@ The new endpoint becomes the controller interface used by future `goet status`, 
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
-* docs/epics/submission-cli-status/003-return-submission-acknowledgement.md
+* docs/concepts/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/003-return-submission-acknowledgement.md
 * docs/CUSTOMER_API.md
 * cmd/controller/main.go
 * internal/model/work_item.go

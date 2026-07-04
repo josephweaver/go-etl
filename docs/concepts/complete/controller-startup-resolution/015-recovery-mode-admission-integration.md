@@ -14,8 +14,8 @@ recovery contract allows it.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/014-exclusive-database-ownership-integration.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/014-exclusive-database-ownership-integration.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 

@@ -12,7 +12,7 @@ its variable declarations.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
 - `cmd/controller/config.go`
 - `cmd/controller/config_test.go`
 

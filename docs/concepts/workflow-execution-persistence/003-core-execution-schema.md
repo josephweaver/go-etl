@@ -16,8 +16,8 @@ or transitioning execution records.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/001-database-bootstrap-and-schema-versioning.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/001-database-bootstrap-and-schema-versioning.md`
 - `internal/persistence/store.go`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/db_adapter_sqlite_test.go`

@@ -12,9 +12,9 @@ into the existing `ResolvedValue` tree without inferring nested types.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/002-typed-expression-json-model.md`
-- `docs/epics/structured-variable-resolution/003-expression-definition-validation.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/002-typed-expression-json-model.md`
+- `docs/concepts/structured-variable-resolution/003-expression-definition-validation.md`
 - `internal/variable/variable.go`
 - `internal/variable/literal.go`
 - `internal/variable/resolver.go`

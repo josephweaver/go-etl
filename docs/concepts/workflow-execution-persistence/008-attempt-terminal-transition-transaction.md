@@ -20,8 +20,8 @@ queued_work -> running_work -> failed_work
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/007-attempt-claim-transaction.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/007-attempt-claim-transaction.md`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/db_adapter_sqlite_test.go`
 - `internal/persistence/store.go`
@@ -42,7 +42,7 @@ it.
 
 ## Documentation Files
 
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
 - `epi_ctl/20260703.md`
 
 ## Acceptance Criteria

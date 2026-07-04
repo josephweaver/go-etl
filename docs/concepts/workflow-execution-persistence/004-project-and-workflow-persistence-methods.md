@@ -15,8 +15,8 @@ This slice introduces data access behavior only for `projects` and `workflows`.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/003-core-execution-schema.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/003-core-execution-schema.md`
 - `internal/persistence/store.go`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/db_adapter_sqlite_test.go`

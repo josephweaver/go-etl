@@ -10,10 +10,10 @@ Implement controller-managed filesystem log sinks for structured log observation
 
 Read these files first:
 
-- docs/epics/execution-observability/README.md
-- docs/epics/execution-observability/001-logging-model.md
-- docs/epics/execution-observability/002-log-configuration.md
-- docs/epics/execution-observability/003-controller-logging-endpoint.md
+- docs/concepts/execution-observability/README.md
+- docs/concepts/execution-observability/001-logging-model.md
+- docs/concepts/execution-observability/002-log-configuration.md
+- docs/concepts/execution-observability/003-controller-logging-endpoint.md
 - docs/ARCHITECTURE_OVERVIEW.md
 - cmd/controller/config.go
 - cmd/controller/config_test.go

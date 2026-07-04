@@ -17,7 +17,7 @@ The implementation should establish the public CLI shape while preserving enough
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/README.md
 * docs/CUSTOMER_API.md
 * docs/ARCHITECTURE_OVERVIEW.md
 * cmd/demo-client/main.go

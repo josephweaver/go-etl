@@ -21,14 +21,14 @@ The documentation should describe the current supported behavior without implyin
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
-* docs/epics/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
-* docs/epics/submission-cli-status/002-deserialize-cli-json-inputs.md
-* docs/epics/submission-cli-status/003-return-submission-acknowledgement.md
-* docs/epics/submission-cli-status/004-add-submission-status-api.md
-* docs/epics/submission-cli-status/005-add-cli-status-command.md
-* docs/epics/submission-cli-status/006-add-wait-support.md
-* docs/epics/submission-cli-status/007-add-json-output-support.md
+* docs/concepts/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
+* docs/concepts/submission-cli-status/002-deserialize-cli-json-inputs.md
+* docs/concepts/submission-cli-status/003-return-submission-acknowledgement.md
+* docs/concepts/submission-cli-status/004-add-submission-status-api.md
+* docs/concepts/submission-cli-status/005-add-cli-status-command.md
+* docs/concepts/submission-cli-status/006-add-wait-support.md
+* docs/concepts/submission-cli-status/007-add-json-output-support.md
 * README.md
 * docs/CUSTOMER_API.md
 * PROJECT_STATE.md
@@ -40,7 +40,7 @@ Do not read unrelated files unless documentation references require them.
 * README.md
 * docs/CUSTOMER_API.md
 * PROJECT_STATE.md
-* docs/epics/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/README.md
 
 ## Allowed Test Files
 

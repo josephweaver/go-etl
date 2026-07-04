@@ -17,9 +17,9 @@ JSON submission.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
-- `docs/epics/workflow-execution-persistence/012f2-client-source-reference-submission.md`
-- `docs/epics/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
+- `docs/concepts/workflow-execution-persistence/012f2-client-source-reference-submission.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
 - `FUTURE.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`

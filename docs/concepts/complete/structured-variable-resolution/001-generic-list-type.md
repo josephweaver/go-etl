@@ -12,7 +12,7 @@ homogeneous item requirements to the accessors and consumers that need them.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/README.md`
 - `internal/variable/type.go`
 - `internal/variable/variable.go`
 - `internal/variable/literal.go`

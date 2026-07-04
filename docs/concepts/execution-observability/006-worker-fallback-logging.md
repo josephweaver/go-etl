@@ -10,10 +10,10 @@ Add worker-side fallback logging for emergency diagnostics when the Worker canno
 
 Read these files first:
 
-- docs/epics/execution-observability/README.md
-- docs/epics/execution-observability/001-logging-model.md
-- docs/epics/execution-observability/002-log-configuration.md
-- docs/epics/execution-observability/004-worker-logging-client.md
+- docs/concepts/execution-observability/README.md
+- docs/concepts/execution-observability/001-logging-model.md
+- docs/concepts/execution-observability/002-log-configuration.md
+- docs/concepts/execution-observability/004-worker-logging-client.md
 - docs/ARCHITECTURE_OVERVIEW.md
 - cmd/worker/config.go
 - cmd/worker/config_test.go

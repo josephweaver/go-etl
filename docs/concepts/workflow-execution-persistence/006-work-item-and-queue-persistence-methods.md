@@ -17,8 +17,8 @@ or advance stage lifecycle.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/005-workflow-run-and-stage-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/005-workflow-run-and-stage-persistence-methods.md`
 - `internal/persistence/store.go`
 - `internal/persistence/store_test.go`
 - `internal/persistence/db_adapter_sqlite.go`

@@ -13,9 +13,9 @@ constructed.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/009-startup-resolver-assembly.md`
-- `docs/epics/complete/controller-startup-resolution/010-main-database-contract.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/009-startup-resolver-assembly.md`
+- `docs/concepts/complete/controller-startup-resolution/010-main-database-contract.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `cmd/controller/defaults.json`

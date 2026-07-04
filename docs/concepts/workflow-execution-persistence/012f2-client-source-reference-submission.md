@@ -16,8 +16,8 @@ workflow, but the client does not submit work items or raw workflow documents.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
-- `docs/epics/workflow-execution-persistence/012-controller-integration-cutover.md`
+- `docs/concepts/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
+- `docs/concepts/workflow-execution-persistence/012-controller-integration-cutover.md`
 - `internal/client/workflow.go`
 - `internal/client/workflow_test.go`
 - `internal/client/README.md`

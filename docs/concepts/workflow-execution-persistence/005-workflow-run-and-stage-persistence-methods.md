@@ -16,8 +16,8 @@ publish work items, or advance stage lifecycle based on work completion.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/workflow-execution-persistence/004-project-and-workflow-persistence-methods.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/004-project-and-workflow-persistence-methods.md`
 - `internal/persistence/store.go`
 - `internal/persistence/store_test.go`
 - `internal/persistence/db_adapter_sqlite.go`

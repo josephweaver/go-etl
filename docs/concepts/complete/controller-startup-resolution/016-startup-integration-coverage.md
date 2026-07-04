@@ -17,8 +17,8 @@ controller runs as a whole.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/015-recovery-mode-admission-integration.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/015-recovery-mode-admission-integration.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `PROJECT_STATE.md`
@@ -39,7 +39,7 @@ forces a bounded cleanup edit.
 
 ## Allowed Documentation Files
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 

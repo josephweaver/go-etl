@@ -12,8 +12,8 @@ accessors while preserving the node's declared type.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/004-variable-typed-expression-integration.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/004-variable-typed-expression-integration.md`
 - `internal/variable/resolver.go`
 - `internal/variable/resolver_test.go`
 - `internal/variable/reference.go`

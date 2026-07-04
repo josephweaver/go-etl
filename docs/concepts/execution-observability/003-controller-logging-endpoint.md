@@ -10,9 +10,9 @@ Add a Controller HTTP endpoint that accepts structured log observations. This sl
 
 Read these files first:
 
-- docs/epics/execution-observability/README.md
-- docs/epics/execution-observability/001-logging-model.md
-- docs/epics/execution-observability/002-log-configuration.md
+- docs/concepts/execution-observability/README.md
+- docs/concepts/execution-observability/001-logging-model.md
+- docs/concepts/execution-observability/002-log-configuration.md
 - docs/ARCHITECTURE_OVERVIEW.md
 - cmd/controller/main.go
 - cmd/controller/main_test.go

@@ -12,8 +12,8 @@ live controller startup or retaining a resolver.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/007-startup-override-scope.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/007-startup-override-scope.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config_test.go`
 - `internal/variable/scope.go`

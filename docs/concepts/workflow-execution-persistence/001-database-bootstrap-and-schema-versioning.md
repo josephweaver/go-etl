@@ -16,7 +16,7 @@ This slice does not move controller queue behavior onto the database yet.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/README.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
 - `internal/ledger/sqlite.go`
 - `internal/ledger/sqlite_test.go`
 

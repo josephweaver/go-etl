@@ -10,7 +10,7 @@ Define the internal structured log observation model used by GOET components to 
 
 Read these files first:
 
-- docs/epics/execution-observability/README.md
+- docs/concepts/execution-observability/README.md
 - docs/ARCHITECTURE_OVERVIEW.md
 - internal/model/work_item.go
 

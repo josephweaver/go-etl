@@ -1,11 +1,11 @@
-# GOET Epic Navigation
+# GOET Strategic Concept Navigation
 
-This directory contains GOET's capability plans. Each epic README describes the
-problem boundary, goals, non-goals, architectural decisions, and proposed
-implementation slices. Use this page as a quick index; follow an epic link for
-its authoritative scope.
+This directory contains GOET's capability plans. Each Strategic Concept README
+describes the problem boundary, goals, non-goals, architectural decisions, and
+proposed Operational Slices. Use this page as a quick index; follow a Strategic
+Concept link for its authoritative scope.
 
-## Proposed Epics
+## Proposed Strategic Concepts
 
 - [Attempt Liveness and Caretaker Recovery](attempt-liveness-recovery/README.md) - Detect workers that stop reporting, recover abandoned attempts, and requeue their logical work.
 - [Controller Resilience](controller-resilience/README.md) - Define controller process identity and restart behavior for work, reports, and orchestration state.
@@ -23,12 +23,13 @@ its authoritative scope.
 ## Early Concepts
 
 These documents describe intended capabilities but do not yet declare the full
-epic status and planning structure used by the proposed epics above.
+Strategic Concept status and planning structure used by the proposed concepts
+above.
 
 - [Logging Framework](logging/README.md) - Sketches hierarchical logging from clients, controllers, workers, and worker subprocesses.
 - [Python WorkItem](python-workitem/README.md) - Sketches a worker plugin for preparing an environment and executing generic Python scripts.
 
-## Completed Epics
+## Completed Strategic Concepts
 
 - [Controller Startup Resolution](complete/controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
@@ -36,5 +37,5 @@ epic status and planning structure used by the proposed epics above.
 
 ## Planning Guides
 
-- [Epic procedure](epic-procedure.md) - Defines how to frame and approve an epic.
-- [Epic slice procedure](epic-slice-procedure.md) - Defines how an approved epic is decomposed into implementation slices.
+- [Strategic Concept procedure](../../../epistemic-control/procedures/strategic-concept-design.md) - Defines how to frame and approve a Strategic Concept.
+- [Operational Slice procedure](../../../epistemic-control/procedures/operational-slice.md) - Defines how an approved Strategic Concept is decomposed into Operational Slices.

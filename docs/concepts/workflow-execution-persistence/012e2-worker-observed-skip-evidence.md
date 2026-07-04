@@ -17,9 +17,9 @@ input and output state immediately before execution.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
-- `docs/epics/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
-- `docs/epics/workflow-execution-persistence/002-canonical-json-and-sha256-helpers.md`
+- `docs/concepts/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
+- `docs/concepts/workflow-execution-persistence/008-attempt-terminal-transition-transaction.md`
+- `docs/concepts/workflow-execution-persistence/002-canonical-json-and-sha256-helpers.md`
 - `internal/fingerprint/canonical_json.go`
 - `internal/model/work_item.go`
 - `cmd/controller/main.go`

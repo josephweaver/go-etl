@@ -14,9 +14,9 @@ The command should query a specific submission and display a human-readable stat
 
 Read these files first:
 
-* docs/epics/submission-cli-status/README.md
-* docs/epics/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
-* docs/epics/submission-cli-status/004-add-submission-status-api.md
+* docs/concepts/submission-cli-status/README.md
+* docs/concepts/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
+* docs/concepts/submission-cli-status/004-add-submission-status-api.md
 * docs/CUSTOMER_API.md
 * cmd/demo-client/main.go
 * internal/client/local_controller.go

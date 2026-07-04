@@ -13,8 +13,8 @@ scope.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/002-typed-expression-json-model.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/002-typed-expression-json-model.md`
 - `internal/variable/expression.go`
 - `internal/variable/expression_test.go`
 - `internal/variable/reference.go`

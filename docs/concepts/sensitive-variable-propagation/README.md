@@ -97,8 +97,8 @@ Relevant documents and packages include:
 - `docs/controller.internal.datamodel.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `docs/CUSTOMER_API.md`
-- `docs/epics/workflow-execution-persistence/README.md`
-- `docs/epics/dependency-aware-workflows/README.md`
+- `docs/concepts/workflow-execution-persistence/README.md`
+- `docs/concepts/dependency-aware-workflows/README.md`
 - `internal/variable`
 
 ## Proposed Slices

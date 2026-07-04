@@ -12,9 +12,9 @@ precedence behavior without enabling overrides in live controller startup yet.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/002-startup-command-line-contract.md`
-- `docs/epics/complete/controller-startup-resolution/005-defaults-controller-layering.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/002-startup-command-line-contract.md`
+- `docs/concepts/complete/controller-startup-resolution/005-defaults-controller-layering.md`
 - `cmd/controller/main.go`
 - `cmd/controller/config_test.go`
 - `internal/variable/variable.go`

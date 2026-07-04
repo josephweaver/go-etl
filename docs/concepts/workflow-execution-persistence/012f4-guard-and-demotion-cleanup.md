@@ -44,8 +44,8 @@ This slice owned the remaining guard/demotion work.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
-- `docs/epics/workflow-execution-persistence/012f3-controller-source-reference-workflow-admission.md`
+- `docs/concepts/workflow-execution-persistence/012f-remove-in-memory-queue-authority.md`
+- `docs/concepts/workflow-execution-persistence/012f3-controller-source-reference-workflow-admission.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `internal/persistence/store.go`

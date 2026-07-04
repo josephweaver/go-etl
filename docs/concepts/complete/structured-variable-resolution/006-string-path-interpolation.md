@@ -12,9 +12,9 @@ preserving the enclosing node's declared type.
 
 Read these files first:
 
-- `docs/epics/structured-variable-resolution/README.md`
-- `docs/epics/structured-variable-resolution/003-expression-definition-validation.md`
-- `docs/epics/structured-variable-resolution/005-recursive-whole-value-references.md`
+- `docs/concepts/structured-variable-resolution/README.md`
+- `docs/concepts/structured-variable-resolution/003-expression-definition-validation.md`
+- `docs/concepts/structured-variable-resolution/005-recursive-whole-value-references.md`
 - `internal/variable/expression.go`
 - `internal/variable/resolver.go`
 - `internal/variable/resolver_test.go`

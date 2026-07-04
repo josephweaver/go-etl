@@ -13,8 +13,8 @@ with controller declarations.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
-- `docs/epics/complete/controller-startup-resolution/003-executable-relative-config-discovery.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/003-executable-relative-config-discovery.md`
 - `cmd/controller/config.go`
 - `cmd/controller/config_test.go`
 - `internal/variable/namespace.go`

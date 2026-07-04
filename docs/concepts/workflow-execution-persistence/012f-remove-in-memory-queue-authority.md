@@ -17,11 +17,11 @@ supported fallback.
 
 Read these files first:
 
-- `docs/epics/workflow-execution-persistence/012-controller-integration-cutover.md`
-- `docs/epics/workflow-execution-persistence/012c-persistence-backed-raw-work-submission.md`
-- `docs/epics/workflow-execution-persistence/012d-persistence-backed-work-claim.md`
-- `docs/epics/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
-- `docs/epics/workflow-execution-persistence/012e2-worker-observed-skip-evidence.md`
+- `docs/concepts/workflow-execution-persistence/012-controller-integration-cutover.md`
+- `docs/concepts/workflow-execution-persistence/012c-persistence-backed-raw-work-submission.md`
+- `docs/concepts/workflow-execution-persistence/012d-persistence-backed-work-claim.md`
+- `docs/concepts/workflow-execution-persistence/012e-persistence-backed-terminal-reports.md`
+- `docs/concepts/workflow-execution-persistence/012e2-worker-observed-skip-evidence.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `internal/persistence/store.go`

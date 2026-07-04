@@ -12,7 +12,7 @@ that resolver without copying or enumerating the process environment.
 
 Read these files first:
 
-- `docs/epics/complete/controller-startup-resolution/README.md`
+- `docs/concepts/complete/controller-startup-resolution/README.md`
 - `internal/variable/resolver.go`
 - `internal/variable/resolver_test.go`
 - `internal/variable/namespace.go`
