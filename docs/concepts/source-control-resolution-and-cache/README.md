@@ -1,6 +1,6 @@
 # Repository Source Resolution and Cache Strategic Concept
 
-Status: Proposed
+Status: In Progress
 
 Cadence: CSxIx
 
@@ -132,18 +132,19 @@ segregated cache destination for admitted bytes.
 ## Current State
 
 Strategically, GOET has planned persistence fields for repository-source facts,
-but
-no reusable repository-source boundary that owns ref resolution, pinned file
-reads, GitHub retrieval, local filesystem retrieval, cache layout, or
-materialization.
+and a reusable `internal/reposource` package now exists for the shared model,
+path validation, provider reads, and admitted source manifest construction. The
+remaining controller-facing repository-source boundary still does not own cache
+layout, cached pinned reads, materialization, cache pin reconstruction, or
+controller admission integration.
 
-Operationally, controller source handling currently lives near controller
-workflow admission code. The repository has `cmd/controller/source_control.go`
-and `cmd/controller/source_control_test.go`, and the existing local source path
-behavior is useful for local-only execution and tests. There is no dedicated
-`internal/reposource` package, no GitHub-backed repository-source provider, no
-cache-backed local filesystem provider, and no controller-owned repository cache
-layout.
+Operationally, controller source handling still lives near controller workflow
+admission code. The repository has `cmd/controller/source_control.go` and
+`cmd/controller/source_control_test.go`, and the new `internal/reposource`
+package now provides the shared model, GitHub provider reads, local filesystem
+provider reads, and manifest construction that later slices will use. There is
+still no controller-owned repository cache layout, verified cache read path, or
+materialization behavior.
 
 ## Target State
 
@@ -241,15 +242,13 @@ keeps materialization code independent of these physical storage choices.
 - Cache cleanup must not remove files required by active or recoverable admitted
   runs.
 
-## Proposed Operational Slices
+## Operational Slice Progress
 
-The approved Operational Slice charters are separate files in this directory.
-This list is the current planning index; the individual OS files are
-authoritative for implementation scope. Implement in numeric order.
+OS implementation order and status:
 
 ```text
-001 Repository Source Model And Path Safety
-002 Provider Reads And Admission Manifest
+001 Repository Source Model And Path Safety        [implemented]
+002 Provider Reads And Admission Manifest         [implemented]
 003 Repository Cache Access Layer And Layout
 004 Cached Admission And Verified Reads
 005 Manifest Materialization
@@ -260,6 +259,9 @@ authoritative for implementation scope. Implement in numeric order.
 010 Controller Admission Integration
 011 Restart Reload Source Verification
 ```
+
+The approved Operational Slice charters are separate files in this directory
+and remain authoritative for detailed scope.
 
 ## Open Questions
 

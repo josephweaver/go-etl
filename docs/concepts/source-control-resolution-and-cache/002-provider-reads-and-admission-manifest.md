@@ -1,6 +1,6 @@
 # 002 Provider Reads and Admission Manifest
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -15,8 +15,8 @@ does not change `/workflow` admission behavior.
 
 ## Current State
 
-After Operational Slice 001, `internal/reposource` is expected to contain the
-shared repository-source model and path validation helpers.
+After Operational Slice 001, `internal/reposource` contained the shared
+repository-source model and path validation helpers.
 
 Current controller source-reference behavior still lives in
 `cmd/controller/source_control.go`. That controller-local adapter reads local
@@ -24,10 +24,11 @@ files directly, uses Git-specific `ResolvedCommit` vocabulary, and may infer Git
 provenance from a local checkout. This slice does not modify that controller
 adapter.
 
-There is no reusable provider abstraction under `internal/reposource`. There is
-no GitHub provider, no local filesystem provider that follows the new null
-revision rule, and no admitted-manifest builder that records file roles, source
-paths, cache paths, provider object IDs, raw hashes, and canonical JSON hashes.
+`internal/reposource` now has a narrow provider abstraction, a GitHub provider,
+a local filesystem provider, and an admitted-manifest builder. Provider reads
+validate repository-relative paths, read only caller-requested files, compute
+raw file-byte SHA-256 values, preserve GitHub object IDs when present, and leave
+local filesystem revision and object IDs null.
 
 ## Target State
 

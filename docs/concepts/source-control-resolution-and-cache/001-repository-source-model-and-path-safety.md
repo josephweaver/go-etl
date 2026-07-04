@@ -1,6 +1,6 @@
 # 001 Repository Source Model and Path Safety
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -14,24 +14,17 @@ filesystem roots, publish cache files, or change controller workflow admission.
 
 ## Current State
 
-`cmd/controller/source_control.go` currently owns source-reference behavior in
-the controller `main` package. It defines `SourceControlAdapter`,
-`SourceDocumentReference`, `ResolvedSourceDocument`, and
-`LocalSourceControlAdapter`.
+`internal/reposource` now exists and defines the shared repository-source
+model for this Strategic Concept. It includes repository identity, resolved
+source reference, source file request and content types, admitted manifest
+types, file-role constants, and reusable slash-separated path validation.
 
-That current adapter has behavior this Strategic Concept will replace in later
-Operational Slices:
-
-- it resolves one document at a time rather than an admitted source manifest;
-- it uses `ResolvedCommit`, which is Git-specific vocabulary;
-- it treats local files inside a Git checkout as Git-provenance-capable;
-- it computes an object-like hash for local files;
-- its `safeRepositoryPath` helper is local to `cmd/controller` and uses
-  filesystem paths rather than a reusable slash-separated repository path type.
-
-There is no `internal/reposource` package. No shared model exists for a
-repository-source provider, admitted manifest, file roles, raw file hash,
-canonical JSON hash, nullable provider object ID, or cache path.
+The controller-local source-control code in `cmd/controller/source_control.go`
+still exists and still owns the current runtime behavior. It continues to use
+Git-specific vocabulary such as `ResolvedCommit`, resolve one document at a
+time, and keep its own `safeRepositoryPath` helper. Later Operational Slices
+will move controller call sites onto the shared model and then replace the
+controller-local source logic.
 
 ## Target State
 

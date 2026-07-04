@@ -23,6 +23,15 @@ The target product still has a reusable Python interface that submits external p
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
+The repository-source model and provider-read slices now exist in
+`internal/reposource`. That package defines repository identity, resolved
+source references, admitted source manifest records, file roles,
+slash-separated repository/path validation, a narrow source `Provider`
+interface, GitHub and local filesystem providers, raw file-byte SHA-256
+evidence, and admitted manifest construction for caller-declared file sets.
+Controller call sites still remain on the old `cmd/controller/source_control.go`
+path for now.
+
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
 `project.json`, workflow documents under `workflows/`, demo run submissions under
@@ -87,6 +96,19 @@ internal/
   model/
     work_item.go
     work_item_test.go
+  reposource/
+    github_provider.go
+    github_provider_test.go
+    local_provider.go
+    local_provider_test.go
+    manifest.go
+    manifest_test.go
+    model.go
+    model_test.go
+    path.go
+    path_test.go
+    provider.go
+    provider_test.go
   workflow/
     fanout.go
     fanout_test.go
