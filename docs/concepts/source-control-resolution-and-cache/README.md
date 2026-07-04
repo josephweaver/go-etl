@@ -1,4 +1,4 @@
-# Source-Control Resolution and Cache Strategic Concept
+# Repository Source Resolution and Cache Strategic Concept
 
 Status: Proposed
 
@@ -6,62 +6,86 @@ Cadence: CSxIx
 
 ## Purpose
 
-Provide the source-control boundary GOET needs to resolve mutable repository
-references into immutable source identities, read pinned files, verify semantic
-content, and materialize explicitly requested files into local cache or staging
+Provide the repository-source boundary GOET needs to resolve project, workflow,
+and explicitly requested supplemental files from GitHub or the local filesystem,
+publish the admitted bytes into a controller-owned repository cache, verify
+cached content, and materialize explicitly requested files into staging
 directories.
 
 Workflow execution persistence records source locators and semantic hashes, but
-source-control behavior is broader than database persistence. This Strategic
-Concept owns ref resolution, repository-relative path safety, GitHub-backed
-retrieval, local cache layout, cache pins, materialization, and offline restart
-behavior.
+repository-source behavior is broader than database persistence. This Strategic
+Concept owns ref resolution where a provider has refs, repository-relative path
+safety, GitHub-backed retrieval, local filesystem-backed retrieval, admitted
+source manifests, repository cache layout, cache pins, materialization, and
+offline restart behavior.
 
 ## Goals
 
-- Define a controller-facing source-control abstraction.
-- Resolve mutable refs such as branches or tags into immutable commit IDs before
-  admission.
-- Read files by repository identity, commit ID, and repository-relative path.
+- Define a controller-facing repository-source abstraction.
+- Resolve mutable refs such as branches or tags into stable revision identities
+  before admission when the provider has mutable refs.
+- Read files by repository identity, revision identity, and repository-relative
+  path.
 - Keep source locators separate from GOET semantic canonical SHA-256 values.
 - Reject unsafe source and materialization paths before provider or filesystem
   code sees them.
-- Provide a GitHub-backed implementation as the first source-control provider.
-- Maintain a local source-control cache that can serve already admitted pinned
-  documents after controller restart.
+- Provide GitHub and local filesystem providers behind the same abstraction.
+- Rename the controller cache configuration from Git-specific names to
+  repository-cache names:
+  `controller_repo_cache_path`, `controller_repo_cache_max_size_mb`, and
+  `controller_repo_cache_retention_milliseconds`.
+- Maintain a local repository cache that can serve already admitted pinned
+  files after controller restart, regardless of
+  whether they originally came from GitHub or the local filesystem.
+- Cache only files explicitly declared by the workflow/project source manifest.
+  Preserve each cached file's repository-relative directory structure under the
+  cache `files/` root.
+- Prevent clients from addressing repository cache paths directly. Clients name
+  provider source paths such as `workflow.json`; the controller chooses where
+  admitted bytes are stored under the cache root.
+- Treat local filesystem source files as volatile. After admission, local files
+  are read from the controller cache copy, not from the original local path.
 - Materialize explicit file manifests into staging directories when packaging or
-  worker runtime code needs filesystem files.
+  worker runtime code needs filesystem files, such as Python scripts and Python
+  environment specifications for the Python executor.
 - Avoid embedding credentials in cache paths, remotes, logs, errors, or durable
   source identities.
 
 ## Non-Goals
 
-- Storing source-controlled JSON documents wholesale in SQLite.
+- Storing source-referenced JSON documents wholesale in SQLite.
+- Checking out, copying, or caching an entire project repository when only a
+  subset of files is needed.
 - Defining workflow dependency semantics.
 - Deciding which files belong in worker artifacts.
 - Implementing controller retention cleanup policy.
-- Supporting non-GitHub providers before GitHub behavior is proven.
+- Supporting providers other than GitHub and local filesystem before those two
+  providers are proven.
 - Replacing GOET canonical JSON hashes with Git object IDs.
+- Inferring Git identity from local filesystem paths. A local path is treated as
+  a local filesystem source unless a future Operational Slice explicitly asks
+  for local Git behavior.
 
 ## Architectural Context
 
-The controller admits workflow runs from source-controlled project and workflow
+The controller admits workflow runs from source-referenced project and workflow
 documents. The `workflow-execution-persistence` Strategic Concept stores the
 durable source facts for admitted runs, but it deliberately does not implement
-remote source-control behavior or a local source cache.
+GitHub retrieval behavior, local filesystem source reads, or a repository cache.
 
-This Strategic Concept adds the source-control boundary that runs before and
-beside workflow admission. The boundary resolves mutable source references into
-immutable commit identities, reads pinned files, and provides local cached bytes
-for already admitted source documents when remote source control is unavailable.
+This Strategic Concept adds the repository-source boundary that runs before and
+beside workflow admission. The boundary resolves source references, reads
+project/workflow files and explicitly declared supplemental files, writes
+admitted bytes into the controller repository cache, and provides local cached
+bytes for already admitted source files when the original source is unavailable.
 
 ## Relationship To Workflow Execution Persistence
 
-`workflow-execution-persistence` stores source-control references as durable
+`workflow-execution-persistence` stores repository-source references as durable
 facts:
 
 - repository identity;
-- resolved commit ID;
+- resolved source revision identity;
 - repository-relative path;
 - source object ID when available;
 - canonical GOET SHA-256;
@@ -69,45 +93,149 @@ facts:
 
 This Strategic Concept owns how those references are created, refreshed,
 verified, cached, and materialized. Persistence remains the database authority
-for admitted runs; source control remains the provenance and file-retrieval
-authority for pinned source documents.
+for admitted runs. GitHub remains the provenance authority for GitHub-backed
+source files. Local filesystem sources provide no source-control provenance and
+are recoverable only from the admitted cache copy plus recorded content hashes.
 
-Remote source control is needed to create or refresh pins. It is not required to
-resume an already admitted run when the local cache has verified content for the
-recorded repository, commit, path, and canonical hash.
+The project and workflow persistence tables keep the original source locator
+facts for audit and provenance. The repository cache provides the controller's
+operational reload source. A cache access layer maps a run's admitted source
+manifest to physical cache files. For local filesystem admissions, the physical
+files live under a run-scoped local cache area. For GitHub admissions, the
+physical files may live under a provider/repository content cache and be reached
+through the same cache access layer.
+
+Source revision identity is nullable in durable persistence. GitHub-backed
+records store the resolved immutable commit ID. Local filesystem records store
+null because local files are not a source-control provenance technique.
+
+Workflow-run submission context must include a durable source-admission context:
+the admitted manifest reference, provider, repository identity, repository key,
+requested ref, nullable source revision identity, and admitted file roles and
+paths needed for restart reload and GitHub repair.
+
+The original provider is needed to create or refresh pins. It is not required to
+resume an already admitted run when the repository cache has verified content
+for the recorded provider, repository identity, source revision identity, path,
+and expected hashes.
+
+Clients never submit repository cache paths. Submitted paths like `project.json`,
+`workflow.json`, or `workflows/demo.json` are interpreted relative to the
+selected provider repository. A client may normalize user-facing path input
+before submission. The controller does not normalize unsafe submitted paths into
+safe basenames; if a submitted path contains `..`, is absolute, is
+drive-qualified, targets the repository cache, targets another protected
+controller area, or otherwise cannot be proven to stay inside the provider
+repository, the controller rejects it. The controller then chooses the
+segregated cache destination for admitted bytes.
 
 ## Current State
 
-Strategically, GOET has planned persistence fields for source-control facts, but
-no reusable source-control boundary that owns ref resolution, pinned file reads,
-GitHub retrieval, cache layout, or materialization.
+Strategically, GOET has planned persistence fields for repository-source facts,
+but
+no reusable repository-source boundary that owns ref resolution, pinned file
+reads, GitHub retrieval, local filesystem retrieval, cache layout, or
+materialization.
 
 Operationally, controller source handling currently lives near controller
 workflow admission code. The repository has `cmd/controller/source_control.go`
 and `cmd/controller/source_control_test.go`, and the existing local source path
 behavior is useful for local-only execution and tests. There is no dedicated
-`internal/sourcecontrol` package, no GitHub-backed source-control provider, and
-no controller-owned source cache layout.
+`internal/reposource` package, no GitHub-backed repository-source provider, no
+cache-backed local filesystem provider, and no controller-owned repository cache
+layout.
 
 ## Target State
 
-Strategically, GOET has a controller-facing source-control boundary that keeps
-source provenance separate from workflow persistence while still producing the
-immutable facts persistence needs for admitted runs.
+Strategically, GOET has a controller-facing repository-source boundary that
+keeps source provenance separate from workflow persistence while still producing
+the immutable facts persistence needs for admitted runs.
 
-Operationally, implementation will introduce a small source-control package,
-GitHub-backed ref and file reads, a deterministic local cache layout, cached
-pinned reads with verification, explicit manifest materialization, and cache pin
-reconstruction from durable workflow execution state.
+Operationally, implementation will introduce a small repository-source package,
+GitHub-backed ref and file reads, local filesystem file reads, deterministic
+repository cache layout, cached pinned reads with verification, explicit
+manifest materialization, and cache pin reconstruction from durable workflow
+execution state.
+
+The target state uses a cache access layer in front of physical cache storage.
+The access layer resolves an admitted run's source manifest into local files
+without exposing cache paths to clients or worker policy code. Local filesystem
+providers publish admitted files under a run-scoped cache area such as
+`<cache-root>/local/runs/<run-id>/files/...`. GitHub providers may publish
+repository contents under a provider cache such as
+`<cache-root>/github/repos/<repository-key>/<content-key>/...`. The access layer
+keeps materialization code independent of these physical storage choices.
 
 ## Design Principles
 
-- Branches and tags are discovery inputs, not durable execution identities.
-- Every admitted run uses immutable commit IDs.
+- Branches and tags are discovery inputs, not durable execution identities, when
+  the provider supports branches and tags.
+- Every admitted run uses a stable source revision identity. For GitHub this is
+  an immutable commit ID. Local filesystem sources do not provide provenance, so
+  their source revision identity is null; the run-scoped cache copy is the
+  operational reload mechanism.
+- `RepositoryRef.Identity` is provider-qualified. GitHub repositories use
+  `github.com/<owner>/<repo>`. Local filesystem repositories use
+  controller-defined aliases such as `local:demo`; the local path behind the
+  alias is controller configuration, not durable run identity.
+- Durable persistence vocabulary should use source revision identity rather than
+  source commit. Git commits are one provider-specific revision identity, not
+  the generic source identity shape.
+- The repository cache configuration rename is immediate because GOET is still
+  pre-production. The controller should use `controller_repo_cache_path`,
+  `controller_repo_cache_max_size_mb`, and
+  `controller_repo_cache_retention_milliseconds` without compatibility aliases
+  for the old `controller_git_cache_*` names.
+- The repository cache is controller-owned internal storage. User-facing source
+  paths never target cache directories.
+- Clients may normalize user-facing paths before submission. The controller
+  validates submitted paths and rejects traversal, absolute paths, cache paths,
+  and other protected controller paths.
+- Repository-relative source paths are slash-separated on every platform. Local
+  filesystem providers convert slash-separated source paths to OS paths only
+  after source-boundary validation succeeds.
 - Repository identity must not contain secrets.
 - Provider object identity, such as a Git blob SHA, is separate from GOET
   canonical JSON SHA-256.
-- Path validation belongs at the source-control boundary.
+- GOET canonical JSON SHA-256 is the required project/workflow restart
+  verification hash because the controller reads and loads those documents as
+  canonical JSON. Raw file-byte SHA-256 may be stored as optional cache/audit
+  evidence, but it is not the source of execution correctness for JSON
+  documents.
+- Restart verification happens when the controller reloads an active `run_id`.
+  The controller parses cached `project.json` and `workflow.json`, computes GOET
+  canonical JSON SHA-256, and compares those values with the durable
+  project/workflow rows for the run. If a GitHub-backed run mismatches, the
+  controller should reimport the pinned GitHub source. If a local filesystem run
+  mismatches, the controller should fail reload with a clear error because local
+  source provenance cannot be recovered.
+- Cache corruption is detected by the same active-run reload verification. For a
+  GitHub-backed run, the controller may delete or quarantine the corrupt cache
+  files before reimporting the recorded GitHub repository, revision, and paths.
+  For a local filesystem run, the controller does not attempt repair and reports
+  the mismatch.
+- Workflow-execution persistence is authoritative for active and recoverable
+  runs. Cache-local pin files are optional operational state that may speed
+  cleanup or help inspection, but they are reconstructable from durable
+  workflow-execution rows and must not become a second authority.
+- Materialization always copies through the repository cache access layer, not
+  directly from provider reads. This ensures packaging and staging use admitted
+  bytes and do not depend on GitHub availability or mutable local filesystem
+  sources.
+- Cache population is file-granular. Providers fetch or copy only files declared
+  by the workflow/project source manifest and recorded in the admitted source
+  manifest, not the whole repository. The cache preserves repository-relative
+  directory structure so later materialization can recreate the expected layout.
+- Required worker files are declared before run admission, not discovered by
+  workers at execution time. For the Python executor, Python scripts, helper
+  files, and environment specifications must be named by the workflow/project
+  source manifest before the run starts. If execution later needs an undeclared
+  source file, that is a workflow authoring error, not a cache miss to repair
+  automatically.
+- The cache access layer owns physical cache lookup. Callers provide an admitted
+  run identity and manifest paths; they do not know whether bytes live under
+  local run-scoped storage or GitHub repository-content storage.
+- Path validation belongs at the repository-source boundary.
 - Materialization consumes an explicit manifest; packaging policy lives
   elsewhere.
 - Cache cleanup must not remove files required by active or recoverable admitted
@@ -115,437 +243,45 @@ reconstruction from durable workflow execution state.
 
 ## Proposed Operational Slices
 
-These are candidate Operational Slices. They are not implementation
-authorization until explicitly selected.
+The approved Operational Slice charters are separate files in this directory.
+This list is the current planning index; the individual OS files are
+authoritative for implementation scope. Implement in numeric order.
 
 ```text
-001 Source-Control Abstraction
-
-Define the controller-facing interface, source identity structs, file-content
-records, materialization request structs, and repository-relative path-safety
-helper. No GitHub, git command, credential, or cache behavior.
-
-002 GitHub Source-Control Implementation
-
-Implement ref resolution, commit identity lookup, pinned file reads, and object
-identity reporting for GitHub while preserving the locator-vs-semantic-hash
-distinction.
-
-003 Local Source-Control Cache Layout
-
-Define deterministic cache paths, repository/commit pin records, cache root
-validation, and collision rules without full retention cleanup.
-
-004 Cached Pinned File Reads
-
-Read pinned files from the local cache when available and verify content against
-stored expectations. Fetch only missing exact commits or objects.
-
+001 Repository Source Model And Path Safety
+002 Provider Reads And Admission Manifest
+003 Repository Cache Access Layer And Layout
+004 Cached Admission And Verified Reads
 005 Manifest Materialization
-
-Materialize an explicit source manifest into a destination directory with path
-safety, deterministic overwrite behavior, and no packaging-policy decisions.
-
 006 Cache Pin Reconstruction
-
-Reconstruct active cache pins from durable workflow execution state after
-controller restart.
+007 Controller Repo Cache Config Rename
+008 Workflow Source Manifest Declaration
+009 Persistence Source Revision and Admission Context
+010 Controller Admission Integration
+011 Restart Reload Source Verification
 ```
-
-## Operational Slice 001 Candidate: Source-Control Abstraction
-
-### Objective
-
-Define the controller-facing source-control boundary used to resolve mutable
-repository references into immutable source identities, read pinned files, and
-materialize explicitly requested files into a local cache or staging directory.
-
-This Operational Slice creates the abstraction that later GitHub and local-cache
-implementations must satisfy. It does not contact GitHub, run `git`, clone
-repositories, or decide which project/workflow files a submission needs.
-
-### Proposed API Shape
-
-Introduce a small package, likely `internal/sourcecontrol`, with data structs
-and an interface shaped around immutable source retrieval:
-
-```go
-type RepositoryRef struct {
-    Identity string
-    DisplayName string
-}
-
-type ResolvedRef struct {
-    Repository RepositoryRef
-    RequestedRef string
-    CommitID string
-}
-
-type FileRef struct {
-    Repository RepositoryRef
-    CommitID string
-    Path string
-}
-
-type FileContent struct {
-    Ref FileRef
-    Bytes []byte
-    ObjectID string
-}
-
-type MaterializeRequest struct {
-    Repository RepositoryRef
-    CommitID string
-    Files []MaterializeFile
-    Destination string
-}
-
-type MaterializeFile struct {
-    SourcePath string
-    DestinationPath string
-}
-
-type Client interface {
-    ResolveRef(ctx context.Context, repository RepositoryRef, ref string) (ResolvedRef, error)
-    ReadFile(ctx context.Context, ref FileRef) (FileContent, error)
-    Materialize(ctx context.Context, request MaterializeRequest) error
-    GetCommitIdentity(ctx context.Context, repository RepositoryRef, commitID string) (ResolvedRef, error)
-}
-```
-
-Names are design candidates. The implementation should prefer short, explicit
-structs over maps or provider-specific JSON blobs.
-
-### Path Safety Boundary
-
-The abstraction owns repository-relative path validation. It should provide a
-helper such as:
-
-```go
-func CleanRelativePath(path string) (string, error)
-```
-
-The helper must reject:
-
-- empty paths;
-- absolute paths;
-- drive-qualified Windows paths;
-- paths containing any original `..` segment;
-- paths that clean to `.` or escape the repository root;
-- paths with backslashes if repository paths are standardized on `/`.
-
-This helper is used for source paths and materialized destination paths. Later
-implementations may add provider-specific validation, but unsafe paths should
-fail before reaching GitHub, `git`, or filesystem copy code.
-
-### Acceptance Criteria
-
-- A new source-control package defines the controller-facing interface.
-- The interface distinguishes mutable requested refs from immutable commit IDs.
-- The interface distinguishes source locator identity from semantic canonical
-  JSON hashes.
-- Repository identity is represented without embedding credentials.
-- File reads are addressed by repository identity, immutable commit ID, and
-  repository-relative path.
-- File read results may include provider object identity separately from GOET
-  canonical SHA-256.
-- Materialization accepts an explicit file manifest and destination rather than
-  deciding packaging policy.
-- Path validation rejects absolute, escaping, empty, and platform-specific
-  unsafe paths.
-- Path validation accepts clean repository-relative paths.
-- Unit tests cover path validation and struct/interface compile-time use.
-
-### Out Of Scope
-
-- GitHub API implementation.
-- Local bare Git cache implementation.
-- Running `git` commands.
-- Fetching, cloning, pruning, or garbage collection.
-- Credential lookup, token storage, or secret handling.
-- Controller submission integration.
-- Workflow/project JSON parsing.
-- Canonical JSON SHA-256 computation.
-- Cache directory naming and collision policy.
-- Retention cleanup.
-
-## Operational Slice 003 Candidate: Local Source-Control Cache Layout
-
-### Objective
-
-Define the on-disk contract for the controller source-control cache.
-
-The cache must make this true:
-
-```text
-source adapter resolves a source reference into a local pinned source document
-```
-
-That means provider-specific source-control work happens before workflow
-admission reads files. `/workflow` should receive local bytes plus source
-identity facts, not know whether those bytes came from GitHub, a local checkout,
-or an already-populated cache entry.
-
-### Cache Root
-
-The cache root comes from controller configuration:
-
-```text
-controller_config.controller_git_cache_path
-```
-
-Existing defaults resolve this under the controller root:
-
-```text
-${controller_root_dir}/git_cache
-```
-
-The cache root must be a controller-owned directory. It may be outside the
-`go-etl` repo. It must not contain credentials in any path segment.
-
-### Directory Layout
-
-Use a deterministic provider/repository/commit layout:
-
-```text
-<cache-root>/
-  repositories/
-    <provider>/
-      <repository-key>/
-        objects/
-        commits/
-          <commit-sha>/
-            files/
-              <repo-relative-path>
-            manifest.json
-            pins/
-              <pin-id>.json
-        locks/
-        tmp/
-```
-
-Example:
-
-```text
-git_cache/
-  repositories/
-    github/
-      github.com_openai_go-etl-demo-project/
-        objects/
-        commits/
-          3f2b0a7.../
-            files/
-              project.json
-              workflows/demo-workflow.json
-            manifest.json
-            pins/
-              run-018f....json
-        locks/
-        tmp/
-```
-
-This is a file-materialized pinned-document cache. A later implementation may
-also store a bare/partial Git object database under `objects/`, but workflow
-admission reads the pinned files under `commits/<commit-sha>/files/`.
-
-### Repository Key
-
-`<repository-key>` is a sanitized stable repository identity. It must:
-
-- be deterministic for the provider repository identity;
-- contain no credentials, tokens, query strings, or user-specific auth data;
-- use only safe filename characters, recommended:
-
-```text
-[a-zA-Z0-9._-]
-```
-
-- avoid case collisions by normalizing provider-owned case rules where possible;
-- include enough provider namespace to avoid ambiguity.
-
-Recommended GitHub key:
-
-```text
-github.com_<owner>_<repo>
-```
-
-If the provider exposes a numeric immutable repository ID, store that in
-metadata but do not require it in the path until the GitHub adapter is designed.
-
-### Commit Directory
-
-`commits/<commit-sha>/` is immutable after publish.
-
-Rules:
-
-- `<commit-sha>` must be a full immutable commit ID, not a branch or tag.
-- Files are written under `tmp/` first, then atomically published into
-  `commits/<commit-sha>/`.
-- Once published, file contents under that commit directory must not be edited
-  in place.
-- If verification finds a mismatch, mark the commit cache entry corrupt and
-  rebuild it through a new temp directory rather than mutating files in place.
-
-### Pinned Files
-
-Pinned source files live under:
-
-```text
-commits/<commit-sha>/files/<repo-relative-path>
-```
-
-Path rules:
-
-- source paths are repository-relative and slash-separated;
-- empty paths, absolute paths, Windows drive-qualified paths, and paths with
-  `..` segments are rejected before filesystem access;
-- cleaned paths must stay under the `files/` root;
-- the original repository-relative path is preserved in metadata.
-
-Only requested files must be materialized. The cache does not need to checkout
-the entire repository for a workflow admission.
-
-### Manifest
-
-Each published commit directory has:
-
-```text
-manifest.json
-```
-
-Initial shape:
-
-```json
-{
-  "schema": "goet/source-cache/v1",
-  "provider": "github",
-  "repository_identity": "github.com/owner/repo",
-  "repository_key": "github.com_owner_repo",
-  "requested_refs": ["main"],
-  "commit_sha": "3f2b0a7...",
-  "created_at": "2026-07-04T12:00:00Z",
-  "files": [
-    {
-      "path": "project.json",
-      "object_id": "...",
-      "size_bytes": 144,
-      "sha256": "..."
-    }
-  ]
-}
-```
-
-`sha256` here is the raw file byte SHA-256 for cache integrity. It is not the
-GOET canonical JSON SHA-256 stored with workflow/project provenance.
-
-### Pins
-
-Pins prevent cleanup from removing files needed by active or recoverable runs.
-
-Pin files live under:
-
-```text
-commits/<commit-sha>/pins/<pin-id>.json
-```
-
-Initial pin shape:
-
-```json
-{
-  "schema": "goet/source-cache-pin/v1",
-  "pin_id": "run-018f...",
-  "reason": "workflow_run",
-  "created_at": "2026-07-04T12:00:00Z",
-  "workflow_run_id": "run-018f...",
-  "files": [
-    "project.json",
-    "workflows/demo-workflow.json"
-  ]
-}
-```
-
-The workflow execution database remains the durable authority for admitted run
-source facts. Pin files are operational cache state reconstructed from the
-database after restart if missing.
-
-### Locks And Temp
-
-Per-repository operations use files under:
-
-```text
-locks/
-tmp/
-```
-
-Rules:
-
-- one repository-level lock prevents concurrent fetch/materialization from
-  corrupting the same repository cache;
-- temp directories include a random suffix and are safe to delete after crash;
-- publish uses atomic rename where the filesystem supports it;
-- cleanup may remove stale temp directories that are not locked.
-
-### Local Adapter Relationship
-
-The current `local` adapter can be treated as a pre-populated cache source:
-
-```text
-local:demo -> ../go-etl-demo-project
-```
-
-That path is useful for local-only execution and tests, but it is not the
-primary cache layout. The primary GitHub adapter should materialize pinned files
-into the cache layout above, then return the same resolved-document shape the
-local adapter returns today.
-
-### Acceptance Criteria
-
-- The cache root, repository key, commit directory, files directory, manifest,
-  pins, locks, and temp directories are specified.
-- The layout records immutable commit IDs, not mutable refs, as execution
-  lookup keys.
-- The cache stores raw file-byte hashes separately from GOET canonical JSON
-  hashes.
-- Path safety rules prevent source files from escaping `files/`.
-- Pin files are explicitly operational cache state, reconstructable from the
-  workflow execution database.
-- The layout supports reading pinned project/workflow files without remote
-  source control when the cache entry is present and verified.
-
-### Out Of Scope
-
-- Implementing the directories in code.
-- GitHub API calls.
-- Fetching/cloning strategy.
-- Bare Git object database design.
-- Retention cleanup implementation.
-- Schema migration for source-cache pins.
-- Worker artifact packaging.
 
 ## Open Questions
 
-- What exact format should `RepositoryRef.Identity` use for GitHub stable
-  repository identity?
-- Should materialization write files by copying from a bare cache, using a
-  temporary worktree, or using provider-specific file reads?
-- Should cache pin state live only in workflow-execution tables or have its own
-  operational table?
-- How should cache corruption be detected and repaired before retrying remote
-  fetch?
+No open questions remain for this Strategic Concept draft.
 
 ## Completion Criteria
 
 - All agreed Operational Slices for this Strategic Concept are written and
   approved before implementation begins.
-- The implemented source-control boundary resolves mutable refs into immutable
-  commit IDs before workflow admission.
+- The implemented source-control boundary resolves source references into stable
+  source revision identities before workflow admission.
 - Pinned file reads preserve the distinction between source locator identity,
-  provider object identity, raw file-byte hashes, and GOET canonical JSON
-  SHA-256 values.
+  provider object identity, optional raw file-byte hashes, and GOET canonical
+  JSON SHA-256 values.
 - Unsafe source and destination paths are rejected before provider or filesystem
   operations.
-- Already admitted pinned files can be read from verified local cache content
-  after controller restart without requiring remote source control.
+- Already admitted pinned files can be read from verified repository cache
+  content after controller restart without requiring remote source control.
+- Local filesystem admissions read from cached admitted bytes after admission,
+  not from the original local source path.
+- Worker-required source files are declared before run admission; workers do not
+  discover and expand the required source file set during execution.
 - Source-control cache pins can be reconstructed from durable workflow execution
   state.
 - Documentation describes the completed current state after implementation.
