@@ -67,7 +67,7 @@ This feature is too large for one EC-3 prompt. Implement it as small atoms on
 the existing epic branch:
 
 ```text
-012f3-a Local source document adapter
+012f3-a Local source document adapter [implemented]
 012f3-b Source-reference request decode and persisted-mode guard tests
 012f3-c Source document canonicalization and provenance records
 012f3-d Compile workflow source into persisted stage/work/queue rows
@@ -161,6 +161,16 @@ Acceptance criteria for 012f3-a:
 - Produces bytes, repository identity, requested ref, resolved commit, path, and
   source object identity.
 - Has focused tests around resolution and path rejection.
+
+Implementation note:
+
+- `cmd/controller/source_control.go` defines the first source-control adapter
+  boundary and `LocalSourceControlAdapter`.
+- `cmd/controller/source_control_test.go` verifies local demo resolution,
+  unknown repository rejection, unsafe path rejection, and unversioned
+  repository fallback identity.
+- The adapter shells out to `git` only to resolve local Git roots. Non-Git roots
+  use `local-unversioned` and a SHA-256 of document bytes as `source_object_id`.
 
 ## 012f3-b Request Decode And Persisted-Mode Guard
 

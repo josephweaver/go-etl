@@ -1156,6 +1156,13 @@ workflow run, compiles initially ready work, and queues that work without using
 where the controller has filesystem access to the referenced repository or
 cache.
 
+The first 012f3 implementation atom adds `LocalSourceControlAdapter` in
+`cmd/controller`. It can resolve configured local repository identities such as
+`local:demo` to repository-relative source documents, rejects unsafe paths, uses
+Git commit/object IDs when the root is a Git repo, and falls back to a
+`local-unversioned` identity for plain directories. `/workflow` is not wired to
+this adapter yet.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
