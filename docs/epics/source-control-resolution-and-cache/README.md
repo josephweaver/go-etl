@@ -230,6 +230,259 @@ fail before reaching GitHub, `git`, or filesystem copy code.
 - Cache directory naming and collision policy.
 - Retention cleanup.
 
+## Slice 003 Candidate: Local Source-Control Cache Layout
+
+### Objective
+
+Define the on-disk contract for the controller source-control cache.
+
+The cache must make this true:
+
+```text
+source adapter resolves a source reference into a local pinned source document
+```
+
+That means provider-specific source-control work happens before workflow
+admission reads files. `/workflow` should receive local bytes plus source
+identity facts, not know whether those bytes came from GitHub, a local checkout,
+or an already-populated cache entry.
+
+### Cache Root
+
+The cache root comes from controller configuration:
+
+```text
+controller_config.controller_git_cache_path
+```
+
+Existing defaults resolve this under the controller root:
+
+```text
+${controller_root_dir}/git_cache
+```
+
+The cache root must be a controller-owned directory. It may be outside the
+`go-etl` repo. It must not contain credentials in any path segment.
+
+### Directory Layout
+
+Use a deterministic provider/repository/commit layout:
+
+```text
+<cache-root>/
+  repositories/
+    <provider>/
+      <repository-key>/
+        objects/
+        commits/
+          <commit-sha>/
+            files/
+              <repo-relative-path>
+            manifest.json
+            pins/
+              <pin-id>.json
+        locks/
+        tmp/
+```
+
+Example:
+
+```text
+git_cache/
+  repositories/
+    github/
+      github.com_openai_go-etl-demo-project/
+        objects/
+        commits/
+          3f2b0a7.../
+            files/
+              project.json
+              workflows/demo-workflow.json
+            manifest.json
+            pins/
+              run-018f....json
+        locks/
+        tmp/
+```
+
+This is a file-materialized pinned-document cache. A later implementation may
+also store a bare/partial Git object database under `objects/`, but workflow
+admission reads the pinned files under `commits/<commit-sha>/files/`.
+
+### Repository Key
+
+`<repository-key>` is a sanitized stable repository identity. It must:
+
+- be deterministic for the provider repository identity;
+- contain no credentials, tokens, query strings, or user-specific auth data;
+- use only safe filename characters, recommended:
+
+```text
+[a-zA-Z0-9._-]
+```
+
+- avoid case collisions by normalizing provider-owned case rules where possible;
+- include enough provider namespace to avoid ambiguity.
+
+Recommended GitHub key:
+
+```text
+github.com_<owner>_<repo>
+```
+
+If the provider exposes a numeric immutable repository ID, store that in
+metadata but do not require it in the path until the GitHub adapter is designed.
+
+### Commit Directory
+
+`commits/<commit-sha>/` is immutable after publish.
+
+Rules:
+
+- `<commit-sha>` must be a full immutable commit ID, not a branch or tag.
+- Files are written under `tmp/` first, then atomically published into
+  `commits/<commit-sha>/`.
+- Once published, file contents under that commit directory must not be edited
+  in place.
+- If verification finds a mismatch, mark the commit cache entry corrupt and
+  rebuild it through a new temp directory rather than mutating files in place.
+
+### Pinned Files
+
+Pinned source files live under:
+
+```text
+commits/<commit-sha>/files/<repo-relative-path>
+```
+
+Path rules:
+
+- source paths are repository-relative and slash-separated;
+- empty paths, absolute paths, Windows drive-qualified paths, and paths with
+  `..` segments are rejected before filesystem access;
+- cleaned paths must stay under the `files/` root;
+- the original repository-relative path is preserved in metadata.
+
+Only requested files must be materialized. The cache does not need to checkout
+the entire repository for a workflow admission.
+
+### Manifest
+
+Each published commit directory has:
+
+```text
+manifest.json
+```
+
+Initial shape:
+
+```json
+{
+  "schema": "goet/source-cache/v1",
+  "provider": "github",
+  "repository_identity": "github.com/owner/repo",
+  "repository_key": "github.com_owner_repo",
+  "requested_refs": ["main"],
+  "commit_sha": "3f2b0a7...",
+  "created_at": "2026-07-04T12:00:00Z",
+  "files": [
+    {
+      "path": "project.json",
+      "object_id": "...",
+      "size_bytes": 144,
+      "sha256": "..."
+    }
+  ]
+}
+```
+
+`sha256` here is the raw file byte SHA-256 for cache integrity. It is not the
+GOET canonical JSON SHA-256 stored with workflow/project provenance.
+
+### Pins
+
+Pins prevent cleanup from removing files needed by active or recoverable runs.
+
+Pin files live under:
+
+```text
+commits/<commit-sha>/pins/<pin-id>.json
+```
+
+Initial pin shape:
+
+```json
+{
+  "schema": "goet/source-cache-pin/v1",
+  "pin_id": "run-018f...",
+  "reason": "workflow_run",
+  "created_at": "2026-07-04T12:00:00Z",
+  "workflow_run_id": "run-018f...",
+  "files": [
+    "project.json",
+    "workflows/demo-workflow.json"
+  ]
+}
+```
+
+The workflow execution database remains the durable authority for admitted run
+source facts. Pin files are operational cache state reconstructed from the
+database after restart if missing.
+
+### Locks And Temp
+
+Per-repository operations use files under:
+
+```text
+locks/
+tmp/
+```
+
+Rules:
+
+- one repository-level lock prevents concurrent fetch/materialization from
+  corrupting the same repository cache;
+- temp directories include a random suffix and are safe to delete after crash;
+- publish uses atomic rename where the filesystem supports it;
+- cleanup may remove stale temp directories that are not locked.
+
+### Local Adapter Relationship
+
+The current `local` adapter can be treated as a pre-populated cache source:
+
+```text
+local:demo -> ../go-etl-demo-project
+```
+
+That path is useful for local-only execution and tests, but it is not the
+primary cache layout. The primary GitHub adapter should materialize pinned files
+into the cache layout above, then return the same resolved-document shape the
+local adapter returns today.
+
+### Acceptance Criteria
+
+- The cache root, repository key, commit directory, files directory, manifest,
+  pins, locks, and temp directories are specified.
+- The layout records immutable commit IDs, not mutable refs, as execution
+  lookup keys.
+- The cache stores raw file-byte hashes separately from GOET canonical JSON
+  hashes.
+- Path safety rules prevent source files from escaping `files/`.
+- Pin files are explicitly operational cache state, reconstructable from the
+  workflow execution database.
+- The layout supports reading pinned project/workflow files without remote
+  source control when the cache entry is present and verified.
+
+### Out Of Scope
+
+- Implementing the directories in code.
+- GitHub API calls.
+- Fetching/cloning strategy.
+- Bare Git object database design.
+- Retention cleanup implementation.
+- Schema migration for source-cache pins.
+- Worker artifact packaging.
+
 ## Open Questions
 
 - What exact format should `RepositoryRef.Identity` use for GitHub stable

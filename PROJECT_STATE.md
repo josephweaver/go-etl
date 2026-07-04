@@ -394,6 +394,18 @@ materialization have been split into the separate
 the database-owned source locator fields but does not own the source-control
 implementation.
 
+The source-control epic now defines the first local cache directory contract.
+The intended cache shape is provider/repository/commit based:
+
+```text
+<cache-root>/repositories/<provider>/<repository-key>/commits/<commit-sha>/files/<repo-relative-path>
+```
+
+Each commit directory has a `manifest.json` for raw file-byte integrity and a
+`pins/` directory for operational cache pins that can be reconstructed from
+workflow execution database records. The cache uses immutable commit IDs for
+execution lookup; mutable refs are only admission inputs.
+
 Controller cutover has started by adding a workflow-execution store handle to
 `Controller` and opening that store as the configured main database during live
 startup. The older attempt ledger remains in code for legacy skip/reuse helpers
