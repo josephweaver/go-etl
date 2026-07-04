@@ -42,7 +42,7 @@ Read these files first:
   "workflow": {
     "repository": "local:demo",
     "ref": "main",
-    "path": "demo-workflow.json"
+    "path": "workflows/demo-workflow.json"
   },
   "variables": []
 }
@@ -130,7 +130,7 @@ Initial shape:
     "repository_identity": "...",
     "requested_ref": "main",
     "resolved_commit": "...",
-    "path": "demo-workflow.json",
+    "path": "workflows/demo-workflow.json",
     "source_object_id": "...",
     "workflow_sha256": "..."
   },

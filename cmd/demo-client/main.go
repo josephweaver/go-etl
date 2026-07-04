@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"goetl/internal/client"
 	"goetl/internal/model"
@@ -49,7 +50,7 @@ func demoWorkflowRunPath(args []string) string {
 		return args[1]
 	}
 
-	return "demo-workflow-run.json"
+	return filepath.Join("..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
 }
 
 func demoResolver() (variable.Resolver, error) {

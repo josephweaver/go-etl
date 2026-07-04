@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-06-26
+Last updated: 2026-07-04
 
 ## Application Target
 
@@ -21,6 +21,12 @@ The exact image-processing method is still experimental. The important product d
 The finished system should expose a reusable Python package interface, tentatively named `goetl`, while keeping the controller and worker runtime in Go.
 
 Customer-facing workflows should live outside the reusable ETL package as pipeline/config files. The Python package should consume those files and submit work to the Go controller.
+
+The local workspace now models that separation with a sibling
+`go-etl-demo-project` repository for customer-facing project metadata, workflow
+JSON, submission references, and demo input artifacts. The reusable `go-etl`
+repository should treat those files as external source-controlled inputs rather
+than internal runtime implementation files.
 
 Example target API:
 
@@ -54,6 +60,10 @@ The controller owns broader workflow state. It decides what work exists, which w
 ## Development Governance Target
 
 The project should continue using explicit HCI/epistemic-control audits for AI-assisted development. The audit target is durable ownership, not immediate recall.
+
+Shared epistemic-control process documents and logs should live outside the
+runtime repo in the sibling `epistemic-control` folder, while `go-etl/AGENTS.md`
+keeps only the repo-local operating contract needed by Codex inside this codebase.
 
 Audits should score:
 

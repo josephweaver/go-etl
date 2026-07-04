@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 ## Current Focus
 
@@ -23,9 +23,20 @@ The target product still has a reusable Python interface that submits external p
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
+Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
+repository. That repo owns source-control-style customer files such as
+`project.json`, workflow documents under `workflows/`, demo run submissions under
+`submissions/`, and demo input data under `data/`. The reusable Go ETL repo keeps
+runtime code, tests, scripts, and low-level worker fixtures such as
+`demo-item.json`.
+
+Epistemic-control process artifacts now live in sibling `../epistemic-control`.
+That folder owns the HCI/control-level notes, agent review instructions, and
+session logs under `epi_ctl/`.
+
 ## Development Governance
 
-`EPI_CTL.md` now uses a three-category epistemic-control model:
+`../epistemic-control/EPI_CTL.md` now uses a three-category epistemic-control model:
 
 ```text
 Strategic Understanding (SU) /20
@@ -37,13 +48,13 @@ Total EC /35
 
 The protocol distinguishes architectural and causal understanding from practical codebase control and from short- or medium-term recall of implementation details. Low implementation recall is explicitly acceptable when Strategic Understanding and Operational Control remain strong.
 
-`EPI_CTL.md` also now defines longitudinal retention reviews. Same-day audits are `T`; follow-up retention-chain reviews are `T+3`, `T+14`, and `T+180`, named with the original session date, such as:
+`../epistemic-control/EPI_CTL.md` also now defines longitudinal retention reviews. Same-day audits are `T`; follow-up retention-chain reviews are `T+3`, `T+14`, and `T+180`, named with the original session date, such as:
 
 ```text
-epi_ctl/20260624.md
-epi_ctl/20260624_T3.md
-epi_ctl/20260624_T14.md
-epi_ctl/20260624_T180.md
+../epistemic-control/epi_ctl/20260624.md
+../epistemic-control/epi_ctl/20260624_T3.md
+../epistemic-control/epi_ctl/20260624_T14.md
+../epistemic-control/epi_ctl/20260624_T180.md
 ```
 
 Retention reviews are first-class audits and are treated as the primary evidence for durable ownership. The protocol also records Codex usage indicators and ActivityWatch distraction/context-switch metrics when available.
@@ -52,11 +63,7 @@ Retention reviews are first-class audits and are treated as the primary evidence
 
 ```text
 go.mod
-demo-workflow.json
-demo-fake-hpcc-workflow.json
-demo-summary-workflow.json
-demo-summary-input.txt
-demo-summary-input-2.txt
+demo-item.json
 .gitignore
 docs/
   fake-hpcc.md

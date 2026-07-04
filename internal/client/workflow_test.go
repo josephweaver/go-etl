@@ -110,7 +110,7 @@ func TestWorkflowClientSubmitWorkflowRun(t *testing.T) {
 		Workflow: SourceDocumentReference{
 			Repository: "local:demo",
 			Ref:        "main",
-			Path:       "demo-workflow.json",
+			Path:       "workflows/demo-workflow.json",
 		},
 		Variables: []variable.Variable{
 			{
@@ -123,8 +123,8 @@ func TestWorkflowClientSubmitWorkflowRun(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if received.Workflow.Path != "demo-workflow.json" {
-		t.Fatalf("workflow path = %q, want demo-workflow.json", received.Workflow.Path)
+	if received.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", received.Workflow.Path)
 	}
 	if received.Project.Repository != "local:demo" {
 		t.Fatalf("project repository = %q, want local:demo", received.Project.Repository)
@@ -135,7 +135,7 @@ func TestWorkflowClientSubmitWorkflowRun(t *testing.T) {
 }
 
 func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
-	path := filepath.Join("..", "..", "demo-workflow.json")
+	path := demoProjectPath("workflows", "demo-workflow.json")
 
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
@@ -156,7 +156,7 @@ func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
 }
 
 func TestWorkflowClientLoadsWorkflowRunSubmissionFile(t *testing.T) {
-	path := filepath.Join("..", "..", "demo-workflow-run.json")
+	path := demoProjectPath("submissions", "demo-workflow-run.json")
 
 	submission, err := LoadWorkflowRunSubmissionFile(path)
 	if err != nil {
@@ -169,13 +169,13 @@ func TestWorkflowClientLoadsWorkflowRunSubmissionFile(t *testing.T) {
 	if submission.Project.Path != "project.json" {
 		t.Fatalf("project path = %q, want project.json", submission.Project.Path)
 	}
-	if submission.Workflow.Path != "demo-workflow.json" {
-		t.Fatalf("workflow path = %q, want demo-workflow.json", submission.Workflow.Path)
+	if submission.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", submission.Workflow.Path)
 	}
 }
 
 func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
-	path := filepath.Join("..", "..", "demo-summary-workflow.json")
+	path := demoProjectPath("workflows", "demo-summary-workflow.json")
 
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
@@ -223,13 +223,13 @@ func TestWorkflowClientSubmitWorkflowRunFile(t *testing.T) {
 	defer server.Close()
 
 	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
-	err := client.SubmitWorkflowRunFile(filepath.Join("..", "..", "demo-workflow-run.json"))
+	err := client.SubmitWorkflowRunFile(demoProjectPath("submissions", "demo-workflow-run.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if received.Workflow.Path != "demo-workflow.json" {
-		t.Fatalf("workflow path = %q, want demo-workflow.json", received.Workflow.Path)
+	if received.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", received.Workflow.Path)
 	}
 }
 
@@ -251,7 +251,7 @@ func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
 	defer server.Close()
 
 	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
-	err := client.SubmitWorkflowFile(filepath.Join("..", "..", "demo-workflow.json"))
+	err := client.SubmitWorkflowFile(demoProjectPath("workflows", "demo-workflow.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,6 +259,11 @@ func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
 	if received.Workflow.ID != "cdl-demo" {
 		t.Fatalf("unexpected workflow id: %s", received.Workflow.ID)
 	}
+}
+
+func demoProjectPath(parts ...string) string {
+	allParts := append([]string{"..", "..", "..", "go-etl-demo-project"}, parts...)
+	return filepath.Join(allParts...)
 }
 
 func TestWorkflowClientRejectsMissingControllerURL(t *testing.T) {

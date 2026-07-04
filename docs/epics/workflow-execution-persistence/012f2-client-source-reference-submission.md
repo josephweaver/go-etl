@@ -203,7 +203,7 @@ and let the controller/source-reference slice define how it is resolved.
 - `LoadWorkflowRunSubmissionFile` loads a source-reference submission file.
 - The old inline workflow methods remain as legacy helpers and are marked in
   comments.
-- `cmd/demo-client` now defaults to `demo-workflow-run.json` and calls
+- `cmd/demo-client` now defaults to `../go-etl-demo-project/submissions/demo-workflow-run.json` and calls
   `SubmitWorkflowRunFile`.
 - `demo-workflow-run.json` uses opaque `local:demo` repository references for
   the project and workflow documents.

@@ -23,7 +23,7 @@ controller_pid="$!"
 
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   if curl -fsS http://localhost:8080/status >/dev/null 2>&1; then
-    go run ./cmd/demo-client demo-fake-hpcc-workflow.json
+    go run ./cmd/demo-client ../go-etl-demo-project/submissions/demo-fake-hpcc-workflow-run.json
     exit 0
   fi
   sleep 0.5
