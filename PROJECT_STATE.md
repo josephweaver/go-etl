@@ -1179,6 +1179,18 @@ persistence; workflow run creation, stage planning, work insertion, and queueing
 remain the next atoms. Current source-document rows use stable source-derived
 `created_at` tokens because the existing upsert methods compare the whole row.
 
+The fourth 012f3 atom now decodes the resolved workflow source as the existing
+`WorkflowSubmission` JSON shape, builds the resolver from workflow variables,
+source-submission variables, and run-submission variables, compiles the
+workflow, creates an opaque workflow run, stores bounded source-reference
+submission context JSON, inserts ready stage rows, inserts run-scoped persisted
+work item rows, and enqueues them. Persisted work item IDs use
+`runID:generatedID` so repeated workflow submissions do not collide on the
+global `work_items.work_item_id` primary key, while the worker payload still
+contains the original `model.WorkItem` JSON. Store-configured `/workflow` can
+now create queued persisted work that the existing persisted `/work/next` path
+can claim.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.

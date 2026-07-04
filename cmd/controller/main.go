@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -1206,7 +1207,59 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return fmt.Errorf("upsert workflow: %w", err)
 	}
 
-	return errSourceReferenceAdmissionNotImplemented
+	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowDocument.Data)
+	if err != nil {
+		return fmt.Errorf("decode workflow source: %w", err)
+	}
+	workflowScope, err := variable.NewScope(workflowSubmission.Workflow.Variables...)
+	if err != nil {
+		return err
+	}
+	sourceSubmissionScope, err := variable.NewScope(workflowSubmission.Variables...)
+	if err != nil {
+		return err
+	}
+	runSubmissionScope, err := variable.NewScope(submission.Variables...)
+	if err != nil {
+		return err
+	}
+	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope), variable.ResolverConfig{})
+	codeVersion, err := controllerCodeVersion(resolver)
+	if err != nil {
+		return err
+	}
+	compileResult, err := workflow.CompileWorkflowResult(resolver, workflowSubmission.Workflow)
+	if err != nil {
+		return err
+	}
+
+	runRecord, err := workflowRunRecordFromSource(projectRecord.ID, workflowRecord.ID, projectDocument, projectHash, workflowDocument, workflowHash, submission.Variables, submittedAt)
+	if err != nil {
+		return err
+	}
+	if err := c.workflowStore.CreateWorkflowRun(ctx, runRecord); err != nil {
+		return fmt.Errorf("create workflow run: %w", err)
+	}
+	stages := stageRecordsFromWorkflow(runRecord.ID, workflowDocument.Path, workflowSubmission.Workflow, submittedAt)
+	if len(stages) != 0 {
+		if err := c.workflowStore.InsertStagePlan(ctx, runRecord.ID, stages); err != nil {
+			return fmt.Errorf("insert stage plan: %w", err)
+		}
+	}
+	items, queued, err := persistenceRecordsFromCompiledWorkflow(runRecord.ID, workflowSubmission.Workflow, compileResult, codeVersion, submittedAt)
+	if err != nil {
+		return err
+	}
+	if len(items) != 0 {
+		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
+			return fmt.Errorf("insert work items: %w", err)
+		}
+		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
+			return fmt.Errorf("enqueue work items: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func canonicalSourceDocument(data []byte) ([]byte, string, error) {
@@ -1221,6 +1274,18 @@ func canonicalSourceDocument(data []byte) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("source document contains multiple JSON values")
 	}
 	return fp.CanonicalJSONSHA256(value)
+}
+
+func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
+	var submission WorkflowSubmission
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&submission); err != nil {
+		return WorkflowSubmission{}, err
+	}
+	if submission.Workflow.ID == "" {
+		return WorkflowSubmission{}, fmt.Errorf("workflow id is required")
+	}
+	return submission, nil
 }
 
 func projectRecordFromSource(source ResolvedSourceDocument, configSHA256 string, createdAt time.Time) persistence.ProjectRecord {
@@ -1259,6 +1324,101 @@ func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
 		return localUnversionedCommit
 	}
 	return "git:" + source.ResolvedCommit
+}
+
+func workflowRunRecordFromSource(projectID string, workflowID string, projectSource ResolvedSourceDocument, projectSHA256 string, workflowSource ResolvedSourceDocument, workflowSHA256 string, variables []variable.Variable, createdAt time.Time) (persistence.WorkflowRunRecord, error) {
+	submissionContext := map[string]any{
+		"project": map[string]any{
+			"repository_identity": projectSource.RepositoryIdentity,
+			"requested_ref":       projectSource.RequestedRef,
+			"resolved_commit":     projectSource.ResolvedCommit,
+			"path":                projectSource.Path,
+			"source_object_id":    projectSource.SourceObjectID,
+			"config_sha256":       projectSHA256,
+		},
+		"workflow": map[string]any{
+			"repository_identity": workflowSource.RepositoryIdentity,
+			"requested_ref":       workflowSource.RequestedRef,
+			"resolved_commit":     workflowSource.ResolvedCommit,
+			"path":                workflowSource.Path,
+			"source_object_id":    workflowSource.SourceObjectID,
+			"workflow_sha256":     workflowSHA256,
+		},
+		"variables": variables,
+	}
+	contextJSON, err := json.Marshal(submissionContext)
+	if err != nil {
+		return persistence.WorkflowRunRecord{}, fmt.Errorf("encode submission context: %w", err)
+	}
+	return persistence.WorkflowRunRecord{
+		ID:                    "run-" + randomHex(16),
+		ProjectID:             projectID,
+		WorkflowID:            workflowID,
+		SubmissionContextJSON: string(contextJSON),
+		CreatedAt:             createdAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func stageRecordsFromWorkflow(runID string, workflowPath string, workflowDefinition workflow.Workflow, createdAt time.Time) []persistence.WorkflowStageRecord {
+	stages := make([]persistence.WorkflowStageRecord, 0, len(workflowDefinition.Steps))
+	timestamp := createdAt.UTC().Format(time.RFC3339)
+	for index, step := range workflowDefinition.Steps {
+		stages = append(stages, persistence.WorkflowStageRecord{
+			RunID:                runID,
+			StageIndex:           index,
+			StepID:               step.ID,
+			StageSourceReference: workflowPath + "#" + step.ID,
+			State:                "ready",
+			CreatedAt:            timestamp,
+			ReadyAt:              timestamp,
+		})
+	}
+	return stages
+}
+
+func persistenceRecordsFromCompiledWorkflow(runID string, workflowDefinition workflow.Workflow, compileResult workflow.CompileResult, codeVersion string, submittedAt time.Time) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, error) {
+	items := workItemsWithRuntimeMetadata(compileResult.WorkflowID, compileResult.WorkItems, codeVersion)
+	stageIndexes := make(map[string]int, len(workflowDefinition.Steps))
+	nextWorkItemIndex := make(map[int]int, len(workflowDefinition.Steps))
+	for index, step := range workflowDefinition.Steps {
+		stageIndexes[step.ID] = index
+	}
+
+	records := make([]persistence.WorkItemRecord, 0, len(items))
+	queued := make([]persistence.QueuedWorkRecord, 0, len(items))
+	timestamp := submittedAt.UTC().Format(time.RFC3339)
+	for index, item := range items {
+		stageIndex, ok := stageIndexes[compileResult.WorkItems[index].StepID]
+		if !ok {
+			return nil, nil, fmt.Errorf("compiled work item references unknown step: %s", compileResult.WorkItems[index].StepID)
+		}
+		workItemIndex := nextWorkItemIndex[stageIndex]
+		nextWorkItemIndex[stageIndex]++
+
+		payload, err := json.Marshal(item)
+		if err != nil {
+			return nil, nil, fmt.Errorf("encode workflow work item: %w", err)
+		}
+		_, resolvedInputsSHA256, err := canonicalSourceDocument(payload)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hash workflow work item: %w", err)
+		}
+		record := persistence.WorkItemRecord{
+			ID:                   runID + ":" + item.ID,
+			RunID:                runID,
+			StageIndex:           stageIndex,
+			WorkItemIndex:        workItemIndex,
+			WorkerPayloadJSON:    string(payload),
+			ResolvedInputsSHA256: resolvedInputsSHA256,
+			CreatedAt:            timestamp,
+		}
+		records = append(records, record)
+		queued = append(queued, persistence.QueuedWorkRecord{
+			WorkItemRecord: record,
+			QueuedAt:       timestamp,
+		})
+	}
+	return records, queued, nil
 }
 
 func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {

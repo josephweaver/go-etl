@@ -70,7 +70,7 @@ the existing epic branch:
 012f3-a Local source document adapter [implemented]
 012f3-b Source-reference request decode and persisted-mode guard tests [implemented]
 012f3-c Source document canonicalization and provenance records [implemented]
-012f3-d Compile workflow source into persisted stage/work/queue rows
+012f3-d Compile workflow source into persisted stage/work/queue rows [implemented]
 012f3-e Persisted scaling demand after workflow admission
 012f3-f End-to-end demo submission test
 ```
@@ -370,6 +370,21 @@ Acceptance criteria for 012f3-d:
   existing compiler.
 - Tests can inspect store state after `/workflow` and see queued rows.
 
+Implementation note:
+
+- Store-configured `/workflow` now decodes the resolved workflow source as the
+  existing inline `WorkflowSubmission` document shape.
+- It creates an opaque `run-<hex>` workflow run ID, stores source-reference
+  submission context JSON, inserts ready stage rows, inserts compiled work-item
+  rows, and enqueues them.
+- Persisted `work_item_id` values are run-scoped as `runID:generatedID` because
+  generated workflow item IDs can repeat across workflow runs. The worker
+  payload still contains the original `model.WorkItem` JSON shape.
+- Controller tests verify source-reference `/workflow` persists provenance,
+  creates an active run, persists a stage, queues two demo work items, leaves
+  in-memory queue fields unchanged, and can claim one queued item through the
+  existing persisted `/work/next` path.
+
 ## 012f3-e Persisted Scaling Demand
 
 After persisted admission succeeds, derive worker start demand from persisted
@@ -503,7 +518,8 @@ Remaining ambiguity to settle during implementation review:
 - **Project semantic model:** project JSON is provenance-only in 012f3. It does
   not yet contribute variables.
 - **Run ID helper:** UUIDv7 is preferred, but the repo may need a tiny helper or
-  dependency decision before implementing that precisely.
+  dependency decision before implementing that precisely. The current 012f3-d
+  implementation uses `run-<random hex>` as the temporary opaque run ID.
 - **Atomicity:** ideal admission should persist project, workflow, run, stages,
   work items, and queue rows in one transaction. The current store methods are
   separate. If adding a transactional store method is too large for 012f3, note

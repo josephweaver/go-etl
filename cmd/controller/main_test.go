@@ -2078,7 +2078,7 @@ func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t 
 	}
 }
 
-func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConfigured(t *testing.T) {
+func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
@@ -2106,8 +2106,8 @@ func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConf
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNotImplemented {
-		t.Fatalf("status code = %d, want 501", response.Code)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204", response.Code)
 	}
 	if len(controller.pending) != 1 {
 		t.Fatalf("pending count = %d, want unchanged 1", len(controller.pending))
@@ -2165,6 +2165,62 @@ func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConf
 	}
 	if gotWorkflow.WorkflowSHA256 != workflowHash {
 		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	if runs[0].ProjectID != project.ID {
+		t.Fatalf("run project id = %q, want %q", runs[0].ProjectID, project.ID)
+	}
+	if runs[0].WorkflowID != workflowRecord.ID {
+		t.Fatalf("run workflow id = %q, want %q", runs[0].WorkflowID, workflowRecord.ID)
+	}
+
+	stage, found, err := store.GetWorkflowStage(context.Background(), runs[0].ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStage() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 was not persisted")
+	}
+	if stage.StepID != "write-demo" {
+		t.Fatalf("stage step id = %q, want write-demo", stage.StepID)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	if queued[0].RunID != runs[0].ID {
+		t.Fatalf("queued run id = %q, want %q", queued[0].RunID, runs[0].ID)
+	}
+	if !strings.HasPrefix(queued[0].ID, runs[0].ID+":") {
+		t.Fatalf("queued work id = %q, want run-scoped id", queued[0].ID)
+	}
+
+	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResponse, nextRequest)
+	if nextResponse.Code != http.StatusOK {
+		t.Fatalf("next work status = %d, want 200", nextResponse.Code)
+	}
+	var claimed model.WorkItem
+	if err := json.NewDecoder(nextResponse.Body).Decode(&claimed); err != nil {
+		t.Fatalf("decode claimed work: %v", err)
+	}
+	if claimed.ID == "" {
+		t.Fatal("claimed work item id is empty")
+	}
+	if claimed.AttemptID == "" {
+		t.Fatal("claimed attempt id is empty")
 	}
 }
 
