@@ -69,7 +69,7 @@ the existing epic branch:
 ```text
 012f3-a Local source document adapter [implemented]
 012f3-b Source-reference request decode and persisted-mode guard tests [implemented]
-012f3-c Source document canonicalization and provenance records
+012f3-c Source document canonicalization and provenance records [implemented]
 012f3-d Compile workflow source into persisted stage/work/queue rows
 012f3-e Persisted scaling demand after workflow admission
 012f3-f End-to-end demo submission test
@@ -268,6 +268,19 @@ Acceptance criteria for 012f3-c:
   source object ID, and canonical hashes.
 - Submission context JSON records source identity, canonical hashes, and
   submitted variables, but not full source documents.
+
+Implementation note:
+
+- Store-configured `/workflow` now resolves project and workflow source
+  documents through `Controller.sourceControl`.
+- The controller decodes source JSON with `UseNumber`, canonicalizes through
+  `internal/fingerprint`, and upserts project/workflow provenance rows before
+  returning the not-yet-implemented sentinel for run/work admission.
+- Project/workflow IDs are deterministic source-derived IDs.
+- Because current `UpsertProject`/`UpsertWorkflow` compares the entire row,
+  including `created_at`, source-document rows use a stable source-derived
+  `created_at` token. A later store-method refinement should preserve a true
+  first-seen timestamp without making idempotent source upsert conflict.
 
 ## Submission Context
 

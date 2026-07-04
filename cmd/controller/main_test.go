@@ -2083,6 +2083,9 @@ func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConf
 	defer store.Close()
 	controller := newController([]model.WorkItem{testWorkItem("memory-pending")})
 	controller.workflowStore = store
+	controller.sourceControl = NewLocalSourceControlAdapter(map[string]string{
+		"local:demo": filepath.Join("..", "..", "..", "go-etl-demo-project"),
+	})
 	controller.assigned["memory-assigned"] = testWorkItem("memory-assigned")
 	controller.failed["memory-failed"] = model.WorkFailure{ID: "memory-failed", Error: "failed"}
 
@@ -2114,6 +2117,54 @@ func TestSubmitWorkflowHandlerDecodesSourceReferencePayloadWhenWorkflowStoreConf
 	}
 	if len(controller.failed) != 1 {
 		t.Fatalf("failed count = %d, want unchanged 1", len(controller.failed))
+	}
+
+	projectSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
+		Repository: "local:demo",
+		Ref:        "main",
+		Path:       "project.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, projectHash, err := canonicalSourceDocument(projectSource.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := projectRecordFromSource(projectSource, projectHash, time.Now().UTC())
+	gotProject, found, err := store.GetProject(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !found {
+		t.Fatal("project was not persisted")
+	}
+	if gotProject.ConfigSHA256 != projectHash {
+		t.Fatalf("project hash = %q, want %q", gotProject.ConfigSHA256, projectHash)
+	}
+
+	workflowSource, err := controller.sourceControl.Resolve(context.Background(), SourceDocumentReference{
+		Repository: "local:demo",
+		Ref:        "main",
+		Path:       "workflows/demo-workflow.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowSource.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowRecord := workflowRecordFromSource(project.ID, workflowSource, workflowHash, time.Now().UTC())
+	gotWorkflow, found, err := store.GetWorkflow(context.Background(), workflowRecord.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflow() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow was not persisted")
+	}
+	if gotWorkflow.WorkflowSHA256 != workflowHash {
+		t.Fatalf("workflow hash = %q, want %q", gotWorkflow.WorkflowSHA256, workflowHash)
 	}
 }
 

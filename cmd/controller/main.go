@@ -43,6 +43,7 @@ type Controller struct {
 	failed            map[string]model.WorkFailure
 	ledger            *sql.DB
 	workflowStore     *persistence.Store
+	sourceControl     SourceControlAdapter
 	shutdown          func(context.Context) error
 	env               *ExecutionEnvironment
 	scaler            WorkerScaleState
@@ -1175,7 +1176,89 @@ func (r SourceDocumentReference) validate(name string) error {
 }
 
 func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) error {
+	if c.sourceControl == nil {
+		return fmt.Errorf("source control adapter is required")
+	}
+	projectDocument, err := c.sourceControl.Resolve(ctx, submission.Project)
+	if err != nil {
+		return fmt.Errorf("resolve project source: %w", err)
+	}
+	workflowDocument, err := c.sourceControl.Resolve(ctx, submission.Workflow)
+	if err != nil {
+		return fmt.Errorf("resolve workflow source: %w", err)
+	}
+
+	_, projectHash, err := canonicalSourceDocument(projectDocument.Data)
+	if err != nil {
+		return fmt.Errorf("canonicalize project source: %w", err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowDocument.Data)
+	if err != nil {
+		return fmt.Errorf("canonicalize workflow source: %w", err)
+	}
+
+	projectRecord := projectRecordFromSource(projectDocument, projectHash, submittedAt)
+	if err := c.workflowStore.UpsertProject(ctx, projectRecord); err != nil {
+		return fmt.Errorf("upsert project: %w", err)
+	}
+	workflowRecord := workflowRecordFromSource(projectRecord.ID, workflowDocument, workflowHash, submittedAt)
+	if err := c.workflowStore.UpsertWorkflow(ctx, workflowRecord); err != nil {
+		return fmt.Errorf("upsert workflow: %w", err)
+	}
+
 	return errSourceReferenceAdmissionNotImplemented
+}
+
+func canonicalSourceDocument(data []byte) ([]byte, string, error) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, "", fmt.Errorf("source document contains multiple JSON values")
+	}
+	return fp.CanonicalJSONSHA256(value)
+}
+
+func projectRecordFromSource(source ResolvedSourceDocument, configSHA256 string, createdAt time.Time) persistence.ProjectRecord {
+	return persistence.ProjectRecord{
+		ID:                 deterministicSourceID("project", source.RepositoryIdentity, source.ResolvedCommit, source.Path, configSHA256),
+		Name:               source.Path,
+		RepositoryIdentity: source.RepositoryIdentity,
+		SourceCommit:       source.ResolvedCommit,
+		ConfigPath:         source.Path,
+		SourceObjectID:     source.SourceObjectID,
+		ConfigSHA256:       configSHA256,
+		CreatedAt:          sourceRecordCreatedAt(source),
+	}
+}
+
+func workflowRecordFromSource(projectID string, source ResolvedSourceDocument, workflowSHA256 string, createdAt time.Time) persistence.WorkflowRecord {
+	return persistence.WorkflowRecord{
+		ID:                 deterministicSourceID("workflow", projectID, source.RepositoryIdentity, source.ResolvedCommit, source.Path, workflowSHA256),
+		ProjectID:          projectID,
+		Name:               source.Path,
+		RepositoryIdentity: source.RepositoryIdentity,
+		SourceCommit:       source.ResolvedCommit,
+		WorkflowPath:       source.Path,
+		SourceObjectID:     source.SourceObjectID,
+		WorkflowSHA256:     workflowSHA256,
+		CreatedAt:          sourceRecordCreatedAt(source),
+	}
+}
+
+func deterministicSourceID(kind string, parts ...string) string {
+	return kind + ":" + sha256HexString(strings.Join(parts, "\n"))
+}
+
+func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
+	if source.ResolvedCommit == localUnversionedCommit {
+		return localUnversionedCommit
+	}
+	return "git:" + source.ResolvedCommit
 }
 
 func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {

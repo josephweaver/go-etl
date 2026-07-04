@@ -1169,6 +1169,16 @@ repository, ref, and path fields. Valid source-reference submissions currently
 reach a not-yet-implemented admission helper; legacy inline workflow JSON is
 rejected in persisted mode without mutating `pending`, `assigned`, or `failed`.
 
+The third 012f3 atom wires provenance persistence into that helper. The
+controller resolves project and workflow source references through
+`Controller.sourceControl`, decodes and canonicalizes the JSON documents through
+`internal/fingerprint`, computes canonical SHA-256 values, and upserts
+`projects` and `workflows` rows with deterministic source-derived IDs. The
+helper still returns the not-yet-implemented sentinel after provenance
+persistence; workflow run creation, stage planning, work insertion, and queueing
+remain the next atoms. Current source-document rows use stable source-derived
+`created_at` tokens because the existing upsert methods compare the whole row.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
