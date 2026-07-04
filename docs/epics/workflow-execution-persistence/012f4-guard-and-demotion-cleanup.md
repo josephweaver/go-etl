@@ -128,6 +128,12 @@ Implementation note:
   `TestSubmitWorkflowHandlerStartsPlannedWorkerCount`,
   `TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig`, and
   `TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp`.
+- The two old skipped ledger-handler tests were retired instead of replaced.
+  `TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured`
+  now covers the active persisted terminal-attempt write path, and
+  `TestStatusHandlerReportsPersistedCountsWhenWorkflowStoreConfigured` covers
+  the active status authority. Handler-written ledger attempt-variable counts
+  are no longer part of controller behavior.
 
 ## 012f4-c Reconcile Epic And Slice Statuses
 

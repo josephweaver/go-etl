@@ -584,89 +584,6 @@ func TestCompleteWorkHandler(t *testing.T) {
 	}
 }
 
-func TestCompleteWorkHandlerRecordsAttemptWhenMetadataPresent(t *testing.T) {
-	t.Skip("legacy ledger-write handler path was removed with no-store queue state")
-	controller := newTestController(t)
-	db := testSQLiteMainDatabase(t)
-	defer db.Close()
-	controller.ledger = db
-	assignNextWork(t, controller)
-
-	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
-		"id":"test-001",
-		"attempt_id":"attempt-001",
-		"workflow_definition_id":"workflow-definition-001",
-		"workflow_fingerprint":"workflow-fingerprint",
-		"workflow_instance_id":"workflow-instance-001",
-		"step_definition_id":"step-definition-001",
-		"step_fingerprint":"step-fingerprint",
-		"step_instance_id":"step-instance-001",
-		"work_item_fingerprint":"work-item-fingerprint",
-		"input_fingerprint":"input-fingerprint",
-		"output_fingerprint":"output-fingerprint",
-		"code_version":"code-version",
-		"started_at":"2026-06-06T12:00:00Z",
-		"completed_at":"2026-06-06T12:01:00Z",
-		"parameters": {
-			"input_path": {
-				"type": "path",
-				"value": "demo-summary-input.txt"
-			}
-		}
-	}`))
-	response := httptest.NewRecorder()
-
-	controller.completeWorkHandler(response, request)
-
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-
-	var count int
-	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempts`).Scan(&count); err != nil {
-		t.Fatalf("query attempt count: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("attempt count = %d, want 1", count)
-	}
-
-	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM attempt_variables WHERE namespace = 'runtime'`).Scan(&count); err != nil {
-		t.Fatalf("query attempt variable count: %v", err)
-	}
-	if count != 14 {
-		t.Fatalf("runtime attempt variable count = %d, want 14", count)
-	}
-
-	var valueJSON string
-	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_definition_id'`).Scan(&valueJSON); err != nil {
-		t.Fatalf("query workflow definition variable: %v", err)
-	}
-	if valueJSON != `"workflow-definition-001"` {
-		t.Fatalf("workflow_definition_id value_json = %q", valueJSON)
-	}
-
-	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_fingerprint'`).Scan(&valueJSON); err != nil {
-		t.Fatalf("query workflow fingerprint variable: %v", err)
-	}
-	if valueJSON != `"workflow-fingerprint"` {
-		t.Fatalf("workflow_fingerprint value_json = %q", valueJSON)
-	}
-
-	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'runtime' AND name = 'workflow_instance_id'`).Scan(&valueJSON); err != nil {
-		t.Fatalf("query workflow instance variable: %v", err)
-	}
-	if valueJSON != `"workflow-instance-001"` {
-		t.Fatalf("workflow_instance_id value_json = %q", valueJSON)
-	}
-
-	if err := db.QueryRowContext(context.Background(), `SELECT value_json FROM attempt_variables WHERE namespace = 'work_item' AND name = 'input_path'`).Scan(&valueJSON); err != nil {
-		t.Fatalf("query input path variable: %v", err)
-	}
-	if valueJSON != `"demo-summary-input.txt"` {
-		t.Fatalf("input_path value_json = %q", valueJSON)
-	}
-}
-
 func TestPriorCompletedAttemptFindsMatchingFingerprint(t *testing.T) {
 	controller := newTestController(t)
 	db := testSQLiteMainDatabase(t)
@@ -1328,49 +1245,6 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 
 	if status.Pending != 1 || status.Assigned != 1 || status.Failed != 1 {
 		t.Fatalf("unexpected persisted status: %+v", status)
-	}
-}
-
-func TestStatusHandlerReportsLedgerCounts(t *testing.T) {
-	t.Skip("legacy ledger status counts are no longer produced by handler completion")
-	controller := newTestController(t)
-	db := testSQLiteMainDatabase(t)
-	defer db.Close()
-	controller.ledger = db
-	assignNextWork(t, controller)
-
-	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
-		"id":"test-001",
-		"attempt_id":"attempt-001",
-		"workflow_definition_id":"workflow-definition-001",
-		"workflow_fingerprint":"workflow-fingerprint",
-		"workflow_instance_id":"workflow-instance-001",
-		"step_definition_id":"step-definition-001",
-		"step_fingerprint":"step-fingerprint",
-		"step_instance_id":"step-instance-001",
-		"work_item_fingerprint":"work-item-fingerprint",
-		"input_fingerprint":"input-fingerprint",
-		"output_fingerprint":"output-fingerprint",
-		"code_version":"code-version",
-		"started_at":"2026-06-06T12:00:00Z",
-		"completed_at":"2026-06-06T12:01:00Z"
-	}`))
-	response := httptest.NewRecorder()
-
-	controller.completeWorkHandler(response, request)
-
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("unexpected completion status code: %d", response.Code)
-	}
-
-	status := getStatus(t, controller)
-
-	if status.Attempts != 1 {
-		t.Fatalf("attempts = %d, want 1", status.Attempts)
-	}
-
-	if status.AttemptVariables != 14 {
-		t.Fatalf("attempt_variables = %d, want 14", status.AttemptVariables)
 	}
 }
 

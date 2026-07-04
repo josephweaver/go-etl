@@ -1261,6 +1261,12 @@ workflow admission before asserting configured Slurm worker submission, planned
 worker count, submitted worker-scale configuration, and organic scale-up after a
 worker claim.
 
+The two skipped legacy ledger-handler tests were removed during 012f4 cleanup.
+The controller completion handler no longer writes old ledger attempt-variable
+rows, and status no longer reports ledger attempt or attempt-variable counts.
+Active coverage for those surfaces is now the persisted terminal-attempt test
+and the persisted status-count test.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The controller queue is now database-backed through the workflow-execution
