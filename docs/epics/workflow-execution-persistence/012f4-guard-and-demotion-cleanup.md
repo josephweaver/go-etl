@@ -1,11 +1,13 @@
-# 012f4 Guard And Demotion Cleanup
+# 012f4 Epic Closure And Boundary Cleanup
 
-Status: partially implemented
+Status: in progress
 
 ## Objective
 
-Make the controller's queue authority boundary explicit after source-reference
-workflow admission moved onto the workflow-execution store.
+Close the workflow-execution-persistence epic by reconciling the queue-authority
+documentation with the implemented source-reference controller path, replacing
+the remaining skipped legacy inline-workflow tests where practical, and naming
+the work that now belongs to follow-up epics.
 
 When `Controller.workflowStore` is configured, the database is the queue
 authority:
@@ -50,16 +52,10 @@ Read these files first:
 
 ## Design Decision
 
-Do not remove `pending`, `assigned`, and `failed` in this slice.
+The in-memory queue fields have already been removed. Closure work should not
+reintroduce a no-store queue fallback or add a replacement in-memory helper.
 
-Reason:
-
-- no-store behavior still exists and is useful for small controller tests;
-- many legacy tests construct controllers by seeding in-memory state;
-- removing the fields would force broad test rewrites and distract from the
-  persistence authority boundary.
-
-Instead, demote them explicitly:
+The current controller contract is:
 
 ```text
 workflowStore != nil = persisted queue authority
@@ -72,9 +68,9 @@ Implement as small atoms:
 
 ```text
 012f4-a Remove in-memory queue fields from Controller [implemented]
-012f4-b Replace skipped legacy inline workflow tests with source-reference coverage
-012f4-c Split status helpers by authority where still useful
-012f4-d Document remaining removal criteria
+012f4-b Replace skipped legacy inline workflow tests with source-reference coverage [in progress]
+012f4-c Reconcile epic and slice statuses [pending]
+012f4-d Document moved/deferred follow-up epics [pending]
 ```
 
 Each atom should leave `go test ./cmd/controller` passing. Run `go test ./...`
@@ -100,91 +96,68 @@ Implementation note:
   with explicit notes. They should be replaced by source-reference based worker
   startup and scaling coverage.
 
-## 012f4-b Persisted-Path Guard Tests
+## 012f4-b Replace Skipped Inline Workflow Tests
 
-Add or consolidate guard tests proving store-configured controller paths leave
-legacy memory queue state unchanged.
+Replace skipped tests that still describe legacy inline `/workflow` JSON with
+tests for the current source-reference contract.
 
-Coverage target:
+Prioritize the smallest tests first:
 
-```text
-POST /workflow
-POST /work
-GET  /work/next
-POST /work/complete
-POST /work/fail
-GET  /status
-```
-
-Guard setup:
-
-- create a controller with `workflowStore` configured;
-- seed legacy memory state with sentinel entries:
-
-```text
-pending:  memory-pending
-assigned: memory-assigned
-failed:   memory-failed
-```
-
-- perform the persisted endpoint operation;
-- assert sentinel state is unchanged;
-- assert persisted store state changed or was read as expected.
+- malformed or incomplete source-reference submissions;
+- configured execution-environment startup from persisted demand;
+- submitted worker-scale variables carried through source-reference admission;
+- duplicate generated work-item IDs through source-loaded workflow fixtures.
 
 Acceptance criteria:
 
-- Every persisted endpoint listed above has guard coverage.
-- The tests fail if a store-configured endpoint appends to `pending`, assigns in
-  `assigned`, deletes from `assigned`, or writes to `failed`.
-- Status guard proves `GET /status` reports persisted counts, not sentinel
-  memory counts.
+- Each replaced test exercises source-reference `/workflow` admission with a
+  configured `workflowStore`.
+- Tests no longer depend on `Controller.pending`, `Controller.assigned`, or
+  `Controller.failed`.
+- Tests that remain skipped include a specific reason and a named replacement
+  path.
 
-## 012f4-c Split Status Helpers By Authority
+Implementation note:
 
-Current status behavior already branches on `workflowStore`, but the authority
-boundary should be easy to read.
+- `TestSubmitWorkflowHandlerRejectsInvalidPayload` now covers an incomplete
+  source-reference payload instead of skipped legacy inline JSON.
 
-Preferred implementation:
+## 012f4-c Reconcile Epic And Slice Statuses
 
-```go
-func (c *Controller) status(ctx context.Context) (model.ControllerStatus, error) {
-    if c.workflowStore != nil {
-        return c.persistedStatus(ctx)
-    }
-    return c.legacyMemoryStatus(ctx)
-}
-```
-
-Names are candidates. The important part is that the top-level status path
-clearly delegates to persisted or legacy authority.
+Update the epic status trail so it matches the implementation evidence.
 
 Acceptance criteria:
 
-- Store-configured status code path does not inspect legacy memory queue state.
-- No-store status code path remains unchanged behaviorally.
-- Tests cover both branches.
+- The README no longer presents GitHub/cache implementation as part of this
+  epic's remaining scope.
+- Implemented slices are marked consistently.
+- Moved slices identify their destination epic.
+- Any remaining incomplete work is either a small closure item or a named
+  follow-up epic.
 
-## 012f4-d Remaining Removal Criteria
+## 012f4-d Document Moved And Deferred Follow-ups
 
-Document the conditions required to remove the in-memory fallback entirely.
+Record the boundary that prevents this epic from continuing to absorb adjacent
+work.
 
-Candidate criteria:
+Moved or deferred work:
 
-- all controller endpoint tests can use persisted fixtures or explicit no-store
-  helper tests;
-- old attempt ledger skip/reuse paths are either migrated or marked as separate
-  legacy behavior;
-- raw work admin/testing path has a persisted fixture helper;
-- no production startup path constructs a no-store controller.
+- source-control resolution, GitHub behavior, local cache layout, cache pins,
+  and materialization belong to `source-control-resolution-and-cache`;
+- heartbeat, caretaker recovery, abandoned-attempt requeue, and stale report
+  fencing belong to `attempt-liveness-recovery`;
+- sequential stage readiness, JIT downstream compilation, and typed step
+  outputs belong to `dependency-aware-workflows`;
+- terminal-row cleanup, archives, and retention policy belong to
+  `controller-retention-cleanup`;
+- broader plugin/source semantic fingerprints belong to the fingerprint and
+  workflow-compilation follow-up designs.
 
 Acceptance criteria:
 
-- `012f-remove-in-memory-queue-authority.md` records whether the end state is
-  "temporarily demoted" or "ready for removal."
-- Any remaining references to `pending`, `assigned`, and `failed` are either:
-  - inside no-store fallback helpers;
-  - inside tests that explicitly test no-store fallback; or
-  - inside guard tests that verify persisted paths ignore them.
+- The closure docs name the next recommended epic.
+- The persistence epic stops accepting new feature slices except narrowly scoped
+  fixes required to close the documented boundary.
 
 ## Out Of Scope
 
@@ -196,16 +169,9 @@ Acceptance criteria:
 - Retry/requeue policy.
 - Worker heartbeat or abandoned-attempt recovery.
 
-## Ambiguity To Review
+## Closure Recommendation
 
-The main ambiguity is whether to rename the fields now or only comment them.
-
-Recommendation:
-
-- If the diff stays localized, introduce `legacyMemoryQueue`.
-- If the rename fans out across too many tests, first add comments and guard
-  tests, then do the struct rename as a separate cleanup slice.
-
-The second ambiguity is whether `GET /status` should include legacy sentinel
-counts for diagnostics when a store is configured. Recommendation: no. Once
-`workflowStore` is configured, status should report persisted authority only.
+After the skipped legacy inline workflow tests are either replaced or explicitly
+retired, mark this epic ready for implementation review. The recommended next
+epic is `source-control-resolution-and-cache`, because current live admission
+still depends on the temporary local source adapter and hard-coded demo mapping.

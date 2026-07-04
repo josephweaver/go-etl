@@ -2923,9 +2923,21 @@ func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidPayload(t *testing.T) {
-	t.Skip("legacy inline workflow submission was removed; replace with source-reference coverage")
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
 	controller := newController()
-	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{"workflow": {}}`))
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"repository": "local:test",
+			"ref": "main"
+		},
+		"workflow": {
+			"repository": "local:test",
+			"ref": "main",
+			"path": "workflows/demo-workflow.json"
+		}
+	}`))
 	response := httptest.NewRecorder()
 
 	controller.submitWorkflowHandler(response, request)

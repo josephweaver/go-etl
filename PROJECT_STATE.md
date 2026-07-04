@@ -1245,6 +1245,15 @@ has been smoke-tested successfully with the new path:
 final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=0 attempt_variables=0
 ```
 
+Feature 012f4 is now being used as an epic-closure and boundary cleanup slice.
+The controller no longer has `pending`, `assigned`, or `failed` queue fields;
+the workflow-execution store is the only supported queue authority. The first
+closure cleanup replaced a skipped legacy inline `/workflow` invalid-payload
+test with source-reference validation coverage. Remaining 012f4 work is to
+replace or explicitly retire the other skipped legacy inline-workflow tests and
+to reconcile the epic README/status trail before marking the persistence epic
+ready for review.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
 The controller queue is now database-backed through the workflow-execution

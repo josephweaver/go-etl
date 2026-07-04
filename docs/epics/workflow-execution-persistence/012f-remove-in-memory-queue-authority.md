@@ -1,18 +1,17 @@
 # 012f Remove In-memory Queue Authority
 
-Status: in progress
+Status: implemented
 
 ## Objective
 
 Stop using `Controller.pending`, `Controller.assigned`, and
-`Controller.failed` as queue authority when the workflow-execution store is
-configured.
+`Controller.failed` as queue authority. The fields have now been removed from
+`Controller`.
 
-The live controller startup path now configures `Controller.workflowStore`, so
-normal runtime behavior should use the database for workflow admission,
-assignment, status, completion, and failure. The in-memory collections may
-remain only as a legacy fallback for tests or explicitly no-store controller
-construction.
+The live controller startup path configures `Controller.workflowStore`, so
+normal runtime behavior uses the database for workflow admission, assignment,
+status, completion, and failure. No-store queue behavior is no longer a
+supported fallback.
 
 ## Required Context
 
@@ -27,7 +26,7 @@ Read these files first:
 - `cmd/controller/main_test.go`
 - `internal/persistence/store.go`
 
-## Current State
+## Implemented State
 
 The persistence-backed paths now exist for:
 
@@ -36,30 +35,17 @@ The persistence-backed paths now exist for:
 - `/work/complete`
 - `/work/fail`
 - `/status`
+- `/workflow` source-reference admission
 
-But `/workflow` still accepts inline workflow JSON, compiles it immediately into
-`model.WorkItem` values, and appends those items to `Controller.pending`. That
-means the controller still has one live path that can create in-memory queue
-authority.
-
-This current implementation is legacy transitional behavior. The intended
-`/workflow` boundary is not "submit work items" and not "submit raw workflow
-JSON." It is "submit a workflow run" by providing immutable source-control
-references to:
+The intended `/workflow` boundary is not "submit work items" and not "submit
+raw workflow JSON." It is "submit a workflow run" by providing immutable
+source-control references to:
 
 - project JSON documents; and
 - workflow JSON documents.
 
 Compiled work items are a controller-generated consequence of admitting that
 workflow run. They are not the API payload.
-
-Current in-memory fields:
-
-```go
-pending  []model.WorkItem
-assigned map[string]model.WorkItem
-failed   map[string]model.WorkFailure
-```
 
 Current persisted equivalents:
 
@@ -72,10 +58,8 @@ completed_work completed/skipped work
 
 ## Implementation Strategy
 
-Do not delete the in-memory fields in the first 012f implementation prompt.
-First make the store-configured controller stop writing to them for normal
-submission paths. After tests no longer depend on persisted-mode mutation of
-those fields, a later cleanup can remove or demote the fields.
+The original incremental strategy is complete. The practical source-reference
+work landed through `012f2`, `012f3`, and `012f4`.
 
 Recommended implementation atoms:
 
@@ -83,8 +67,8 @@ Recommended implementation atoms:
 012f-a Define workflow admission payload and provenance bridge
 012f-b Persist admitted workflow run and initially ready compiled work
 012f-c Make persisted workflow scaling demand derive from queued/running store counts
-012f-d Add guard tests proving persisted paths do not mutate pending/assigned/failed
-012f-e Remove or demote in-memory queue authority after no live store path uses it
+012f-d Add guard tests proving persisted paths do not mutate pending/assigned/failed [superseded by field removal]
+012f-e Remove or demote in-memory queue authority after no live store path uses it [implemented]
 ```
 
 ## 012f-a Define Workflow Admission Payload And Provenance Bridge
@@ -166,20 +150,10 @@ Acceptance criteria:
   still leave in-memory collections unchanged.
 - Status for store-configured controllers derives from persisted rows.
 
-## 012f-e Demotion Or Removal
+## 012f-e Removal
 
-After 012f-a through 012f-d, decide whether to remove the fields immediately or
-rename/document them as legacy fallback state.
-
-Possible end states:
-
-1. Remove `pending`, `assigned`, and `failed` entirely.
-2. Keep them but move no-store behavior behind a small legacy/in-memory queue
-   helper.
-3. Keep them temporarily with comments marking them as no-store fallback only.
-
-The strongest end state is removal, but it may require broader test rewrites
-because many existing tests construct controllers by seeding in-memory state.
+`pending`, `assigned`, and `failed` were removed from `Controller`. Remaining
+closure work is test/documentation cleanup, not queue-authority implementation.
 
 ## Out Of Scope
 
@@ -205,10 +179,9 @@ workflow JSON from a pinned local/source-control cache reference. If that is too
 large for 012f, split a source-reference admission slice before removing
 in-memory queue authority.
 
-Another ambiguity is how far to remove in-memory fields in this slice. Because
-many tests still rely on them and no-store fallback behavior is still useful for
-small unit tests, full removal should be a separate cleanup atom after persisted
-workflow submission is proven.
+The in-memory fields have been removed. Tests that still mention legacy inline
+workflow submission should be replaced with source-reference coverage or
+retired with an explicit rationale.
 
 ## Implementation Notes
 
@@ -223,7 +196,7 @@ First implementation prompt:
 - Source-reference `/workflow` admission remains unimplemented and should be
   handled by the source-reference admission/client follow-up slices.
 
-Current cleanup follow-up:
+Closure follow-up:
 
 - Source-reference `/workflow` admission is now implemented through the
   `012f3` atoms.
@@ -234,6 +207,5 @@ Current cleanup follow-up:
   present.
 - The local demo config now uses `.run/controller/workflow-execution.sqlite`,
   avoiding the older incompatible `.run/controller/ledger.sqlite` file.
-- The next 012f cleanup step should focus on guard tests and demotion of
-  `pending`, `assigned`, and `failed` as no-store fallback state.
-- `012f4-guard-and-demotion-cleanup.md` defines that cleanup slice.
+- `012f4-guard-and-demotion-cleanup.md` now serves as the epic closure and
+  boundary cleanup slice.
