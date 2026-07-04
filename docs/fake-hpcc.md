@@ -278,7 +278,7 @@ worker_config.docker_slurm_container
 The repository includes a Dockerized Slurm submission fixture:
 
 ```text
-demo-docker-slurm-workflow.json
+../go-etl-demo-project/workflows/demo-docker-slurm-workflow.json
 ```
 
 This fixture is for the worker-start boundary only. It points at the generic shared Dockerized Slurm root `/data/goetl`, where the worker artifact, worker config, Slurm script, logs, temp files, and completed output should live. It will not drain the submitted workflow queue end to end until the real worker binary and config are written into that shared path.
@@ -431,7 +431,7 @@ The current controller starter treats `local` and `hpcc` as command-backed targe
 The repository includes a first fake-HPCC submission fixture:
 
 ```text
-demo-fake-hpcc-workflow.json
+../go-etl-demo-project/workflows/demo-fake-hpcc-workflow.json
 ```
 
 It resolves `worker_target_environment` to `hpcc` and points `worker_start_executable` plus `worker_start_args` at the fake `sbatch` command. The local fixture runs fake `sbatch` with `FAKE_SLURM_FOREGROUND=1` so end-to-end tests are deterministic on the current Windows/Git Bash development path. It is a variable-contract fixture: a generated `.run/fake-hpcc/worker.slurm` script must exist before it can be used to launch a worker.
@@ -478,7 +478,7 @@ Use the helper script for the normal local check:
 scripts/fake-hpcc/run-demo
 ```
 
-The helper builds a controller binary, starts it from Bash, waits for `/status`, submits `demo-fake-hpcc-workflow.json`, and asks the controller to shut down when the demo client finishes.
+The helper builds a controller binary, starts it from Bash, waits for `/status`, submits `../go-etl-demo-project/submissions/demo-fake-hpcc-workflow-run.json`, and asks the controller to shut down when the demo client finishes.
 
 Build the controller binary from Bash first:
 
@@ -495,7 +495,7 @@ Start the controller from Bash:
 In another Bash shell, submit the fake-HPCC workflow:
 
 ```bash
-go run ./cmd/demo-client demo-fake-hpcc-workflow.json
+go run ./cmd/demo-client ../go-etl-demo-project/submissions/demo-fake-hpcc-workflow-run.json
 ```
 
 The expected successful final status has no pending, assigned, or failed work:

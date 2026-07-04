@@ -1,23 +1,23 @@
 # Workflow Execution Persistence Epic
 
-Status: Proposed
+Status: Ready for implementation review
 
 ## Purpose
 
-Make the database authoritative for workflow runs, immutable resolver inputs,
-step state, work items, attempts, logical outputs, source-control identities,
-and reusable fingerprints so execution can continue correctly across controller
-restart.
+Make the database authoritative for workflow runs, resolver recipes, step state,
+work items, attempts, logical outputs, source-control identities, and reusable
+fingerprints so execution can continue correctly across controller restart.
 
 The current controller keeps pending, assigned, and failed work primarily in
 process memory. Dependency-aware JIT compilation requires durable state that
 can trace a completed `work_item_id` back to its step and workflow run and
-reconstruct the exact variable context used at submission.
+reconstruct the variable context used at submission from pinned sources,
+submission context, and resolver recipes.
 
 This epic also establishes the first controller-owned persistence boundary for
 bootstrapping the main database, reading and writing execution tables, computing
-canonical JSON SHA-256 values, and loading pinned project/workflow files from a
-source-control implementation.
+canonical JSON SHA-256 values, and storing source locator facts produced by a
+source-control boundary.
 
 ## Goals
 
@@ -29,9 +29,9 @@ source-control implementation.
   ad hoc SQL through the controller.
 - Persist the workflow definition, project identity, workflow identity, and a
   controller-generated `run_id` at submission.
-- Snapshot workflow configuration, project configuration, submission
-  overrides, and execution-relevant controller configuration immutably for the
-  run.
+- Persist immutable source references, hashes, and resolver recipes for the
+  project, workflow, submission overrides, and execution-relevant controller
+  sources used by the run.
 - Persist ordered step/stage definitions and lifecycle state.
 - Persist compiled work items before they become assignable.
 - Represent current work placement with separate queued, running, completed,
@@ -42,13 +42,11 @@ source-control implementation.
 - Persist typed logical outputs plus SHA-256 pre-state and post-state hashes for
   reusable terminal attempts.
 - Provide canonical JSON-to-SHA-256 helpers for project config, workflow config,
-  resolved inputs, work-item payloads, output JSON, state observations, and
+  resolved-input hashes, work-item payloads, output JSON, state observations, and
   future fingerprint records.
-- Provide a source-control abstraction for resolving repository revisions,
-  reading pinned files, obtaining source commit/object identities, and checking
-  out or materializing required files.
-- Provide a GitHub-backed source-control implementation as the first concrete
-  source-control adapter.
+- Persist source locator facts supplied by a source-control boundary, including
+  repository identity, resolved commit, path, source object identity when
+  available, and canonical GOET SHA-256.
 - Support transactional completion, stage-state updates, and creation of newly
   ready work.
 - Reconstruct runnable, blocked, running, failed, and completed workflow state
@@ -65,9 +63,9 @@ source-control implementation.
 - Defining sequential or `parallel_with` dependency semantics.
 - Defining heartbeat intervals, leases, fencing, or abandonment policy.
 - Implementing a general artifact storage service.
-- Implementing source-control support for providers other than GitHub.
-- Implementing full Git cache retention, eviction, repacking, or garbage
-  collection policy.
+- Implementing the source-control abstraction, GitHub behavior, local cache
+  layout, cache pins, materialization, retention, eviction, repacking, or
+  garbage collection policy.
 - Implementing secret storage or plaintext credential persistence.
 - Moving workflow resolution or scheduling decisions into SQL triggers.
 - Coordinating multiple active controllers before a concrete high-availability
@@ -87,17 +85,18 @@ project_id
           attempt_id
 ```
 
-The controller remains the only process that talks directly to SQLite. Clients
-and workers interact through HTTP APIs. The database is the execution source of
-truth; caches may accelerate reads of immutable definitions, but must not become
-a second queue or lifecycle authority.
+The controller remains the only process that talks directly to the main
+database. The first database adapter is SQLite. Clients and workers interact
+through HTTP APIs. The database is the execution source of truth; caches may
+accelerate reads of immutable definitions, but must not become a second queue or
+lifecycle authority.
 
 The client submits or identifies a project and workflow source. The controller
 loads the project and workflow from a pinned source-control revision, computes
 canonical project/workflow SHA-256 values, creates `run_id`, and stores immutable
-execution-relevant snapshots. Later JIT compilation rebuilds the resolver from
-those snapshots, generated runtime variables, and completed prior-step outputs;
-it does not read a newer project configuration.
+source references and resolver recipes. Later JIT compilation rebuilds the
+resolver from those pinned sources, generated runtime variables, and completed
+prior-step outputs; it does not read a newer project configuration.
 
 At submission, the controller normalizes the ordered workflow into stage
 definitions and assigns every stage its zero-based `stage_index`. The `run_id`
@@ -118,7 +117,8 @@ Startup must:
 
 1. Resolve and validate the configured database driver and connection string.
 2. Open the database.
-3. Enable required SQLite pragmas, including foreign-key enforcement.
+3. Enable required database safety settings, including SQLite foreign-key
+   enforcement for the first adapter.
 4. Create the schema metadata table if the database is empty or missing schema
    metadata.
 5. Apply forward-only migrations until the database reaches the controller's
@@ -163,7 +163,6 @@ Initial method families should include:
 Schema / bootstrap
 - OpenStore
 - CurrentSchemaVersion
-- ApplyMigrations
 
 Projects and workflows
 - UpsertProjectRevision
@@ -255,21 +254,52 @@ repository and path are unchanged.
 project. A materially different workflow receives a new `workflow_id`.
 
 `workflow_instances` stores one submitted run and its immutable submission
-context, including source-control locator, source commit, submission overrides,
-runtime variables, controller/plugin versions when relevant, and resolver input
-snapshots.
+context in `submission_context_json`, including source-control locator, source
+commit, submission overrides or their pinned source reference, runtime variables,
+controller/plugin versions when relevant, and the resolver recipe needed to
+reconstruct run-time configuration from authoritative sources.
+`submission_context_json` is a bounded list of key/variable pairs, not an
+unstructured dump of source documents.
 
 `workflow_stages` stores the ordered stage plan for a run. It should carry at
-least `run_id`, `stage_index`, stage definition JSON or normalized stage JSON,
+least `run_id`, `stage_index`, stage definition source/reference information,
 state, timestamps, and optional output JSON/hash for stage-level outputs.
+Initial state names may include `ready`, `running`, `completed`, `failed`,
+`skipped`, and `blocked`.
 
-`work_items` stores immutable compiled worker payloads and resolved input
-snapshots. Repeated stage compilation must be idempotent through uniqueness such
-as `(run_id, stage_index, work_item_index)`.
+`work_items` stores immutable compiled worker payloads and resolved-input
+hashes. Resolved inputs are recreated from pinned configuration sources and the
+resolver recipe; the stored hash verifies that reconstruction produced the same
+semantic input before skip/reuse decisions rely on it. If a work item requires a
+concrete worker payload after restart, that payload is persisted as compact
+controller-generated JSON, initially shaped around the worker operation plugin
+and resolved parameters:
+
+```json
+{
+  "plugin": "plugin-name",
+  "parameters": {
+    "param1": "param1value"
+  }
+}
+```
+
+Repeated stage compilation must be idempotent through uniqueness such as
+`(run_id, stage_index, work_item_index)`. A stage compilation that has no
+external work still produces a deterministic skipped/no-op work item with typed
+logical output `[]`, preserving the invariant that committed stage compilation
+has durable work-item evidence.
 
 `queued_work` and `running_work` represent current placement. `completed_work`
-and `failed_work` represent terminal attempt outcomes. Only `queued_work` and
-`running_work` should be treated as current work location.
+and `failed_work` represent terminal attempt outcomes. A `completed_work` row
+may include `skipped_parent_id` when the row records reuse of an identical prior
+completed result. Only `queued_work` and `running_work` should be treated as
+current work location.
+
+`workers` stores the minimum execution-environment-specific cancellation handle
+needed after restart, such as a scheduler job ID, container ID, or process
+identity. Liveness, heartbeat timing, and worker capability policy are separate
+concerns owned by later recovery and scheduling slices.
 
 ## Transactional Lifecycle
 
@@ -302,6 +332,16 @@ Worker scaling derives demand from persisted queued/running state, and status
 reports persisted counts. The controller does not maintain a second in-memory
 pending or assigned queue, including a nominal cache that could become a
 competing source of truth.
+
+Schema alignment note: `queued_at` is durable eligibility evidence, not mutable
+scheduling metadata. The schema and persistence methods should copy `queued_at`
+from `queued_work` into `running_work` during claim, then into `completed_work`
+or `failed_work` during terminal transition. Re-enqueueing an already queued
+item with the same `queued_at` may be idempotent; re-enqueueing it with a
+different `queued_at` should be treated as a conflict unless a later slice
+explicitly defines timestamp mutation semantics. The epic README and slice
+files are the implementation authority when they differ from older working
+notes such as `docs/db-design.md`.
 
 ## Canonical JSON and SHA-256 Helpers
 
@@ -344,11 +384,13 @@ Project and workflow source locators are recorded separately from their semantic
 fingerprints. Repository, commit SHA, and path answer where GOET obtained one
 known-valid copy. Canonical SHA-256 answers what semantic content GOET used.
 
-## Source-Control Abstraction
+## Source-Control Boundary
 
 The controller needs a source-control boundary because project/workflow
 configuration and execution components should be loaded from pinned source
-revisions, not from whichever branch happens to be current at restart.
+revisions, not from whichever branch happens to be current at restart. The
+implementation of that boundary moved to the separate
+`source-control-resolution-and-cache` epic.
 
 The abstraction should support:
 
@@ -382,7 +424,9 @@ and unable to escape the repository root.
 
 ## GitHub Source-Control Implementation
 
-GitHub is the first concrete source-control implementation.
+GitHub remains the intended first remote source-control implementation, but it
+is no longer part of this persistence epic. It belongs to
+`source-control-resolution-and-cache`.
 
 The GitHub implementation should:
 
@@ -411,15 +455,29 @@ Git blob SHA                     = Git object identity
 
 All three may be useful. They are not interchangeable.
 
-## Immutable Snapshots and Resolver Recipes
+## Source References and Resolver Recipes
 
-Immutable workflow definitions and configuration snapshots are stored as
-canonical text JSON documents. Each document includes an explicit document schema
-version, and its column uses `CHECK (json_valid(...))`. Query-critical identity,
-ordering, lifecycle, timestamps, and foreign keys remain normalized relational
-columns. Go normally decodes each immutable document as a whole; SQLite JSON
-extraction is available for diagnostics and bounded migrations, not as the
-primary scheduling interface.
+Immutable workflow and project definitions remain in source control. The
+database stores the source repository reference, repository-relative path,
+resolved commit SHA, source object identity when available, canonical GOET
+SHA-256, and schema/version metadata needed to reload the same document through
+the controller's source-control cache.
+
+The database should not become a duplicate document store for source-controlled
+project, workflow, defaults, or controller JSON. Keeping those documents in
+GitHub or a local source-control cache preserves provenance and avoids database
+bloat. The database records which immutable document was used, not a second copy
+of every source-controlled JSON file.
+
+Query-critical identity, ordering, lifecycle, timestamps, and foreign keys
+remain normalized relational columns. Compact controller-generated records that
+do not already have a source-controlled home may be stored as canonical text JSON
+when they are required for restart, audit, or downstream compilation.
+
+A pinned source document must be reloadable from the local source-control cache
+after submission. Remote source control is needed to create or refresh pins, not
+to resume an already admitted run. Recovery should verify cached file content
+against the stored canonical SHA-256 before trusting it.
 
 SQLite JSONB is deferred. Text JSON is easier to inspect, export, test, and
 migrate and does not couple stored definitions to SQLite's private binary
@@ -428,13 +486,14 @@ representation.
 The intended resolver rule remains:
 
 ```text
-Persist the inputs and outputs of resolution, not the resolver.
+Persist the resolver recipe and durable outputs of resolution, not the resolver.
 ```
 
 A resolver is created for one specific lifecycle decision, resolves the required
 values, and is discarded. Durable records must contain enough information to
-reconstruct the resolver recipe used for submission, stage compilation,
-work-item compilation, assignment-time resolution, and output propagation.
+reload canonical defaults/controller/project/workflow sources and reconstruct
+the resolver recipe used for submission, stage compilation, work-item
+compilation, assignment-time resolution, and output propagation.
 
 ## Stage Progression
 
@@ -444,9 +503,19 @@ same durable transition. A unique completed-stage identity `(run_id,
 stage_index)` makes a repeated completion request harmless and prevents a stage
 from compiling its successor twice.
 
-A stage compilation that yields zero work items records immediate successful
-stage completion with typed output `[]` and continues to the next ready stage in
-the same idempotent progression. It creates no placeholder work item or attempt.
+Stage completion is derived from persisted work rows. For a given
+`run_id/stage_index`, the stage is complete when every `work_items` row for that
+stage has one matching successful `completed_work` terminal row, and there are
+no remaining `queued_work`, `running_work`, or `failed_work` rows for that stage.
+This allows the controller to determine stage completion by querying
+`work_items` and terminal/current placement tables instead of maintaining a
+separate in-memory stage counter.
+
+A stage compilation that yields no external work creates one deterministic
+skipped/no-op work item and records successful skipped completion with typed
+output `[]`. It does not assign anything to a worker, but it still leaves
+durable work-item and terminal-output evidence so downstream stage-completion
+checks use the same persisted model as normal work.
 
 Completion is addressed by `attempt_id` plus its fencing token once fencing is
 defined. Repeating an identical terminal report for the already recorded attempt
@@ -538,7 +607,7 @@ canonical hash storage, source locator storage, and safe unused-row deletion.
 
 005 Workflow Run and Stage Persistence Methods
 
-Add methods to create workflow runs, persist immutable submission snapshots,
+Add methods to create workflow runs, persist immutable submission provenance,
 insert ordered stage plans, query stage state, and list active runs after
 restart.
 
@@ -564,74 +633,285 @@ logical work item.
 Add the durable transition that marks a stage complete exactly once and inserts
 newly ready work items/queue rows in the same transaction.
 
-010 Source-Control Abstraction
+010 Source-Control Dependency
 
-Define the controller-facing source-control interface for ref resolution,
-pinned file reads, commit identity, safe path handling, and materialization of a
-manifest into a staging directory.
+Record that source-control abstraction and cache behavior moved to the separate
+`source-control-resolution-and-cache` epic. This persistence epic stores source
+locator facts but does not implement GitHub, cache, or materialization behavior.
 
-011 GitHub Source-Control Implementation
-
-Implement the first source-control adapter for GitHub, preserving the locator vs
-semantic fingerprint distinction and returning repository/commit/path/blob
-metadata where available.
-
-012 Restart Reconstruction
+011 Restart Reconstruction
 
 On controller startup, rebuild active run, queue, running-attempt, and cache-pin
 views from persisted rows without reconstructing an in-memory queue authority.
 
-013 Controller Integration Cutover
+012 Controller Integration Cutover
 
 Move `/workflow`, `/work/next`, `/work/complete`, `/work/fail`, `/status`, and
 worker-scaling demand reads onto the store boundary and remove the old pending /
 assigned / failed in-memory collections.
 ```
 
-## Open Questions
+## Planning Decisions
 
-1. Which execution-relevant controller variables are snapshotted into a run, and
-   which remain deployment-only settings?
-2. What retention periods apply to completed, failed, and lost operational
-   records; where is compact provenance archived; and which project/controller
-   configuration owns that policy?
-3. Should `project_id` and `workflow_id` be user-provided stable names,
-   content-derived IDs, or database/controller-generated IDs that carry
-   canonical SHA-256 beside them?
-4. Should the first GitHub implementation use a local bare Git cache immediately,
-   or start with a thinner GitHub file-read implementation behind the same
-   source-control interface?
-5. What is the minimum stage table shape needed before dependency-aware
-   workflows, and which stage fields should wait for that epic?
-6. Should fingerprint algorithm versions be separate columns, embedded in each
-   JSON document, or carried by schema version for the first implementation?
-7. What exact canonical JSON rules should GOET adopt for numbers and
-   schema-declared non-semantic fields?
-8. Should persistence expose one monolithic `Store` interface, or should it be
-   decomposed into repositories such as Projects, Runs, WorkItems, Workers, and
-   SourceControlMetadata?
-9. Which layer owns database transactions: the persistence package, controller
-   services, or explicit transaction objects passed between repositories?
-10. Which component is responsible for generating each identifier, including
-    `project_id`, `workflow_id`, `run_id`, `work_item_id`, and `attempt_id`?
-11. Should canonical JSON versioning be independent from database schema
-    versioning?
-12. Which immutable documents are persisted in full versus referenced only by
-    fingerprints, including project config, workflow definition, resolved inputs,
-    stage definitions, submission context, and dependency manifests?
-13. Should the source-control abstraction materialize an entire dependency
-    closure, or should it only provide object retrieval while a separate
-    packaging service owns materialization?
-14. Should the persistence abstraction be designed now for future database
-    backends such as PostgreSQL, or may it remain SQLite-specific for the first
-    implementation?
-15. Which package owns fingerprint computation: persistence, a fingerprint
-    package, source-control, workflow compiler, or plugin-specific code?
-16. Should schema migration infrastructure live inside the persistence package or
-    be a separate migration subsystem?
-17. Which epic owns physical deletion behavior versus retention policy? The
-    persistence epic introduces delete methods, while `controller-retention-cleanup`
-    appears to own cleanup and retention policy.
+These decisions resolve the implementation-shaping questions for this epic. They
+may still be revised by later implementation evidence, but they are strong
+enough to guide the first slice decomposition.
+
+### Controller Configuration Provenance
+
+Workflow runs do not store a second materialized controller configuration.
+Controller startup resolution already defines the authoritative source model:
+canonical `defaults.json`, selected `controller.json`, allowed overrides,
+captured environment access, generated runtime variables, and short-lived
+resolvers.
+
+The run record should persist the provenance needed to reconstruct the approved
+execution-relevant recipe:
+
+- defaults document source reference and canonical SHA-256;
+- controller document source reference and canonical SHA-256;
+- allowed submission or command overrides that affect the run;
+- execution-environment identity and component types selected for the run;
+- worker runtime image/artifact identity;
+- plugin versions when they affect work-item behavior or state observation;
+- generated runtime values that are part of the run lifecycle.
+
+Deployment-only settings are not part of run provenance unless they affect
+workflow semantics. Examples include controller listen host/port, HTTP timeout
+values, local cache sizes, caretaker cadence, log level, and cleanup retention
+policy. These may be recorded in operational diagnostics, but they are not used
+to decide whether a run is reproducible or reusable.
+
+### Identifier Ownership
+
+Human-provided names and generated identities are distinct.
+
+```text
+project_name      optional human or customer-facing label
+project_id        controller-generated immutable identity for one project config
+project_sha256    canonical semantic fingerprint of project config
+
+workflow_name     workflow-authored stable label
+workflow_id       controller-generated immutable identity for one workflow config
+workflow_sha256   canonical semantic fingerprint of workflow config
+
+run_id            controller-generated identity for one submission
+stage_index       controller-assigned zero-based position within the run
+work_item_id      compiler-generated deterministic identity within run/stage
+attempt_id        controller-generated identity at claim time
+```
+
+`project_id` and `workflow_id` should not be pure content hashes because they
+also participate in database relationships and may need short, opaque,
+controller-owned identities. The canonical SHA-256 values are stored beside
+them and remain the semantic comparison mechanism.
+
+Controller-generated database IDs should use UUIDv7. Table `created_at` fields
+remain the authoritative timestamp columns for lifecycle queries, but UUIDv7
+keeps generated IDs roughly time-ordered for index locality, logs, and operator
+inspection. This does not change the distinction between human names, database
+identities, and semantic SHA-256 values.
+
+### Stage Minimum
+
+Before dependency-aware workflows, `workflow_stages` needs only enough structure
+to persist the ordered run plan and support later stage completion:
+
+- `run_id`;
+- `stage_index`;
+- stable step or stage definition ID;
+- stage source/reference information;
+- lifecycle state;
+- created, ready, started, completed, and failed timestamps as applicable;
+- typed output JSON and output SHA-256 when the stage produces logical output.
+
+Fields for dependency expressions, `parallel_with`, cross-workflow dependency
+manifests, leases, and retry policy should wait for the dependency-aware and
+liveness epics.
+
+### Fingerprint and Canonical JSON Versioning
+
+Fingerprint algorithm versioning should be stored explicitly beside each
+fingerprint-bearing value. Database schema versioning says how rows are shaped;
+fingerprint algorithm versioning says how semantic bytes were produced. The two
+may advance independently.
+
+The first implementation should use a single version label such as:
+
+```text
+canonical_json_v1_sha256
+```
+
+Canonical JSON version 1 should define stable object-key ordering, no
+insignificant whitespace, stable string encoding, explicit null-versus-missing
+treatment, and deterministic formatting for accepted integer JSON numbers.
+Decimals should be represented as schema-defined strings rather than JSON
+numbers. When a schema declares a field non-semantic, omission happens before
+canonicalization and is recorded by the schema or document version.
+
+### Store Boundary and Transactions
+
+Persistence should expose one concrete `Store` type with task-oriented methods,
+not one large public interface and not many repositories exposed directly to the
+controller. Internally, `Store` may organize code into project, workflow, run,
+work-item, attempt, and worker files as the package grows.
+
+The persistence package owns database transactions. Controller code calls one
+method for one lifecycle transition, such as claiming work or completing an
+attempt. It should not assemble multi-table transactions across repository
+objects.
+
+### Source-Controlled Document Storage
+
+Source-controlled documents should be referenced by immutable source identity,
+not copied wholesale into SQLite:
+
+- repository identity;
+- resolved commit SHA;
+- repository-relative path;
+- source object identity when available;
+- canonical GOET SHA-256;
+- document schema/version metadata.
+
+The controller's source-control cache is the local filesystem mechanism that
+makes those pinned documents available during restart and later compilation.
+GitHub or another source-control backend remains the provenance authority.
+This source-control-first model is intentional: customer repositories are the
+natural ownership and review boundary for project, workflow, controller, and
+defaults JSON. The database records the immutable source identity and semantic
+hashes needed to prove which customer-owned documents were admitted.
+
+The cache should store pinned revisions under deterministic directories derived
+from repository identity and commit SHA, such as:
+
+```text
+<cache-root>/<repo-name>-<commit-sha>/
+```
+
+The exact sanitization and collision rule belongs to the source-control
+implementation slice. Cleanup may remove unpinned or no-longer-recoverable cache
+entries to maintain size bounds, but it must not remove files needed by active
+or recoverable admitted runs.
+
+Compact controller-generated JSON may still be stored in the database when it
+has no source-controlled home and is required for restart or downstream
+decisions. Examples include `workflow_instances.submission_context_json`,
+compiled work-item payloads, and typed logical outputs. Resolved inputs should
+normally be reconstructed from pinned configs plus the resolver recipe and then
+checked against stored hashes rather than stored wholesale. The implementation
+should avoid storing large source documents in SQLite merely for convenience.
+
+### Source-Control Scope
+
+The source-control abstraction should provide pinned object retrieval and a
+minimal materialization method. It should not own execution packaging policy.
+
+In practice, source control owns:
+
+- resolving refs to immutable commits;
+- reading repository-relative files at a commit;
+- returning repository, commit, path, and object identities;
+- rejecting unsafe paths;
+- materializing an explicit manifest into a destination directory.
+
+A later packaging service owns deciding which files belong in the manifest and
+how those files become worker artifacts.
+
+The first GitHub implementation may be thin behind this interface. A local bare
+Git cache remains the target shape, but cache retention and full cache
+management are outside this epic.
+
+### SQLite First
+
+The first persistence implementation may be SQLite-specific, but SQLite details
+should be contained behind a database-adapter boundary. Controller and
+orchestration code should call persistence-level operations, not SQLite-specific
+SQL or driver behavior.
+
+The first implementation may use a file such as `db_adapter_sqlite.go` for
+SQLite-specific connection, pragma, SQL, transaction, and migration details. A
+future PostgreSQL implementation should be able to add a sibling adapter, such
+as `db_adapter_postgres.go`, without rewriting controller lifecycle code.
+
+This epic does not need to fully design PostgreSQL before a second backend
+exists. It only requires keeping the SQLite dependency from leaking through the
+controller-facing store boundary.
+
+### Fingerprint Package
+
+Canonical JSON and SHA-256 helpers should live in a small shared internal
+package, such as `internal/fingerprint`, rather than in persistence,
+source-control, workflow compilation, or plugin-specific code. Persistence uses
+the helper to store hashes; source-control uses it to compute semantic document
+hashes; workflow and plugin code use it when they define semantic identities.
+
+### Migration Ownership
+
+Schema migration infrastructure belongs inside the persistence package for now.
+The controller should call `OpenStore` or equivalent; it should not know which
+migrations exist or invoke individual migration steps.
+
+In practical terms, migration ownership means the database adapter opens the
+database, checks the recorded schema version, applies allowed forward migrations
+transactionally, and rejects unsupported newer schemas before returning a usable
+store. Controller startup treats this as one store-opening operation.
+
+### Retention Ownership
+
+This epic defines which records must exist and which lineage/fingerprint facts
+must survive cleanup. `controller-retention-cleanup` owns retention periods,
+cleanup scheduling, physical deletion policy, archive/compaction strategy, and
+operator-facing cleanup configuration.
+
+Persistence may provide safe primitives such as `Delete...IfUnused`; it should
+not decide when old terminal records are old enough to purge.
+
+### Database Cleanup and Retention Placeholder
+
+Detailed cleanup policy is intentionally deferred to the
+`controller-retention-cleanup` epic. That epic should define:
+
+- retention periods for completed, failed, skipped, and lost attempts;
+- whether retention is controller-wide, project-narrowable, or both;
+- compact provenance rows that must survive hot-row cleanup;
+- archive location and format for compact provenance;
+- cleanup scheduling and backpressure behavior;
+- operator-facing configuration variables;
+- safeguards for source references, fingerprints, lineage, typed outputs, and
+  state hashes required for audit, reuse, or downstream reconstruction.
+
+Until that epic is implemented, persistence should avoid irreversible deletion
+of terminal execution evidence except through narrow `Delete...IfUnused`
+operations that prove the row is not referenced by active or terminal lifecycle
+state.
+
+### Controller-Created No-Op Work
+
+Controller-created skipped/no-op work should use the same terminal model as
+normal work by creating a controller-owned skipped attempt row. The attempt has
+no worker claim, but it still records `attempt_id`, `work_item_id`, terminal
+state, typed output `[]`, timestamps, and lifecycle variables.
+
+This avoids a second terminal outcome shape and preserves the invariant that a
+completed or skipped logical work item has durable attempt evidence.
+
+## Deferred Design Edges
+
+These ambiguities do not block the epic, but they should be settled in the
+specific implementation slices that first need them:
+
+- `submission_context_json` needs a narrow schema before implementation so it
+  remains a bounded list of key/variable pairs.
+- The local source-control cache needs a pinning rule: admitted-run files must
+  not be evicted while any active or recoverable run depends on them.
+- Compiled worker payload storage needs a size boundary so compact
+  plugin/parameter payloads can restart correctly without turning SQLite into an
+  artifact store.
+- Controller-owned skipped attempts should carry an executor/source marker, and
+  skipped/reused completed rows should point to the identical prior completion
+  through `completed_work.skipped_parent_id`.
+- Stage lifecycle transitions still need precise SQL constraints and transaction
+  tests for the derived completion rule.
 
 ## Completion Criteria
 
@@ -643,10 +923,12 @@ assigned / failed in-memory collections.
 - A shared canonical JSON and SHA-256 helper is used by persistence code.
 - Project and workflow configuration hashes are computed from canonical content,
   not from source locator strings.
-- GitHub repository, commit/object ID, path, Git blob identity when available,
-  and GOET canonical SHA-256 are recorded as distinct concepts.
-- A source-control abstraction exists and has a GitHub implementation.
-- A submitted workflow run and its resolver inputs survive controller restart.
+- Repository identity, commit/object ID, path, source object identity when
+  available, and GOET canonical SHA-256 are recorded as distinct concepts.
+- Source-control abstraction, GitHub implementation, local cache, cache pins,
+  and materialization are explicitly moved to
+  `source-control-resolution-and-cache`.
+- A submitted workflow run and its resolver recipe survive controller restart.
 - A completed work item can be traced through stage instance, workflow run,
   workflow definition, and project identity.
 - One logical work item may have multiple attempts without identity collision.
@@ -658,8 +940,8 @@ assigned / failed in-memory collections.
 - A unique completed-stage record ensures successful stage completion compiles
   the next stage exactly once.
 - A completed stage can cause newly ready work to be persisted exactly once.
-- Later-step resolution uses immutable run snapshots rather than current project
-  configuration.
+- Later-step resolution uses immutable run provenance and pinned source
+  references rather than current project configuration.
 - Typed outputs and SHA-256 pre/post-state hashes can be restored for downstream
   compilation and reuse decisions.
 - Runnable, active, blocked, failed, and completed state can be reconstructed
@@ -677,7 +959,7 @@ assigned / failed in-memory collections.
 - Migrations are forward-only and transactional, reject newer schemas, and use
   verified backup restoration rather than automatic down-migrations after a
   production schema is declared.
-- Immutable definitions and configuration snapshots use schema-versioned,
-  validated text JSON; scheduling identities and state remain relational.
+- Source-controlled definitions and configuration are reloaded through pinned
+  source references; scheduling identities and state remain relational.
 - Existing ledger-based attempt history remains queryable or has an explicit
   migration path.

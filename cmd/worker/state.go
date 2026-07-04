@@ -13,10 +13,23 @@ import (
 	"goetl/internal/model"
 )
 
-func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time) error {
+type WorkEvidence struct {
+	Skipped         bool
+	SkippedParentID string
+	SkipReason      string
+	InputSHA256     string
+	OutputSHA256    string
+	PreStateSHA256  string
+	PostStateSHA256 string
+	OutputJSON      string
+	PreStateJSON    string
+	PostStateJSON   string
+}
+
+func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
 
-	body, err := json.Marshal(workCompletion(item, startedAt))
+	body, err := json.Marshal(workCompletion(item, startedAt, evidence))
 	if err != nil {
 		return fmt.Errorf("encode work completion: %w", err)
 	}
@@ -34,15 +47,29 @@ func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt tim
 	return nil
 }
 
-func workCompletion(item model.WorkItem, startedAt time.Time) model.WorkCompletion {
+func workCompletion(item model.WorkItem, startedAt time.Time, evidence WorkEvidence) model.WorkCompletion {
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
 	completedAt := time.Now().UTC().Format(time.RFC3339)
+	attemptID := item.AttemptID
+	if attemptID == "" {
+		attemptID = item.ID + "-attempt-" + randomHex(8)
+	}
 
 	completion := model.WorkCompletion{
 		ID:                   item.ID,
-		AttemptID:            item.ID + "-attempt-" + randomHex(8),
+		AttemptID:            attemptID,
+		Skipped:              evidence.Skipped,
+		SkippedParentID:      evidence.SkippedParentID,
+		SkipReason:           evidence.SkipReason,
+		InputSHA256:          evidence.InputSHA256,
+		OutputSHA256:         evidence.OutputSHA256,
+		PreStateSHA256:       evidence.PreStateSHA256,
+		PostStateSHA256:      evidence.PostStateSHA256,
+		OutputJSON:           evidence.OutputJSON,
+		PreStateJSON:         evidence.PreStateJSON,
+		PostStateJSON:        evidence.PostStateJSON,
 		WorkflowDefinitionID: item.WorkflowDefinitionID,
 		WorkflowFingerprint:  item.WorkflowFingerprint,
 		WorkflowInstanceID:   item.WorkflowInstanceID,
@@ -100,10 +127,15 @@ func randomHex(byteCount int) string {
 	return hex.EncodeToString(data)
 }
 
-func reportWorkFailed(controllerURL string, itemID string, workErr error) error {
+func reportWorkFailed(controllerURL string, item model.WorkItem, workErr error) error {
 	url := strings.TrimRight(controllerURL, "/") + "/work/fail"
 
-	body, err := json.Marshal(model.WorkFailure{ID: itemID, Error: workErr.Error()})
+	body, err := json.Marshal(model.WorkFailure{
+		ID:        item.ID,
+		AttemptID: item.AttemptID,
+		FailedAt:  time.Now().UTC().Format(time.RFC3339),
+		Error:     workErr.Error(),
+	})
 	if err != nil {
 		return fmt.Errorf("encode work failure: %w", err)
 	}

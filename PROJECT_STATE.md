@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-02
+Last updated: 2026-07-04
 
 ## Current Focus
 
@@ -23,9 +23,20 @@ The target product still has a reusable Python interface that submits external p
 
 Project guidance is in `AGENTS.md`. The longer product and architecture direction is in `TARGET_STATE.md`.
 
+Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
+repository. That repo owns source-control-style customer files such as
+`project.json`, workflow documents under `workflows/`, demo run submissions under
+`submissions/`, and demo input data under `data/`. The reusable Go ETL repo keeps
+runtime code, tests, scripts, and low-level worker fixtures such as
+`demo-item.json`.
+
+Epistemic-control process artifacts now live in sibling `../epistemic-control`.
+That folder owns the HCI/control-level notes, agent review instructions, and
+session logs under `epi_ctl/`.
+
 ## Development Governance
 
-`EPI_CTL.md` now uses a three-category epistemic-control model:
+`../epistemic-control/EPI_CTL.md` now uses a three-category epistemic-control model:
 
 ```text
 Strategic Understanding (SU) /20
@@ -37,13 +48,13 @@ Total EC /35
 
 The protocol distinguishes architectural and causal understanding from practical codebase control and from short- or medium-term recall of implementation details. Low implementation recall is explicitly acceptable when Strategic Understanding and Operational Control remain strong.
 
-`EPI_CTL.md` also now defines longitudinal retention reviews. Same-day audits are `T`; follow-up retention-chain reviews are `T+3`, `T+14`, and `T+180`, named with the original session date, such as:
+`../epistemic-control/EPI_CTL.md` also now defines longitudinal retention reviews. Same-day audits are `T`; follow-up retention-chain reviews are `T+3`, `T+14`, and `T+180`, named with the original session date, such as:
 
 ```text
-epi_ctl/20260624.md
-epi_ctl/20260624_T3.md
-epi_ctl/20260624_T14.md
-epi_ctl/20260624_T180.md
+../epistemic-control/epi_ctl/20260624.md
+../epistemic-control/epi_ctl/20260624_T3.md
+../epistemic-control/epi_ctl/20260624_T14.md
+../epistemic-control/epi_ctl/20260624_T180.md
 ```
 
 Retention reviews are first-class audits and are treated as the primary evidence for durable ownership. The protocol also records Codex usage indicators and ActivityWatch distraction/context-switch metrics when available.
@@ -52,11 +63,7 @@ Retention reviews are first-class audits and are treated as the primary evidence
 
 ```text
 go.mod
-demo-workflow.json
-demo-fake-hpcc-workflow.json
-demo-summary-workflow.json
-demo-summary-input.txt
-demo-summary-input-2.txt
+demo-item.json
 .gitignore
 docs/
   fake-hpcc.md
@@ -177,30 +184,29 @@ Shared controller-worker JSON contracts live in `internal/model`.
 The local runtime flow is:
 
 1. Start the controller on `:8080`.
-2. The controller creates an in-memory queue with one demo work item.
-3. Start the worker from `cmd/worker`.
-4. The worker loads `demo-config.json`.
-5. The worker validates required runtime directories.
-6. The worker requests `GET /work/next`.
-7. The controller moves one item from `pending` to `assigned`.
-8. The worker validates and dispatches the item by `Type`.
-9. The demo handler writes temporary output under `TmpDir`.
-10. The demo handler renames completed output into `DataDir`.
-11. The worker reports success with `POST /work/complete`, or failure with `POST /work/fail`.
-12. The worker asks for more work.
-13. The worker exits cleanly when `GET /work/next` returns `204 No Content`.
+2. A client submits a source-reference workflow run to `POST /workflow`.
+3. The controller resolves the referenced project/workflow JSON, persists
+   provenance, compiles initially ready work, and stores queued work in the
+   workflow-execution database.
+4. Start the worker from `cmd/worker`.
+5. The worker loads `demo-config.json`.
+6. The worker validates required runtime directories.
+7. The worker requests `GET /work/next`.
+8. The controller claims one queued row into running work and returns the worker
+   payload JSON.
+9. The worker validates and dispatches the item by `Type`.
+10. The demo handler writes temporary output under `TmpDir`.
+11. The demo handler renames completed output into `DataDir`.
+12. The worker reports success with `POST /work/complete`, or failure with
+    `POST /work/fail`, including the assigned `attempt_id`.
+13. The worker asks for more work.
+14. The worker exits cleanly when `GET /work/next` returns `204 No Content`.
 
 ## Controller
 
-The controller stores three in-memory collections:
-
-```text
-pending    work that can be assigned
-assigned   work currently owned by a worker
-failed     failed work and its error text
-```
-
-Access is protected by `sync.Mutex` so later concurrent workers can safely use the queue.
+The controller stores queue state in the workflow-execution database. A
+controller without a workflow store rejects queue endpoints instead of falling
+back to process-local state.
 
 Current endpoints:
 
@@ -209,12 +215,13 @@ GET  /work/next      assign the next pending item, or return 204
 POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
-POST /workflow       submit one tiny workflow and variables
+POST /workflow       submit source references for project and workflow JSON
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
 
-Completed items are removed from `assigned`. Failed items are removed from `assigned` and stored in `failed`. Queue state is currently process-local and is lost when the controller exits.
+Completed and failed items move through persisted running, completed, and failed
+work records.
 
 If started with `--config`, the controller loads that variable document and normalizes all variables into `controller_config`. A relative explicit path remains relative to the process working directory. If no config path is supplied, the controller loads:
 
@@ -265,10 +272,11 @@ constructing the HTTP server. The resolved settings are validated as the
 startup HTTP contract and are used to configure the listener address and HTTP
 server timeouts and limits.
 
-The controller startup path now stamps a recovery-start timestamp and enters a
-recovery-only admission mode before serving requests. During this phase the
-controller keeps normal workflow and raw-work submission closed while still
-serving the dedicated health endpoint and the existing worker report endpoints.
+The controller startup path now stamps a recovery-start timestamp, enters a
+recovery-only admission mode, performs the current read-only startup recovery
+check against active workflow runs, and opens normal admission before serving
+requests. The dedicated health endpoint remains available independently of
+normal admission.
 
 The demo client starts the controller with:
 
@@ -351,6 +359,72 @@ The older `LocalWorkerStarter` remains in the repository for the local process p
 The controller has small read, comparison, decision, marker, and skipped-attempt helpers for idempotency groundwork. `priorCompletedAttempt` asks the ledger for the latest completed attempt matching a work-item fingerprint. `priorCompletedAttemptMatchesWorkItem` checks that the prior attempt was completed and that work-item, input, output, and code-version fingerprints still match the current assignment. `reusablePriorAttempt` composes those checks into a single controller question. `workReuseDecision` returns an observational decision with reason strings such as `no_prior_completed_attempt`, `prior_attempt_mismatch`, and `matched_prior_completed_attempt`. `workSkipForReuseDecision` can build a validated `WorkSkip` marker from a positive reuse decision. `skippedAttemptFromWorkSkip` can build a skipped `ledger.Attempt` snapshot with `runtime.prior_attempt_id` and `runtime.skip_reason`. `recordSkippedAttempt` can persist that skipped snapshot when called explicitly. `/status` reports how many pending work items are currently reuse candidates, derived from pending reuse-decision reason counts. `/work/next` now records and removes reusable pending items as skipped attempts before assigning the next non-reusable item.
 
 `POST /shutdown` currently invokes a controller shutdown hook. In local client-started runs, the client should poll `GET /status` and call this endpoint when pending and assigned counts both reach zero.
+
+## Workflow Execution Persistence
+
+`internal/persistence` contains the first SQLite-backed workflow execution
+store for the `workflow-execution-persistence` epic. The schema currently
+tracks projects, workflows, workflow runs, stage plans, work items, queued
+work, attempts, running work, completed work, failed work, and worker records.
+
+The store can insert workflow/run/stage/work-item records, enqueue work,
+derive per-stage queued/running/completed/failed counts, atomically claim the
+oldest queued work into `running_work`, atomically terminate a running attempt
+into either `completed_work` or `failed_work`, and atomically mark a stage
+complete when persisted work rows prove every work item for the stage completed
+successfully. Terminal rows preserve the copied `queued_at` and `started_at`
+values from `running_work` plus the terminal timestamp. Completion records store
+output JSON, output hash, pre-state hash, post-state hash, and optional
+`skipped_parent_id`; failure records store the error and failure time. Repeated
+identical terminal reports are idempotent; conflicting terminal reports fail.
+Stage completion can publish caller-supplied newly ready work items and queue
+rows in the same transaction, while dependency readiness and downstream
+compilation remain out of scope. Restart-oriented read queries can list running
+work, retrieve one running attempt, list terminal attempts for a run, and derive
+run-level queued/running/completed/failed counts from placement and terminal
+tables.
+
+This persistence package is not yet wired into the live controller HTTP
+assignment and report paths. The older `internal/ledger` attempt snapshot
+ledger remains the currently wired local demo ledger.
+
+Source-control resolution, GitHub retrieval, local cache layout, and
+materialization have been split into the separate
+`source-control-resolution-and-cache` epic. Workflow execution persistence keeps
+the database-owned source locator fields but does not own the source-control
+implementation.
+
+The source-control epic now defines the first local cache directory contract.
+The intended cache shape is provider/repository/commit based:
+
+```text
+<cache-root>/repositories/<provider>/<repository-key>/commits/<commit-sha>/files/<repo-relative-path>
+```
+
+Each commit directory has a `manifest.json` for raw file-byte integrity and a
+`pins/` directory for operational cache pins that can be reconstructed from
+workflow execution database records. The cache uses immutable commit IDs for
+execution lookup; mutable refs are only admission inputs.
+
+The persistence epic now has a `012f4` cleanup slice for guard and demotion
+work. The first implementation removed `Controller.pending`,
+`Controller.assigned`, and `Controller.failed` entirely so the controller no
+longer exposes a process-local queue authority.
+
+Controller cutover has started by adding a workflow-execution store handle to
+`Controller` and opening that store as the configured main database during live
+startup. The older attempt ledger remains in code for legacy skip/reuse helpers
+and tests, but live startup no longer opens it as the main database. When a
+workflow-execution store is configured, `/status` now derives pending,
+assigned, and failed-equivalent counts from persisted queued, running, and
+failed work rows instead of the in-memory queue maps. Raw `POST /work`
+submissions also persist into a synthetic raw-work run and queue row when the
+workflow-execution store is configured; the old in-memory raw submission path
+has been removed. `/work/next` claims persisted
+queued work through the workflow-execution store and decodes the stored worker
+payload back into the existing worker response shape when the store is
+configured. Queue endpoints return service unavailable when no workflow store is
+configured.
 
 ## SQLite Ledger
 
@@ -1012,7 +1086,7 @@ cmd/worker/.run/data/cdl-demo-2025.txt
 Expected local ledger output:
 
 ```text
-.run/controller/ledger.sqlite
+.run/controller/workflow-execution.sqlite
 ```
 
 The current verified demo run records two attempt rows and four attempt-variable rows.
@@ -1021,9 +1095,192 @@ The current verified demo run records two attempt rows and four attempt-variable
 
 The controller now owns queue semantics. The worker stays relatively dumb: pull, execute, report, repeat.
 
+## Workflow Execution Persistence Cutover
+
+Feature 012e now routes `/work/complete` and `/work/fail` through
+`internal/persistence.Store` when `Controller.workflowStore` is configured.
+Persisted `/work/next` returns the store-created `attempt_id`, and workers echo
+that attempt ID in completion and failure reports. Failure reports also carry
+optional `failed_at` so duplicate persisted failure reports can be idempotent
+when they repeat the same durable payload.
+
+Worker completions now carry three JSON evidence documents:
+
+- `output_json`
+- `pre_state_json`
+- `post_state_json`
+
+The controller validates and canonicalizes the completion evidence, stores
+canonical `output_json`, and writes SHA-256 hashes for output, pre-state, and
+post-state through `Store.CompleteAttempt`. Legacy in-memory completion and
+failure behavior is unchanged when no workflow-execution store is configured.
+
+The worker demo and summary operations now return `WorkEvidence` to the worker
+loop so terminal reports can include discernible output, pre-state, and
+post-state evidence. This changed the worker execution shape from:
+
+```go
+err := worker.Run(item)
+```
+
+to:
+
+```go
+evidence, err := worker.Run(item)
+```
+
+Feature 012e2 extends that contract with worker-observed skip evidence. Work
+assignments can now carry `reuse_candidates`, and completion reports can carry:
+
+- `skipped`
+- `skipped_parent_id`
+- `skip_reason`
+- `input_sha256`
+- `output_sha256`
+- `pre_state_sha256`
+- `post_state_sha256`
+
+The worker uses `internal/fingerprint` for canonical JSON and SHA-256 hashing.
+The demo worker can skip when its current pre-state and expected output match a
+prior candidate. The summary worker includes input file path, size, and content
+SHA-256 in its input observation before deciding whether reuse is safe.
+
+Persisted `/work/next` currently selects reuse candidates from prior completed
+attempts in the same run when `resolved_inputs_sha256` and
+`worker_payload_json` match. This is a conservative temporary stand-in until
+`controller_sha256` and `plugin_sha256` are precisely defined. The database
+schema still stores worker-observed input/output hashes inside canonical
+`output_json`; explicit columns are deferred to a later schema slice.
+
+Feature 012f has started by blocking the remaining live persisted path that
+could create in-memory queue authority. When `Controller.workflowStore` is
+configured, `/workflow` now rejects the legacy inline JSON payload with `501 Not
+Implemented` instead of compiling it into a process-local queue. Source-reference
+workflow admission is now the controller/client boundary.
+
+Feature 012f2 updates the Go client side of that boundary. `internal/client`
+now has a `WorkflowRunSubmission` envelope with project and workflow
+`SourceDocumentReference` values, and `cmd/demo-client` now submits
+`demo-workflow-run.json` through `SubmitWorkflowRunFile`. The old inline
+workflow submission helpers remain as legacy compatibility methods, but they
+are no longer the demo client's normal path. Controller-side source-reference
+admission is still pending.
+
+Feature 012f3 is designed as the controller-side source-reference admission
+slice. The target `/workflow` path loads project/workflow JSON through a
+source-control adapter, persists source identity and canonical hashes, creates a
+workflow run, compiles initially ready work, and queues that work without using
+process-local controller state. The first concrete adapter should be `local`, for cases
+where the controller has filesystem access to the referenced repository or
+cache.
+
+The first 012f3 implementation atom adds `LocalSourceControlAdapter` in
+`cmd/controller`. It can resolve configured local repository identities such as
+`local:demo` to repository-relative source documents, rejects unsafe paths, uses
+Git commit/object IDs when the root is a Git repo, and falls back to a
+`local-unversioned` identity for plain directories. `/workflow` is not wired to
+this adapter yet.
+
+The second 012f3 atom updates store-configured `/workflow` to decode the
+source-reference `WorkflowRunSubmission` envelope and validate project/workflow
+repository, ref, and path fields. Valid source-reference submissions currently
+reach a not-yet-implemented admission helper; legacy inline workflow JSON is
+rejected in persisted mode without mutating `pending`, `assigned`, or `failed`.
+
+The third 012f3 atom wires provenance persistence into that helper. The
+controller resolves project and workflow source references through
+`Controller.sourceControl`, decodes and canonicalizes the JSON documents through
+`internal/fingerprint`, computes canonical SHA-256 values, and upserts
+`projects` and `workflows` rows with deterministic source-derived IDs. The
+helper still returns the not-yet-implemented sentinel after provenance
+persistence; workflow run creation, stage planning, work insertion, and queueing
+remain the next atoms. Current source-document rows use stable source-derived
+`created_at` tokens because the existing upsert methods compare the whole row.
+
+The fourth 012f3 atom now decodes the resolved workflow source as the existing
+`WorkflowSubmission` JSON shape, builds the resolver from workflow variables,
+source-submission variables, and run-submission variables, compiles the
+workflow, creates an opaque workflow run, stores bounded source-reference
+submission context JSON, inserts ready stage rows, inserts run-scoped persisted
+work item rows, and enqueues them. Persisted work item IDs use
+`runID:generatedID` so repeated workflow submissions do not collide on the
+global `work_items.work_item_id` primary key, while the worker payload still
+contains the original `model.WorkItem` JSON. Store-configured `/workflow` can
+now create queued persisted work that the existing persisted `/work/next` path
+can claim.
+
+The fifth 012f3 atom wires worker scaling for source-reference admission.
+After persisted work is enqueued, the controller derives demand from
+`ListQueuedWorkItems` and `ListRunningWork`, then uses the existing
+`WorkerScaleState` and `startConfiguredWorkers` path.
+
+Persisted source-reference admission can now also start local command-backed
+workers when no configured `ExecutionEnvironment` is present. It uses the
+existing `LocalWorkerStarter` path and worker configuration variables from the
+resolved workflow source. This keeps the local demo path working while the
+configured execution-environment model remains the preferred HPCC-facing path.
+
+The sixth 012f3 atom adds an end-to-end controller test for the migrated sibling
+demo project. The test loads
+`../go-etl-demo-project/submissions/demo-workflow-run.json`, maps `local:demo`
+to `../go-etl-demo-project`, submits the real source-reference body to
+`/workflow`, verifies persisted project/workflow/run/stage/queued-work state,
+checks that queued worker payload JSON decodes as `model.WorkItem`, claims one
+item through persisted `/work/next`.
+
+The local demo source adapter is now wired into live controller startup. When
+the controller starts from the `go-etl` working directory, `local:demo` maps to
+`../go-etl-demo-project`. This is a development/demo bridge so the current
+demo-client source-reference submission has a resolver during live admission.
+Future source-control work should replace the hard-coded mapping with
+controller configuration and source-control-cache-backed resolution.
+
+The local demo controller config now writes to
+`.run/controller/workflow-execution.sqlite` instead of the old
+`.run/controller/ledger.sqlite` path. The old file was created by an earlier
+ledger shape and is not automatically replaced. The source-reference demo client
+has been smoke-tested successfully with the new path:
+
+```text
+final status: pending=0 assigned=0 failed=0 pending_reuse_candidates=0 attempts=0 attempt_variables=0
+```
+
+Feature 012f4 is now being used as an epic-closure and boundary cleanup slice.
+The controller no longer has `pending`, `assigned`, or `failed` queue fields;
+the workflow-execution store is the only supported queue authority. The first
+closure cleanup replaced a skipped legacy inline `/workflow` invalid-payload
+test with source-reference validation coverage. Remaining 012f4 work is to
+replace or explicitly retire the other skipped legacy inline-workflow tests and
+to reconcile the epic README/status trail before marking the persistence epic
+ready for review.
+
+The next 012f4 cleanup pass replaced the legacy inline worker startup and
+worker-scaling `/workflow` tests with source-reference fixtures backed by
+`LocalSourceControlAdapter`. The converted coverage now exercises persisted
+workflow admission before asserting configured Slurm worker submission, planned
+worker count, submitted worker-scale configuration, and organic scale-up after a
+worker claim.
+
+The two skipped legacy ledger-handler tests were removed during 012f4 cleanup.
+The controller completion handler no longer writes old ledger attempt-variable
+rows, and status no longer reports ledger attempt or attempt-variable counts.
+Active coverage for those surfaces is now the persisted terminal-attempt test
+and the persisted status-count test.
+
+The final 012f4 cleanup converted the remaining skipped inline `/workflow`
+tests to source-reference coverage for general workflow admission, submitted
+code version, Singularity runtime, invalid worker scale config, and duplicate
+generated work-item IDs. `cmd/controller/main_test.go` now has no skipped tests,
+and the persistence epic is ready for implementation review rather than further
+feature expansion.
+
 The controller startup path now has a small assembly helper in `cmd/controller/main.go` so tests can exercise the full startup sequence without launching a live listener. The new startup coverage verifies precedence, qualified database lookup protection, recovery-mode startup, and fail-closed behavior before bind.
 
-The current in-memory queue is intentionally small. The SQLite ledger is only an attempt snapshot ledger; it is not yet a durable queue, retry system, workflow state store, or skip engine. Do not add retry rules or broad workflow parsing until the local controller state and ledger boundary are clear.
+The controller queue is now database-backed through the workflow-execution
+store. The older SQLite ledger remains an attempt snapshot helper for legacy
+skip/reuse code, but it is no longer the queue authority. Do not add retry rules
+or broad workflow parsing until the workflow-execution store boundary remains
+clear.
 
 For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 

@@ -2,18 +2,18 @@
 
 This directory owns the local Go client boundary for submitting workflow runs to a controller.
 
-It is not the workflow compiler, scheduler, ledger, or worker runtime. Its job is to translate a client-side workflow submission into controller HTTP calls, and to handle the local-controller bootstrap path when the configured controller is not already reachable.
+It is not the workflow compiler, scheduler, ledger, or worker runtime. Its job is to translate a client-side workflow-run source reference submission into controller HTTP calls, and to handle the local-controller bootstrap path when the configured controller is not already reachable.
 
 ## Files
 
-- `workflow.go` owns workflow submission, workflow submission file loading, controller reachability checks, status polling, and client-initiated shutdown after the controller becomes idle.
+- `controller_client.go` owns source-reference workflow-run submission, submission file loading, controller reachability checks, status polling, and client-initiated shutdown after the controller becomes idle.
 - `local_controller.go` owns the local process-starting adapter used when a client is allowed to start a controller on the same machine.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
 ## Owned Concepts
 
-- Client-side workflow submission envelope.
+- Client-side workflow-run source-reference submission envelope.
 - Controller reachability from the client's point of view.
 - Optional local controller startup before submission.
 - Client-side polling for idle controller state.
@@ -31,7 +31,8 @@ Test files in this directory describe expected behavior but do not own productio
 ## Invariants
 
 - The controller URL and client polling interval come from typed variables, not from a separate client config system.
-- Workflow submission targets the controller workflow API, not raw worker execution.
+- Workflow-run submission targets the controller workflow API, not raw worker execution.
+- The normal client path submits project/workflow source references, not inline workflow JSON.
 - The client may start a local controller, but it does not manage controller internals after startup.
 - Local controller startup is best-effort coordinated so concurrent clients do not intentionally start duplicate controllers.
 - Shutdown is requested only after the client observes no pending or assigned work.
@@ -42,5 +43,5 @@ Test files in this directory describe expected behavior but do not own productio
 - `os` and JSON encoding for loading serialized workflow submissions.
 - `os/exec` for local controller startup.
 - `internal/variable` for resolving runtime control values.
-- `internal/workflow` for the submitted workflow shape.
+- `internal/workflow` only for the temporary legacy inline workflow submission helpers.
 - `internal/model` for controller status.

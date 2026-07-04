@@ -103,6 +103,7 @@ func TestWorkItemValidate(t *testing.T) {
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:                   "work-item-001",
+		AttemptID:            "attempt-001",
 		Type:                 WorkItemTypeWriteDemoOutput,
 		OutputFilename:       "output.txt",
 		WorkflowDefinitionID: "workflow-definition-001",
@@ -115,6 +116,15 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 		InputFingerprint:     "input-fingerprint",
 		OutputFingerprint:    "output-fingerprint",
 		CodeVersion:          "code-version",
+		ReuseCandidates: []WorkReuseCandidate{
+			{
+				AttemptID:        "attempt-prior",
+				InputSHA256:      "input-sha",
+				OutputSHA256:     "output-sha",
+				PostStateSHA256:  "post-state-sha",
+				OutputJSONSHA256: "output-json-sha",
+			},
+		},
 		Parameters: Parameters{
 			"input_path": {Type: "path", Value: "/data/input.tif"},
 		},
@@ -132,6 +142,13 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 
 	if decodedItem.WorkflowInstanceID != item.WorkflowInstanceID {
 		t.Fatalf("workflow_instance_id = %q, want %q", decodedItem.WorkflowInstanceID, item.WorkflowInstanceID)
+	}
+
+	if decodedItem.AttemptID != item.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decodedItem.AttemptID, item.AttemptID)
+	}
+	if len(decodedItem.ReuseCandidates) != 1 || decodedItem.ReuseCandidates[0].AttemptID != "attempt-prior" {
+		t.Fatalf("reuse_candidates = %+v, want prior attempt", decodedItem.ReuseCandidates)
 	}
 
 	if decodedItem.StepDefinitionID != item.StepDefinitionID {
@@ -155,6 +172,16 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
 		ID:                   "work-item-001",
 		AttemptID:            "attempt-001",
+		Skipped:              true,
+		SkippedParentID:      "attempt-prior",
+		SkipReason:           "matched_worker_observed_state",
+		InputSHA256:          "input-sha",
+		OutputSHA256:         "output-sha",
+		PreStateSHA256:       "pre-state-sha",
+		PostStateSHA256:      "post-state-sha",
+		OutputJSON:           `{"result":"ok"}`,
+		PreStateJSON:         `{"output_exists":false}`,
+		PostStateJSON:        `{"output_exists":true}`,
 		WorkflowDefinitionID: "workflow-definition-001",
 		WorkflowFingerprint:  "workflow-fingerprint",
 		WorkflowInstanceID:   "workflow-instance-001",
@@ -185,6 +212,24 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	if decodedCompletion.AttemptID != completion.AttemptID {
 		t.Fatalf("attempt_id = %q, want %q", decodedCompletion.AttemptID, completion.AttemptID)
 	}
+	if !decodedCompletion.Skipped || decodedCompletion.SkippedParentID != completion.SkippedParentID {
+		t.Fatalf("skip metadata = %+v, want skipped parent %q", decodedCompletion, completion.SkippedParentID)
+	}
+	if decodedCompletion.InputSHA256 != completion.InputSHA256 || decodedCompletion.OutputSHA256 != completion.OutputSHA256 {
+		t.Fatalf("observed hashes = %+v, want input/output hashes", decodedCompletion)
+	}
+
+	if decodedCompletion.OutputJSON != completion.OutputJSON {
+		t.Fatalf("output_json = %q, want %q", decodedCompletion.OutputJSON, completion.OutputJSON)
+	}
+
+	if decodedCompletion.PreStateJSON != completion.PreStateJSON {
+		t.Fatalf("pre_state_json = %q, want %q", decodedCompletion.PreStateJSON, completion.PreStateJSON)
+	}
+
+	if decodedCompletion.PostStateJSON != completion.PostStateJSON {
+		t.Fatalf("post_state_json = %q, want %q", decodedCompletion.PostStateJSON, completion.PostStateJSON)
+	}
 
 	if decodedCompletion.WorkflowDefinitionID != completion.WorkflowDefinitionID {
 		t.Fatalf("workflow_definition_id = %q, want %q", decodedCompletion.WorkflowDefinitionID, completion.WorkflowDefinitionID)
@@ -200,6 +245,32 @@ func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 
 	if decodedCompletion.Parameters["input_path"].Value != "demo-summary-input.txt" {
 		t.Fatalf("unexpected input_path parameter: %+v", decodedCompletion.Parameters["input_path"])
+	}
+}
+
+func TestWorkFailureJSONIncludesAttemptID(t *testing.T) {
+	failure := WorkFailure{
+		ID:        "work-item-001",
+		AttemptID: "attempt-001",
+		FailedAt:  "2026-07-03T12:00:00Z",
+		Error:     "boom",
+	}
+
+	data, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatalf("marshal failure: %v", err)
+	}
+
+	var decoded WorkFailure
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode failure: %v", err)
+	}
+
+	if decoded.AttemptID != failure.AttemptID {
+		t.Fatalf("attempt_id = %q, want %q", decoded.AttemptID, failure.AttemptID)
+	}
+	if decoded.FailedAt != failure.FailedAt {
+		t.Fatalf("failed_at = %q, want %q", decoded.FailedAt, failure.FailedAt)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"goetl/internal/client"
 	"goetl/internal/model"
@@ -17,14 +18,14 @@ func main() {
 	}
 
 	starter := client.NewLocalControllerStarter(resolver)
-	workflowClient := client.NewWorkflowClientWithStarter(nil, resolver, starter)
+	controllerClient := client.NewControllerClientWithStarter(nil, resolver, starter)
 
-	if err := workflowClient.SubmitWorkflowFile(demoWorkflowPath(os.Args)); err != nil {
+	if err := controllerClient.SubmitWorkflowRunFile(demoWorkflowRunPath(os.Args)); err != nil {
 		fmt.Println("submit workflow:", err)
 		return
 	}
 
-	status, err := workflowClient.ShutdownWhenIdle(60)
+	status, err := controllerClient.ShutdownWhenIdle(60)
 	if err != nil {
 		fmt.Println("wait for shutdown:", err)
 		return
@@ -44,12 +45,12 @@ func formatFinalStatus(status model.ControllerStatus) string {
 	)
 }
 
-func demoWorkflowPath(args []string) string {
+func demoWorkflowRunPath(args []string) string {
 	if len(args) > 1 {
 		return args[1]
 	}
 
-	return "demo-workflow.json"
+	return filepath.Join("..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
 }
 
 func demoResolver() (variable.Resolver, error) {

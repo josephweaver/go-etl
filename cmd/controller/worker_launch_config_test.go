@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -161,7 +162,7 @@ func TestWorkerLaunchConfigRejectsMissingScriptPath(t *testing.T) {
 }
 
 func TestDockerSlurmWorkflowFixtureResolvesWorkerConfig(t *testing.T) {
-	data, err := os.ReadFile("../../demo-docker-slurm-workflow.json")
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "workflows", "demo-docker-slurm-workflow.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

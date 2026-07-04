@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"goetl/internal/variable"
@@ -61,7 +62,7 @@ func TestLocalWorkerStarterRejectsMissingExecutable(t *testing.T) {
 }
 
 func TestFakeHPCCWorkflowFixtureResolvesWorkerCommand(t *testing.T) {
-	data, err := os.ReadFile("../../demo-fake-hpcc-workflow.json")
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "go-etl-demo-project", "workflows", "demo-fake-hpcc-workflow.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

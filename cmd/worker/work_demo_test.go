@@ -18,8 +18,12 @@ func TestWorkerWriteDemoOutput(t *testing.T) {
 		OutputFilename: "result.txt",
 	}
 
-	if err := worker.writeDemoOutput(item); err != nil {
+	evidence, err := worker.writeDemoOutput(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
+		t.Fatalf("expected output evidence: %+v", evidence)
 	}
 
 	tmpPath := filepath.Join(worker.Config.TmpDir, item.OutputFilename)
@@ -65,8 +69,12 @@ func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
 		t.Fatalf("write stale output: %v", err)
 	}
 
-	if err := worker.writeDemoOutput(item); err != nil {
+	evidence, err := worker.writeDemoOutput(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(evidence.PreStateJSON, `"output_exists":true`) {
+		t.Fatalf("expected pre-state to see stale output: %s", evidence.PreStateJSON)
 	}
 
 	output, err := os.ReadFile(dataPath)
@@ -76,5 +84,42 @@ func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
 
 	if string(output) != "completed test-001\n" {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+func TestWorkerWriteDemoOutputSkipsMatchingReuseCandidate(t *testing.T) {
+	worker := newTestWorker(t)
+
+	item := model.WorkItem{
+		ID:             "test-001",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "result.txt",
+	}
+	firstEvidence, err := worker.writeDemoOutput(item)
+	if err != nil {
+		t.Fatalf("first write error: %v", err)
+	}
+
+	item.ReuseCandidates = []model.WorkReuseCandidate{
+		{
+			AttemptID:       "attempt-prior",
+			InputSHA256:     firstEvidence.InputSHA256,
+			OutputSHA256:    firstEvidence.OutputSHA256,
+			PostStateSHA256: firstEvidence.PostStateSHA256,
+		},
+	}
+	secondEvidence, err := worker.writeDemoOutput(item)
+	if err != nil {
+		t.Fatalf("second write error: %v", err)
+	}
+
+	if !secondEvidence.Skipped {
+		t.Fatalf("expected skipped evidence: %+v", secondEvidence)
+	}
+	if secondEvidence.SkippedParentID != "attempt-prior" {
+		t.Fatalf("skipped parent = %q, want attempt-prior", secondEvidence.SkippedParentID)
+	}
+	if secondEvidence.PreStateSHA256 != firstEvidence.PostStateSHA256 {
+		t.Fatalf("pre-state hash = %q, want prior post-state %q", secondEvidence.PreStateSHA256, firstEvidence.PostStateSHA256)
 	}
 }

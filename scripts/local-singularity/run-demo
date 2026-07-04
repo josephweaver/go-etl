@@ -42,7 +42,7 @@ for _ in $(seq 1 60); do
 done
 
 curl -fsS -X POST -H "Content-Type: application/json" \
-  --data-binary @demo-local-singularity-workflow.json \
+  --data-binary @../go-etl-demo-project/workflows/demo-local-singularity-workflow.json \
   http://localhost:8080/workflow >/tmp/goetl-submit.out
 
 for i in $(seq 1 90); do

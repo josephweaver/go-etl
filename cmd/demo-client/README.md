@@ -2,13 +2,13 @@
 
 This directory owns the local demo client executable.
 
-The demo client is a runnable example of the current local workflow path. It builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow file, waits for the controller to become idle, asks for shutdown, and prints the final status.
+The demo client is a runnable example of the current local workflow path. It builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow-run source-reference file, waits for the controller to become idle, asks for shutdown, and prints the final status.
 
 It is not the reusable Python-facing API, the controller, the worker, the workflow compiler, or the variable system. It wires existing package boundaries together for a local demonstration.
 
 ## Files
 
-- `main.go` owns the demo executable entry point, demo runtime variables, workflow-file selection, final status formatting, and local client wiring.
+- `main.go` owns the demo executable entry point, demo runtime variables, workflow-run submission file selection, final status formatting, and local client wiring.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
@@ -16,7 +16,7 @@ Test files in this directory describe expected behavior but do not own productio
 
 - Local demo execution path.
 - Demo defaults for controller contact and startup.
-- Demo workflow-file selection.
+- Demo workflow-run source-reference file selection.
 - Final local status display.
 - Example wiring between the reusable client helper and the controller executable.
 
@@ -33,7 +33,7 @@ Test files in this directory describe expected behavior but do not own productio
 
 - This executable should stay small and demonstrative.
 - Demo startup values are expressed as typed variables.
-- The demo submits workflow files, not raw work items.
+- The demo submits workflow-run source-reference files, not raw work items or inline workflow JSON.
 - The demo waits for pending and assigned work to reach zero before requesting controller shutdown.
 - Reusable client behavior should live in `internal/client`, not be duplicated here.
 

@@ -13,6 +13,19 @@ target. Current HPCC-facing work should stay on the Bash/Linux dialect through
 WSL, Dockerized Slurm, and SingularityCE so Windows quoting and path rules do
 not distract from the production runtime path.
 
+## Local Source-control Adapter
+
+Add a `local` source-control adapter for development and local-only execution.
+It would resolve project/workflow source references from repositories already
+available on the same filesystem as the controller, without GitHub API access.
+
+This adapter should only be valid when the controller is running locally with
+filesystem access to the referenced repository or cache. It should still
+resolve refs to immutable commits, reject unsafe paths, read repository-relative
+project/workflow JSON files, and return the same source identity shape as a
+remote source-control adapter. It is a convenience adapter, not a second
+provenance model.
+
 ## Previous Workflow Stage Alias
 
 Consider adding a generated read-only `workflow.previous` convenience variable

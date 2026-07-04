@@ -12,7 +12,7 @@ import (
 	"goetl/internal/workflow"
 )
 
-func TestWorkflowClientSubmitWorkflow(t *testing.T) {
+func TestControllerClientSubmitWorkflow(t *testing.T) {
 	var received WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/status" {
@@ -36,7 +36,7 @@ func TestWorkflowClientSubmitWorkflow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
 	err := client.SubmitWorkflow(WorkflowSubmission{
 		Workflow: workflow.Workflow{
 			ID: "cdl",
@@ -76,8 +76,66 @@ func TestWorkflowClientSubmitWorkflow(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
-	path := filepath.Join("..", "..", "demo-workflow.json")
+func TestControllerClientSubmitWorkflowRun(t *testing.T) {
+	var received WorkflowRunSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+
+		if r.URL.Path != "/workflow" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	err := client.SubmitWorkflowRun(WorkflowRunSubmission{
+		Project: SourceDocumentReference{
+			Repository: "local:demo",
+			Ref:        "main",
+			Path:       "project.json",
+		},
+		Workflow: SourceDocumentReference{
+			Repository: "local:demo",
+			Ref:        "main",
+			Path:       "workflows/demo-workflow.json",
+		},
+		Variables: []variable.Variable{
+			{
+				Name:            variable.Name{Namespace: variable.NamespaceOverride, Key: "code_version"},
+				TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "test-version"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if received.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", received.Workflow.Path)
+	}
+	if received.Project.Repository != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", received.Project.Repository)
+	}
+	if len(received.Variables) != 1 {
+		t.Fatalf("variables count = %d, want 1", len(received.Variables))
+	}
+}
+
+func TestControllerClientLoadsWorkflowSubmissionFile(t *testing.T) {
+	path := demoProjectPath("workflows", "demo-workflow.json")
 
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
@@ -97,8 +155,27 @@ func TestWorkflowClientLoadsWorkflowSubmissionFile(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
-	path := filepath.Join("..", "..", "demo-summary-workflow.json")
+func TestControllerClientLoadsWorkflowRunSubmissionFile(t *testing.T) {
+	path := demoProjectPath("submissions", "demo-workflow-run.json")
+
+	submission, err := LoadWorkflowRunSubmissionFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if submission.Project.Repository != "local:demo" {
+		t.Fatalf("project repository = %q, want local:demo", submission.Project.Repository)
+	}
+	if submission.Project.Path != "project.json" {
+		t.Fatalf("project path = %q, want project.json", submission.Project.Path)
+	}
+	if submission.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", submission.Workflow.Path)
+	}
+}
+
+func TestControllerClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
+	path := demoProjectPath("workflows", "demo-summary-workflow.json")
 
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
@@ -128,7 +205,35 @@ func TestWorkflowClientLoadsSummaryWorkflowSubmissionFile(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
+func TestControllerClientSubmitWorkflowRunFile(t *testing.T) {
+	var received WorkflowRunSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	err := client.SubmitWorkflowRunFile(demoProjectPath("submissions", "demo-workflow-run.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if received.Workflow.Path != "workflows/demo-workflow.json" {
+		t.Fatalf("workflow path = %q, want workflows/demo-workflow.json", received.Workflow.Path)
+	}
+}
+
+func TestControllerClientSubmitWorkflowFile(t *testing.T) {
 	var received WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -145,8 +250,8 @@ func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
-	err := client.SubmitWorkflowFile(filepath.Join("..", "..", "demo-workflow.json"))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	err := client.SubmitWorkflowFile(demoProjectPath("workflows", "demo-workflow.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -156,8 +261,13 @@ func TestWorkflowClientSubmitWorkflowFile(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientRejectsMissingControllerURL(t *testing.T) {
-	client := NewWorkflowClient(nil, variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
+func demoProjectPath(parts ...string) string {
+	allParts := append([]string{"..", "..", "..", "go-etl-demo-project"}, parts...)
+	return filepath.Join(allParts...)
+}
+
+func TestControllerClientRejectsMissingControllerURL(t *testing.T) {
+	client := NewControllerClient(nil, variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -165,7 +275,7 @@ func TestWorkflowClientRejectsMissingControllerURL(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientChecksControllerBeforeSubmit(t *testing.T) {
+func TestControllerClientChecksControllerBeforeSubmit(t *testing.T) {
 	submitted := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/status" {
@@ -181,7 +291,7 @@ func TestWorkflowClientChecksControllerBeforeSubmit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -193,7 +303,7 @@ func TestWorkflowClientChecksControllerBeforeSubmit(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientStartsControllerWhenUnavailable(t *testing.T) {
+func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 	statusChecks := 0
 	submitted := false
 	starter := &testControllerStarter{}
@@ -215,7 +325,7 @@ func TestWorkflowClientStartsControllerWhenUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
+	client := NewControllerClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err != nil {
@@ -235,7 +345,7 @@ func TestWorkflowClientStartsControllerWhenUnavailable(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientRejectsControllerStartupTimeout(t *testing.T) {
+func TestControllerClientRejectsControllerStartupTimeout(t *testing.T) {
 	starter := &testControllerStarter{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/status" {
@@ -249,7 +359,7 @@ func TestWorkflowClientRejectsControllerStartupTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
+	client := NewControllerClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -261,7 +371,7 @@ func TestWorkflowClientRejectsControllerStartupTimeout(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientRejectsFailedSubmission(t *testing.T) {
+func TestControllerClientRejectsFailedSubmission(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/status" {
 			w.WriteHeader(http.StatusOK)
@@ -272,7 +382,7 @@ func TestWorkflowClientRejectsFailedSubmission(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -280,7 +390,7 @@ func TestWorkflowClientRejectsFailedSubmission(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientShutdownWhenIdle(t *testing.T) {
+func TestControllerClientShutdownWhenIdle(t *testing.T) {
 	shutdown := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -300,7 +410,7 @@ func TestWorkflowClientShutdownWhenIdle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
 
 	status, err := client.ShutdownWhenIdle(1)
 	if err != nil {
@@ -316,7 +426,7 @@ func TestWorkflowClientShutdownWhenIdle(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientDoesNotShutdownWhenBusy(t *testing.T) {
+func TestControllerClientDoesNotShutdownWhenBusy(t *testing.T) {
 	shutdown := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -334,7 +444,7 @@ func TestWorkflowClientDoesNotShutdownWhenBusy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolver(t, server.URL))
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
 
 	_, err := client.ShutdownWhenIdle(1)
 	if err == nil {
@@ -346,7 +456,7 @@ func TestWorkflowClientDoesNotShutdownWhenBusy(t *testing.T) {
 	}
 }
 
-func TestWorkflowClientUsesStatusPollInterval(t *testing.T) {
+func TestControllerClientUsesStatusPollInterval(t *testing.T) {
 	statusChecks := 0
 	shutdown := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +479,7 @@ func TestWorkflowClientUsesStatusPollInterval(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewWorkflowClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
 
 	status, err := client.ShutdownWhenIdle(2)
 	if err != nil {

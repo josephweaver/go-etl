@@ -1259,7 +1259,7 @@ func TestControllerOwnsConfiguredLedger(t *testing.T) {
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 
-	controller := newController(nil)
+	controller := newController()
 	controller.ledger = db
 
 	if controller.ledger == nil {
@@ -1268,7 +1268,7 @@ func TestControllerOwnsConfiguredLedger(t *testing.T) {
 }
 
 func TestControllerRecordAttemptNoopsWithoutLedger(t *testing.T) {
-	controller := newController(nil)
+	controller := newController()
 
 	if err := controller.recordAttempt(context.Background(), ledger.Attempt{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1279,7 +1279,7 @@ func TestControllerRecordAttemptWritesConfiguredLedger(t *testing.T) {
 	db := testSQLiteMainDatabase(t)
 	defer db.Close()
 
-	controller := newController(nil)
+	controller := newController()
 	controller.ledger = db
 	attempt := ledger.Attempt{
 		ID:                  "attempt-001",

@@ -12,12 +12,12 @@ type Worker struct {
 	Config Config
 }
 
-func (w Worker) Run(item model.WorkItem) error {
+func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {
 	fmt.Println("worker starting")
 	fmt.Println("log dir:", w.Config.LogDir)
 
 	if err := w.log("worker starting"); err != nil {
-		return err
+		return WorkEvidence{}, err
 	}
 
 	return w.runWorkItem(item)
@@ -65,9 +65,9 @@ func requireDir(path string) error {
 	return nil
 }
 
-func (w Worker) runWorkItem(item model.WorkItem) error {
+func (w Worker) runWorkItem(item model.WorkItem) (WorkEvidence, error) {
 	if err := item.Validate(); err != nil {
-		return fmt.Errorf("invalid work item: %w", err)
+		return WorkEvidence{}, fmt.Errorf("invalid work item: %w", err)
 	}
 
 	switch item.Type {
@@ -76,6 +76,6 @@ func (w Worker) runWorkItem(item model.WorkItem) error {
 	case model.WorkItemTypeSummarizeInputFile:
 		return w.summarizeInputFile(item)
 	default:
-		return fmt.Errorf("unsupported work item type: %s", item.Type)
+		return WorkEvidence{}, fmt.Errorf("unsupported work item type: %s", item.Type)
 	}
 }

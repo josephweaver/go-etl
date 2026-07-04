@@ -25,8 +25,12 @@ func TestWorkerSummarizeInputFile(t *testing.T) {
 		},
 	}
 
-	if err := worker.summarizeInputFile(item); err != nil {
+	evidence, err := worker.summarizeInputFile(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
+		t.Fatalf("expected summary evidence: %+v", evidence)
 	}
 
 	output, err := os.ReadFile(filepath.Join(worker.Config.DataDir, item.OutputFilename))
@@ -51,7 +55,7 @@ func TestWorkerSummarizeInputFileRequiresInputPath(t *testing.T) {
 		OutputFilename: "summary.txt",
 	}
 
-	if err := worker.summarizeInputFile(item); err == nil {
+	if _, err := worker.summarizeInputFile(item); err == nil {
 		t.Fatal("expected an error")
 	}
 }

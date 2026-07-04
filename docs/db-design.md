@@ -2,6 +2,10 @@
 
 SQLite schema notes for durable workflow execution.
 
+This is a working design note. The active epic README and numbered feature
+slices under `docs/epics/` are closer to implementation and take precedence
+when they differ from this file.
+
 ## `projects`
 
 ```sql
@@ -78,8 +82,7 @@ CREATE TABLE work_items (
     run_id         TEXT NOT NULL REFERENCES workflow_instances(run_id),
     stage_index    INTEGER NOT NULL CHECK (stage_index >= 0),
     work_item_index INTEGER NOT NULL CHECK (work_item_index >= 0),
-    work_item_json  TEXT NOT NULL CHECK (json_valid(work_item_json)),
-    resolved_inputs_json TEXT NOT NULL CHECK (json_valid(resolved_inputs_json)),
+    worker_payload_json TEXT NOT NULL CHECK (json_valid(worker_payload_json)),
     resolved_inputs_sha256 TEXT NOT NULL
         CHECK (length(resolved_inputs_sha256) = 64),
     created_at     TEXT NOT NULL,
@@ -88,10 +91,12 @@ CREATE TABLE work_items (
 ```
 
 The composite uniqueness constraint makes repeated stage compilation
-idempotent. `work_item_json` contains the compiled worker payload.
-`resolved_inputs_json` contains the canonical resolved operation inputs;
-`resolved_inputs_sha256` supports prior-work lookup without including unrelated
-submission context. Retries reuse both values.
+idempotent. `worker_payload_json` contains the compiled worker payload that the
+worker needs to execute the item. `resolved_inputs_sha256` supports prior-work
+lookup without including unrelated submission context. Retries reuse both
+values. The full resolved input document may be reconstructed from source
+documents and resolver inputs; storing it directly in this table is not part of
+the current epic design.
 
 `stage_index` is the index of a logical block, commonly one step or a collection
 of parallel steps. `work_item_index` is the ordinal within a fanout operation.

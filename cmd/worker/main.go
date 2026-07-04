@@ -48,14 +48,15 @@ func runWorkerLoop(worker Worker) error {
 		}
 
 		startedAt := time.Now().UTC()
-		if err := worker.Run(item); err != nil {
-			if reportErr := reportWorkFailed(worker.Config.ControllerURL, item.ID, err); reportErr != nil {
+		evidence, err := worker.Run(item)
+		if err != nil {
+			if reportErr := reportWorkFailed(worker.Config.ControllerURL, item, err); reportErr != nil {
 				return fmt.Errorf("run work item: %v; report failure: %w", err, reportErr)
 			}
 			return err
 		}
 
-		if err := reportWorkComplete(worker.Config.ControllerURL, item, startedAt); err != nil {
+		if err := reportWorkComplete(worker.Config.ControllerURL, item, startedAt, evidence); err != nil {
 			return fmt.Errorf("report completion: %w", err)
 		}
 	}

@@ -24,7 +24,7 @@
         "key": "main_database_connection_string"
       },
       "type": "string",
-      "expression": ".run/controller/ledger.sqlite"
+      "expression": ".run/controller/workflow-execution.sqlite"
     }
   ]
 }

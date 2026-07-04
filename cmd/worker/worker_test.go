@@ -50,7 +50,7 @@ func TestWorkerRunWorkItemRejectsInvalidItem(t *testing.T) {
 		OutputFilename: "../outside.txt",
 	}
 
-	if err := worker.runWorkItem(item); err == nil {
+	if _, err := worker.runWorkItem(item); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -85,8 +85,12 @@ func TestWorkerRun(t *testing.T) {
 		OutputFilename: "result.txt",
 	}
 
-	if err := worker.Run(item); err != nil {
+	evidence, err := worker.Run(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
+		t.Fatalf("expected run evidence: %+v", evidence)
 	}
 
 	dataPath := filepath.Join(worker.Config.DataDir, item.OutputFilename)
@@ -111,8 +115,12 @@ func TestWorkerRunSummarizeInputFile(t *testing.T) {
 		},
 	}
 
-	if err := worker.Run(item); err != nil {
+	evidence, err := worker.Run(item)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
+		t.Fatalf("expected summary evidence: %+v", evidence)
 	}
 
 	dataPath := filepath.Join(worker.Config.DataDir, item.OutputFilename)
@@ -130,7 +138,7 @@ func TestWorkerRunWorkItemRejectsUnsupportedType(t *testing.T) {
 		OutputFilename: "result.txt",
 	}
 
-	if err := worker.runWorkItem(item); err == nil {
+	if _, err := worker.runWorkItem(item); err == nil {
 		t.Fatal("expected an error")
 	}
 }

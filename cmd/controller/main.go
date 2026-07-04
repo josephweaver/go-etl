@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,23 +16,33 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
+	fp "goetl/internal/fingerprint"
 	"goetl/internal/ledger"
 	"goetl/internal/model"
+	"goetl/internal/persistence"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
 const defaultControllerConfigFilename = "controller.json"
+const rawPersistenceProjectID = "__raw_project__"
+const rawPersistenceWorkflowID = "__raw_workflow__"
+const rawPersistenceRunID = "__raw_run__"
+const rawPersistenceStageIndex = 0
+const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
+
+var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
 type Controller struct {
 	mu                sync.Mutex
-	pending           []model.WorkItem
-	assigned          map[string]model.WorkItem
-	failed            map[string]model.WorkFailure
 	ledger            *sql.DB
+	workflowStore     *persistence.Store
+	sourceControl     SourceControlAdapter
+	workerStarter     WorkerStarter
 	shutdown          func(context.Context) error
 	env               *ExecutionEnvironment
 	scaler            WorkerScaleState
@@ -42,6 +54,16 @@ type Controller struct {
 type WorkflowSubmission struct {
 	Workflow  workflow.Workflow   `json:"workflow"`
 	Variables []variable.Variable `json:"variables"`
+}
+
+type WorkflowRunSubmission struct {
+	Project   SourceDocumentReference `json:"project"`
+	Workflow  SourceDocumentReference `json:"workflow"`
+	Variables []variable.Variable     `json:"variables,omitempty"`
+}
+
+type WorkerStarter interface {
+	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
 
 type WorkReuseDecision struct {
@@ -92,11 +114,9 @@ type controllerHTTPSettings struct {
 	MaxHeaderBytes          int
 }
 
-func newController(items []model.WorkItem) *Controller {
+func newController() *Controller {
 	return &Controller{
-		pending:         items,
-		assigned:        make(map[string]model.WorkItem),
-		failed:          make(map[string]model.WorkFailure),
+		workerStarter:   LocalWorkerStarter{},
 		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
 			MaxCount:                2,
@@ -117,6 +137,16 @@ func (c *Controller) allowNormalAdmission() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.normalAdmission = true
+}
+
+func (c *Controller) completeStartupRecovery(ctx context.Context) error {
+	if c.workflowStore != nil {
+		if _, err := c.workflowStore.ListActiveWorkflowRuns(ctx); err != nil {
+			return fmt.Errorf("list active workflow runs: %w", err)
+		}
+	}
+	c.allowNormalAdmission()
+	return nil
 }
 
 func (c *Controller) recoveryAdmissionClosed() bool {
@@ -189,13 +219,13 @@ func buildControllerServer(
 	}
 	config := sources.Controller
 
-	ledgerDB, err := initMainDatabase(context.Background(), resolver)
+	workflowStore, databasePath, err := initWorkflowExecutionStore(context.Background(), resolver)
 	if err != nil {
 		return nil, nil, fmt.Errorf("controller database failed: %w", err)
 	}
-	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnership(ledgerDB)
+	releaseDatabaseOwnership, err := acquireControllerDatabaseOwnershipForPath(databasePath)
 	if err != nil {
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller database ownership failed: %w", err)
 	}
 	workingDirectory, err := getwd()
@@ -203,21 +233,21 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerFilesystemPaths(resolver, workingDirectory); err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
 	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller policy failed: %w", err)
 	}
 	httpSettings, err := resolveControllerHTTPSettings(resolver)
@@ -225,7 +255,7 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller http failed: %w", err)
 	}
 
@@ -234,14 +264,22 @@ func buildControllerServer(
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
-		ledgerDB.Close()
+		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller execution environment failed: %w", err)
 	}
 
-	controller := newController(nil)
-	controller.ledger = ledgerDB
+	controller := newController()
+	controller.workflowStore = workflowStore
+	controller.sourceControl = initSourceControlAdapter(workingDirectory)
 	controller.env = executionEnvironment
 	controller.enterRecoveryMode()
+	if err := controller.completeStartupRecovery(context.Background()); err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		workflowStore.Close()
+		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -270,7 +308,7 @@ func buildControllerServer(
 				return err
 			}
 		}
-		return ledgerDB.Close()
+		return workflowStore.Close()
 	}, nil
 }
 
@@ -454,6 +492,12 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 	return &env, nil
 }
 
+func initSourceControlAdapter(workingDirectory string) SourceControlAdapter {
+	return NewLocalSourceControlAdapter(map[string]string{
+		"local:demo": filepath.Join(workingDirectory, "..", "go-etl-demo-project"),
+	})
+}
+
 func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
 	driver, err := resolver.String("controller_config.main_database_driver")
 	if err != nil {
@@ -480,6 +524,26 @@ func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB,
 	return db, nil
 }
 
+func initWorkflowExecutionStore(ctx context.Context, resolver variable.Resolver) (*persistence.Store, string, error) {
+	driver, err := resolver.String("controller_config.main_database_driver")
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: required variable controller_config.main_database_driver: %w", err)
+	}
+	connectionString, err := resolver.String("controller_config.main_database_connection_string")
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: resolve controller_config.main_database_connection_string: %w", err)
+	}
+
+	store, err := persistence.OpenStore(ctx, persistence.Config{
+		Driver:           driver,
+		ConnectionString: connectionString,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("controller startup database: %w", err)
+	}
+	return store, connectionString, nil
+}
+
 func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
 	if db == nil {
 		return nil, fmt.Errorf("controller startup database ownership: database handle is required")
@@ -491,6 +555,17 @@ func acquireControllerDatabaseOwnership(db *sql.DB) (func() error, error) {
 	}
 	if path == "" || path == ":memory:" {
 		return func() error { return nil }, nil
+	}
+
+	return acquireControllerDatabaseOwnershipForPath(path)
+}
+
+func acquireControllerDatabaseOwnershipForPath(path string) (func() error, error) {
+	if path == "" || path == ":memory:" {
+		return func() error { return nil }, nil
+	}
+	if path != filepath.Clean(path) {
+		path = filepath.Clean(path)
 	}
 
 	lockPath := path + ".controller.lock"
@@ -865,16 +940,132 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.hasWorkItemID(item.ID) {
-		http.Error(w, "work item id already exists", http.StatusConflict)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	c.pending = append(c.pending, item)
+	if err := c.submitRawWorkToStore(r.Context(), item, time.Now().UTC()); err != nil {
+		if isPersistenceConflict(err) {
+			http.Error(w, "work item id already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "persist work item", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkItem, submittedAt time.Time) error {
+	if err := c.ensureRawPersistenceRun(ctx); err != nil {
+		return err
+	}
+
+	record, queued, err := persistenceRecordsFromRawWorkItem(item, submittedAt)
+	if err != nil {
+		return err
+	}
+	if _, found, err := c.workflowStore.GetWorkItem(ctx, record.ID); err != nil {
+		return err
+	} else if found {
+		return fmt.Errorf("work item %s already exists", record.ID)
+	}
+	if err := c.workflowStore.InsertWorkItems(ctx, []persistence.WorkItemRecord{record}); err != nil {
+		return err
+	}
+	if err := c.workflowStore.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{queued}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Controller) ensureRawPersistenceRun(ctx context.Context) error {
+	project := persistence.ProjectRecord{
+		ID:                 rawPersistenceProjectID,
+		Name:               "Raw Work",
+		RepositoryIdentity: "controller:raw",
+		SourceCommit:       "raw",
+		ConfigPath:         "raw",
+		ConfigSHA256:       sha256HexString("raw-project"),
+		CreatedAt:          rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.UpsertProject(ctx, project); err != nil {
+		return err
+	}
+	workflow := persistence.WorkflowRecord{
+		ID:                 rawPersistenceWorkflowID,
+		ProjectID:          rawPersistenceProjectID,
+		Name:               "Raw Work",
+		RepositoryIdentity: "controller:raw",
+		SourceCommit:       "raw",
+		WorkflowPath:       "raw",
+		WorkflowSHA256:     sha256HexString("raw-workflow"),
+		CreatedAt:          rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.UpsertWorkflow(ctx, workflow); err != nil {
+		return err
+	}
+	run := persistence.WorkflowRunRecord{
+		ID:                    rawPersistenceRunID,
+		ProjectID:             rawPersistenceProjectID,
+		WorkflowID:            rawPersistenceWorkflowID,
+		SubmissionContextJSON: `{"source":"raw-work"}`,
+		CreatedAt:             rawPersistenceCreatedAt,
+	}
+	if err := c.workflowStore.CreateWorkflowRun(ctx, run); err != nil {
+		return err
+	}
+	stage := persistence.WorkflowStageRecord{
+		RunID:                rawPersistenceRunID,
+		StageIndex:           rawPersistenceStageIndex,
+		StepID:               "raw-work",
+		StageSourceReference: "controller:raw-work",
+		State:                "ready",
+		CreatedAt:            rawPersistenceCreatedAt,
+		ReadyAt:              rawPersistenceCreatedAt,
+	}
+	return c.workflowStore.InsertStagePlan(ctx, rawPersistenceRunID, []persistence.WorkflowStageRecord{stage})
+}
+
+func persistenceRecordsFromRawWorkItem(item model.WorkItem, submittedAt time.Time) (persistence.WorkItemRecord, persistence.QueuedWorkRecord, error) {
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return persistence.WorkItemRecord{}, persistence.QueuedWorkRecord{}, fmt.Errorf("encode raw work item: %w", err)
+	}
+	record := persistence.WorkItemRecord{
+		ID:                   item.ID,
+		RunID:                rawPersistenceRunID,
+		StageIndex:           rawPersistenceStageIndex,
+		WorkItemIndex:        rawWorkItemIndex(item.ID),
+		WorkerPayloadJSON:    string(payload),
+		ResolvedInputsSHA256: sha256HexBytes(payload),
+		CreatedAt:            submittedAt.UTC().Format(time.RFC3339),
+	}
+	return record, persistence.QueuedWorkRecord{
+		WorkItemRecord: record,
+		QueuedAt:       submittedAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func rawWorkItemIndex(id string) int {
+	sum := sha256.Sum256([]byte(id))
+	return int(sum[0]&0x7f)<<24 | int(sum[1])<<16 | int(sum[2])<<8 | int(sum[3])
+}
+
+func sha256HexString(value string) string {
+	return sha256HexBytes([]byte(value))
+}
+
+func sha256HexBytes(value []byte) string {
+	sum := sha256.Sum256(value)
+	return hex.EncodeToString(sum[:])
+}
+
+func isPersistenceConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "already exists")
 }
 
 func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Request) {
@@ -889,71 +1080,349 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "controller is in recovery mode", http.StatusServiceUnavailable)
 		return
 	}
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
+		return
+	}
 
-	var submission WorkflowSubmission
+	var submission WorkflowRunSubmission
 	if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
-		http.Error(w, "decode workflow submission", http.StatusBadRequest)
+		http.Error(w, "decode workflow run submission", http.StatusBadRequest)
 		return
 	}
-
-	workflowScope, err := variable.NewScope(submission.Workflow.Variables...)
-	if err != nil {
+	if err := submission.validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	submissionScope, err := variable.NewScope(submission.Variables...)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC()); err != nil {
+		if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
+			http.Error(w, err.Error(), http.StatusNotImplemented)
+			return
+		}
+		http.Error(w, "persist workflow run", http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
-	resolver := variable.NewResolver(variable.NewSet(workflowScope, submissionScope), variable.ResolverConfig{})
+func (s WorkflowRunSubmission) validate() error {
+	if err := s.Project.validate("project"); err != nil {
+		return err
+	}
+	if err := s.Workflow.validate("workflow"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r SourceDocumentReference) validate(name string) error {
+	if strings.TrimSpace(r.Repository) == "" {
+		return fmt.Errorf("%s repository is required", name)
+	}
+	if strings.TrimSpace(r.Ref) == "" {
+		return fmt.Errorf("%s ref is required", name)
+	}
+	if strings.TrimSpace(r.Path) == "" {
+		return fmt.Errorf("%s path is required", name)
+	}
+	return nil
+}
+
+func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) error {
+	if c.sourceControl == nil {
+		return fmt.Errorf("source control adapter is required")
+	}
+	projectDocument, err := c.sourceControl.Resolve(ctx, submission.Project)
+	if err != nil {
+		return fmt.Errorf("resolve project source: %w", err)
+	}
+	workflowDocument, err := c.sourceControl.Resolve(ctx, submission.Workflow)
+	if err != nil {
+		return fmt.Errorf("resolve workflow source: %w", err)
+	}
+
+	_, projectHash, err := canonicalSourceDocument(projectDocument.Data)
+	if err != nil {
+		return fmt.Errorf("canonicalize project source: %w", err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowDocument.Data)
+	if err != nil {
+		return fmt.Errorf("canonicalize workflow source: %w", err)
+	}
+
+	projectRecord := projectRecordFromSource(projectDocument, projectHash, submittedAt)
+	if err := c.workflowStore.UpsertProject(ctx, projectRecord); err != nil {
+		return fmt.Errorf("upsert project: %w", err)
+	}
+	workflowRecord := workflowRecordFromSource(projectRecord.ID, workflowDocument, workflowHash, submittedAt)
+	if err := c.workflowStore.UpsertWorkflow(ctx, workflowRecord); err != nil {
+		return fmt.Errorf("upsert workflow: %w", err)
+	}
+
+	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowDocument.Data)
+	if err != nil {
+		return fmt.Errorf("decode workflow source: %w", err)
+	}
+	workflowScope, err := variable.NewScope(workflowSubmission.Workflow.Variables...)
+	if err != nil {
+		return err
+	}
+	sourceSubmissionScope, err := variable.NewScope(workflowSubmission.Variables...)
+	if err != nil {
+		return err
+	}
+	runSubmissionScope, err := variable.NewScope(submission.Variables...)
+	if err != nil {
+		return err
+	}
+	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope), variable.ResolverConfig{})
 	codeVersion, err := controllerCodeVersion(resolver)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
-
-	compiledItems, err := workflow.CompileWorkflowItems(resolver, submission.Workflow)
+	compileResult, err := workflow.CompileWorkflowResult(resolver, workflowSubmission.Workflow)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
-	items := workItemsWithRuntimeMetadata(submission.Workflow.ID, compiledItems, codeVersion)
 
-	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+	runRecord, err := workflowRunRecordFromSource(projectRecord.ID, workflowRecord.ID, projectDocument, projectHash, workflowDocument, workflowHash, submission.Variables, submittedAt)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
-
-	c.mu.Lock()
-
-	for _, item := range items {
-		if c.hasWorkItemID(item.ID) {
-			c.mu.Unlock()
-			http.Error(w, "work item id already exists", http.StatusConflict)
-			return
+	if err := c.workflowStore.CreateWorkflowRun(ctx, runRecord); err != nil {
+		return fmt.Errorf("create workflow run: %w", err)
+	}
+	stages := stageRecordsFromWorkflow(runRecord.ID, workflowDocument.Path, workflowSubmission.Workflow, submittedAt)
+	if len(stages) != 0 {
+		if err := c.workflowStore.InsertStagePlan(ctx, runRecord.ID, stages); err != nil {
+			return fmt.Errorf("insert stage plan: %w", err)
+		}
+	}
+	items, queued, err := persistenceRecordsFromCompiledWorkflow(runRecord.ID, workflowSubmission.Workflow, compileResult, codeVersion, submittedAt)
+	if err != nil {
+		return err
+	}
+	if len(items) != 0 {
+		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
+			return fmt.Errorf("insert work items: %w", err)
+		}
+		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
+			return fmt.Errorf("enqueue work items: %w", err)
 		}
 	}
 
-	startCount := 0
-	assignedCount := len(c.assigned)
-	c.pending = append(c.pending, items...)
+	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+	if err != nil {
+		return err
+	}
+	queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
+	if err != nil {
+		return err
+	}
+	startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
+	c.scaler.RecordStart(submittedAt, startCount, runningCount)
+	if err := c.startWorkers(ctx, resolver, startCount); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Controller) persistedWorkDemand(ctx context.Context) (int, int, error) {
+	queued, err := c.workflowStore.ListQueuedWorkItems(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list queued work: %w", err)
+	}
+	running, err := c.workflowStore.ListRunningWork(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list running work: %w", err)
+	}
+	return len(queued), len(running), nil
+}
+
+func (c *Controller) startWorkers(ctx context.Context, resolver variable.Resolver, count int) error {
+	if count == 0 {
+		return nil
+	}
 	if c.env != nil {
-		now := time.Now()
-		startCount = c.scaler.PlanStarts(now, len(c.pending), assignedCount, scaleCfg)
-		c.scaler.RecordStart(now, startCount, assignedCount)
-	}
-	c.mu.Unlock()
-
-	if err := c.startConfiguredWorkers(r.Context(), resolver, startCount); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return c.startConfiguredWorkers(ctx, resolver, count)
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	targetEnvironment, err := workerTargetEnvironment(resolver)
+	if err != nil {
+		return err
+	}
+	if targetEnvironment == "" {
+		return nil
+	}
+	if c.workerStarter == nil {
+		return fmt.Errorf("worker starter is required")
+	}
+	for i := 0; i < count; i++ {
+		if err := c.workerStarter.StartWorker(targetEnvironment, resolver); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalSourceDocument(data []byte) ([]byte, string, error) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, "", err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, "", fmt.Errorf("source document contains multiple JSON values")
+	}
+	return fp.CanonicalJSONSHA256(value)
+}
+
+func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
+	var submission WorkflowSubmission
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&submission); err != nil {
+		return WorkflowSubmission{}, err
+	}
+	if submission.Workflow.ID == "" {
+		return WorkflowSubmission{}, fmt.Errorf("workflow id is required")
+	}
+	return submission, nil
+}
+
+func projectRecordFromSource(source ResolvedSourceDocument, configSHA256 string, createdAt time.Time) persistence.ProjectRecord {
+	return persistence.ProjectRecord{
+		ID:                 deterministicSourceID("project", source.RepositoryIdentity, source.ResolvedCommit, source.Path, configSHA256),
+		Name:               source.Path,
+		RepositoryIdentity: source.RepositoryIdentity,
+		SourceCommit:       source.ResolvedCommit,
+		ConfigPath:         source.Path,
+		SourceObjectID:     source.SourceObjectID,
+		ConfigSHA256:       configSHA256,
+		CreatedAt:          sourceRecordCreatedAt(source),
+	}
+}
+
+func workflowRecordFromSource(projectID string, source ResolvedSourceDocument, workflowSHA256 string, createdAt time.Time) persistence.WorkflowRecord {
+	return persistence.WorkflowRecord{
+		ID:                 deterministicSourceID("workflow", projectID, source.RepositoryIdentity, source.ResolvedCommit, source.Path, workflowSHA256),
+		ProjectID:          projectID,
+		Name:               source.Path,
+		RepositoryIdentity: source.RepositoryIdentity,
+		SourceCommit:       source.ResolvedCommit,
+		WorkflowPath:       source.Path,
+		SourceObjectID:     source.SourceObjectID,
+		WorkflowSHA256:     workflowSHA256,
+		CreatedAt:          sourceRecordCreatedAt(source),
+	}
+}
+
+func deterministicSourceID(kind string, parts ...string) string {
+	return kind + ":" + sha256HexString(strings.Join(parts, "\n"))
+}
+
+func sourceRecordCreatedAt(source ResolvedSourceDocument) string {
+	if source.ResolvedCommit == localUnversionedCommit {
+		return localUnversionedCommit
+	}
+	return "git:" + source.ResolvedCommit
+}
+
+func workflowRunRecordFromSource(projectID string, workflowID string, projectSource ResolvedSourceDocument, projectSHA256 string, workflowSource ResolvedSourceDocument, workflowSHA256 string, variables []variable.Variable, createdAt time.Time) (persistence.WorkflowRunRecord, error) {
+	submissionContext := map[string]any{
+		"project": map[string]any{
+			"repository_identity": projectSource.RepositoryIdentity,
+			"requested_ref":       projectSource.RequestedRef,
+			"resolved_commit":     projectSource.ResolvedCommit,
+			"path":                projectSource.Path,
+			"source_object_id":    projectSource.SourceObjectID,
+			"config_sha256":       projectSHA256,
+		},
+		"workflow": map[string]any{
+			"repository_identity": workflowSource.RepositoryIdentity,
+			"requested_ref":       workflowSource.RequestedRef,
+			"resolved_commit":     workflowSource.ResolvedCommit,
+			"path":                workflowSource.Path,
+			"source_object_id":    workflowSource.SourceObjectID,
+			"workflow_sha256":     workflowSHA256,
+		},
+		"variables": variables,
+	}
+	contextJSON, err := json.Marshal(submissionContext)
+	if err != nil {
+		return persistence.WorkflowRunRecord{}, fmt.Errorf("encode submission context: %w", err)
+	}
+	return persistence.WorkflowRunRecord{
+		ID:                    "run-" + randomHex(16),
+		ProjectID:             projectID,
+		WorkflowID:            workflowID,
+		SubmissionContextJSON: string(contextJSON),
+		CreatedAt:             createdAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func stageRecordsFromWorkflow(runID string, workflowPath string, workflowDefinition workflow.Workflow, createdAt time.Time) []persistence.WorkflowStageRecord {
+	stages := make([]persistence.WorkflowStageRecord, 0, len(workflowDefinition.Steps))
+	timestamp := createdAt.UTC().Format(time.RFC3339)
+	for index, step := range workflowDefinition.Steps {
+		stages = append(stages, persistence.WorkflowStageRecord{
+			RunID:                runID,
+			StageIndex:           index,
+			StepID:               step.ID,
+			StageSourceReference: workflowPath + "#" + step.ID,
+			State:                "ready",
+			CreatedAt:            timestamp,
+			ReadyAt:              timestamp,
+		})
+	}
+	return stages
+}
+
+func persistenceRecordsFromCompiledWorkflow(runID string, workflowDefinition workflow.Workflow, compileResult workflow.CompileResult, codeVersion string, submittedAt time.Time) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, error) {
+	items := workItemsWithRuntimeMetadata(compileResult.WorkflowID, compileResult.WorkItems, codeVersion)
+	stageIndexes := make(map[string]int, len(workflowDefinition.Steps))
+	nextWorkItemIndex := make(map[int]int, len(workflowDefinition.Steps))
+	for index, step := range workflowDefinition.Steps {
+		stageIndexes[step.ID] = index
+	}
+
+	records := make([]persistence.WorkItemRecord, 0, len(items))
+	queued := make([]persistence.QueuedWorkRecord, 0, len(items))
+	timestamp := submittedAt.UTC().Format(time.RFC3339)
+	for index, item := range items {
+		stageIndex, ok := stageIndexes[compileResult.WorkItems[index].StepID]
+		if !ok {
+			return nil, nil, fmt.Errorf("compiled work item references unknown step: %s", compileResult.WorkItems[index].StepID)
+		}
+		workItemIndex := nextWorkItemIndex[stageIndex]
+		nextWorkItemIndex[stageIndex]++
+
+		payload, err := json.Marshal(item)
+		if err != nil {
+			return nil, nil, fmt.Errorf("encode workflow work item: %w", err)
+		}
+		_, resolvedInputsSHA256, err := canonicalSourceDocument(payload)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hash workflow work item: %w", err)
+		}
+		record := persistence.WorkItemRecord{
+			ID:                   runID + ":" + item.ID,
+			RunID:                runID,
+			StageIndex:           stageIndex,
+			WorkItemIndex:        workItemIndex,
+			WorkerPayloadJSON:    string(payload),
+			ResolvedInputsSHA256: resolvedInputsSHA256,
+			CreatedAt:            timestamp,
+		}
+		records = append(records, record)
+		queued = append(queued, persistence.QueuedWorkRecord{
+			WorkItemRecord: record,
+			QueuedAt:       timestamp,
+		})
+	}
+	return records, queued, nil
 }
 
 func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variable.Resolver, count int) error {
@@ -1224,24 +1693,6 @@ func (c *Controller) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (c *Controller) hasWorkItemID(id string) bool {
-	for _, item := range c.pending {
-		if item.ID == id {
-			return true
-		}
-	}
-
-	if _, ok := c.assigned[id]; ok {
-		return true
-	}
-
-	if _, ok := c.failed[id]; ok {
-		return true
-	}
-
-	return false
-}
-
 func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1251,34 +1702,52 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.mu.Lock()
-	pendingItems := append([]model.WorkItem(nil), c.pending...)
-	status := model.ControllerStatus{
-		Pending:  len(c.pending),
-		Assigned: len(c.assigned),
-		Failed:   len(c.failed),
-	}
-	c.mu.Unlock()
-
-	reuseReasons, err := c.pendingReuseDecisionReasons(r.Context(), pendingItems)
+	status, err := c.controllerStatus(r.Context())
 	if err != nil {
-		http.Error(w, "query reuse candidates", http.StatusInternalServerError)
+		http.Error(w, "query controller status", http.StatusInternalServerError)
 		return
 	}
-	status.PendingReuseCandidates = reuseReasons["matched_prior_completed_attempt"]
-
-	attempts, attemptVariables, err := c.ledgerStatusCounts(r.Context())
-	if err != nil {
-		http.Error(w, "query ledger status", http.StatusInternalServerError)
-		return
-	}
-	status.Attempts = attempts
-	status.AttemptVariables = attemptVariables
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(status); err != nil {
 		http.Error(w, "encode status", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
+	if c.workflowStore == nil {
+		return model.ControllerStatus{}, fmt.Errorf("workflow store required")
+	}
+
+	return c.persistenceControllerStatus(ctx)
+}
+
+func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.ControllerStatus, error) {
+	queued, err := c.workflowStore.ListQueuedWorkItems(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list queued work: %w", err)
+	}
+	running, err := c.workflowStore.ListRunningWork(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list running work: %w", err)
+	}
+	runs, err := c.workflowStore.ListActiveWorkflowRuns(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list active workflow runs: %w", err)
+	}
+
+	status := model.ControllerStatus{
+		Pending:  len(queued),
+		Assigned: len(running),
+	}
+	for _, run := range runs {
+		counts, err := c.workflowStore.CountWorkItemsForRun(ctx, run.ID)
+		if err != nil {
+			return model.ControllerStatus{}, fmt.Errorf("count work items for run %s: %w", run.ID, err)
+		}
+		status.Failed += counts.Failed
+	}
+	return status, nil
 }
 
 func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -1336,19 +1805,12 @@ func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "work item id and error are required", http.StatusBadRequest)
 		return
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.assigned[failure.ID]; !ok {
-		http.Error(w, "work item not assigned", http.StatusNotFound)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	delete(c.assigned, failure.ID)
-	c.failed[failure.ID] = failure
-	fmt.Println("work item failed:", failure.ID, failure.Error)
-	w.WriteHeader(http.StatusNoContent)
+	c.failPersistedWorkHandler(w, r, failure)
 }
 
 func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request) {
@@ -1367,30 +1829,159 @@ func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "work item id is required", http.StatusBadRequest)
 		return
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.assigned[completion.ID]; !ok {
-		http.Error(w, "work item not assigned", http.StatusNotFound)
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
 
-	attempt, hasAttempt, err := attemptFromCompletion(completion)
+	c.completePersistedWorkHandler(w, r, completion)
+}
+
+func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Request, failure model.WorkFailure) {
+	if failure.AttemptID == "" {
+		http.Error(w, "attempt_id is required", http.StatusBadRequest)
+		return
+	}
+	failedAt, err := reportTimestamp("failed_at", failure.FailedAt, time.Now().UTC())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if hasAttempt {
-		if err := c.recordAttempt(r.Context(), attempt); err != nil {
-			http.Error(w, "record completion", http.StatusInternalServerError)
+
+	_, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
+		AttemptID: failure.AttemptID,
+		Error:     failure.Error,
+		FailedAt:  failedAt,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "conflicts with existing") {
+			http.Error(w, "fail attempt conflict", http.StatusConflict)
 			return
 		}
+		http.Error(w, "fail persisted attempt", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "active attempt not found", http.StatusNotFound)
+		return
 	}
 
-	delete(c.assigned, completion.ID)
-	fmt.Println("work item completed:", completion.ID)
+	fmt.Println("persisted work item failed:", failure.ID, failure.AttemptID, failure.Error)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http.Request, completion model.WorkCompletion) {
+	request, err := completeAttemptRequestFromCompletion(completion, time.Now().UTC())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
+	if err != nil {
+		if strings.Contains(err.Error(), "conflicts with existing") {
+			http.Error(w, "complete attempt conflict", http.StatusConflict)
+			return
+		}
+		http.Error(w, "complete persisted attempt", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "active attempt not found", http.StatusNotFound)
+		return
+	}
+
+	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallbackCompletedAt time.Time) (persistence.CompleteAttemptRequest, error) {
+	if completion.AttemptID == "" {
+		return persistence.CompleteAttemptRequest{}, fmt.Errorf("attempt_id is required")
+	}
+	if completion.Skipped && completion.SkippedParentID == "" {
+		return persistence.CompleteAttemptRequest{}, fmt.Errorf("skipped_parent_id is required when skipped is true")
+	}
+
+	outputJSON, outputJSONSHA256, err := canonicalJSONTextAndHash("output_json", completion.OutputJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	_, preStateEvidenceSHA256, err := canonicalJSONTextAndHash("pre_state_json", completion.PreStateJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	_, postStateEvidenceSHA256, err := canonicalJSONTextAndHash("post_state_json", completion.PostStateJSON)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	preStateSHA256, err := reportedOrEvidenceSHA256("pre_state_sha256", completion.PreStateSHA256, preStateEvidenceSHA256)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	postStateSHA256, err := reportedOrEvidenceSHA256("post_state_sha256", completion.PostStateSHA256, postStateEvidenceSHA256)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+
+	completedAt, err := reportTimestamp("completed_at", completion.CompletedAt, fallbackCompletedAt)
+	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+
+	return persistence.CompleteAttemptRequest{
+		AttemptID:        completion.AttemptID,
+		SkippedParentID:  completion.SkippedParentID,
+		OutputJSON:       outputJSON,
+		OutputJSONSHA256: outputJSONSHA256,
+		PreStateSHA256:   preStateSHA256,
+		PostStateSHA256:  postStateSHA256,
+		CompletedAt:      completedAt,
+	}, nil
+}
+
+func reportedOrEvidenceSHA256(name string, reported string, evidence string) (string, error) {
+	if reported == "" {
+		return evidence, nil
+	}
+	if err := fp.ValidateSHA256Hex(reported); err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	return reported, nil
+}
+
+func canonicalJSONTextAndHash(name string, value string) (string, string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", "", fmt.Errorf("%s is required", name)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return "", "", fmt.Errorf("decode %s: %w", name, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return "", "", fmt.Errorf("%s must contain one JSON document", name)
+	}
+
+	canonical, hash, err := fp.CanonicalJSONSHA256(decoded)
+	if err != nil {
+		return "", "", fmt.Errorf("canonicalize %s: %w", name, err)
+	}
+	return string(canonical), hash, nil
+}
+
+func reportTimestamp(name string, value string, fallback time.Time) (string, error) {
+	if value == "" {
+		return fallback.UTC().Format(time.RFC3339), nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed.UTC().Format(time.RFC3339), nil
 }
 
 func attemptFromCompletion(completion model.WorkCompletion) (ledger.Attempt, bool, error) {
@@ -1496,39 +2087,99 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if !c.requireNormalAdmission(w) {
 		return
 	}
-
-	for {
-		c.mu.Lock()
-		if len(c.pending) == 0 {
-			c.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		item := c.pending[0]
-		c.pending = c.pending[1:]
-		c.mu.Unlock()
-
-		_, skipped, err := c.recordSkippedAttempt(r.Context(), item, time.Now().UTC())
-		if err != nil {
-			c.mu.Lock()
-			c.pending = append([]model.WorkItem{item}, c.pending...)
-			c.mu.Unlock()
-			http.Error(w, "record skipped attempt", http.StatusInternalServerError)
-			return
-		}
-		if skipped {
-			fmt.Println("work item skipped:", item.ID)
-			continue
-		}
-
-		c.mu.Lock()
-		c.assigned[item.ID] = item
-		c.mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(item); err != nil {
-			http.Error(w, "encode work item", http.StatusInternalServerError)
-		}
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
+
+	c.nextPersistedWorkHandler(w, r)
+}
+
+func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {
+	claim, found, err := c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-" + randomHex(16),
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		http.Error(w, "claim work", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	var item model.WorkItem
+	if err := json.Unmarshal([]byte(claim.WorkItem.WorkerPayloadJSON), &item); err != nil {
+		http.Error(w, "decode persisted worker payload", http.StatusInternalServerError)
+		return
+	}
+	item.AttemptID = claim.AttemptID
+	item.ReuseCandidates, err = c.persistedReuseCandidates(r.Context(), claim)
+	if err != nil {
+		http.Error(w, "load reuse candidates", http.StatusInternalServerError)
+		return
+	}
+	if err := item.Validate(); err != nil {
+		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(item); err != nil {
+		http.Error(w, "encode work item", http.StatusInternalServerError)
+	}
+}
+
+func (c *Controller) persistedReuseCandidates(ctx context.Context, claim persistence.ClaimedWorkRecord) ([]model.WorkReuseCandidate, error) {
+	terminals, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, claim.WorkItem.RunID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]model.WorkReuseCandidate, 0)
+	for _, terminal := range terminals {
+		if terminal.TerminalState != "completed" {
+			continue
+		}
+		if terminal.AttemptID == claim.AttemptID {
+			continue
+		}
+		if terminal.WorkItem.ResolvedInputsSHA256 != claim.WorkItem.ResolvedInputsSHA256 {
+			continue
+		}
+		if terminal.WorkItem.WorkerPayloadJSON != claim.WorkItem.WorkerPayloadJSON {
+			continue
+		}
+		candidate := model.WorkReuseCandidate{
+			AttemptID:        terminal.AttemptID,
+			OutputJSONSHA256: terminal.OutputJSONSHA256,
+			PreStateSHA256:   terminal.PreStateSHA256,
+			PostStateSHA256:  terminal.PostStateSHA256,
+		}
+		hashes, err := workerObservedHashesFromOutputJSON(terminal.OutputJSON)
+		if err != nil {
+			return nil, err
+		}
+		candidate.InputSHA256 = hashes.InputSHA256
+		candidate.OutputSHA256 = hashes.OutputSHA256
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+type workerObservedHashes struct {
+	InputSHA256  string `json:"input_sha256"`
+	OutputSHA256 string `json:"output_sha256"`
+}
+
+func workerObservedHashesFromOutputJSON(outputJSON string) (workerObservedHashes, error) {
+	if outputJSON == "" {
+		return workerObservedHashes{}, nil
+	}
+	var hashes workerObservedHashes
+	if err := json.Unmarshal([]byte(outputJSON), &hashes); err != nil {
+		return workerObservedHashes{}, fmt.Errorf("decode worker observed hashes: %w", err)
+	}
+	return hashes, nil
 }

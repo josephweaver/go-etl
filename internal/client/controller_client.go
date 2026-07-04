@@ -19,7 +19,19 @@ type WorkflowSubmission struct {
 	Variables []variable.Variable `json:"variables"`
 }
 
-type WorkflowClient struct {
+type WorkflowRunSubmission struct {
+	Project   SourceDocumentReference `json:"project"`
+	Workflow  SourceDocumentReference `json:"workflow"`
+	Variables []variable.Variable     `json:"variables,omitempty"`
+}
+
+type SourceDocumentReference struct {
+	Repository string `json:"repository"`
+	Ref        string `json:"ref"`
+	Path       string `json:"path"`
+}
+
+type ControllerClient struct {
 	httpClient *http.Client
 	resolver   variable.Resolver
 	starter    ControllerStarter
@@ -29,23 +41,32 @@ type ControllerStarter interface {
 	StartController() error
 }
 
-func NewWorkflowClient(httpClient *http.Client, resolver variable.Resolver) WorkflowClient {
-	return NewWorkflowClientWithStarter(httpClient, resolver, nil)
+func NewControllerClient(httpClient *http.Client, resolver variable.Resolver) ControllerClient {
+	return NewControllerClientWithStarter(httpClient, resolver, nil)
 }
 
-func NewWorkflowClientWithStarter(httpClient *http.Client, resolver variable.Resolver, starter ControllerStarter) WorkflowClient {
+func NewControllerClientWithStarter(httpClient *http.Client, resolver variable.Resolver, starter ControllerStarter) ControllerClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
-	return WorkflowClient{
+	return ControllerClient{
 		httpClient: httpClient,
 		resolver:   resolver,
 		starter:    starter,
 	}
 }
 
-func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
+func (c ControllerClient) SubmitWorkflowRun(submission WorkflowRunSubmission) error {
+	return c.submitWorkflowPayload(submission)
+}
+
+// SubmitWorkflow submits a legacy inline workflow payload. Prefer SubmitWorkflowRun.
+func (c ControllerClient) SubmitWorkflow(submission WorkflowSubmission) error {
+	return c.submitWorkflowPayload(submission)
+}
+
+func (c ControllerClient) submitWorkflowPayload(submission any) error {
 	controllerURL, err := c.controllerURL()
 	if err != nil {
 		return err
@@ -57,7 +78,7 @@ func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
 
 	body, err := json.Marshal(submission)
 	if err != nil {
-		return fmt.Errorf("encode workflow submission: %w", err)
+		return fmt.Errorf("encode workflow run submission: %w", err)
 	}
 
 	url := strings.TrimRight(controllerURL, "/") + "/workflow"
@@ -74,7 +95,17 @@ func (c WorkflowClient) SubmitWorkflow(submission WorkflowSubmission) error {
 	return nil
 }
 
-func (c WorkflowClient) SubmitWorkflowFile(path string) error {
+func (c ControllerClient) SubmitWorkflowRunFile(path string) error {
+	submission, err := LoadWorkflowRunSubmissionFile(path)
+	if err != nil {
+		return err
+	}
+
+	return c.SubmitWorkflowRun(submission)
+}
+
+// SubmitWorkflowFile submits a legacy inline workflow file. Prefer SubmitWorkflowRunFile.
+func (c ControllerClient) SubmitWorkflowFile(path string) error {
 	submission, err := LoadWorkflowSubmissionFile(path)
 	if err != nil {
 		return err
@@ -83,6 +114,22 @@ func (c WorkflowClient) SubmitWorkflowFile(path string) error {
 	return c.SubmitWorkflow(submission)
 }
 
+// LoadWorkflowRunSubmissionFile loads the source-reference workflow-run submission format.
+func LoadWorkflowRunSubmissionFile(path string) (WorkflowRunSubmission, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorkflowRunSubmission{}, fmt.Errorf("read workflow run submission file: %w", err)
+	}
+
+	var submission WorkflowRunSubmission
+	if err := json.Unmarshal(data, &submission); err != nil {
+		return WorkflowRunSubmission{}, fmt.Errorf("decode workflow run submission file: %w", err)
+	}
+
+	return submission, nil
+}
+
+// LoadWorkflowSubmissionFile loads the legacy inline workflow submission format.
 func LoadWorkflowSubmissionFile(path string) (WorkflowSubmission, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -97,7 +144,7 @@ func LoadWorkflowSubmissionFile(path string) (WorkflowSubmission, error) {
 	return submission, nil
 }
 
-func (c WorkflowClient) EnsureController(controllerURL string) error {
+func (c ControllerClient) EnsureController(controllerURL string) error {
 	if err := c.CheckController(controllerURL); err == nil {
 		return nil
 	}
@@ -113,7 +160,7 @@ func (c WorkflowClient) EnsureController(controllerURL string) error {
 	return c.WaitForController(controllerURL, 10)
 }
 
-func (c WorkflowClient) CheckController(controllerURL string) error {
+func (c ControllerClient) CheckController(controllerURL string) error {
 	url := strings.TrimRight(controllerURL, "/") + "/status"
 	response, err := c.httpClient.Get(url)
 	if err != nil {
@@ -128,7 +175,7 @@ func (c WorkflowClient) CheckController(controllerURL string) error {
 	return nil
 }
 
-func (c WorkflowClient) WaitForController(controllerURL string, maxChecks int) error {
+func (c ControllerClient) WaitForController(controllerURL string, maxChecks int) error {
 	if maxChecks <= 0 {
 		return fmt.Errorf("max checks must be positive")
 	}
@@ -154,7 +201,7 @@ func (c WorkflowClient) WaitForController(controllerURL string, maxChecks int) e
 	return fmt.Errorf("controller did not become reachable: %w", lastErr)
 }
 
-func (c WorkflowClient) ShutdownWhenIdle(maxChecks int) (model.ControllerStatus, error) {
+func (c ControllerClient) ShutdownWhenIdle(maxChecks int) (model.ControllerStatus, error) {
 	if maxChecks <= 0 {
 		return model.ControllerStatus{}, fmt.Errorf("max checks must be positive")
 	}
@@ -190,7 +237,7 @@ func (c WorkflowClient) ShutdownWhenIdle(maxChecks int) (model.ControllerStatus,
 	return model.ControllerStatus{}, fmt.Errorf("controller still has pending or assigned work")
 }
 
-func (c WorkflowClient) Status(controllerURL string) (model.ControllerStatus, error) {
+func (c ControllerClient) Status(controllerURL string) (model.ControllerStatus, error) {
 	url := strings.TrimRight(controllerURL, "/") + "/status"
 	response, err := c.httpClient.Get(url)
 	if err != nil {
@@ -210,7 +257,7 @@ func (c WorkflowClient) Status(controllerURL string) (model.ControllerStatus, er
 	return status, nil
 }
 
-func (c WorkflowClient) Shutdown(controllerURL string) error {
+func (c ControllerClient) Shutdown(controllerURL string) error {
 	url := strings.TrimRight(controllerURL, "/") + "/shutdown"
 	request, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
@@ -230,7 +277,7 @@ func (c WorkflowClient) Shutdown(controllerURL string) error {
 	return nil
 }
 
-func (c WorkflowClient) controllerURL() (string, error) {
+func (c ControllerClient) controllerURL() (string, error) {
 	reference, err := variable.ParseReference("controller_url")
 	if err != nil {
 		return "", err
@@ -253,7 +300,7 @@ func (c WorkflowClient) controllerURL() (string, error) {
 	return controllerURL, nil
 }
 
-func (c WorkflowClient) statusPollInterval() (time.Duration, error) {
+func (c ControllerClient) statusPollInterval() (time.Duration, error) {
 	reference, err := variable.ParseReference("client_status_poll_interval")
 	if err != nil {
 		return 0, err
