@@ -18,14 +18,14 @@ func main() {
 	}
 
 	starter := client.NewLocalControllerStarter(resolver)
-	workflowClient := client.NewWorkflowClientWithStarter(nil, resolver, starter)
+	controllerClient := client.NewControllerClientWithStarter(nil, resolver, starter)
 
-	if err := workflowClient.SubmitWorkflowRunFile(demoWorkflowRunPath(os.Args)); err != nil {
+	if err := controllerClient.SubmitWorkflowRunFile(demoWorkflowRunPath(os.Args)); err != nil {
 		fmt.Println("submit workflow:", err)
 		return
 	}
 
-	status, err := workflowClient.ShutdownWhenIdle(60)
+	status, err := controllerClient.ShutdownWhenIdle(60)
 	if err != nil {
 		fmt.Println("wait for shutdown:", err)
 		return
