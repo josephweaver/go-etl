@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,22 +30,16 @@ with open(os.environ["GOET_INPUT_JSON"], "r", encoding="utf-8") as handle:
     input_document = json.load(handle)
 
 output = {
-    "work_item_id": os.environ["GOET_WORK_ITEM_ID"],
-    "attempt_id": os.environ["GOET_ATTEMPT_ID"],
-    "source_dir": os.environ["GOET_SOURCE_DIR"],
-    "work_dir": os.environ["GOET_WORK_DIR"],
-    "data_dir": os.environ["GOET_DATA_DIR"],
-    "tmp_dir": os.environ["GOET_TMP_DIR"],
-    "log_dir": os.environ["GOET_LOG_DIR"],
-    "entrypoint": os.environ["GOET_PYTHON_ENTRYPOINT"],
-    "environment": os.environ.get("GOET_PYTHON_ENVIRONMENT_JSON", ""),
+    "nested": {"b": 2, "a": 1},
     "argv": sys.argv[1:],
+    "attempt_id": os.environ["GOET_ATTEMPT_ID"],
     "input_work_item_id": input_document["work_item"]["id"],
-    "input_output_filename": input_document["work_item"]["output_filename"]
+    "input_output_filename": input_document["work_item"]["output_filename"],
+    "work_item_id": os.environ["GOET_WORK_ITEM_ID"]
 }
 
 with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
-    json.dump(output, handle, sort_keys=True)
+    json.dump(output, handle, indent=2)
 
 print("python stdout")
 print("python stderr", file=sys.stderr)
@@ -55,9 +50,9 @@ print("python stderr", file=sys.stderr)
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-001", "attempt-001", model.Parameters{
-		"python_entrypoint":  {Type: "path", Value: "scripts/run.py"},
-		"python_environment": {Type: "path", Value: "config/env.json"},
-		"python_args":        {Type: "list", Value: []any{"alpha", "beta"}},
+		"python_entrypoint":  model.Parameter{Type: "path", Value: "scripts/run.py"},
+		"python_environment": model.Parameter{Type: "path", Value: "config/env.json"},
+		"python_args":        model.Parameter{Type: "list", Value: []any{"alpha", "beta"}},
 	})
 
 	evidence, err := worker.Run(item)
@@ -74,6 +69,16 @@ print("python stderr", file=sys.stderr)
 		t.Fatalf("read result: %v", err)
 	}
 
+	expectedLogicalOutputRaw := []byte(fmt.Sprintf(`{"nested":{"b":2,"a":1},"argv":["alpha","beta"],"attempt_id":%q,"input_work_item_id":%q,"input_output_filename":%q,"work_item_id":%q}`,
+		item.AttemptID, item.ID, item.OutputFilename, item.ID))
+	expectedCanonicalOutput, expectedOutputHash, _, err := canonicalJSONDocument(expectedLogicalOutputRaw, "GOET_OUTPUT_JSON")
+	if err != nil {
+		t.Fatalf("canonicalize expected logical output: %v", err)
+	}
+	if !bytes.Equal(data, expectedCanonicalOutput) {
+		t.Fatalf("promoted output = %s, want %s", data, expectedCanonicalOutput)
+	}
+
 	var output map[string]any
 	if err := json.Unmarshal(data, &output); err != nil {
 		t.Fatalf("decode result: %v", err)
@@ -85,21 +90,18 @@ print("python stderr", file=sys.stderr)
 	if output["attempt_id"] != item.AttemptID {
 		t.Fatalf("unexpected attempt_id: %v", output["attempt_id"])
 	}
-	if output["input_work_item_id"] != item.ID {
-		t.Fatalf("unexpected input work item id: %v", output["input_work_item_id"])
-	}
-	if output["input_output_filename"] != item.OutputFilename {
-		t.Fatalf("unexpected input output filename: %v", output["input_output_filename"])
-	}
-	if output["entrypoint"] == "" || output["environment"] == "" {
-		t.Fatalf("expected resolved source paths: %+v", output)
+	if nested, ok := output["nested"].(map[string]any); !ok || nested["a"] != float64(1) || nested["b"] != float64(2) {
+		t.Fatalf("unexpected nested output: %#v", output["nested"])
 	}
 	argv, ok := output["argv"].([]any)
 	if !ok || len(argv) != 2 || argv[0] != "alpha" || argv[1] != "beta" {
 		t.Fatalf("unexpected argv: %#v", output["argv"])
 	}
-	if output["source_dir"] != filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "source") {
-		t.Fatalf("unexpected source dir: %v", output["source_dir"])
+	if output["input_work_item_id"] != item.ID {
+		t.Fatalf("unexpected input work item id: %v", output["input_work_item_id"])
+	}
+	if output["input_output_filename"] != item.OutputFilename {
+		t.Fatalf("unexpected input output filename: %v", output["input_output_filename"])
 	}
 
 	inputPath := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "work", "input.json")
@@ -120,6 +122,64 @@ print("python stderr", file=sys.stderr)
 	}
 	if !strings.Contains(string(stderrLog), "python stderr") {
 		t.Fatalf("stderr was not captured: %q", stderrLog)
+	}
+
+	var wrapper struct {
+		Schema          string         `json:"schema"`
+		WorkItemID      string         `json:"work_item_id"`
+		Operation       string         `json:"operation"`
+		Entrypoint      string         `json:"entrypoint"`
+		Environment     string         `json:"environment"`
+		ExitCode        int            `json:"exit_code"`
+		LogicalOutput   map[string]any `json:"logical_output"`
+		InputSHA256     string         `json:"input_sha256"`
+		OutputSHA256    string         `json:"output_sha256"`
+		PreStateSHA256  string         `json:"pre_state_sha256"`
+		PostStateSHA256 string         `json:"post_state_sha256"`
+		StdoutSHA256    string         `json:"stdout_sha256"`
+		StderrSHA256    string         `json:"stderr_sha256"`
+	}
+	if err := json.Unmarshal([]byte(evidence.OutputJSON), &wrapper); err != nil {
+		t.Fatalf("decode evidence wrapper: %v", err)
+	}
+
+	expectedEntrypoint := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "source", "scripts", "run.py")
+	expectedEnvironment := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "source", "config", "env.json")
+	if wrapper.Schema != pythonOutputEvidenceSchema {
+		t.Fatalf("wrapper schema = %q", wrapper.Schema)
+	}
+	if wrapper.WorkItemID != item.ID {
+		t.Fatalf("wrapper work_item_id = %q", wrapper.WorkItemID)
+	}
+	if wrapper.Operation != pythonScriptOperation {
+		t.Fatalf("wrapper operation = %q", wrapper.Operation)
+	}
+	if wrapper.Entrypoint != expectedEntrypoint {
+		t.Fatalf("wrapper entrypoint = %q, want %q", wrapper.Entrypoint, expectedEntrypoint)
+	}
+	if wrapper.Environment != expectedEnvironment {
+		t.Fatalf("wrapper environment = %q, want %q", wrapper.Environment, expectedEnvironment)
+	}
+	if wrapper.ExitCode != 0 {
+		t.Fatalf("wrapper exit_code = %d", wrapper.ExitCode)
+	}
+	if wrapper.LogicalOutput["work_item_id"] != item.ID {
+		t.Fatalf("wrapper logical_output = %#v", wrapper.LogicalOutput)
+	}
+	if wrapper.InputSHA256 == "" || wrapper.OutputSHA256 == "" || wrapper.PreStateSHA256 == "" || wrapper.PostStateSHA256 == "" {
+		t.Fatalf("wrapper missing hash fields: %+v", wrapper)
+	}
+	if wrapper.OutputSHA256 != expectedOutputHash || evidence.OutputSHA256 != expectedOutputHash {
+		t.Fatalf("unexpected output hash: wrapper=%s evidence=%s want=%s", wrapper.OutputSHA256, evidence.OutputSHA256, expectedOutputHash)
+	}
+	if evidence.InputSHA256 == "" || evidence.PreStateSHA256 == "" || evidence.PostStateSHA256 == "" {
+		t.Fatalf("evidence hashes missing: %+v", evidence)
+	}
+	if wrapper.StdoutSHA256 == "" || wrapper.StderrSHA256 == "" {
+		t.Fatalf("wrapper missing stdout/stderr hashes: %+v", wrapper)
+	}
+	if strings.Contains(evidence.OutputJSON, "python stdout") || strings.Contains(evidence.OutputJSON, "python stderr") {
+		t.Fatalf("evidence wrapper should not embed log contents: %s", evidence.OutputJSON)
 	}
 }
 
@@ -147,7 +207,7 @@ func TestWorkerRunWorkItemRejectsUnsafePythonEntrypoint(t *testing.T) {
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-003", "attempt-003", model.Parameters{
-		"python_entrypoint": {Type: "path", Value: "../escape.py"},
+		"python_entrypoint": model.Parameter{Type: "path", Value: "../escape.py"},
 	})
 
 	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "unsafe python_entrypoint path") {
@@ -164,8 +224,8 @@ func TestWorkerRunWorkItemRejectsUnsafePythonEnvironment(t *testing.T) {
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-004", "attempt-004", model.Parameters{
-		"python_entrypoint":  {Type: "path", Value: "scripts/run.py"},
-		"python_environment": {Type: "path", Value: "../env.json"},
+		"python_entrypoint":  model.Parameter{Type: "path", Value: "scripts/run.py"},
+		"python_environment": model.Parameter{Type: "path", Value: "../env.json"},
 	})
 
 	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "unsafe python_environment path") {
@@ -182,8 +242,8 @@ func TestWorkerRunWorkItemRejectsInvalidPythonArgs(t *testing.T) {
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-005", "attempt-005", model.Parameters{
-		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
-		"python_args":       {Type: "list", Value: []any{"ok", 7}},
+		"python_entrypoint": model.Parameter{Type: "path", Value: "scripts/run.py"},
+		"python_args":       model.Parameter{Type: "list", Value: []any{"ok", 7}},
 	})
 
 	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "python_args") {
@@ -202,7 +262,7 @@ func TestWorkerRunWorkItemRejectsNonZeroPythonExit(t *testing.T) {
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-006", "attempt-006", model.Parameters{
-		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"python_entrypoint": model.Parameter{Type: "path", Value: "scripts/run.py"},
 	})
 
 	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "python process exited with error") {
@@ -221,11 +281,59 @@ func TestWorkerRunWorkItemRejectsMissingPythonOutputJSON(t *testing.T) {
 	worker.Config.ControllerURL = server.URL
 
 	item := pythonTestItem("python-007", "attempt-007", model.Parameters{
-		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"python_entrypoint": model.Parameter{Type: "path", Value: "scripts/run.py"},
 	})
 
 	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "missing GOET_OUTPUT_JSON") {
 		t.Fatalf("expected missing output json error, got %v", err)
+	}
+}
+
+func TestWorkerRunWorkItemRejectsInvalidPythonOutputJSON(t *testing.T) {
+	requirePython3(t)
+
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name: "invalid",
+			script: `with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    handle.write("{")`,
+			want: "decode GOET_OUTPUT_JSON",
+		},
+		{
+			name: "multiple",
+			script: `with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    handle.write('{"a":1} {"b":2}')`,
+			want: "one JSON document",
+		},
+		{
+			name: "trailing",
+			script: `with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    handle.write('{"a":1} trailing')`,
+			want: "one JSON document",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			worker := newPythonTestWorker(t)
+			server := newPythonSourceServer(t, map[string]string{
+				"scripts/run.py": "import os\n" + tt.script + "\n",
+			})
+			t.Cleanup(server.Close)
+			worker.Config.ControllerURL = server.URL
+
+			item := pythonTestItem("python-bad-"+tt.name, "attempt-bad-"+tt.name, model.Parameters{
+				"python_entrypoint": model.Parameter{Type: "path", Value: "scripts/run.py"},
+			})
+
+			if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
 	}
 }
 

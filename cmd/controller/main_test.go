@@ -2964,6 +2964,31 @@ func TestShutdownHandlerRejectsUnavailableShutdown(t *testing.T) {
 	}
 }
 
+func TestWorkerObservedHashesFromPythonOutputEvidenceWrapper(t *testing.T) {
+	hashes, err := workerObservedHashesFromOutputJSON(`{
+		"schema":"goet/python-workitem-output/v1",
+		"work_item_id":"python-001",
+		"operation":"python_script",
+		"entrypoint":"/tmp/source/scripts/run.py",
+		"exit_code":0,
+		"logical_output":{"value":1},
+		"input_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"output_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"pre_state_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		"post_state_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	}`)
+	if err != nil {
+		t.Fatalf("workerObservedHashesFromOutputJSON() error = %v", err)
+	}
+
+	if hashes.InputSHA256 != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("input hash = %q", hashes.InputSHA256)
+	}
+	if hashes.OutputSHA256 != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("output hash = %q", hashes.OutputSHA256)
+	}
+}
+
 func TestRecoveryModeBlocksNormalAdmission(t *testing.T) {
 	controller := newController()
 	controller.enterRecoveryMode()

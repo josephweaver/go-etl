@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
 )
 
@@ -67,7 +66,6 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	if err != nil {
 		return WorkEvidence{}, fmt.Errorf("open stderr log %s: %w", stderrPath, err)
 	}
-	defer stderrFile.Close()
 
 	command := exec.Command(w.pythonExecutable(), append([]string{entrypointPath}, args...)...)
 	command.Dir = staging.SourceDir
@@ -90,11 +88,23 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	}
 
 	if err := command.Start(); err != nil {
+		_ = stdoutFile.Close()
+		_ = stderrFile.Close()
 		return WorkEvidence{}, fmt.Errorf("launch python process: %w", err)
 	}
 
 	if err := command.Wait(); err != nil {
+		_ = stdoutFile.Close()
+		_ = stderrFile.Close()
 		return WorkEvidence{}, fmt.Errorf("python process exited with error: %w", err)
+	}
+
+	if err := stdoutFile.Close(); err != nil {
+		_ = stderrFile.Close()
+		return WorkEvidence{}, fmt.Errorf("close stdout log %s: %w", stdoutPath, err)
+	}
+	if err := stderrFile.Close(); err != nil {
+		return WorkEvidence{}, fmt.Errorf("close stderr log %s: %w", stderrPath, err)
 	}
 
 	outputJSON, err := os.ReadFile(outputPath)
@@ -105,13 +115,18 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("read python output json %s: %w", outputPath, err)
 	}
 
+	logicalOutput, outputSHA256, _, err := canonicalJSONDocument(outputJSON, "GOET_OUTPUT_JSON")
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
 	dataPath := filepath.Join(w.Config.DataDir, item.OutputFilename)
 	preState, err := outputFileState(dataPath)
 	if err != nil {
 		return WorkEvidence{}, err
 	}
 
-	if err := os.WriteFile(dataPath, outputJSON, 0644); err != nil {
+	if err := atomicWriteFile(dataPath, logicalOutput, 0644); err != nil {
 		return WorkEvidence{}, fmt.Errorf("write completed python output %s: %w", dataPath, err)
 	}
 
@@ -120,14 +135,71 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 
-	inputSHA256, err := inputObservationSHA256(item, inputDocument)
+	stdoutSHA256, hasStdout, err := logFileSHA256(stdoutPath)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	stderrSHA256, hasStderr, err := logFileSHA256(stderrPath)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	if !hasStdout {
+		stdoutSHA256 = ""
+	}
+	if !hasStderr {
+		stderrSHA256 = ""
+	}
+
+	inputSHA256, err := pythonInputObservationSHA256(item, entrypointPath, environmentPath, args, inputDocument)
 	if err != nil {
 		return WorkEvidence{}, err
 	}
 
-	outputSHA256 := fp.SHA256Hex(outputJSON)
+	preStateSHA256, err := canonicalObservationSHA256(preState)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	postStateSHA256, err := canonicalObservationSHA256(postState)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
 
-	return outputEvidence(item, dataPath, int64(len(outputJSON)), preState, postState, inputSHA256, outputSHA256, model.WorkReuseCandidate{})
+	outputJSONText, err := pythonOutputEvidenceJSONText(
+		item,
+		entrypointPath,
+		environmentPath,
+		0,
+		logicalOutput,
+		inputSHA256,
+		outputSHA256,
+		preStateSHA256,
+		postStateSHA256,
+		stdoutSHA256,
+		stderrSHA256,
+	)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
+	preStateJSON, err := json.Marshal(preState)
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("encode pre-state evidence: %w", err)
+	}
+
+	postStateJSON, err := json.Marshal(postState)
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("encode post-state evidence: %w", err)
+	}
+
+	return WorkEvidence{
+		InputSHA256:     inputSHA256,
+		OutputSHA256:    outputSHA256,
+		PreStateSHA256:  preStateSHA256,
+		PostStateSHA256: postStateSHA256,
+		OutputJSON:      outputJSONText,
+		PreStateJSON:    string(preStateJSON),
+		PostStateJSON:   string(postStateJSON),
+	}, nil
 }
 
 func (w Worker) pythonExecutable() string {
