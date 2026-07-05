@@ -4,6 +4,8 @@ Last updated: 2026-07-05
 
 ## Current Focus
 
+Dependency-aware workflow slice `003-persist-workflow-stage-state` is now implemented: controller dependency-plan state now persists in workflow run submission context with deterministic read/list/readback paths for stages, steps, and work-item memberships via `workflow_dependency_store.go`; typed state enums and duplicate checks are added in `internal/model`.
+
 Dependency-aware workflow slice `002-compile-single-workflow-stage` is now implemented: `internal/workflow` now has a stage-scoped compiler (`CompileWorkflowStage`) that compiles only one normalized stage, returns step-order and item-order metadata, and detects duplicate work-item IDs within that stage.
 
 Operational observability slice 010 (`010-cli-logs-command`) is now implemented: the demo CLI now supports `goet logs <submission_id> [--controller-url <url>] [--tail <n>] [--level <level>] [--stream <stream>] [--attempt-id <id>] [--json]`, with bounded, submission-scoped log retrieval via `internal/client` and compact/default rendering.

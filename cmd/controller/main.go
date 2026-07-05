@@ -1586,6 +1586,7 @@ type workflowRunSubmissionContext struct {
 	Schema          string                            `json:"schema"`
 	SourceAdmission workflowRunSourceAdmissionContext `json:"source_admission"`
 	Variables       []variable.Variable               `json:"variables"`
+	DependencyState *model.WorkflowDependencyPlan     `json:"dependency_state,omitempty"`
 }
 
 type workflowRunSourceAdmissionContext struct {
