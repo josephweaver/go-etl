@@ -1,6 +1,6 @@
 # Execution Observability
 
-Status: Ready
+Status: Complete
 
 ## Purpose
 
@@ -167,7 +167,7 @@ The source of truth is `cmd/controller/defaults.json`. `cmd/controller/controlle
 
 GOET has a controller/worker runtime, a completed first Python WorkItem execution path, and a submission/status CLI contract. A user can submit work and monitor a submission by `submission_id`, but execution logs are not yet a controller-owned public capability.
 
-The existing Execution Observability concept directory is a compact proposed draft. It correctly states the controller-owned logging principle, best-effort logging behavior, bounded HTTP delivery semantics, and fallback-log boundary. It does not yet account for the completed submission/status contract, does not define a `goet logs` customer surface, and has a numbering gap: the README lists slice 007, while the directory currently contains no `007-...` document.
+The existing Execution Observability concept directory now records the completed controller-owned logging boundary, including the submission/status contract, the `goet logs` customer surface, the controller log-ingestion endpoint, the controller read API, and the worker fallback path.
 
 ### Operational current state
 
@@ -326,7 +326,7 @@ These Operational Slices should be implemented one at a time. Each slice is inte
 Use one slice per Codex session:
 
 ```text
-please read docs/concepts/execution-observability/001-logging-model.md and implement exactly that slice
+please read docs/concepts/complete/execution-observability/001-logging-model.md and implement exactly that slice
 ```
 
 Then continue with the next numbered slice after the previous one is committed and accepted.

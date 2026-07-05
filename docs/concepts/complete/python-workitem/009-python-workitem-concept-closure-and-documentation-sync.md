@@ -1,4 +1,4 @@
-﻿# Python WorkItem Concept Closure and Documentation Sync
+# Python WorkItem Concept Closure and Documentation Sync
 
 Status: Complete
 
@@ -91,7 +91,7 @@ Read these files first:
 - `docs/concepts/python-workitem/008-python-workitem-end-to-end-smoke-path.md`
 - `docs/concepts/python-workitem/python-workitem-smoke.md`
 - `docs/concepts/submission-cli-status/README.md`
-- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/README.md`
 - `docs/concepts/resource-constraint/README.md`
 - `docs/concepts/dependency-aware-workflows/README.md`
 

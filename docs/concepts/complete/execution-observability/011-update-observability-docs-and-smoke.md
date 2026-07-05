@@ -1,6 +1,6 @@
 # 011 Update Observability Docs And Smoke
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -43,17 +43,17 @@ Do not mark the Strategic Concept `Implemented` unless the human explicitly want
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/002-log-configuration.md`
-- `docs/concepts/execution-observability/003-controller-logging-endpoint.md`
-- `docs/concepts/execution-observability/004-worker-logging-client.md`
-- `docs/concepts/execution-observability/005-controller-filesystem-log-sinks.md`
-- `docs/concepts/execution-observability/006-worker-fallback-logging.md`
-- `docs/concepts/execution-observability/007-python-subprocess-log-emission.md`
-- `docs/concepts/execution-observability/008-log-levels-and-filtering.md`
-- `docs/concepts/execution-observability/009-submission-log-read-api.md`
-- `docs/concepts/execution-observability/010-cli-logs-command.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/002-log-configuration.md`
+- `docs/concepts/complete/execution-observability/003-controller-logging-endpoint.md`
+- `docs/concepts/complete/execution-observability/004-worker-logging-client.md`
+- `docs/concepts/complete/execution-observability/005-controller-filesystem-log-sinks.md`
+- `docs/concepts/complete/execution-observability/006-worker-fallback-logging.md`
+- `docs/concepts/complete/execution-observability/007-python-subprocess-log-emission.md`
+- `docs/concepts/complete/execution-observability/008-log-levels-and-filtering.md`
+- `docs/concepts/complete/execution-observability/009-submission-log-read-api.md`
+- `docs/concepts/complete/execution-observability/010-cli-logs-command.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
@@ -74,7 +74,7 @@ None.
 
 ## Allowed Documentation Files
 
-- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/README.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`

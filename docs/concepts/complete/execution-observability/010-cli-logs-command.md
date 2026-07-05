@@ -1,6 +1,6 @@
 # 010 CLI Logs Command
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -67,9 +67,9 @@ Reusable HTTP behavior belongs in `internal/client`; command parsing and present
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/009-submission-log-read-api.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/009-submission-log-read-api.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/demo-client/README.md`

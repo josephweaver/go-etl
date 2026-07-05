@@ -3,7 +3,7 @@
 This bundle is replacement-ready for:
 
 ```text
-docs/concepts/execution-observability/
+docs/concepts/complete/execution-observability/
 ```
 
 It overwrites the existing README and existing slice files:

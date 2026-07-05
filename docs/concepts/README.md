@@ -12,7 +12,6 @@ Concept link for its authoritative scope.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
 - [Dependency-Aware Workflow Execution](dependency-aware-workflows/README.md) - Compile and queue workflow steps only when their predecessor steps have completed successfully.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
-- [Execution Observability](execution-observability/README.md) - Collect, route, stream, and store execution logs through the controller.
 - [Resource Constraints](resource-constraint/README.md) - Add controller-owned admission limits for work items that share named resources.
 - [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Preserve sensitivity metadata through variable resolution, diagnostics, persistence, and execution boundaries.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
@@ -29,6 +28,7 @@ above.
 
 ## Completed Strategic Concepts
 
+- [Execution Observability](complete/execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
 - [Controller Startup Resolution](complete/controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.

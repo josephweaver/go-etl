@@ -1,6 +1,6 @@
 # 001 Logging Model
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -69,7 +69,7 @@ Keep the type in `internal/model`; do not create a controller-only or worker-onl
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/README.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `internal/model/README.md`
 - `internal/model/work_item.go`

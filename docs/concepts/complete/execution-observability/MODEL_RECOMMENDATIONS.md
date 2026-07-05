@@ -3,7 +3,7 @@
 These recommendations assume Codex is implementing the Execution Observability Operational Slices one at a time with the prompt pattern:
 
 ```text
-please read docs/concepts/execution-observability/<slice>.md and implement exactly that slice
+please read docs/concepts/complete/execution-observability/<slice>.md and implement exactly that slice
 ```
 
 The goal is to reduce reasoning-token use without causing Codex to over-read or over-edit the repository.

@@ -1,6 +1,6 @@
 # 004 Worker Logging Client
 
-Status: Ready
+Status: Complete
 
 ## Objective
 
@@ -50,9 +50,9 @@ Keep the client inside `cmd/worker` for now. Do not promote it into a reusable p
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/003-controller-logging-endpoint.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/003-controller-logging-endpoint.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/worker/README.md`
 - `cmd/worker/config.go`

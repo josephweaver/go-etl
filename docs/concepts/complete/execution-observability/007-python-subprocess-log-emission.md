@@ -1,6 +1,6 @@
 # 007 Python Subprocess Log Emission
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -58,10 +58,10 @@ The subprocess line-to-observation conversion may live in a small helper if that
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/004-worker-logging-client.md`
-- `docs/concepts/execution-observability/006-worker-fallback-logging.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/004-worker-logging-client.md`
+- `docs/concepts/complete/execution-observability/006-worker-fallback-logging.md`
 - `docs/concepts/python-workitem/README.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/worker/README.md`

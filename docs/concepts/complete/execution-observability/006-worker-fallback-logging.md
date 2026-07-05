@@ -1,6 +1,6 @@
 # 006 Worker Fallback Logging
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -44,9 +44,9 @@ Reuse the worker's existing configured log directory if available. Do not add a 
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/004-worker-logging-client.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/004-worker-logging-client.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/worker/README.md`
 - `cmd/worker/config.go`

@@ -1,6 +1,6 @@
 # 005 Controller Filesystem Log Sinks
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -58,10 +58,10 @@ Keep the sink in `cmd/controller` for now. Do not add a new persistence layer or
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/002-log-configuration.md`
-- `docs/concepts/execution-observability/003-controller-logging-endpoint.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/002-log-configuration.md`
+- `docs/concepts/complete/execution-observability/003-controller-logging-endpoint.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/controller/README.md`
 - `cmd/controller/config.go`

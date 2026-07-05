@@ -1,6 +1,6 @@
 # 009 Submission Log Read API
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -68,11 +68,11 @@ If response structs are shared with `internal/client`, put them in `internal/mod
 
 Read these files first:
 
-- `docs/concepts/execution-observability/README.md`
-- `docs/concepts/execution-observability/001-logging-model.md`
-- `docs/concepts/execution-observability/002-log-configuration.md`
-- `docs/concepts/execution-observability/005-controller-filesystem-log-sinks.md`
-- `docs/concepts/execution-observability/008-log-levels-and-filtering.md`
+- `docs/concepts/complete/execution-observability/README.md`
+- `docs/concepts/complete/execution-observability/001-logging-model.md`
+- `docs/concepts/complete/execution-observability/002-log-configuration.md`
+- `docs/concepts/complete/execution-observability/005-controller-filesystem-log-sinks.md`
+- `docs/concepts/complete/execution-observability/008-log-levels-and-filtering.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/controller/README.md`
