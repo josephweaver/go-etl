@@ -147,6 +147,20 @@ The first durable storage implementation is controller-managed filesystem JSON L
 
 Human-readable formatting belongs at read time or CLI presentation time. Filesystem paths are controller internals and must not be exposed as public API facts.
 
+### Controller configuration defaults
+
+Slice 002 publishes the controller-owned logging defaults that later slices must treat as stable inputs:
+
+| Variable | Default |
+| --- | ---: |
+| `controller_config.controller_filesystem_logging_enabled` | `true` |
+| `controller_config.controller_log_root_path` | `${controller_root_dir}/logs` |
+| `controller_config.controller_log_level` | `info` |
+| `controller_config.controller_log_read_default_tail_lines` | `100` |
+| `controller_config.controller_log_read_max_tail_lines` | `1000` |
+
+The source of truth is `cmd/controller/defaults.json`. `cmd/controller/controller-default-config.json` and `cmd/controller/demo-config.json` should inherit these values rather than duplicate them. This keeps the default controller configuration small and ensures validation tests exercise the inherited default path.
+
 ## Current State
 
 ### Strategic current state
@@ -268,6 +282,8 @@ Content-Type: application/json
 GET /submissions/sub_1234/logs?tail=100
 Accept: application/json
 ```
+
+If `tail` is omitted, the controller uses `controller_log_read_default_tail_lines = 100`. Requests above `controller_log_read_max_tail_lines = 1000` should return a client error rather than silently clamping.
 
 ```json
 {

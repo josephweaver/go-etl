@@ -7,6 +7,7 @@ It is not the place for controller scheduling, workflow compilation, worker exec
 ## Files
 
 - `work_item.go` owns the shared work assignment, completion, failure, parameter, and controller status shapes.
+- `log_observation.go` owns the shared structured log-observation transport and level helper behavior.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
@@ -17,6 +18,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Completion and failure report shapes.
 - Controller status summary shape.
 - Shared structural validity rules for work assignments.
+- Shared structured log-observation validation and level comparison rules.
 
 ## Concepts Owned Elsewhere
 

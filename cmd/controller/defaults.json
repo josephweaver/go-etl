@@ -14,6 +14,8 @@
     {"name": {"namespace": "controller_config", "key": "controller_log_root_path"}, "type": "path", "expression": "${controller_root_dir}/logs"},
     {"name": {"namespace": "controller_config", "key": "controller_filesystem_logging_enabled"}, "type": "bool", "expression": true},
     {"name": {"namespace": "controller_config", "key": "controller_log_level"}, "type": "string", "expression": "info"},
+    {"name": {"namespace": "controller_config", "key": "controller_log_read_default_tail_lines"}, "type": "int", "expression": 100},
+    {"name": {"namespace": "controller_config", "key": "controller_log_read_max_tail_lines"}, "type": "int", "expression": 1000},
     {"name": {"namespace": "controller_config", "key": "controller_read_header_timeout_milliseconds"}, "type": "int", "expression": 5000},
     {"name": {"namespace": "controller_config", "key": "controller_read_timeout_milliseconds"}, "type": "int", "expression": 30000},
     {"name": {"namespace": "controller_config", "key": "controller_write_timeout_milliseconds"}, "type": "int", "expression": 30000},
