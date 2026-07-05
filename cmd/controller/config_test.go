@@ -264,6 +264,8 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		"controller_log_root_path",
 		"controller_filesystem_logging_enabled",
 		"controller_log_level",
+		"controller_log_read_default_tail_lines",
+		"controller_log_read_max_tail_lines",
 		"controller_read_header_timeout_milliseconds",
 		"controller_read_timeout_milliseconds",
 		"controller_write_timeout_milliseconds",
