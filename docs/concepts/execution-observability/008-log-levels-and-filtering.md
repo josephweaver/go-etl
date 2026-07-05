@@ -1,73 +1,106 @@
 # 008 Log Levels and Filtering
 
-Status: proposed
+Status: Ready
 
 ## Objective
 
-Implement log-level filtering and sink routing for structured log observations. This slice decides which observations should be written to which configured sinks and resolves any required human-readable names needed for filesystem paths.
+Apply configured minimum log-level filtering and route observations consistently before durable controller filesystem writes.
+
+This slice turns the log level configured in slice 002 into observable sink behavior.
+
+## Current State
+
+The logging model defines levels. Controller configuration resolves a minimum log level. Controller filesystem sinks can write accepted observations to JSONL files.
+
+The controller does not yet consistently decide which accepted observations should be written durably when their level is below the configured threshold.
+
+Routing rules may also be duplicated between endpoint and sink code unless this slice centralizes them.
+
+## Target State
+
+The controller applies a small, explicit filtering and routing rule before writing to durable log sinks.
+
+Expected filtering behavior:
+
+- Observations below the configured minimum level are accepted by the ingestion endpoint but not written to durable filesystem sinks.
+- Observations at or above the configured minimum level are eligible for durable writes.
+- Invalid configured levels should already be rejected by startup configuration; runtime code should still handle unexpected values defensively.
+- Filtering failures become warnings only and do not fail work execution.
+
+Expected routing behavior:
+
+- Observations without `submission_id` route to controller-wide logs.
+- Observations with `submission_id` route to submission-level logs.
+- Observations with `submission_id` and `attempt_id` route to attempt-level logs according to the sink strategy chosen in slice 005.
+- Missing human-readable names never fail logging. Prefer stable IDs; names are presentation metadata.
+
+## Concept Decision
+
+This slice updates the controller filesystem sink concept. If filtering/routing helpers are large enough to reason about independently, a new controller-local helper file is justified.
+
+Do not move filtering into `internal/model`; model-level helpers may compare levels, but controller configuration decides what gets written.
 
 ## Required Context
 
 Read these files first:
 
-- docs/concepts/execution-observability/README.md
-- docs/concepts/execution-observability/001-logging-model.md
-- docs/concepts/execution-observability/002-log-configuration.md
-- docs/concepts/execution-observability/005-controller-filesystem-log-sinks.md
-- docs/ARCHITECTURE_OVERVIEW.md
-- cmd/controller/config.go
-- cmd/controller/config_test.go
-- cmd/controller/main.go
-- cmd/controller/main_test.go
-- internal/model/log_observation.go
+- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/execution-observability/001-logging-model.md`
+- `docs/concepts/execution-observability/002-log-configuration.md`
+- `docs/concepts/execution-observability/005-controller-filesystem-log-sinks.md`
+- `docs/ARCHITECTURE_OVERVIEW.md`
+- `cmd/controller/README.md`
+- `cmd/controller/config.go`
+- `cmd/controller/config_test.go`
+- `cmd/controller/log_sink.go`
+- `cmd/controller/log_sink_test.go`
+- `cmd/controller/main.go`
+- `cmd/controller/main_test.go`
+- `internal/model/log_observation.go`
 
-Do not read unrelated files unless test failures directly require it.
+Do not read unrelated files unless test failures directly require them.
 
 ## Allowed Production Files
 
-- cmd/controller/config.go
-- cmd/controller/main.go
+- `cmd/controller/config.go`
+- `cmd/controller/log_sink.go`
+- `cmd/controller/log_filter.go`
+- `cmd/controller/main.go`
 
 ## Allowed Test Files
 
-- cmd/controller/config_test.go
-- cmd/controller/main_test.go
+- `cmd/controller/config_test.go`
+- `cmd/controller/log_sink_test.go`
+- `cmd/controller/log_filter_test.go`
+- `cmd/controller/main_test.go`
 
 ## Out Of Scope
 
 - Worker logging client changes.
 - Worker fallback logging changes.
-- Subprocess stdout/stderr capture.
-- Python work item execution.
+- Python subprocess emission changes.
+- Submission-log read endpoint.
+- CLI log command.
 - Attempt Ledger schema redesign.
-- Execution event generalization.
+- Durable event store.
 - Metrics, tracing, or monitoring UI.
 
 ## Acceptance Criteria
 
-- Controller applies configured minimum log levels before writing observations to filesystem sinks.
-- Controller can route observations to controller-wide, workflow/run, and attempt-level sinks based on observation metadata.
-- Controller does not require strict global log ordering.
-- Log filtering failure or metadata resolution failure produces warnings only and does not fail work execution.
-- Tests cover filtering out observations below the configured level.
-- Tests cover keeping observations at or above the configured level.
-- Tests cover routing to the expected sink category.
-- Tests cover missing metadata behavior for workflow/run or attempt-level sinks.
-
-## Metadata Resolution
-
-A log observation may carry stable identifiers such as `workflow_id`, `run_id`, `step_id`, `work_item_id`, and `attempt_id`, while filesystem paths may require human-readable names such as workflow name and step name.
-
-This slice should define the controller-side resolution rule for path construction:
-
-- Prefer explicit names already present on the log observation when available.
-- Resolve missing workflow or step names from controller-owned state or the ledger/database when available.
-- Fall back to stable IDs when names cannot be resolved.
-- Never fail logging or work execution because a name cannot be resolved.
+- Controller filters out observations below the configured minimum level before durable writes.
+- Controller writes observations at the configured minimum level.
+- Controller writes observations above the configured minimum level.
+- Tests cover `debug` filtered by `info` minimum.
+- Tests cover `info` retained by `info` minimum.
+- Tests cover `warn` and `error` retained by lower minimums.
+- Tests cover routing for controller-wide observations.
+- Tests cover routing for submission observations.
+- Tests cover routing for attempt observations.
+- Missing workflow or step names do not fail filtering or routing.
+- The ingestion endpoint still treats logging as best-effort.
 
 ## Notes
 
-- Filesystem paths are presentation/storage concerns. The structured observation model should continue to use stable IDs for identity.
-- Human-readable names are useful for directory layout, but stable IDs should remain available for unambiguous lookup.
-- If the current database does not yet store the required mapping, this slice may document or minimally implement the best available fallback without redesigning the ledger.
-- Logging is best-effort. Failed filtering, routing, or name resolution must never fail work execution.
+- The controller may accept observations below the durable threshold so workers do not need to know the controller's sink policy.
+- Do not introduce per-component or per-stream filtering in this slice unless it is already trivial from existing config. Minimum level is enough.
+- Strict global ordering is not required.

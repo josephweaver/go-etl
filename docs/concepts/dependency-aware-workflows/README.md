@@ -1,349 +1,272 @@
-# Dependency-Aware Workflow Execution Epic
+# Dependency-Aware Workflow Execution
 
-Status: Proposed
+Status: Ready
 
 ## Purpose
 
-Make workflow execution dependency-aware so the controller compiles and queues
-only steps whose predecessors have completed successfully and whose outputs are
-available.
+Make workflow execution dependency-aware so the controller only makes dependency-ready work assignable.
 
-The current controller eagerly compiles every step during workflow submission
-and appends every generated work item to the same pending queue. Consequently,
-a worker may receive work from a downstream step before an upstream step has
-completed. The controller also does not retain the submitted workflow
-definition and variable scopes needed to compile later steps just in time.
+After this Strategic Concept is complete, GOET workflows execute in dependency stages instead of submitting every generated work item to the queue at once. Sequential workflow steps run sequentially by default. Contiguous steps with the same `parallel_with` label run in the same stage and may be assigned concurrently after their shared predecessor stage completes.
+
+This concept assumes these previous Strategic Concepts have already been completed and merged:
+
+- `submission-cli-status`: workflow submission returns a stable `submission_id`; `goet status`, `goet submit ... --wait`, and JSON output exist.
+- `execution-observability`: controller-owned log observations exist; submission-scoped logs are readable through the controller and CLI.
+
+Those assumptions let this concept focus on dependency readiness instead of creating another public run handle or another observation surface.
+
+## Strategic Decision
+
+Dependency readiness is controller-owned orchestration state.
+
+Workers do not decide which workflow step is ready. Workers continue to request one assignable work item, execute it, and report a terminal result. A work item must enter the assignable queue only after the controller has proven that the step's predecessor stage completed successfully.
+
+The first dependency-aware workflow model is stage-based, not a general graph language:
+
+```text
+workflow definition order + contiguous parallel_with groups => ordered dependency stages
+```
+
+This keeps the user-facing workflow format simple while fixing the current scheduling bug: downstream work cannot race ahead of upstream work merely because all steps were compiled during submission.
 
 ## Goals
 
-- Treat workflow steps as sequential by default, with `parallel_with` as the
-  explicit declaration that selected steps may run in the same dependency
-  stage.
-- Normalize step declarations into dependency edges and validate them before
-  execution begins.
-- Prevent downstream work from becoming assignable before all of its required
-  predecessor steps have completed successfully.
-- Retain each submitted workflow definition and its effective configuration
-  scopes for the lifetime of the workflow instance.
-- Compile initially runnable steps at submission time and compile newly ready
-  steps when predecessor state changes.
-- Treat a fan-out step as complete only after every work item belonging to that
-  step reaches the required terminal state.
-- Capture successful step outputs as typed values that downstream expressions
-  can resolve through the variable system.
-- Assemble a fresh resolver context at each compilation boundary from retained
-  definition/configuration scopes, generated runtime variables, and completed
-  predecessor outputs.
-- Keep workflow-instance, step-instance, and work-item state distinct and
-  attributable through their existing identities.
-- Ensure worker scaling reacts when JIT compilation adds newly ready work.
-- Define deterministic behavior for upstream failure, skipped/reused work, and
-  controller restart.
+- Treat workflow steps as sequential by default.
+- Treat `parallel_with` as a workflow-local label that groups only a contiguous run of adjacent steps into one parallel stage.
+- Reject non-contiguous reuse of a `parallel_with` label before any queue mutation.
+- Normalize every submitted workflow into ordered, zero-based stages.
+- Persist enough workflow, stage, step, and work-item state for the controller to evaluate readiness after terminal work results.
+- Compile and queue only stage 0 during submission.
+- Compile later stages just in time after the previous stage completes successfully.
+- Treat a step as complete only after all required work items belonging to that step have reached a success-equivalent terminal state.
+- Treat a stage as complete only after every step in that stage completes successfully.
+- Capture typed logical step outputs so downstream expressions can resolve `workflow.step[index]` through the existing variable resolver.
+- Preserve deterministic output order for fan-out steps by using the original fan-out item order, not completion order or work-item ID sorting.
+- Fail the workflow instance when any step fails, and prevent later stages from being compiled after that failure.
+- Surface dependency state through the already-existing submission status and observability surfaces.
 
 ## Non-Goals
 
-- Implementing resource-capacity admission control; that remains in the
-  resource-constraint epic.
-- Moving workflow expression evaluation into workers.
-- Allowing workers to decide which workflow steps are ready.
-- Adding arbitrary conditional branching, loops, or a general workflow
-  programming language in the first version.
-- Implementing sub-workflow invocation unless it is explicitly added through
-  later epic review.
-- Redesigning scheduler-specific CPU, memory, GPU, or queue requests.
-- Treating submission order alone as a safe substitute for tracked dependency
-  state.
+- Arbitrary DAG declarations such as `depends_on`.
+- Conditional branches, loops, dynamic step creation, or a general workflow programming language.
+- Cross-workflow dependencies or the `dependent_workflow` tag.
+- Resource-capacity admission control. Resource readiness remains a later independent gate: `dependency ready AND resource available => assignable`.
+- Worker-side workflow expression evaluation.
+- Worker-side dependency readiness decisions.
+- Cancellation of already-running sibling work items in a failed parallel stage.
+- New public identifiers separate from `submission_id` and the existing internal workflow/run IDs.
+- A new observability system separate from the completed Execution Observability concept.
+- Attempt liveness recovery, abandoned-attempt recovery, or lease fencing beyond what already exists in the repository when this concept begins.
+- Attempt reuse or skip correctness beyond the existing terminal work-result contract. A skipped/reused item may satisfy a dependency only when it records the same logical output shape needed by downstream resolution.
 
 ## Architectural Context
 
-Dependency readiness is controller-owned orchestration state. Workers remain
-simple: request one eligible work item, execute it, and report a terminal
-result. A work item must enter the assignable pending queue only after its step
-is ready.
+GOET's controller owns orchestration, queueing, source admission, workflow compilation, and direct SQLite/database access. Workers interact through HTTP, execute assigned work, and report completion or failure.
 
-The current submission flow in `cmd/controller/main.go` constructs temporary
-workflow and submission scopes, creates a resolver, compiles every workflow
-step, and discards the definition-level resolution context after the request.
-The current completion flow records an attempt and removes the completed item
-from the assigned map, but does not update step state or activate downstream
-steps.
+Before this concept, workflow submission compiles every step immediately and queues every generated work item. That makes queue order the only accidental barrier between upstream and downstream work. Queue order is not a dependency model. With multiple workers, a downstream item can be assigned before the upstream stage has completed.
 
-The target lifecycle is conceptually:
+After this concept, the controller owns a workflow-instance state machine:
 
 ```text
 submit workflow
-      |
-      v
-validate dependency graph and retain workflow instance context
-      |
-      v
-compile and queue dependency-ready steps only
-      |
-      v
-workers complete every item in a step
-      |
-      v
-capture typed step outputs and mark step complete
-      |
-      v
-identify newly ready steps
-      |
-      v
-assemble resolver context and compile those steps JIT
+  -> normalize workflow stages
+  -> persist workflow/stage/step context
+  -> compile and queue stage 0 only
+  -> workers execute ready work
+  -> terminal work result updates work-item and step state
+  -> completed stage captures typed outputs
+  -> next stage becomes ready
+  -> controller compiles next stage just in time
+  -> repeat until workflow completed or failed
 ```
 
-Workflow authoring remains sequential by default. A `parallel_with` tag is a
-workflow-local group label, not a reference to a step name or position. A
-contiguous run of steps carrying the same non-empty label forms one parallel
-stage. An untagged step forms a sequential stage by itself. Each stage depends
-on completion of every step in the preceding stage.
+This concept builds on the existing variable package. Downstream step parameters are still resolved by the controller before creating worker assignments. Predecessor outputs are exposed as a generated, read-only workflow variable rather than through a separate expression mechanism.
 
-For example:
+## Current State
+
+This current state is the expected state after the previous two Strategic Concepts have landed.
+
+- `goet submit` submits a workflow and returns a `submission_id`.
+- `goet status <submission_id>` can read workflow/submission status from the controller.
+- `goet submit ... --wait` can wait for a terminal submission state.
+- `goet logs <submission_id>` can read controller-owned execution observations.
+- Python work items can execute admitted source and return a canonical logical `output.json` through the worker completion path.
+- The controller can compile a workflow into work items through `internal/workflow`.
+- The workflow compiler currently treats the workflow as a flat list of steps and compiles all steps during submission.
+- The current `workflow.Step` shape does not yet encode stage readiness or dependency grouping.
+- The queue is assignable-work oriented; it does not represent future blocked steps as assignable work.
+
+## Target State
+
+Workflow submission creates a dependency-aware workflow instance.
+
+The controller persists or otherwise records the normalized stage plan, step instance states, queued work-item membership, retained workflow/configuration context, and terminal outputs needed to compile later stages. Only dependency-ready work items enter the assignable queue.
+
+A simple sequential workflow:
 
 ```text
-step 1: parallel_with = "GroupA"
-step 2: parallel_with = "GroupA"
-step 3: untagged
-step 4: parallel_with = "GroupB"
-step 5: parallel_with = "GroupB"
+step 0
+step 1
+step 2
 ```
 
 normalizes to:
 
 ```text
-[step 1, step 2] -> [step 3] -> [step 4, step 5]
+stage 0: step 0
+stage 1: step 1
+stage 2: step 2
 ```
 
-Parallel groups must be contiguous and a closed label cannot be reopened. This
-is invalid because `GroupA` ends before step 3 and is reused at step 4:
+A workflow with contiguous `parallel_with` groups:
 
 ```text
-step 1: parallel_with = "GroupA"
-step 2: parallel_with = "GroupA"
-step 3: untagged
-step 4: parallel_with = "GroupA"
+step 0: parallel_with = "A"
+step 1: parallel_with = "A"
+step 2: untagged
+step 3: parallel_with = "B"
+step 4: parallel_with = "B"
 ```
 
-A step following a parallel group cannot become ready until every member of
-that group has completed; waiting only for the textually last member would
-recreate the same scheduling bug at a group boundary.
-
-Submission normalizes this sequence into zero-based stages. An untagged step is
-one stage; a contiguous `parallel_with` group is one stage containing multiple
-steps. All stage definitions and indexes are recorded when the workflow run is
-created. Only stage 0 is compiled initially. Successful completion of every
-required work item in stage N activates JIT compilation of stage N+1.
-
-If compiling a fan-out stage produces zero work items, the stage completes
-successfully immediately with typed output `[]`. The controller then activates
-the next stage through the same durable, idempotent stage-completion transition;
-no synthetic work item or attempt is created for the empty fan-out.
-
-Output aggregation preserves execution structure rather than flattening it. A
-non-fan-out step produces one typed object using the variable module's existing
-`TypeObject` and `ResolvedValue` tree. The object contains the step's named
-logical outputs; no separate workflow-output value system is introduced. A
-fan-out step produces an ordered list of its work-item outputs in deterministic
-fan-out order. A parallel group produces an ordered list of its member-step
-outputs in workflow-definition order. Consequently, a parallel group whose
-members are fan-out steps produces a list of lists:
+normalizes to:
 
 ```text
-parallel group output = [
-  [fan-out step 1 item outputs],
-  [fan-out step 2 item outputs]
-]
+stage 0: step 0, step 1
+stage 1: step 2
+stage 2: step 3, step 4
 ```
 
-No implicit flattening occurs. A downstream consumer that requires a flat list
-must request an explicit transformation in a later expression capability.
-
-Step outputs have stable implicit identities based on workflow-definition
-position. The expression form is conceptually:
+This is invalid because label `A` is reused after the first `A` group closed:
 
 ```text
-workflow.step[0]
-workflow.step[1]
+step 0: parallel_with = "A"
+step 1: parallel_with = "A"
+step 2: untagged
+step 3: parallel_with = "A"
 ```
 
-`workflow.step` is a controller-generated, read-only generic list whose entries
-appear in workflow-definition order. Each entry is the logical output of that
-step: an object for a normal step or a list of objects for a fan-out step. The
-controller exposes only outputs whose steps have completed successfully; an
-unavailable current or future entry is a resolution error rather than an empty
-placeholder.
+A later stage becomes eligible only after every step in the previous stage has completed successfully. A step with fan-out is complete only after every generated fan-out work item has completed successfully or has been accepted as a success-equivalent skip by the existing terminal-result contract.
 
-Parallel group labels control concurrency and do not become a second output-
-addressing scheme. The initial implementation uses explicit
-`workflow.step[index]` references only; a convenience alias for the immediately
-preceding stage is deferred to `FUTURE.md`.
+## Output Contract
 
-For example, an SFTP download plugin may define its observable state as the
-canonical combination of remote source metadata and local downloaded output
-state. Before transfer it computes `pre_state_hash`. After successful transfer
-it computes `post_state_hash` over the same state definition. On a later run,
-matching the current pre-state hash to the prior successful post-state hash
-proves, according to the plugin's declared observation guarantees, that the
-downloaded state is already converged and the transfer may be skipped. A
-changed remote file or missing/corrupt local output changes the observed state
-and prevents the skip.
-
-Reuse identity is composite. Its execution-relevant components include at
-least:
+The public generated output namespace is:
 
 ```text
-GOET Core source revision
-selected GOET plugin source revision
-project source revision
-workflow definition ID within that project revision
-step position within that workflow definition
-bound work-item input fingerprint
+workflow.step[index]
 ```
 
-The source revisions are immutable Git commit identities, not repository names
-alone. Workflow and step definitions are cohesive project components checked
-into the project repository under their IDs. The project commit is therefore
-their version authority. A workflow ID such as `workflow-download-cdl` and a
-position such as `step 3` identify components inside that immutable project
-revision; they are not independent version sources. Normalized workflow and
-step fingerprints may still be recorded for diagnostics and finer-grained
-comparison, but correctness does not depend on locating separate workflow or
-step repositories. A conservative first implementation may invalidate reuse
-when any listed repository revision changes, even if the changed files did not
-affect this step.
+`workflow.step` is a controller-generated, read-only list in workflow-definition order. It is not authored by the workflow document.
 
-These components remain individually queryable typed variables in the attempt
-record and also feed one deterministic composite execution fingerprint. The
-worker uses that execution fingerprint to locate a prior successful candidate
-and compares its current `pre_state_hash` to the candidate's
-`post_state_hash`. Equality means the plugin-defined external state already
-matches the prior successful final state.
+Each list entry is the logical output of one workflow step:
 
-Dependencies between complete workflows, including the `dependent_workflow`
-tag and GitHub definition lookup, belong to the separate
-`workflow-dependency-resolution` epic. This epic supplies the workflow-instance
-state and readiness transitions that cross-workflow dependencies consume.
+- a non-fan-out step produces one object;
+- a fan-out step produces a list of item-output objects in deterministic fan-out order;
+- a future, failed, or unavailable step has no output and causes a resolution error when referenced.
 
-Retained workflow context must be isolated by workflow-instance ID. It must not
-be implemented by accumulating workflow scopes in one global resolver. Each
-JIT compilation should assemble the scopes belonging to that workflow
-instance in deliberate precedence order.
+`parallel_with` labels do not create output names. They only control concurrency. Downstream expressions should use explicit step indexes in the first implementation.
 
-The variable system remains the expression and precedence authority. A later
-step should receive predecessor outputs through a defined read-only namespace
-or equivalent typed scope rather than through an unrelated output lookup
-mechanism. The controller should resolve downstream parameters before creating
-worker assignments.
+The controller must not flatten fan-out output lists implicitly. A downstream consumer that needs a flattened shape requires a later explicit transformation capability.
 
-Workflow readiness and resource readiness are independent gates:
+## State Model
+
+The implementation may name these records differently, but it needs equivalent concepts:
 
 ```text
-dependency ready AND resource capacity available => assignable
+WorkflowInstance
+  submission_id
+  workflow_instance_id / run_id
+  workflow_definition_id
+  state: submitted | running | completed | failed
+  retained submitted workflow document
+  retained variable/configuration scopes needed for JIT compilation
+
+WorkflowStageInstance
+  submission_id
+  stage_index
+  state: blocked | ready | active | completed | failed
+  step_indexes in workflow-definition order
+
+WorkflowStepInstance
+  submission_id
+  stage_index
+  step_index
+  step_definition_id
+  state: blocked | ready | active | completed | failed
+  expected_work_item_count
+  completed_work_item_count
+  failed_work_item_count
+  output value when completed
+
+WorkflowWorkItemMembership
+  submission_id
+  stage_index
+  step_index
+  work_item_id
+  work_item_index within the step/fan-out result
+  terminal state and terminal evidence
 ```
 
-A dependency-blocked item must not consume resource capacity. A resource-
-blocked item must not cause a downstream step to be considered complete.
+The controller should transition this state idempotently. Replaying or retrying a terminal work-result handler must not double-complete a stage or double-queue the next stage.
 
-Any failed step fails its workflow instance and permanently prevents later
-stages from becoming ready. Work items from the same parallel stage that were
-already assigned may finish and report their terminal results, but their
-completion cannot reactivate the failed workflow or trigger downstream
-compilation. The first implementation does not require cancellation of those
-already-running siblings.
+## Failure Contract
 
-When a completion transition makes a downstream stage ready, the controller
-persists the newly compiled queued work and signals a reconciliation loop.
-Completion handling does not directly launch worker processes. The reconciler
-observes durable queued demand and applies the existing worker-scaling policy.
+Any failed work item fails its step. Any failed step fails its stage. Any failed stage fails the workflow instance/submission.
 
-## Required State
+When a step fails inside a parallel stage, sibling work items that were already assigned may still finish and report terminal results. Their later completion must not reactivate the failed workflow or compile downstream stages. The first implementation does not need to cancel running siblings.
 
-The design is expected to require controller-owned records for at least:
+## Submission Status And Observability
 
-- The workflow instance and retained submitted definition.
-- Definition, project/configuration, submission override, and generated runtime
-  variable scopes needed for later resolution.
-- Each step's dependency set and lifecycle state.
-- The work-item instances belonging to each compiled step instance.
-- Terminal work-item results and the typed logical outputs derived from them,
-  including ordered fan-out lists and nested parallel-group lists.
-- Failure or skip decisions that affect downstream readiness.
+The completed Submission CLI Status concept owns the public submission handle and status command. This concept should extend those existing surfaces, not replace them.
 
-Durable run/configuration snapshots, work-item and attempt identity, atomic
-state transitions, restart reconstruction, and pre/post-state hashes are
-owned by `workflow-execution-persistence`. Heartbeats, leases, fencing, and
-abandoned-attempt recovery are owned by `attempt-liveness-recovery`. This epic
-consumes those guarantees when deciding whether a stage has completed and when
-the next stage may be compiled.
+Status should be able to tell a user whether a submission is blocked, active, completed, or failed because of dependency state. It does not need a rich UI, but it should expose enough structured data for `goet status --json` to show the current stage and step states.
 
-## Relationship To Other Epics
+The completed Execution Observability concept owns log observations. This concept should emit observations for meaningful dependency transitions, such as:
 
-- `structured-variable-resolution` supplies recursive typed expressions,
-  accessors, interpolation, and diagnostics used when compiling later steps.
-- `resource-constraint` depends on this epic for the definition of workflow
-  eligibility. Resource admission must never make a dependency-blocked step
-  assignable.
-- `controller-resilience` owns the broader controller-instance and abandoned-
-  compute lifecycle. This epic must define which workflow state resilience
-  would need to restore.
-- `workflow-dependency-resolution` builds cross-workflow lookup and dependency
-  behavior on top of the workflow-instance lifecycle defined here.
-- `workflow-execution-persistence` is a prerequisite and owns database-backed
-  run context, work-item/attempt records, outputs, and restart reconstruction.
-- `attempt-liveness-recovery` owns heartbeat leases, caretaker reconciliation,
-  fencing, and abandoned-attempt retry transitions.
-- Attempt-ledger reuse must restore logical outputs before a reused or skipped
-  predecessor can satisfy downstream dependencies.
+```text
+workflow stages normalized
+stage 0 queued
+stage N completed
+stage N+1 activated
+workflow failed because step X failed
+```
+
+## Relationship To Later Concepts
+
+- `resource-constraint` consumes dependency readiness as an eligibility gate. It must not make dependency-blocked work assignable.
+- Python environment management benefits from dependency-aware execution because environment setup failures can stop downstream stages deterministically.
+- Python/R SDKs can show stage-aware status through the existing submission/status API.
+- Cross-workflow dependencies can later build on the workflow-instance lifecycle introduced here.
 
 ## Proposed Slices
 
-No implementation slices are agreed yet. Candidate implementation areas will
-be decomposed after the remaining readiness and worker-scaling behavior is
-resolved and prerequisite epic boundaries are reviewed.
-
-## Open Questions
-
-No unresolved epic-level behavior questions remain. Slice decomposition should
-begin only after the prerequisite persistence and liveness boundaries are
-reviewed.
+1. `001-normalize-workflow-stages.md` — add `parallel_with` to workflow steps and normalize definitions into ordered stages.
+2. `002-compile-single-workflow-stage.md` — let the workflow compiler compile one normalized stage without compiling future stages.
+3. `003-persist-workflow-stage-state.md` — add controller-owned workflow/stage/step/work-item dependency state records.
+4. `004-stamp-work-items-with-step-instance-metadata.md` — attach workflow, stage, step, and item-order metadata to compiled work items before queue insertion.
+5. `005-submit-only-initial-ready-stage.md` — make workflow submission persist the plan and queue only stage 0.
+6. `006-record-terminal-work-item-state.md` — update dependency state when work completion or failure is reported.
+7. `007-capture-typed-step-outputs.md` — convert successful terminal outputs into typed step outputs and expose `workflow.step[index]` scope construction.
+8. `008-compile-next-ready-stage.md` — activate and JIT-compile the next stage after a predecessor stage completes.
+9. `009-handle-empty-fanout-and-auto-advance.md` — complete zero-work-item steps/stages without synthetic attempts and continue activation.
+10. `010-propagate-step-and-workflow-failure.md` — make failure transitions terminal and prevent downstream activation.
+11. `011-surface-dependency-state-in-status-and-logs.md` — extend submission status and observations with stage/step dependency state.
+12. `012-update-dependency-workflow-docs-and-smoke.md` — update docs and add repeatable smoke coverage for sequential and parallel-stage workflows.
 
 ## Completion Criteria
 
-- Submission rejects invalid dependency graphs before queue mutation.
-- Steps execute sequentially by default, while `parallel_with` steps may be
-  assigned concurrently only when their shared predecessor requirements are
-  satisfied.
-- Submission rejects a `parallel_with` label that is reused after its
-  contiguous group has closed.
-- Only work items belonging to dependency-ready steps can enter the assignable
-  pending queue.
-- Two workers cannot execute dependent steps concurrently unless the declared
-  dependency has already been satisfied.
-- A fan-out predecessor is not complete until all of its required work items
-  are terminal according to the agreed success policy.
-- An empty fan-out completes successfully with typed output `[]` and advances
-  without creating a work item or attempt.
-- Fan-out output ordering follows deterministic fan-out order; parallel-group
-  output ordering follows workflow-definition order, and nested lists remain
-  nested.
-- A non-fan-out step exposes one typed object represented by the variable
-  module's existing resolved object model.
-- Downstream steps compile JIT using the retained scopes and typed outputs of
-  their own workflow instance.
-- Workflow definitions, immutable resolver snapshots, step state, work items,
-  and attempts are database-backed so a controller restart does not lose the
-  run or cause later steps to use newer project configuration.
-- Workflow configurations from different submissions never leak into one
-  another.
-- Upstream failure and skipped/reused work have explicit tested effects on
-  downstream readiness.
-- Any failed step fails the workflow and prevents compilation of all later
-  stages; already-running parallel siblings may finish without changing that
-  terminal workflow state.
-- Newly compiled downstream work participates in worker scaling and normal
-  assignment.
-- Restart behavior matches the agreed persistence boundary and is not implied
-  beyond what is implemented.
-- Resource constraints can consume dependency readiness as a separate,
-  authoritative eligibility gate.
-- Relevant workflow, controller, variable, ledger, and integration tests pass.
+- Invalid non-contiguous `parallel_with` labels are rejected before queue mutation.
+- Workflow steps execute sequentially by default.
+- Adjacent steps with the same `parallel_with` label may become assignable concurrently after their predecessor stage completes.
+- Only stage 0 work items are queued during initial submission.
+- Later-stage work items are absent from the assignable queue until their predecessor stage completes successfully.
+- A stage following a parallel group waits for every step in that parallel group, not only the textually last step.
+- Fan-out predecessor steps are not complete until every generated fan-out work item reaches an accepted terminal success state.
+- Empty fan-out steps complete successfully with output `[]` and advance the workflow without creating a synthetic work item or attempt.
+- Downstream stage compilation uses retained workflow/configuration scopes and generated `workflow.step[index]` outputs from the same submission only.
+- Fan-out output ordering follows fan-out generation order, not completion order.
+- Workflow configuration, output state, and resolver scopes from one submission never leak into another submission.
+- A work-item failure fails the owning step/stage/workflow and permanently prevents downstream stage compilation.
+- Already-running sibling work items in a failed parallel stage can report terminal results without changing the failed workflow state.
+- `goet status <submission_id>` reflects dependency-aware state.
+- `goet logs <submission_id>` includes useful dependency transition observations when observability is enabled.
+- Relevant workflow, controller, status, and smoke tests pass.

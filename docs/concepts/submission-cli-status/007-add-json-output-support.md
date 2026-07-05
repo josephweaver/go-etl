@@ -1,6 +1,6 @@
 # 007 Add JSON Output Support
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
