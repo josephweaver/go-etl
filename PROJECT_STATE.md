@@ -9,7 +9,7 @@ Operational observability slice 009 (`009-submission-log-read-api`) is now imple
 
 Operational observability slice 003 (`003-controller-logging-endpoint`) is now implemented: controller now registers `POST /observations/logs` with bounded request-size handling, JSON decode/validation behavior, and a success response that does not mutate queue/work state.
 
-Operational observability slice 004 (`004-worker-logging-client`) is now implemented: the worker runtime has a dedicated log client that posts one `internal/model.LogObservation` to `POST /observations/logs`, validates each observation before send, and returns `LogDeliveryError` on non-2xx responses, transport failures, encoding failures, and validation failures.
+Operational observability slice 004 (`004-worker-logging-client`) is now implemented: the worker runtime has a dedicated log client that posts one `internal/model.LogObservation` to `POST /observations/logs`, validates each observation before send, and returns `*LogDeliveryError` on non-2xx responses, transport failures, encoding failures, and validation failures.
 
 Operational observability slice 005 (`005-controller-filesystem-log-sinks`) is now implemented: the controller now persists accepted `internal/model.LogObservation` payloads to controller-owned JSONL files under `controller_log_root_path`, routing by controller-wide, submission, and attempt paths using path-safe IDs and serialized file appends.
 
