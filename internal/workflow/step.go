@@ -8,8 +8,9 @@ import (
 )
 
 type Step struct {
-	ID     string
-	FanOut *FanOutStep
+	ID           string
+	FanOut       *FanOutStep
+	ParallelWith string `json:"parallel_with,omitempty"`
 }
 
 func CompileStep(resolver variable.Resolver, step Step) ([]model.WorkItem, error) {

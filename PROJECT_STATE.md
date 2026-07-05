@@ -1473,3 +1473,4 @@ For HPCC work, use the configured execution-environment path against the locally
 ## Likely Next Step
 
 Wire `internal/clientsetup.SSHSetup` into `cmd/demo-client` behind an explicit setup flag or subcommand so the questionnaire can create local key material and a generated controller config from the demo client. Keep remote `authorized_keys` installation and durable `known_hosts` file management as separate, explicit follow-up slices.
+
