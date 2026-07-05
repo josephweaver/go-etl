@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -80,13 +81,25 @@ func submitCommand(command cliCommand, httpClient *http.Client) error {
 		return fmt.Errorf("goet submit: %w", err)
 	}
 
-	fmt.Println(formatSubmissionAcknowledgement(acknowledgement))
+	if command.JSON {
+		if err := writeJSONOutput(os.Stdout, acknowledgement); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println(formatSubmissionAcknowledgement(acknowledgement))
+	}
 	if !command.Wait {
 		return nil
 	}
 
 	status, waitErr := controllerClient.WaitForSubmission(acknowledgement.SubmissionID)
-	if status.SubmissionID != "" {
+	if command.JSON {
+		if status.SubmissionID != "" {
+			if err := writeJSONOutput(os.Stdout, status); err != nil {
+				return err
+			}
+		}
+	} else if status.SubmissionID != "" {
 		fmt.Println(formatSubmissionStatus(status))
 	}
 	if waitErr != nil {
@@ -107,7 +120,21 @@ func statusCommand(command cliCommand, httpClient *http.Client) error {
 		return fmt.Errorf("goet status: %w", err)
 	}
 
-	fmt.Println(formatSubmissionStatus(status))
+	if command.JSON {
+		if err := writeJSONOutput(os.Stdout, status); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println(formatSubmissionStatus(status))
+	}
+	return nil
+}
+
+func writeJSONOutput(writer io.Writer, value any) error {
+	encoder := json.NewEncoder(writer)
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Errorf("encode json output: %w", err)
+	}
 	return nil
 }
 
