@@ -72,6 +72,52 @@ function Remove-TreeIfPresent {
     }
 }
 
+function Invoke-CurlRequest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Method,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+
+        [string]$Body
+    )
+
+    $responsePath = [System.IO.Path]::GetTempFileName()
+    $bodyPath = $null
+    try {
+        $curlArgs = @('-sS', '-X', $Method, '-o', $responsePath, '-w', '%{http_code}')
+        if ($null -ne $Body) {
+            $bodyPath = [System.IO.Path]::GetTempFileName()
+            Set-Content -LiteralPath $bodyPath -Value $Body -NoNewline -Encoding utf8
+            $curlArgs += @('-H', 'Content-Type: application/json', '--data-binary', ('@' + $bodyPath))
+        }
+
+        $statusText = & curl.exe @curlArgs $Uri
+        $statusCode = 0
+        if (-not [int]::TryParse(($statusText | Out-String).Trim(), [ref]$statusCode)) {
+            throw "curl returned non-numeric status code: $statusText"
+        }
+
+        $bodyText = ''
+        if (Test-Path -LiteralPath $responsePath -PathType Leaf) {
+            $bodyText = Get-Content -Raw -LiteralPath $responsePath
+        }
+
+        return [pscustomobject]@{
+            StatusCode = $statusCode
+            Body       = $bodyText
+        }
+    } finally {
+        if ($bodyPath -and (Test-Path -LiteralPath $bodyPath)) {
+            Remove-Item -LiteralPath $bodyPath -Force
+        }
+        if (Test-Path -LiteralPath $responsePath) {
+            Remove-Item -LiteralPath $responsePath -Force
+        }
+    }
+}
+
 function Test-JsonSyntax {
     param(
         [Parameter(Mandatory = $true)]
@@ -94,12 +140,44 @@ function Test-JsonSyntax {
     return 'ConvertFrom-Json'
 }
 
-function Assert-Python3Available {
+function Resolve-PythonExecutable {
     $python3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $python3) {
-        throw "python3 is required because cmd/worker/demo-config.json defaults to python3"
+    if ($python3) {
+        return $python3.Path
     }
-    return $python3.Path
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        return $python.Path
+    }
+
+    $candidates = @(
+        'C:\ProgramData\anaconda3\python.exe',
+        'C:\Python314\python.exe',
+        'C:\Program Files\Python314\python.exe',
+        'C:\Program Files\Python313\python.exe',
+        'C:\Program Files\Python312\python.exe',
+        'C:\Program Files\Python311\python.exe',
+        'C:\Program Files\Python310\python.exe'
+    )
+
+    if ($env:LocalAppData) {
+        $candidates += @(
+            (Join-Path $env:LocalAppData 'Programs\Python\Python314\python.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python313\python.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python312\python.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python311\python.exe'),
+            (Join-Path $env:LocalAppData 'Programs\Python\Python310\python.exe')
+        )
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $candidate
+        }
+    }
+
+    throw "python3 or python is required for the smoke path, or a known Windows python.exe install path must exist"
 }
 
 function Wait-ForHttpGet {
@@ -117,8 +195,8 @@ function Wait-ForHttpGet {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -Method Get -Uri $Uri -TimeoutSec 5
-            if ($response.StatusCode -eq $ExpectedStatusCode) {
+            $response = Invoke-CurlRequest -Method Get -Uri $Uri
+            if ([int]$response.StatusCode -eq $ExpectedStatusCode) {
                 return
             }
         } catch {
@@ -138,7 +216,8 @@ function Get-ControllerStatus {
         [string]$ControllerUrl
     )
 
-    return Invoke-RestMethod -Method Get -Uri ($ControllerUrl.TrimEnd('/') + '/status') -TimeoutSec 5
+    $response = Invoke-CurlRequest -Method Get -Uri ($ControllerUrl.TrimEnd('/') + '/status')
+    return $response.Body | ConvertFrom-Json
 }
 
 function Wait-ForControllerIdle {
@@ -162,6 +241,27 @@ function Wait-ForControllerIdle {
     }
 
     throw "controller did not become idle within $TimeoutSeconds seconds; last status: $($lastStatus | ConvertTo-Json -Compress)"
+}
+
+function Wait-ForControllerPortClosed {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Port,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $connection = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $connection) {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "timed out waiting for port $Port to close"
 }
 
 function Assert-OutputFields {
@@ -225,41 +325,99 @@ $jsonTool = Test-JsonSyntax -Path $projectJson
 [void](Test-JsonSyntax -Path $environmentJson)
 Write-Host "Validated JSON syntax with $jsonTool."
 
-$python3Path = Assert-Python3Available
+$pythonExecutable = Resolve-PythonExecutable
 
-Write-Host "Compiling hello.py with python3..."
-& $python3Path -m py_compile $entrypointPy
+Write-Host "Compiling hello.py..."
+& $pythonExecutable -m py_compile $entrypointPy
 
-$controllerLogRoot = Join-Path $repoRoot '.run\python-workitem-smoke'
+$controllerLogRoot = Join-Path $repoRoot ('.run\python-workitem-smoke\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-pid' + $PID)
 $controllerStdout = Join-Path $controllerLogRoot 'controller.stdout.log'
 $controllerStderr = Join-Path $controllerLogRoot 'controller.stderr.log'
 $controllerDatabaseDir = Join-Path $repoRoot '.run\controller'
+$controllerDatabaseLock = Join-Path $controllerDatabaseDir 'workflow-execution.sqlite.controller.lock'
 $workerRuntimeDir = Join-Path $repoRoot 'cmd\worker\.run'
-
-Remove-TreeIfPresent -Path $controllerLogRoot
-Remove-TreeIfPresent -Path $controllerDatabaseDir
-Remove-TreeIfPresent -Path $workerRuntimeDir
-New-Item -ItemType Directory -Force -Path $controllerLogRoot | Out-Null
-
-$go = Get-Command go -ErrorAction Stop
-$controllerArgs = @('run', './cmd/controller', './cmd/controller/demo-config.json')
-$controllerProcess = Start-Process -FilePath $go.Path -ArgumentList $controllerArgs -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
+$workerLogDir = Join-Path $workerRuntimeDir 'logs'
+$workerTmpDir = Join-Path $workerRuntimeDir 'tmp'
+$workerDataDir = Join-Path $workerRuntimeDir 'data'
+$controllerBinary = Join-Path $repoRoot '.run\goetl-controller.exe'
+$workerBinary = Join-Path $repoRoot '.run\goetl-worker.exe'
+$workerSmokeConfig = Join-Path $repoRoot '.run\python-workitem-smoke-worker-config.json'
+$python3ShimDir = Join-Path $repoRoot '.run\python3-shim'
+$python3ShimPath = Join-Path $python3ShimDir 'python3.cmd'
+$controllerBaseUrl = 'http://127.0.0.1:8080'
 
 try {
-    Wait-ForHttpGet -Uri 'http://localhost:8080/healthz' -ExpectedStatusCode 204 -TimeoutSeconds 120
-    Wait-ForHttpGet -Uri 'http://localhost:8080/status' -ExpectedStatusCode 200 -TimeoutSeconds 120
+    [void](Invoke-CurlRequest -Method Post -Uri ($controllerBaseUrl + '/shutdown'))
+    Wait-ForControllerPortClosed -Port 8080 -TimeoutSeconds 15
+} catch {
+    # Ignore stale or absent controllers. Cleanup below will continue with the
+    # current on-disk state.
+}
+
+Remove-TreeIfPresent -Path $controllerDatabaseDir
+if (Test-Path -LiteralPath $controllerDatabaseLock -PathType Leaf) {
+    Remove-Item -LiteralPath $controllerDatabaseLock -Force
+}
+if (Test-Path -LiteralPath $controllerDatabaseDir) {
+    throw "failed to remove stale controller state dir: $controllerDatabaseDir"
+}
+Remove-TreeIfPresent -Path $workerRuntimeDir
+New-Item -ItemType Directory -Force -Path $controllerLogRoot | Out-Null
+foreach ($dir in @($workerRuntimeDir, $workerLogDir, $workerTmpDir, $workerDataDir)) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+}
+New-Item -ItemType Directory -Force -Path $python3ShimDir | Out-Null
+Set-Content -LiteralPath $python3ShimPath -Value ("@echo off`r`n""{0}"" %*`r`n" -f $pythonExecutable) -Encoding ascii
+$env:PATH = $python3ShimDir + ';' + $env:PATH
+
+$workerSmokeConfigBody = [pscustomobject]@{
+    log_dir           = $workerLogDir
+    tmp_dir           = $workerTmpDir
+    data_dir          = $workerDataDir
+    controller_url    = $controllerBaseUrl
+    python_executable = $pythonExecutable
+} | ConvertTo-Json
+Set-Content -LiteralPath $workerSmokeConfig -Value $workerSmokeConfigBody -Encoding utf8
+
+$go = Get-Command go -ErrorAction Stop
+if (Test-Path -LiteralPath $controllerBinary -PathType Leaf) {
+    $controllerProcess = Start-Process -FilePath $controllerBinary -ArgumentList @('--config', './cmd/controller/demo-config.json') -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
+} else {
+    $controllerArgs = @('run', './cmd/controller', '--config', './cmd/controller/demo-config.json')
+    $controllerProcess = Start-Process -FilePath $go.Path -ArgumentList $controllerArgs -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
+}
+
+try {
+    Wait-ForHttpGet -Uri ($controllerBaseUrl + '/healthz') -ExpectedStatusCode 204 -TimeoutSeconds 300
+    Wait-ForHttpGet -Uri ($controllerBaseUrl + '/status') -ExpectedStatusCode 200 -TimeoutSeconds 300
 
     Write-Host "Submitting python-hello workflow..."
-    $submissionBody = Get-Content -Raw -LiteralPath $submissionJson
-    $submitResponse = Invoke-WebRequest -Method Post -Uri 'http://localhost:8080/workflow' -ContentType 'application/json' -Body $submissionBody -TimeoutSec 30
-    if ($submitResponse.StatusCode -ne 204) {
-        throw "workflow submission returned HTTP $($submitResponse.StatusCode), want 204"
+    $submission = Get-Content -Raw -LiteralPath $submissionJson | ConvertFrom-Json
+    $override = [pscustomobject]@{
+        name = [pscustomobject]@{
+            namespace = 'worker_config'
+            key = 'worker_max_count'
+        }
+        type = 'int'
+        expression = 0
+    }
+    $submission.variables = @($submission.variables) + @($override)
+    $submissionBody = $submission | ConvertTo-Json -Depth 20
+    $submitResponse = Invoke-CurlRequest -Method Post -Uri ($controllerBaseUrl + '/workflow') -Body $submissionBody
+    if ([int]$submitResponse.StatusCode -ne 204) {
+        throw "workflow submission returned HTTP $([int]$submitResponse.StatusCode), want 204"
     }
 
-    $finalStatus = Wait-ForControllerIdle -ControllerUrl 'http://localhost:8080' -TimeoutSeconds 180
+    Write-Host "Starting worker with absolute config path..."
+    if (Test-Path -LiteralPath $workerBinary -PathType Leaf) {
+        $workerOutput = & $workerBinary $workerSmokeConfig
+    } else {
+        $workerOutput = & $go.Path run ./cmd/worker $workerSmokeConfig
+    }
+
+    $finalStatus = Wait-ForControllerIdle -ControllerUrl $controllerBaseUrl -TimeoutSeconds 300
     Write-Host ("Controller idle: pending={0}, assigned={1}" -f $finalStatus.pending, $finalStatus.assigned)
 
-    $workerDataDir = Join-Path $repoRoot 'cmd\worker\.run\data'
     Assert-DirectoryExists -Path $workerDataDir -Label 'worker data dir'
     $expectedOutputPath = Join-Path $workerDataDir 'python-hello-hello.json'
     Assert-LeafExists -Path $expectedOutputPath -Label 'worker output'
@@ -282,10 +440,14 @@ try {
     Write-Host "Output file: $expectedOutputPath"
     Write-Host "Attempt logs: $attemptLogDir"
     Write-Host "Controller log: $controllerStdout"
+    if ($workerOutput) {
+        Write-Host "Worker output:"
+        $workerOutput | Write-Host
+    }
     Write-Host "Smoke path completed."
 } finally {
     try {
-        Invoke-WebRequest -Method Post -Uri 'http://localhost:8080/shutdown' -TimeoutSec 10 | Out-Null
+        [void](Invoke-CurlRequest -Method Post -Uri ($controllerBaseUrl + '/shutdown'))
     } catch {
         # If shutdown is already in progress or the controller never came up,
         # fall back to process cleanup below.

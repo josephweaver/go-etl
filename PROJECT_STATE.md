@@ -75,11 +75,24 @@ admission, a system-Python placeholder, and a small standard-library script.
 Operational Slice 008 now adds the repeatable local smoke path for that
 fixture. `scripts/python-workitem-smoke.ps1` validates the sibling demo
 project, compiles `scripts/hello.py`, starts the controller from
-`cmd/controller/demo-config.json`, waits for `/status`, submits
-`submissions/python-hello-local.json`, lets the controller launch the local
-worker from the workflow's worker settings, and verifies the promoted output
-JSON at `cmd/worker/.run/data/python-hello-hello.json` plus the worker attempt
-logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
+`cmd/controller/demo-config.json` with `--config`, waits for `/status`, submits
+`submissions/python-hello-local.json` with a `worker_max_count=0` override,
+starts the local worker explicitly with an absolute config path, and verifies
+the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json` plus
+the worker attempt logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
+The smoke path checks the controller on `http://127.0.0.1:8080`, which is the
+loopback bind observed during validation.
+It now resolves `python3` first and then `python`, and writes a temporary
+worker config with `python_executable` set explicitly for the smoke run.
+The validated smoke path expects a Windows Python interpreter; WSL Python is
+not used because the worker and its staged attempt paths are Windows-native.
+The smoke script now writes per-run controller logs under
+`.run/python-workitem-smoke/<run-id>/` to avoid reusing locked log files across
+retries.
+
+The worker container image under `containers/goetl-worker/Dockerfile` now also
+installs `python3` alongside `ca-certificates` so the packaged worker image can
+run the same system-Python contract used by the demo fixture.
 
 Epistemic-control process artifacts now live in sibling `../epistemic-control`.
 That folder owns the HCI/control-level notes, agent review instructions, and

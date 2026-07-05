@@ -6,10 +6,11 @@ This runbook proves the local Python WorkItem path from the sibling demo project
 
 - `go-etl` checked out at the repo root.
 - `../go-etl-demo-project` checked out next to this repository.
-- `python3` on `PATH`.
+- a Windows `python3` or `python` on `PATH`, or a standard Windows `python.exe` install location.
 - `pwsh` available for the smoke script.
 
-The smoke path depends on `cmd/worker/demo-config.json`, which defaults the worker Python executable to `python3`.
+The smoke path resolves `python3` first and then `python`. It writes a temporary worker config under `.run/` with `python_executable` set explicitly for the smoke run.
+WSL Python is not used for this slice because the worker is a Windows process and the staged attempt paths are Windows filesystem paths.
 
 ## Repository Layout Assumptions
 
@@ -28,12 +29,17 @@ cmd/worker/.run/data/python-hello-hello.json
 ```
 
 The controller writes its SQLite ledger under the repo root `.run/controller/` path.
+The smoke script creates `cmd/worker/.run/logs`, `cmd/worker/.run/tmp`, and
+`cmd/worker/.run/data` before it expects the worker to start.
 
 ## Smoke Command
 
 Run this from the `go-etl` repository root:
 
 ```powershell
+go build -o .run/goetl-controller.exe ./cmd/controller
+go build -o .run/goetl-worker.exe ./cmd/worker
+New-Item -ItemType Directory -Force -Path cmd/worker/.run/logs,cmd/worker/.run/tmp,cmd/worker/.run/data | Out-Null
 pwsh -NoProfile -File scripts/python-workitem-smoke.ps1
 ```
 
@@ -45,7 +51,10 @@ pwsh -NoProfile -File scripts/python-workitem-smoke.ps1 -Help
 
 ## Expected Controller Behavior
 
-The script starts the controller with `go run ./cmd/controller ./cmd/controller/demo-config.json`.
+The script starts the controller with a prebuilt `.run/goetl-controller.exe`
+when it exists. If that file is absent, it falls back to
+`go run ./cmd/controller --config ./cmd/controller/demo-config.json`.
+The controller listens on `http://127.0.0.1:8080` for the smoke run.
 
 After startup:
 
@@ -55,7 +64,7 @@ After startup:
 - `POST /shutdown` should stop the controller cleanly when the smoke run is done.
 
 The workflow submission uses the controller's local source-reference admission against `../go-etl-demo-project`.
-The demo workflow also carries the worker launch settings, so the controller can start the local worker from the workflow variables.
+For the smoke run, the script disables controller auto-start by overriding `worker_max_count` at submission time and then starts the worker explicitly with an absolute config path. This avoids the current relative-config-path failure mode in the workflow's built-in local worker launch settings.
 
 ## Expected Output File
 
@@ -88,15 +97,15 @@ Expected logs:
 
 The script also writes the captured controller logs to:
 
-- `.run/python-workitem-smoke/controller.stdout.log`
-- `.run/python-workitem-smoke/controller.stderr.log`
+- `.run/python-workitem-smoke/<run-id>/controller.stdout.log`
+- `.run/python-workitem-smoke/<run-id>/controller.stderr.log`
 
 ## What The Script Validates Automatically
 
 - sibling demo project exists
 - required demo fixture files exist
 - JSON fixtures parse
-- `hello.py` compiles with `python3 -m py_compile`
+- `hello.py` compiles with the resolved Python interpreter
 - controller becomes reachable
 - workflow submission returns `204`
 - controller becomes idle
@@ -107,7 +116,7 @@ The script also writes the captured controller logs to:
 
 ## What Remains Manual
 
-If `python3` is missing, the smoke path cannot complete because the worker config defaults to `python3`.
+If neither `python3` nor `python` is available, the smoke path cannot complete unless the interpreter is installed at one of the standard Windows `python.exe` locations the script checks.
 
 If the script fails before idle, inspect the controller log files above first.
 The worker attempt log directory is the next place to check because it captures the Python subprocess stdout and stderr.
@@ -115,15 +124,20 @@ The worker attempt log directory is the next place to check because it captures 
 If the controller start or submission shape changes, run the same commands manually:
 
 ```powershell
-go run ./cmd/controller ./cmd/controller/demo-config.json
-go run ./cmd/worker ./cmd/worker/demo-config.json
+go build -o .run/goetl-controller.exe ./cmd/controller
+go build -o .run/goetl-worker.exe ./cmd/worker
+New-Item -ItemType Directory -Force -Path cmd/worker/.run/logs,cmd/worker/.run/tmp,cmd/worker/.run/data | Out-Null
+.run/goetl-controller.exe --config ./cmd/controller/demo-config.json
+.run/goetl-worker.exe (Resolve-Path ./cmd/worker/demo-config.json)
 ```
 
-The controller launch is normally enough because the workflow's worker settings already point at the worker command above.
+The worker command should use an absolute config path. The relative workflow-owned `./cmd/worker/demo-config.json` path is not yet reliable for Python work because the worker currently resolves its runtime directories relative to the config path text it was given.
+
+Use `http://127.0.0.1:8080` when checking the running controller by hand.
 
 ## Troubleshooting
 
-- If `GET /healthz` never succeeds, check `.run/python-workitem-smoke/controller.stderr.log`.
+- If `GET /healthz` never succeeds, check the per-run controller stderr log under `.run/python-workitem-smoke/<run-id>/`.
 - If the workflow submits but never reaches idle, check the worker attempt logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
-- If the output file is missing, inspect `cmd/worker/.run/data/` and confirm the worker used the expected `python3` executable.
+- If the output file is missing, inspect `cmd/worker/.run/data/` and confirm the worker used the expected resolved Python executable.
 - If the demo repository fixture files are missing, stop and restore `../go-etl-demo-project` before rerunning the smoke path.
