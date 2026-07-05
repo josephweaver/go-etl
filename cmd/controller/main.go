@@ -1318,13 +1318,48 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
-	compileResult, err := workflow.CompileWorkflowResult(resolver, workflowSubmission.Workflow)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, err
+	var plan workflow.WorkflowPlan
+	var stageResult *workflow.CompileStageResult
+	compileResult := workflow.CompileResult{
+		WorkflowID: workflowSubmission.Workflow.ID,
+		StepCount:  len(workflowSubmission.Workflow.Steps),
+		WorkItems:  nil,
+	}
+
+	if len(workflowSubmission.Workflow.Steps) > 0 {
+		var err error
+		plan, err = workflow.NormalizeStages(workflowSubmission.Workflow)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("normalize workflow stages: %w", err)
+		}
+
+		result, err := workflow.CompileWorkflowStage(resolver, workflowSubmission.Workflow, plan, 0)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
+		stageResult = &result
+
+		compiledItems := make([]workflow.CompiledWorkItem, 0, len(result.WorkItems))
+		for _, item := range result.WorkItems {
+			compiledItems = append(compiledItems, workflow.CompiledWorkItem{
+				WorkflowID: result.WorkflowID,
+				StepID:     item.StepID,
+				WorkItem:   item.WorkItem,
+			})
+		}
+		compileResult.WorkItems = compiledItems
 	}
 	compileResult, err = prepareCompiledWorkflowForAdmission(c.repoCacheLayout, manifest, compileResult)
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
+	}
+	if stageResult != nil {
+		if len(stageResult.WorkItems) != len(compileResult.WorkItems) {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("compile result mismatch: expected %d stage items, got %d", len(stageResult.WorkItems), len(compileResult.WorkItems))
+		}
+		for index := range stageResult.WorkItems {
+			stageResult.WorkItems[index].WorkItem = compileResult.WorkItems[index].WorkItem
+		}
 	}
 
 	runRecord, err := workflowRunRecordFromAdmittedManifest(runID, projectRecord.ID, workflowRecord.ID, manifest, submission.Variables, submittedAt, c.repoCacheLayout)
@@ -1344,24 +1379,19 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	var memberships []compiledStageWorkItemMembership
 	var items []persistence.WorkItemRecord
 	var queued []persistence.QueuedWorkRecord
-
-	if len(compileResult.WorkItems) != 0 {
-		plan, err := workflow.NormalizeStages(workflowSubmission.Workflow)
-		if err != nil {
-			return model.SubmissionAcknowledgement{}, fmt.Errorf("normalize workflow stages: %w", err)
-		}
+	if len(plan.Stages) != 0 {
 		if err := c.CreateWorkflowDependencyPlan(ctx, runRecord.ID, runRecord.WorkflowID, plan.Stages); err != nil {
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow dependency plan: %w", err)
 		}
+	}
 
-		stageResults, err := splitCompiledWorkflowByStage(compileResult, plan)
-		if err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
-		items, queued, memberships, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
-		if err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
+	stageResults := []workflow.CompileStageResult{}
+	if stageResult != nil {
+		stageResults = append(stageResults, *stageResult)
+	}
+	items, queued, memberships, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
 	}
 	if len(items) != 0 {
 		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {

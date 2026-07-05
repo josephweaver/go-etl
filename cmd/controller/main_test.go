@@ -3131,6 +3131,211 @@ func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024, 2025}, testSlurmWorkerVariables,
+		`
+		{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 0 {
+			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+	}
+}
+
+func TestSubmitWorkflowHandlerQueuesOnlyInitialParallelStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024, 2025}, testSlurmWorkerVariables,
+		`
+		{
+			"ID": "download-a",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-a",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-b",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-b",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 4 {
+		t.Fatalf("initial work item count = %d, want 4", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 4 {
+		t.Fatalf("queued work count = %d, want 4", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 0 {
+			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+	}
+}
+
+func TestSubmitWorkflowHandlerRejectsInvalidParallelWithBeforeQueueMutation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024}, "",
+		`
+		{
+			"ID": "download-a",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-a",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-b",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-b",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "transform",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "transform",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-c",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-c",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("active run count = %d, want 0", len(runs))
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued work count = %d, want 0", len(queued))
+	}
+}
+
 func setupLocalWorkflowSource(t *testing.T, controller *Controller) string {
 	t.Helper()
 
@@ -3180,6 +3385,63 @@ func writeLocalWorkflowSource(t *testing.T, root string, years []int, variables 
 
 func writeLocalWorkflowSourceWithExpressions(t *testing.T, root string, yearExpressions []string, variables string, extraWorkItemFields string) {
 	t.Helper()
+	writeLocalWorkflowSourceWithSteps(
+		t,
+		root,
+		yearExpressionsToYears(t, yearExpressions),
+		variables,
+		`{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					`+extraWorkItemFields+`
+					"OutputPrefix": "cdl",
+					"OutputExtension": ".txt"
+				}
+			}
+		}`,
+	)
+}
+
+func yearExpressionsToYears(t *testing.T, yearExpressions []string) []int {
+	t.Helper()
+
+	years := make([]int, 0, len(yearExpressions))
+	for _, expression := range yearExpressions {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(expression), &parsed); err != nil {
+			t.Fatalf("unmarshal year expression %q: %v", expression, err)
+		}
+		value, ok := parsed["expression"]
+		if !ok {
+			t.Fatalf("year expression %q is missing field \"expression\"", expression)
+		}
+
+		switch v := value.(type) {
+		case float64:
+			years = append(years, int(v))
+		case string:
+			year, err := strconv.Atoi(strings.TrimSpace(strings.Trim(v, `"`)))
+			if err != nil {
+				t.Fatalf("year expression %q: %v", expression, err)
+			}
+			years = append(years, year)
+		default:
+			t.Fatalf("year expression %q has unsupported expression type %T", expression, value)
+		}
+	}
+	return years
+}
+
+func writeLocalWorkflowSourceWithSteps(t *testing.T, root string, years []int, variables string, steps string) {
+	t.Helper()
+
+	yearExpressions := make([]string, 0, len(years))
+	for _, year := range years {
+		yearExpressions = append(yearExpressions, `{"type": "int", "expression": `+strconv.Itoa(year)+`}`)
+	}
 
 	workflowJSON := `{
 		"workflow": {
@@ -3192,18 +3454,7 @@ func writeLocalWorkflowSourceWithExpressions(t *testing.T, root string, yearExpr
 				}
 			],
 			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							` + extraWorkItemFields + `
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
+				` + steps + `
 			]
 		},
 		"variables": [

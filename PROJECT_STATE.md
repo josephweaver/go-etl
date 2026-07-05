@@ -10,6 +10,8 @@ Dependency-aware workflow slice `002-compile-single-workflow-stage` is now imple
 
 Dependency-aware workflow slice `004-stamp-work-items-with-step-instance-metadata` is now implemented: controller submission now stamps deterministic workflow/step runtime metadata and step-instance IDs, preserves per-step work-item indexes when persisting work items, and records membership state (`submission_id`, `stage_index`, `step_index`, `work_item_id`, `work_item_index`) as part of workflow run admission.
 
+Dependency-aware workflow slice `005-submit-only-initial-ready-stage` is now implemented: live `/workflow` admission now normalizes stages, compiles and persists only stage 0 work items, records stage 0 dependency membership, and leaves later stages uncompiled and unqueued until they become ready.
+
 Operational observability slice 010 (`010-cli-logs-command`) is now implemented: the demo CLI now supports `goet logs <submission_id> [--controller-url <url>] [--tail <n>] [--level <level>] [--stream <stream>] [--attempt-id <id>] [--json]`, with bounded, submission-scoped log retrieval via `internal/client` and compact/default rendering.
 Operational observability slice 009 (`009-submission-log-read-api`) is now implemented: controller now exposes `GET /submissions/{submission_id}/logs` with bounded reads, optional level/stream/attempt filtering, known-submission validation, and bounded, deterministic tail metadata.
 

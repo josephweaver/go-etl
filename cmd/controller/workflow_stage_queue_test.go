@@ -179,7 +179,7 @@ func TestPersistenceRecordsFromCompiledStageResultsIncludesDeterministicMetadata
 		}
 	}
 
-	expectedIndexes := []int{1, 0, 0}
+	expectedIndexes := []int{0, 1, 2}
 	for index, expected := range expectedIndexes {
 		if records[index].WorkItemIndex != expected {
 			t.Fatalf("records[%d].WorkItemIndex = %d, want %d", index, records[index].WorkItemIndex, expected)

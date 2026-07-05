@@ -98,6 +98,7 @@ func persistenceRecordsFromCompiledStageResults(
 	persistenceItems := make([]persistence.WorkItemRecord, 0)
 	queued := make([]persistence.QueuedWorkRecord, 0)
 	memberships := make([]compiledStageWorkItemMembership, 0)
+	nextWorkItemIndexByStage := make(map[int]int, len(stageResults))
 
 	workflowID := ""
 	if len(stageResults) != 0 {
@@ -110,6 +111,9 @@ func persistenceRecordsFromCompiledStageResults(
 
 	for _, stageResult := range stageResults {
 		for _, item := range stageResult.WorkItems {
+			workItemIndex := nextWorkItemIndexByStage[item.StageIndex]
+			nextWorkItemIndexByStage[item.StageIndex]++
+
 			if _, ok := stepInstances[item.StepID]; !ok {
 				stepInstances[item.StepID] = runID + ":step:" + strconv.Itoa(item.StepIndex)
 			}
@@ -150,7 +154,7 @@ func persistenceRecordsFromCompiledStageResults(
 				ID:                   id,
 				RunID:                runID,
 				StageIndex:           item.StageIndex,
-				WorkItemIndex:        item.WorkItemIndex,
+				WorkItemIndex:        workItemIndex,
 				WorkerPayloadJSON:    string(payload),
 				ResolvedInputsSHA256: resolvedInputsSHA256,
 				CreatedAt:            timestamp,
@@ -164,7 +168,7 @@ func persistenceRecordsFromCompiledStageResults(
 				stageIndex:    item.StageIndex,
 				stepIndex:     item.StepIndex,
 				workItemID:    id,
-				workItemIndex: item.WorkItemIndex,
+				workItemIndex: workItemIndex,
 			})
 		}
 	}

@@ -1,6 +1,6 @@
 # 005 Submit Only Initial Ready Stage
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
@@ -8,9 +8,11 @@ Change workflow submission so it normalizes the workflow, persists dependency st
 
 ## Current State
 
-Before this slice, workflow submission still compiles all workflow steps and queues all generated work items during `POST /workflow` or the equivalent submission path used by `goet submit`.
+Slices 001 through 003 are implemented on the visible concept branch, and slice 004 must be complete before this slice starts.
 
-Slices 001 through 004 added stage normalization, stage-scoped compilation, dependency state records, and metadata stamping, but the live submission path has not yet been changed to use them.
+Before this slice, live workflow submission still behaves as an eager admission path: it can compile and queue all generated work items during `POST /workflow` or the equivalent submission path used by `goet submit`.
+
+After 004, the controller should have a helper that can turn a compiled stage result into queue-ready work items plus dependency membership records. This slice wires that helper into live submission and queues only stage 0.
 
 ## Target State
 
@@ -50,24 +52,25 @@ Read these files first:
 - `docs/concepts/submission-cli-status/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
-- `internal/workflow/stage.go`
-- `internal/workflow/compile_stage.go`
+- the actual stage compiler file created by 002
+- the actual dependency-state owner created by 003
+- the actual queue/membership helper created by 004
 
 Do not read unrelated files unless test failures directly require them.
 
 ## Allowed Production Files
 
 - `cmd/controller/main.go`
-- `cmd/controller/workflow_dependency_store.go`
-- `cmd/controller/workflow_stage_queue.go`
+- the actual dependency-state owner created by 003
+- the actual queue/membership helper created by 004
 - `internal/workflow/stage.go`
-- `internal/workflow/compile_stage.go`
+- the actual stage compiler file created by 002
 
 ## Allowed Test Files
 
 - `cmd/controller/main_test.go`
 - `cmd/controller/workflow_submission_test.go`
-- `cmd/controller/workflow_stage_queue_test.go`
+- tests for the actual queue/membership helper created by 004
 - `internal/workflow/compile_stage_test.go`
 
 If controller submission tests already live under different file names, modify those tests instead and report the substitution.
