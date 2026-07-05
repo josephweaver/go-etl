@@ -68,6 +68,10 @@ repository. That repo owns source-control-style customer files such as
 runtime code, tests, scripts, and low-level worker fixtures such as
 `demo-item.json`.
 
+The sibling demo repo now also includes a minimal `python-hello` fixture that
+proves the source-admission-to-Python-execution vertical slice with local source
+admission, a system-Python placeholder, and a small standard-library script.
+
 Epistemic-control process artifacts now live in sibling `../epistemic-control`.
 That folder owns the HCI/control-level notes, agent review instructions, and
 session logs under `epi_ctl/`.

@@ -1,6 +1,6 @@
 # 007 Python Demo Project Fixture
 
-Status: proposed
+Status: complete
 
 ## Objective
 
@@ -25,7 +25,7 @@ submissions/
 data/
 ```
 
-The public `go-etl-demo-project` currently contains only a README describing the intended structure. It does not yet contain Python workflow fixtures.
+Completion note: the sibling `go-etl-demo-project` now contains the minimal `python-hello` fixture described below.
 
 After slices 001 through 006, GOET should be able to admit source-reference workflows that declare Python source files, compile `python_script` work items with source locators, let workers stage admitted source bundles, execute Python, and report evidence.
 
