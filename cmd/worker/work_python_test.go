@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"strings"
 	"testing"
 
@@ -180,6 +181,168 @@ print("python stderr", file=sys.stderr)
 	}
 	if strings.Contains(evidence.OutputJSON, "python stdout") || strings.Contains(evidence.OutputJSON, "python stderr") {
 		t.Fatalf("evidence wrapper should not embed log contents: %s", evidence.OutputJSON)
+	}
+}
+
+func TestWorkerRunWorkItemEmitsPythonSubprocessLogs(t *testing.T) {
+	requirePython3(t)
+
+	var mu sync.Mutex
+	var observations []model.LogObservation
+	server := newPythonSourceAndLogServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+import sys
+
+print("stdout one")
+print("stdout two")
+print("stderr one", file=sys.stderr)
+print("stderr two", file=sys.stderr)
+output = {"ok": true}
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump(output, handle)
+`),
+		"config/env.json": `{"environment":"present"}`,
+	}, func(t *testing.T, w http.ResponseWriter, req *http.Request) {
+		t.Helper()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if req.Method != http.MethodPost {
+			t.Fatalf("unexpected method for log endpoint: %s", req.Method)
+		}
+		if req.URL.Path != "/observations/logs" {
+			t.Fatalf("unexpected path for log endpoint: %s", req.URL.Path)
+		}
+
+		var observation model.LogObservation
+		if err := json.NewDecoder(req.Body).Decode(&observation); err != nil {
+			t.Fatalf("decode log observation: %v", err)
+		}
+		observations = append(observations, observation)
+	})
+	t.Cleanup(server.Close)
+
+	worker := newPythonTestWorker(t)
+	worker.Config.ControllerURL = server.URL
+	item := pythonTestItem("python-emit-001", "attempt-emit-001", model.Parameters{
+		"python_entrypoint":  model.Parameter{Type: "path", Value: "scripts/run.py"},
+		"python_environment": model.Parameter{Type: "path", Value: "config/env.json"},
+		"python_args":        model.Parameter{Type: "list", Value: []any{"alpha", "beta"}},
+	})
+	item.WorkflowDefinitionID = "workflow-demo"
+	item.StepDefinitionID = "step-demo"
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observations) < 4 {
+		t.Fatalf("expected at least 4 log observations, got %d", len(observations))
+	}
+
+	stdoutObservations := []string{}
+	stderrObservations := []string{}
+	for _, observation := range observations {
+		if observation.Component != "worker-python" {
+			t.Fatalf("unexpected component: %q", observation.Component)
+		}
+		if observation.WorkItemID != item.ID {
+			t.Fatalf("unexpected work item id in log: %q", observation.WorkItemID)
+		}
+		if observation.AttemptID != item.AttemptID {
+			t.Fatalf("unexpected attempt id in log: %q", observation.AttemptID)
+		}
+		if observation.WorkflowID != item.WorkflowDefinitionID {
+			t.Fatalf("unexpected workflow id in log: %q", observation.WorkflowID)
+		}
+		if observation.StepID != item.StepDefinitionID {
+			t.Fatalf("unexpected step id in log: %q", observation.StepID)
+		}
+		if observation.SubmissionID != item.Source.RunID {
+			t.Fatalf("unexpected submission id in log: %q", observation.SubmissionID)
+		}
+		if observation.RunID != item.Source.RunID {
+			t.Fatalf("unexpected run id in log: %q", observation.RunID)
+		}
+		if observation.Sequence == 0 {
+			t.Fatalf("unexpected sequence in log: %d", observation.Sequence)
+		}
+
+		switch observation.Stream {
+		case model.LogStreamStdout:
+			if observation.Level != model.LogLevelInfo {
+				t.Fatalf("unexpected stdout log level: %q", observation.Level)
+			}
+			stdoutObservations = append(stdoutObservations, observation.Message)
+		case model.LogStreamStderr:
+			if observation.Level != model.LogLevelWarn {
+				t.Fatalf("unexpected stderr log level: %q", observation.Level)
+			}
+			stderrObservations = append(stderrObservations, observation.Message)
+		default:
+			t.Fatalf("unexpected stream: %q", observation.Stream)
+		}
+	}
+
+	if !containsAll(stdoutObservations, []string{"stdout one", "stdout two"}) {
+		t.Fatalf("missing expected stdout observations: %#v", stdoutObservations)
+	}
+	if !containsAll(stderrObservations, []string{"stderr one", "stderr two"}) {
+		t.Fatalf("missing expected stderr observations: %#v", stderrObservations)
+	}
+}
+
+func TestWorkerRunWorkItemFallsBackToFallbackLogOnLogDeliveryFailure(t *testing.T) {
+	requirePython3(t)
+
+	server := newPythonSourceAndLogServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+output = {"ok": true}
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump(output, handle)
+`),
+	}, func(t *testing.T, w http.ResponseWriter, req *http.Request) {
+		t.Helper()
+
+		if req.Method != http.MethodPost {
+			t.Fatalf("unexpected method for log endpoint: %s", req.Method)
+		}
+		if req.URL.Path != "/observations/logs" {
+			t.Fatalf("unexpected path for log endpoint: %s", req.URL.Path)
+		}
+
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("unavailable"))
+	}, http.StatusServiceUnavailable)
+	t.Cleanup(server.Close)
+
+	worker := newPythonTestWorker(t)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-fallback-001", "attempt-fallback-001", model.Parameters{
+		"python_entrypoint": model.Parameter{Type: "path", Value: "scripts/run.py"},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fallbackPath := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "fallback-observations.jsonl")
+	data, err := os.ReadFile(fallbackPath)
+	if err != nil {
+		t.Fatalf("expected fallback observations file %q: %v", fallbackPath, err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		t.Fatal("expected fallback observation lines")
 	}
 }
 
@@ -390,6 +553,32 @@ func newPythonSourceServer(t *testing.T, files map[string]string) *httptest.Serv
 	}))
 }
 
+func newPythonSourceAndLogServer(t *testing.T, files map[string]string, logHandler func(*testing.T, http.ResponseWriter, *http.Request), status ...int) *httptest.Server {
+	t.Helper()
+	logStatus := http.StatusCreated
+	if len(status) > 0 {
+		logStatus = status[0]
+	}
+
+	body := mustPythonSourceBundle(t, files)
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/source-bundle.zip") {
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(body)
+			return
+		}
+
+		if r.URL.Path == "/observations/logs" {
+			logHandler(t, w, r)
+			w.WriteHeader(logStatus)
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+}
+
 func mustPythonSourceBundle(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 
@@ -409,6 +598,22 @@ func mustPythonSourceBundle(t *testing.T, files map[string]string) []byte {
 	}
 
 	return buffer.Bytes()
+}
+
+func containsAll(values []string, want []string) bool {
+	for _, item := range want {
+		found := false
+		for _, value := range values {
+			if value == item {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func requirePython3(t *testing.T) {

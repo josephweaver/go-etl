@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -107,6 +109,8 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("close stderr log %s: %w", stderrPath, err)
 	}
 
+	_ = w.emitPythonSubprocessLogLines(item, stdoutPath, stderrPath, staging.LogDir)
+
 	outputJSON, err := os.ReadFile(outputPath)
 	if os.IsNotExist(err) {
 		return WorkEvidence{}, fmt.Errorf("missing GOET_OUTPUT_JSON after successful python process exit: %s", outputPath)
@@ -200,6 +204,74 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		PreStateJSON:    string(preStateJSON),
 		PostStateJSON:   string(postStateJSON),
 	}, nil
+}
+
+func (w Worker) emitPythonSubprocessLogLines(item model.WorkItem, stdoutPath string, stderrPath string, fallbackLogDir string) error {
+	if err := w.emitPythonSubprocessLogLinesFromPath(item, stdoutPath, model.LogStreamStdout, model.LogLevelInfo, fallbackLogDir); err != nil {
+		return err
+	}
+
+	return w.emitPythonSubprocessLogLinesFromPath(item, stderrPath, model.LogStreamStderr, model.LogLevelWarn, fallbackLogDir)
+}
+
+func (w Worker) emitPythonSubprocessLogLinesFromPath(
+	item model.WorkItem,
+	path string,
+	stream string,
+	level model.LogLevel,
+	fallbackLogDir string,
+) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s log %s: %w", stream, path, err)
+	}
+	defer file.Close()
+
+	client := LogClient{ControllerURL: w.Config.ControllerURL}
+	scanner := bufio.NewScanner(file)
+	var observedErr error
+
+	submissionID := ""
+	runID := ""
+	if item.Source != nil {
+		submissionID = item.Source.RunID
+		runID = item.Source.RunID
+	}
+
+	sequence := uint64(1)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			sequence++
+			continue
+		}
+
+		observation := model.LogObservation{
+			Component:   "worker-python",
+			Stream:      stream,
+			Level:       level,
+			SubmissionID: submissionID,
+			WorkflowID:  item.WorkflowDefinitionID,
+			WorkItemID:  item.ID,
+			AttemptID:   item.AttemptID,
+			RunID:       runID,
+			StepID:      item.StepDefinitionID,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+			Sequence:    sequence,
+			Message:     line,
+		}
+		sequence++
+
+		if err := client.SendLogObservationWithFallback(observation, fallbackLogDir); err != nil {
+			observedErr = err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan %s log %s: %w", stream, path, err)
+	}
+
+	return observedErr
 }
 
 func (w Worker) pythonExecutable() string {

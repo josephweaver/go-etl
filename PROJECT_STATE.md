@@ -1460,6 +1460,11 @@ skip/reuse code, but it is no longer the queue authority. Do not add retry rules
 or broad workflow parsing until the workflow-execution store boundary remains
 clear.
 
+Operational observability slice 007 is now implemented: Python subprocess stdout
+and stderr are replayed from the captured attempt logs into `internal/model`
+`LogObservation` records via the worker logging client, with best-effort
+delivery and fallback on failure.
+
 For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 
 ## Likely Next Step
