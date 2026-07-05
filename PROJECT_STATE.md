@@ -72,6 +72,15 @@ The sibling demo repo now also includes a minimal `python-hello` fixture that
 proves the source-admission-to-Python-execution vertical slice with local source
 admission, a system-Python placeholder, and a small standard-library script.
 
+Operational Slice 008 now adds the repeatable local smoke path for that
+fixture. `scripts/python-workitem-smoke.ps1` validates the sibling demo
+project, compiles `scripts/hello.py`, starts the controller from
+`cmd/controller/demo-config.json`, waits for `/status`, submits
+`submissions/python-hello-local.json`, lets the controller launch the local
+worker from the workflow's worker settings, and verifies the promoted output
+JSON at `cmd/worker/.run/data/python-hello-hello.json` plus the worker attempt
+logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
+
 Epistemic-control process artifacts now live in sibling `../epistemic-control`.
 That folder owns the HCI/control-level notes, agent review instructions, and
 session logs under `epi_ctl/`.

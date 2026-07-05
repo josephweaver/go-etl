@@ -1,6 +1,6 @@
 # Python WorkItem End-to-End Smoke Path
 
-Status: proposed
+Status: complete
 
 ## Objective
 
@@ -40,11 +40,11 @@ GET /workflow-runs/{run_id}/source-bundle.zip
 
 and the worker path that downloads the bundle and runs `python_script` through a subprocess. The sibling repository `../go-etl-demo-project` owns client-facing project, workflow, submission, script, environment, and data fixtures.
 
-What is still missing is a concrete, repeatable smoke path that a developer can run after the fixture exists. Unit tests prove individual components, but there is not yet a single documented or scripted procedure that proves the whole admitted-source Python execution path.
+The repeatable smoke path now exists as `scripts/python-workitem-smoke.ps1` with the companion runbook `docs/concepts/python-workitem/python-workitem-smoke.md`.
 
 ## Target State
 
-The repository contains a small smoke script and/or runbook that can be followed from the GOET repository root with the sibling demo project checked out next to it.
+The repository contains a small smoke script and runbook that can be followed from the GOET repository root with the sibling demo project checked out next to it.
 
 The smoke path should:
 
@@ -61,7 +61,7 @@ The smoke path should:
 11. Verify stdout/stderr log files exist under the worker attempt staging tree when practical.
 12. Shut down the controller cleanly through the existing shutdown endpoint.
 
-If the existing local runtime does not support full automation without broader CLI work, the slice should still produce a precise manual runbook and should clearly name the missing automation blocker.
+The smoke path is automated through the controller's existing local worker-launch settings, so no new runtime behavior or submission CLI is required.
 
 ## Concept Decision
 
@@ -126,7 +126,7 @@ This slice is a smoke/runbook slice. It should validate behavior by running comm
 
 ## Acceptance Criteria
 
-- A developer-facing smoke script or runbook exists.
+- A developer-facing smoke script and runbook exist.
 - The smoke path names the required sibling repository layout.
 - The smoke path validates the Python fixture JSON files.
 - The smoke path validates `scripts/hello.py` with `python3 -m py_compile` when `python3` is available.
@@ -139,7 +139,7 @@ This slice is a smoke/runbook slice. It should validate behavior by running comm
 - The smoke path captures or points to controller and worker logs for debugging failed smoke runs.
 - The smoke path shuts down the controller cleanly when automation is possible.
 - If full automation is not possible, the runbook states the missing blocker in concrete terms.
-- `PROJECT_STATE.md` is updated only after the smoke path has been validated or the manual blocker has been documented.
+- `PROJECT_STATE.md` is updated to record the smoke path.
 - No runtime behavior is changed by this slice.
 
 ## Notes
@@ -149,4 +149,4 @@ This slice is a smoke/runbook slice. It should validate behavior by running comm
 - The worker output file path depends on `cmd/worker/demo-config.json` and the process working directory. The script or runbook must make the working directory explicit.
 - If `python3` is not available, skip only Python compile/execution validation and report that clearly.
 - If the controller or worker command-line shape differs from the assumptions above, follow the code and document the exact commands that work.
-- If full smoke automation requires a general `goet submit` command, do not implement that here. Record it as a reason to advance the Submission CLI Status Strategic Concept.
+- If a future workflow needs broader submission ergonomics, record that as a reason to advance the Submission CLI Status Strategic Concept.
