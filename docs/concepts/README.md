@@ -31,6 +31,7 @@ above.
 - [Execution Observability](complete/execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
 - [Controller Startup Resolution](complete/controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
+- [Repository Source Resolution and Cache](complete/source-control-resolution-and-cache/README.md) - Provides repository-source resolution, controller cache population, verified cached reads, and explicit materialization for admitted workflow sources.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
 - [Python WorkItem](complete/python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
 - [Submission CLI Status](complete/submission-cli-status/README.md) - Establishes a production-oriented CLI and queryable submission status model for workflow execution.

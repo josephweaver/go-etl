@@ -1,6 +1,6 @@
 # 007 Controller Repo Cache Config Rename
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -69,7 +69,7 @@ root; it should not know controller variable names.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
 - `cmd/controller/config_test.go`
@@ -92,9 +92,9 @@ require it.
 ## Allowed Documentation Files
 
 - `PROJECT_STATE.md`
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/003-repository-cache-access-layer-and-layout.md`
-- `docs/concepts/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/003-repository-cache-access-layer-and-layout.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
 
 ## Out Of Scope
 

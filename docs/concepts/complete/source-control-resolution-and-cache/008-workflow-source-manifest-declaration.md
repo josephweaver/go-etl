@@ -1,6 +1,6 @@
 # 008 Workflow Source Manifest Declaration
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -89,9 +89,9 @@ or duplicate a narrow transport shape if that avoids an import cycle.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
-- `docs/concepts/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
 - `internal/reposource/model.go`
 - `internal/reposource/path.go`
 - `internal/client/controller_client.go`

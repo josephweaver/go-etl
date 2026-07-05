@@ -1,4 +1,4 @@
-﻿# 007 Python Demo Project Fixture
+# 007 Python Demo Project Fixture
 
 Status: Complete
 
@@ -79,7 +79,7 @@ Read these files first:
 - `AGENTS.md`
 - `PROJECT_STATE.md`
 - `docs/concepts/python-workitem/README.md`
-- `docs/concepts/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
 - `../go-etl-demo-project/README.md`
 - `cmd/controller/controller-default-config.json`
 - `cmd/worker/worker-default-config.json`

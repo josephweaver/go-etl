@@ -1,6 +1,6 @@
 # 003 Repository Cache Access Layer and Layout
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -94,9 +94,9 @@ do not need to know where bytes are stored after admission.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
-- `docs/concepts/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
 - `internal/reposource/model.go`
 - `internal/reposource/path.go`
 - `internal/reposource/manifest.go`

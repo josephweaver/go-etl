@@ -390,7 +390,7 @@ The controller needs a source-control boundary because project/workflow
 configuration and execution components should be loaded from pinned source
 revisions, not from whichever branch happens to be current at restart. The
 implementation of that boundary moved to the separate
-`source-control-resolution-and-cache` epic.
+`Repository Source Resolution and Cache` Strategic Concept.
 
 The abstraction should support:
 
@@ -425,8 +425,8 @@ and unable to escape the repository root.
 ## GitHub Source-Control Implementation
 
 GitHub remains the intended first remote source-control implementation, but it
-is no longer part of this persistence epic. It belongs to
-`source-control-resolution-and-cache`.
+is no longer part of this persistence Strategic Concept. It belongs to the
+`Repository Source Resolution and Cache` Strategic Concept.
 
 The GitHub implementation should:
 
@@ -636,7 +636,8 @@ newly ready work items/queue rows in the same transaction.
 010 Source-Control Dependency
 
 Record that source-control abstraction and cache behavior moved to the separate
-`source-control-resolution-and-cache` epic. This persistence epic stores source
+`Repository Source Resolution and Cache` Strategic Concept. This Strategic
+Concept stores source
 locator facts but does not implement GitHub, cache, or materialization behavior.
 
 011 Restart Reconstruction
@@ -926,8 +927,8 @@ specific implementation slices that first need them:
 - Repository identity, commit/object ID, path, source object identity when
   available, and GOET canonical SHA-256 are recorded as distinct concepts.
 - Source-control abstraction, GitHub implementation, local cache, cache pins,
-  and materialization are explicitly moved to
-  `source-control-resolution-and-cache`.
+  and materialization are explicitly moved to the
+  `Repository Source Resolution and Cache` Strategic Concept.
 - A submitted workflow run and its resolver recipe survive controller restart.
 - A completed work item can be traced through stage instance, workflow run,
   workflow definition, and project identity.

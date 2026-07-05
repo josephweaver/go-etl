@@ -1,6 +1,6 @@
 # 004 Cached Admission and Verified Reads
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -84,10 +84,10 @@ the cache.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
-- `docs/concepts/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
-- `docs/concepts/source-control-resolution-and-cache/003-repository-cache-access-layer-and-layout.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/003-repository-cache-access-layer-and-layout.md`
 - `internal/reposource/model.go`
 - `internal/reposource/path.go`
 - `internal/reposource/manifest.go`

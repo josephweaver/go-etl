@@ -1,6 +1,6 @@
 # 011 Restart Reload Source Verification
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -58,11 +58,11 @@ source-control authenticity.
 
 Before implementing this slice, read:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
-- `docs/concepts/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
-- `docs/concepts/source-control-resolution-and-cache/009-persistence-source-revision-and-admission-context.md`
-- `docs/concepts/source-control-resolution-and-cache/010-controller-admission-integration.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/009-persistence-source-revision-and-admission-context.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/010-controller-admission-integration.md`
 - Existing controller persistence methods for active workflow runs, projects,
   and workflows.
 

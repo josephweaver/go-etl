@@ -1,6 +1,6 @@
 # 001 Repository Source Model and Path Safety
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -60,7 +60,7 @@ materialization slices depend on the controller `main` package.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
 - `cmd/controller/source_control.go`
 - `cmd/controller/source_control_test.go`
 - `internal/fingerprint/canonical_json.go`

@@ -160,7 +160,8 @@ work.
 Moved or deferred work:
 
 - source-control resolution, GitHub behavior, local cache layout, cache pins,
-  and materialization belong to `source-control-resolution-and-cache`;
+  and materialization belong to the `Repository Source Resolution and Cache`
+  Strategic Concept;
 - heartbeat, caretaker recovery, abandoned-attempt requeue, and stale report
   fencing belong to `attempt-liveness-recovery`;
 - sequential stage readiness, JIT downstream compilation, and typed step
@@ -189,6 +190,7 @@ Acceptance criteria:
 ## Closure Recommendation
 
 The skipped legacy inline workflow tests have been replaced or explicitly
-retired, so this epic is ready for implementation review. The recommended next
-epic is `source-control-resolution-and-cache`, because current live admission
+retired, so this Strategic Concept is ready for implementation review. The
+recommended next Strategic Concept is `Repository Source Resolution and Cache`,
+because current live admission
 still depends on the temporary local source adapter and hard-coded demo mapping.

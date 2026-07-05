@@ -1,6 +1,6 @@
 # 009 Persistence Source Revision and Admission Context
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -96,10 +96,10 @@ from scattered project/workflow rows.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
-- `docs/concepts/source-control-resolution-and-cache/010-controller-admission-integration.md`
-- `docs/concepts/source-control-resolution-and-cache/011-restart-reload-verification.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/010-controller-admission-integration.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/011-restart-reload-verification.md`
 - `internal/persistence/store.go`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/db_adapter_sqlite_test.go`
@@ -123,9 +123,9 @@ compile or test failures directly require it.
 ## Allowed Documentation Files
 
 - `PROJECT_STATE.md`
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/010-controller-admission-integration.md`
-- `docs/concepts/source-control-resolution-and-cache/011-restart-reload-verification.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/010-controller-admission-integration.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/011-restart-reload-verification.md`
 
 ## Out Of Scope
 

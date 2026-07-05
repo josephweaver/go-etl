@@ -1,4 +1,4 @@
-﻿# 006 Workflow Compilation Integration for Python Source WorkItems
+# 006 Workflow Compilation Integration for Python Source WorkItems
 
 Status: Complete
 
@@ -69,7 +69,7 @@ Read these files first:
 - `AGENTS.md`
 - `PROJECT_STATE.md`
 - `docs/concepts/python-workitem/README.md`
-- `docs/concepts/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
 - `internal/model/work_item.go`
 - `internal/reposource/model.go`
 - `internal/reposource/source_declaration.go`

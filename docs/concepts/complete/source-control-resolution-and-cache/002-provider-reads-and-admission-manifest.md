@@ -1,6 +1,6 @@
 # 002 Provider Reads and Admission Manifest
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -64,8 +64,8 @@ evidence to build the admitted manifest.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
 - `internal/reposource/model.go`
 - `internal/reposource/path.go`
 - `internal/fingerprint/canonical_json.go`

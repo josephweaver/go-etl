@@ -1,6 +1,6 @@
 # 010 Controller Admission Integration
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -79,13 +79,13 @@ verified cache reads.
 
 Read these files first:
 
-- `docs/concepts/source-control-resolution-and-cache/README.md`
-- `docs/concepts/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
-- `docs/concepts/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
-- `docs/concepts/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
-- `docs/concepts/source-control-resolution-and-cache/007-controller-repo-cache-config-rename.md`
-- `docs/concepts/source-control-resolution-and-cache/008-workflow-source-manifest-declaration.md`
-- `docs/concepts/source-control-resolution-and-cache/009-persistence-source-revision-and-admission-context.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/001-repository-source-model-and-path-safety.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/002-provider-reads-and-admission-manifest.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/004-cached-admission-and-verified-reads.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/007-controller-repo-cache-config-rename.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/008-workflow-source-manifest-declaration.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/009-persistence-source-revision-and-admission-context.md`
 - `internal/reposource/model.go`
 - `internal/reposource/provider.go`
 - `internal/reposource/manifest.go`

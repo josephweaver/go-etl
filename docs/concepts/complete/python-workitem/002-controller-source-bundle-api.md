@@ -1,4 +1,4 @@
-﻿# 002 Controller Source Bundle API
+# 002 Controller Source Bundle API
 
 Status: Complete
 
@@ -61,7 +61,7 @@ Read these files first:
 - `AGENTS.md`
 - `PROJECT_STATE.md`
 - `docs/concepts/python-workitem/README.md`
-- `docs/concepts/source-control-resolution-and-cache/README.md`
+- `docs/concepts/complete/source-control-resolution-and-cache/README.md`
 - `internal/reposource/model.go`
 - `internal/reposource/cache_access.go`
 - `internal/reposource/cache_verify.go`
