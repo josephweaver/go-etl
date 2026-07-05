@@ -1,6 +1,6 @@
 # 004 Add Submission Status API
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

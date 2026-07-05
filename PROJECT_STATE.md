@@ -98,6 +98,9 @@ Accepted` with a structured submission acknowledgement containing
 default `goet submit` output prints those three acknowledgement facts in a
 human-readable form. The commands do not yet call a submission status endpoint,
 wait, or emit final JSON output.
+The controller now also exposes `GET /submissions/{submission_id}/status`
+with a shared submission status response in `internal/model` that reports the
+submission's run-scoped work counts and controller-derived execution state.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
@@ -337,6 +340,7 @@ POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
 POST /workflow       submit source references for project and workflow JSON; success returns 202 with submission acknowledgement JSON
 GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
+GET  /submissions/{submission_id}/status  return per-submission execution status
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
@@ -1096,6 +1100,7 @@ Current coverage includes:
 - Worker failure reporting.
 - Controller assignment, completion, and failure endpoints.
 - Controller raw work submission and status endpoint behavior.
+- Controller submission status endpoint behavior.
 - Controller source-bundle endpoint behavior for admitted Python source files,
   including missing-run, missing-source-context, unsafe-path, and cache
   miss/corruption errors.

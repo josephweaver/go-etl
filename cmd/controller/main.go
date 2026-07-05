@@ -322,6 +322,7 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
+	mux.HandleFunc("/submissions/", controller.submissionStatusHandler)
 	mux.HandleFunc("/work", controller.submitWorkHandler)
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
@@ -1964,6 +1965,37 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (c *Controller) submissionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
+
+	submissionID, ok := submissionIDFromStatusPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	status, found, err := c.submissionStatus(r.Context(), submissionID)
+	if err != nil {
+		http.Error(w, "query submission status", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		http.Error(w, "encode submission status", http.StatusInternalServerError)
+	}
+}
+
 func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
 	if c.workflowStore == nil {
 		return model.ControllerStatus{}, fmt.Errorf("workflow store required")
@@ -1998,6 +2030,85 @@ func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.Con
 		status.Failed += counts.Failed
 	}
 	return status, nil
+}
+
+func (c *Controller) submissionStatus(ctx context.Context, submissionID string) (model.SubmissionStatus, bool, error) {
+	if c.workflowStore == nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("workflow store required")
+	}
+
+	run, found, err := c.workflowStore.GetWorkflowRun(ctx, submissionID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("get workflow run %s: %w", submissionID, err)
+	}
+	if !found {
+		return model.SubmissionStatus{}, false, nil
+	}
+
+	counts, err := c.workflowStore.CountWorkItemsForRun(ctx, run.ID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("count work items for run %s: %w", run.ID, err)
+	}
+	terminalAttempts, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, run.ID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("list terminal attempts for run %s: %w", run.ID, err)
+	}
+
+	skipped := 0
+	for _, attempt := range terminalAttempts {
+		if attempt.TerminalState == "completed" && attempt.SkippedParentID != "" {
+			skipped++
+		}
+	}
+
+	completed := counts.Completed - skipped
+	if completed < 0 {
+		completed = 0
+	}
+
+	return model.SubmissionStatus{
+		SubmissionID:   run.ID,
+		WorkflowID:     run.WorkflowID,
+		Status:         submissionStatusName(counts.Queued, counts.Running, counts.Completed, counts.Failed),
+		KnownWorkItems: counts.Queued + counts.Running + counts.Completed + counts.Failed,
+		Queued:         counts.Queued,
+		Running:        counts.Running,
+		Completed:      completed,
+		Failed:         counts.Failed,
+		Skipped:        skipped,
+	}, true, nil
+}
+
+func submissionStatusName(queued int, running int, completed int, failed int) string {
+	switch {
+	case running > 0:
+		return "running"
+	case queued > 0:
+		return "queued"
+	case failed > 0:
+		return "failed"
+	case completed > 0:
+		return "completed"
+	default:
+		return "unknown"
+	}
+}
+
+func submissionIDFromStatusPath(path string) (string, bool) {
+	const prefix = "/submissions/"
+	const suffix = "/status"
+
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+
+	submissionID := strings.TrimPrefix(path, prefix)
+	submissionID = strings.TrimSuffix(submissionID, suffix)
+	if submissionID == "" || strings.Contains(submissionID, "/") {
+		return "", false
+	}
+
+	return submissionID, true
 }
 
 func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {
