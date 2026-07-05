@@ -1,10 +1,10 @@
 # Submission CLI Status
 
-Status: Ready
+Status: Implemented
 
 ## Purpose
 
-This Strategic Concept turns the current local demo submission path into the first stable, scriptable GOET command-line submission and status interface.
+This Strategic Concept defined the first stable, scriptable GOET command-line submission and status interface. The contract is now implemented in the repository docs and current CLI boundary.
 
 GOET already has a controller, worker runtime, workflow submission path, source-admitted Python work-item execution path, and aggregate controller status endpoint. The missing public boundary is a user-facing submission handle. This concept introduces that boundary through:
 
@@ -77,28 +77,25 @@ This concept belongs between the completed Python WorkItem phase and later SDK/c
 
 ### Strategic current state
 
-GOET has a local Go controller/worker runtime and a completed first Python WorkItem execution path, but the current public interaction model is still a local runtime foundation rather than the intended stable user-facing API.
+GOET has a local Go controller/worker runtime, a completed first Python WorkItem execution path, and an implemented CLI submission/status contract. The current public interaction model is now the command-shaped submission boundary rather than only a local demo path.
 
-The project already documents the desired API direction: a CLI-first customer interface that consumes canonical `controller.json`, `project.json`, and `workflow.json` files, with Python and R wrappers following as thin adapters over the same public model.
+The project documentation now records the implemented CLI-first customer interface that consumes canonical `controller.json`, `project.json`, and `workflow.json` files, with Python and R wrappers still expected to follow as thin adapters over the same public model.
 
 ### Operational current state
 
-- `cmd/demo-client/main.go` is a demo executable, not yet a command-shaped CLI.
-- The demo client currently builds a small typed-variable resolver, starts or contacts a local controller through `internal/client`, submits one workflow-run source-reference file, waits for aggregate idle status, requests shutdown, and prints a final aggregate status line.
-- `cmd/demo-client` already has a `main_test.go`, but its tests cover demo path selection and final aggregate status formatting rather than `submit` or `status` subcommands.
-- `internal/client/controller_client.go` owns controller reachability checks, workflow-run submission file loading, `POST /workflow` submission, aggregate `GET /status`, and client-initiated shutdown after aggregate idle state.
-- The existing client submission path expects successful `POST /workflow` to return `204 No Content`.
-- `cmd/controller/main.go` owns the HTTP API surface, including `POST /workflow`, `GET /status`, worker assignment/report endpoints, and shutdown.
-- `GET /status` reports aggregate controller queue/attempt counts. It does not report the status of one submitted workflow.
-- There is no public `submission_id` returned from workflow submission.
-- There is no `GET /submissions/{submission_id}/status` endpoint.
-- The earlier `submission-cli-status` planning docs contained stale slice names and mixed `--watch` into early parser scope even though later docs intentionally rejected built-in watch behavior.
+- `cmd/demo-client/main.go` recognizes `submit` and `status` and keeps the zero-argument compatibility path.
+- The CLI supports explicit controller, project, and workflow JSON inputs, submission acknowledgements, submission-scoped status, `--wait`, and `--json`.
+- `internal/client` owns controller reachability checks, CLI input loading, submission acknowledgement handling, submission status retrieval, wait polling, and client-initiated shutdown after aggregate idle state.
+- The controller returns `submission_id`, `workflow_id`, and `initial_work_item_count` for successful submission.
+- `cmd/controller/main.go` owns the HTTP API surface, including `POST /workflow`, `GET /status`, `GET /submissions/{submission_id}/status`, worker assignment/report endpoints, and shutdown.
+- `goet submit` and `goet status` remain thin clients of controller-owned state.
+- Repeated status display is documented as an operating-system composition, such as `watch -n 5 goet status <submission_id>`, rather than a built-in `--watch` option.
 
 ## Target State
 
 ### Strategic target state
 
-GOET has a CLI-first submission/status contract that can serve as the first public customer interface and as the future substrate for Python and R wrappers. A submitted workflow has a public `submission_id`, and all status/wait behavior is expressed through that stable identifier.
+GOET now has a CLI-first submission/status contract that can serve as the first public customer interface and as the future substrate for Python and R wrappers. A submitted workflow has a public `submission_id`, and all status/wait behavior is expressed through that stable identifier.
 
 The controller remains the only authority for orchestration state. The CLI does not infer workflow progress from local files, remember submissions, inspect worker directories, or own scheduling decisions.
 
@@ -146,6 +143,8 @@ The controller remains the only authority for orchestration state. The CLI does 
 - `goet submit ... --wait` polls `GET /submissions/{submission_id}/status` until a terminal state is reached.
 - `--json` emits valid JSON to standard output and writes diagnostics/errors to standard error.
 - Documentation describes the implemented CLI behavior and explicitly explains that repeated display should use operating-system tools rather than a built-in `--watch` option.
+
+The concept is implemented; the remaining text serves as the durable description of the delivered contract.
 
 ## Proposed Slices
 

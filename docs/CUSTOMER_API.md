@@ -1,10 +1,10 @@
 # Customer API
 
-Last updated: 2026-06-26
+Last updated: 2026-07-05
 
 ## Purpose
 
-This document defines the intended customer-facing API direction for GOET.
+This document defines the customer-facing API direction for GOET and records the implemented CLI submission/status contract where it already exists.
 
 GOET should expose a stable submission model that lets customers run workflows without modifying GOET core. The near-term customer interface is expected to be a scriptable CLI. Python and R APIs are expected to follow as thin adapters over the same canonical JSON files and controller API.
 
@@ -144,6 +144,27 @@ Overrides are useful for experiments, one-off capacity changes, temporary paths,
 ## CLI-First API
 
 The near-term public API should be a scriptable CLI.
+
+The current executable implementation lives in `cmd/demo-client` and already supports:
+
+```bash
+goet submit --controller controller.json --project project.json --workflow workflow.json
+goet submit --controller-url http://localhost:8080 --project project.json --workflow workflow.json
+goet status <submission_id>
+goet submit --controller controller.json --project project.json --workflow workflow.json --wait
+goet submit --controller controller.json --project project.json --workflow workflow.json --json
+goet status <submission_id> --json
+```
+
+Repeated display should be composed with operating-system tooling such as:
+
+```bash
+watch -n 5 goet status <submission_id>
+```
+
+GOET intentionally does not provide a built-in `--watch` option in this concept.
+
+When `--wait` is used, completed submissions exit with status code `0`; failed or otherwise unrecognized terminal states exit non-zero.
 
 Representative shape:
 

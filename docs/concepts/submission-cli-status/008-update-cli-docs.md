@@ -1,6 +1,6 @@
 # 008 Update CLI Documentation And Examples
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
@@ -144,3 +144,10 @@ None. This slice updates documentation only.
 - Do not document future workflow capabilities as current capabilities.
 - A future concept can create agent-facing workflow-authoring instructions once the workflow language and worker operation set are stable enough for agents to author useful workflows.
 - Do not hide implementation limitations. If a behavior is demo-only or local-only, state that precisely.
+
+## Implementation Result
+
+- Updated `README.md` to show the implemented `submit` and `status` commands, `--wait`, `--json`, and OS-level repeated status display.
+- Updated `docs/CUSTOMER_API.md` to reflect the implemented CLI contract without introducing a built-in `--watch` option.
+- Updated `cmd/demo-client/README.md`, `internal/client/README.md`, and `cmd/controller/README.md` so the package-level docs match the current submission/status boundary.
+- Updated `PROJECT_STATE.md` to record the documented current state.

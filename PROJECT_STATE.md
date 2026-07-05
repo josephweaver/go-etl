@@ -4,6 +4,8 @@ Last updated: 2026-07-05
 
 ## Current Focus
 
+CLI submission and status commands now support `--json` output for acknowledgement, status, and wait-final results while preserving default human-readable output. The root README, customer API docs, and concept README now describe the implemented submit/status workflow and the lack of a built-in `--watch` option.
+
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
 The current HPCC-facing work has shifted from a command-backed `hpcc` worker target toward a configurable execution-environment model. The controller now requires serialized controller documents to declare `api_version: goet/v1alpha1` and `kind: Controller` before it validates variables or execution-environment settings. It can load `cmd/controller/controller-default-config.json`, build an `ExecutionEnvironment`, store it on `Controller.env`, prepare its components, and submit worker jobs through a scheduler. Controller startup now also acquires a file-based exclusive ownership lock beside the SQLite ledger before binding HTTP; if the lock already exists, startup fails closed before admission. The default configured chain is:
@@ -105,6 +107,8 @@ states.
 The controller now also exposes `GET /submissions/{submission_id}/status`
 with a shared submission status response in `internal/model` that reports the
 submission's run-scoped work counts and controller-derived execution state.
+
+The submission-cli-status documentation slice is now implemented in the living docs. `README.md`, `docs/CUSTOMER_API.md`, `cmd/demo-client/README.md`, `internal/client/README.md`, and `cmd/controller/README.md` now describe the current `goet submit` and `goet status` contract, including `--wait`, `--json`, and shell-driven repeated status display.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
