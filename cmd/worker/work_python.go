@@ -241,24 +241,20 @@ func (w Worker) emitPythonSubprocessLogLinesFromPath(
 	sequence := uint64(1)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			sequence++
-			continue
-		}
 
 		observation := model.LogObservation{
-			Component:   "worker-python",
-			Stream:      stream,
-			Level:       level,
+			Component:    "worker-python",
+			Stream:       stream,
+			Level:        level,
 			SubmissionID: submissionID,
-			WorkflowID:  item.WorkflowDefinitionID,
-			WorkItemID:  item.ID,
-			AttemptID:   item.AttemptID,
-			RunID:       runID,
-			StepID:      item.StepDefinitionID,
-			Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
-			Sequence:    sequence,
-			Message:     line,
+			WorkflowID:   item.WorkflowDefinitionID,
+			WorkItemID:   item.ID,
+			AttemptID:    item.AttemptID,
+			RunID:        runID,
+			StepID:       item.StepDefinitionID,
+			Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+			Sequence:     sequence,
+			Message:      line,
 		}
 		sequence++
 

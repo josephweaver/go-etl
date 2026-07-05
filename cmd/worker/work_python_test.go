@@ -10,8 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 
 	"goetl/internal/model"
@@ -196,8 +196,10 @@ import os
 import sys
 
 print("stdout one")
+print("")
 print("stdout two")
 print("stderr one", file=sys.stderr)
+print("", file=sys.stderr)
 print("stderr two", file=sys.stderr)
 output = {"ok": true}
 with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
@@ -244,6 +246,9 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 	if len(observations) < 4 {
 		t.Fatalf("expected at least 4 log observations, got %d", len(observations))
 	}
+	if len(observations) < 6 {
+		t.Fatalf("expected at least 6 log observations, got %d", len(observations))
+	}
 
 	stdoutObservations := []string{}
 	stderrObservations := []string{}
@@ -275,11 +280,17 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 
 		switch observation.Stream {
 		case model.LogStreamStdout:
+			if len(stdoutObservations) > 3 {
+				t.Fatalf("unexpected stdout count: %d", len(stdoutObservations))
+			}
 			if observation.Level != model.LogLevelInfo {
 				t.Fatalf("unexpected stdout log level: %q", observation.Level)
 			}
 			stdoutObservations = append(stdoutObservations, observation.Message)
 		case model.LogStreamStderr:
+			if len(stderrObservations) > 3 {
+				t.Fatalf("unexpected stderr count: %d", len(stderrObservations))
+			}
 			if observation.Level != model.LogLevelWarn {
 				t.Fatalf("unexpected stderr log level: %q", observation.Level)
 			}
