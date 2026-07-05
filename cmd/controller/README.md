@@ -8,7 +8,7 @@ It is not the worker runtime, Python-facing API, reusable workflow language, var
 
 ## Files
 
-- `main.go` owns the controller process, HTTP API surface, durable queue lifecycle, workflow submission handling, runtime metadata attachment, ledger write coordination, status reporting, and shutdown hook.
+- `main.go` owns the controller process, HTTP API surface, durable queue lifecycle, workflow submission handling, submission acknowledgement, submission-scoped status reporting, runtime metadata attachment, ledger write coordination, and shutdown hook.
 - `config.go` owns loading controller startup configuration into typed variables.
 - `local_worker.go` owns the local worker-starting adapter used by the controller.
 - `worker_scaler.go` owns the small worker-start planning state used when pending work exists.
@@ -19,13 +19,14 @@ Test files in this directory describe expected behavior but do not own productio
 ## Owned Concepts
 
 - Controller process boundary.
-- HTTP API for work assignment, completion, failure, workflow submission, status, and shutdown.
+- HTTP API for work assignment, completion, failure, workflow submission, submission acknowledgement, submission-scoped status, and shutdown.
 - Durable queued, running, completed, and failed work state through the workflow-execution store.
 - Workflow submission orchestration.
 - Controller-generated runtime metadata for work items.
 - Local worker startup decisions.
 - Controller-owned ledger write coordination.
-- Local status summary for clients and demos.
+- Local aggregate status summary for clients and demos.
+- Submission-scoped status for `goet status <submission_id>`.
 
 ## Concepts Owned Elsewhere
 
@@ -45,6 +46,8 @@ Test files in this directory describe expected behavior but do not own productio
 - Workers should receive concrete work-item parameters and metadata, not unresolved workflow intent.
 - Worker startup is bounded by configured scaling limits and queued work.
 - Queue state is stored in the workflow-execution database; a controller without a workflow store rejects queue endpoints.
+- Successful workflow admission returns a submission acknowledgement with `submission_id`, `workflow_id`, and initial work-item count.
+- `GET /submissions/{submission_id}/status` is the controller-owned status endpoint for one submission.
 
 ## Major Dependencies
 

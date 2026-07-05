@@ -322,6 +322,7 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
+	mux.HandleFunc("/submissions/", controller.submissionStatusHandler)
 	mux.HandleFunc("/work", controller.submitWorkHandler)
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
@@ -1110,7 +1111,8 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC()); err != nil {
+	ack, err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC())
+	if err != nil {
 		if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
 			http.Error(w, err.Error(), http.StatusNotImplemented)
 			return
@@ -1118,7 +1120,11 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "persist workflow run", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(ack); err != nil {
+		http.Error(w, "encode submission acknowledgement", http.StatusInternalServerError)
+	}
 }
 
 func (s WorkflowRunSubmission) validate() error {
@@ -1144,174 +1150,178 @@ func (r SourceDocumentReference) validate(name string) error {
 	return nil
 }
 
-func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) error {
+func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
 	provider, err := c.repositorySourceProvider(submission.Project)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	if submission.Workflow.Repository != submission.Project.Repository {
-		return fmt.Errorf("workflow repository %s does not match project repository %s", submission.Workflow.Repository, submission.Project.Repository)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("workflow repository %s does not match project repository %s", submission.Workflow.Repository, submission.Project.Repository)
 	}
 	if submission.Workflow.Ref != submission.Project.Ref {
-		return fmt.Errorf("workflow ref %s does not match project ref %s", submission.Workflow.Ref, submission.Project.Ref)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("workflow ref %s does not match project ref %s", submission.Workflow.Ref, submission.Project.Ref)
 	}
 	resolved, err := provider.Resolve(ctx, submission.Project.Ref)
 	if err != nil {
-		return fmt.Errorf("resolve repository source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("resolve repository source: %w", err)
 	}
 
 	initialReads, err := provider.ReadFiles(ctx, resolved, []string{submission.Project.Path, submission.Workflow.Path})
 	if err != nil {
-		return fmt.Errorf("read project/workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("read project/workflow source: %w", err)
 	}
 	projectRead, err := requiredReadByPath(initialReads, submission.Project.Path)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	workflowRead, err := requiredReadByPath(initialReads, submission.Workflow.Path)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	_, projectHash, err := canonicalSourceDocument(projectRead.Content.Data)
 	if err != nil {
-		return fmt.Errorf("canonicalize project source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize project source: %w", err)
 	}
 	_, workflowHash, err := canonicalSourceDocument(workflowRead.Content.Data)
 	if err != nil {
-		return fmt.Errorf("canonicalize workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize workflow source: %w", err)
 	}
 	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowRead.Content.Data)
 	if err != nil {
-		return fmt.Errorf("decode workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode workflow source: %w", err)
 	}
 	declared, err := declaredSourceFiles(submission.Project.Path, projectHash, submission.Workflow.Path, workflowHash, workflowSubmission.SourceManifest)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	supplementalPaths := supplementalSourcePaths(declared)
 	supplementalReads, err := provider.ReadFiles(ctx, resolved, supplementalPaths)
 	if err != nil {
-		return fmt.Errorf("read supplemental source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("read supplemental source: %w", err)
 	}
 	allReads := append(append([]reposource.ReadFileResult{}, initialReads...), supplementalReads...)
 
 	runID := "run-" + randomHex(16)
 	manifest, err := reposource.BuildAdmittedSourceManifest(runID, resolved, declared, allReads)
 	if err != nil {
-		return fmt.Errorf("build admitted source manifest: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("build admitted source manifest: %w", err)
 	}
 	if err := reposource.PublishAdmittedSource(c.repoCacheLayout, manifest, allReads); err != nil {
-		return fmt.Errorf("publish admitted source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("publish admitted source: %w", err)
 	}
 	cacheAccess, err := reposource.NewCacheAccess(c.repoCacheLayout, manifest)
 	if err != nil {
-		return fmt.Errorf("open admitted source cache: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("open admitted source cache: %w", err)
 	}
 	cachedProjectData, err := cacheAccess.ReadFile(submission.Project.Path)
 	if err != nil {
-		return fmt.Errorf("read cached project source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("read cached project source: %w", err)
 	}
 	cachedWorkflowData, err := cacheAccess.ReadFile(submission.Workflow.Path)
 	if err != nil {
-		return fmt.Errorf("read cached workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("read cached workflow source: %w", err)
 	}
 	_, projectHash, err = canonicalSourceDocument(cachedProjectData)
 	if err != nil {
-		return fmt.Errorf("canonicalize cached project source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize cached project source: %w", err)
 	}
 	_, workflowHash, err = canonicalSourceDocument(cachedWorkflowData)
 	if err != nil {
-		return fmt.Errorf("canonicalize cached workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize cached workflow source: %w", err)
 	}
 	workflowSubmission, err = decodeWorkflowSourceSubmission(cachedWorkflowData)
 	if err != nil {
-		return fmt.Errorf("decode cached workflow source: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode cached workflow source: %w", err)
 	}
 
 	projectFile, err := manifestFileByRole(manifest, reposource.FileRoleProject)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	workflowFile, err := manifestFileByRole(manifest, reposource.FileRoleWorkflow)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	projectRecord := projectRecordFromAdmittedSource(manifest.Source, projectFile, projectHash)
 	if err := c.workflowStore.UpsertProject(ctx, projectRecord); err != nil {
-		return fmt.Errorf("upsert project: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("upsert project: %w", err)
 	}
 	workflowRecord := workflowRecordFromAdmittedSource(projectRecord.ID, manifest.Source, workflowFile, workflowHash)
 	if err := c.workflowStore.UpsertWorkflow(ctx, workflowRecord); err != nil {
-		return fmt.Errorf("upsert workflow: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("upsert workflow: %w", err)
 	}
 
 	workflowScope, err := variable.NewScope(workflowSubmission.Workflow.Variables...)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	sourceSubmissionScope, err := variable.NewScope(workflowSubmission.Variables...)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	runSubmissionScope, err := variable.NewScope(submission.Variables...)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope), variable.ResolverConfig{})
 	codeVersion, err := controllerCodeVersion(resolver)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	compileResult, err := workflow.CompileWorkflowResult(resolver, workflowSubmission.Workflow)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	compileResult, err = prepareCompiledWorkflowForAdmission(c.repoCacheLayout, manifest, compileResult)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
 	runRecord, err := workflowRunRecordFromAdmittedManifest(runID, projectRecord.ID, workflowRecord.ID, manifest, submission.Variables, submittedAt, c.repoCacheLayout)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	if err := c.workflowStore.CreateWorkflowRun(ctx, runRecord); err != nil {
-		return fmt.Errorf("create workflow run: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow run: %w", err)
 	}
 	stages := stageRecordsFromWorkflow(runRecord.ID, workflowFile.SourcePath, workflowSubmission.Workflow, submittedAt)
 	if len(stages) != 0 {
 		if err := c.workflowStore.InsertStagePlan(ctx, runRecord.ID, stages); err != nil {
-			return fmt.Errorf("insert stage plan: %w", err)
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("insert stage plan: %w", err)
 		}
 	}
 	items, queued, err := persistenceRecordsFromCompiledWorkflow(runRecord.ID, workflowSubmission.Workflow, compileResult, codeVersion, submittedAt)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	if len(items) != 0 {
 		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
-			return fmt.Errorf("insert work items: %w", err)
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("insert work items: %w", err)
 		}
 		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
-			return fmt.Errorf("enqueue work items: %w", err)
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("enqueue work items: %w", err)
 		}
 	}
 
 	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
 	c.scaler.RecordStart(submittedAt, startCount, runningCount)
 	if err := c.startWorkers(ctx, resolver, startCount); err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
-	return nil
+	return model.SubmissionAcknowledgement{
+		SubmissionID:         runRecord.ID,
+		WorkflowID:           workflowSubmission.Workflow.ID,
+		InitialWorkItemCount: len(items),
+	}, nil
 }
 
 func (c *Controller) persistedWorkDemand(ctx context.Context) (int, int, error) {
@@ -1955,6 +1965,37 @@ func (c *Controller) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (c *Controller) submissionStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !c.requireNormalAdmission(w) {
+		return
+	}
+
+	submissionID, ok := submissionIDFromStatusPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	status, found, err := c.submissionStatus(r.Context(), submissionID)
+	if err != nil {
+		http.Error(w, "query submission status", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		http.Error(w, "encode submission status", http.StatusInternalServerError)
+	}
+}
+
 func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
 	if c.workflowStore == nil {
 		return model.ControllerStatus{}, fmt.Errorf("workflow store required")
@@ -1989,6 +2030,85 @@ func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.Con
 		status.Failed += counts.Failed
 	}
 	return status, nil
+}
+
+func (c *Controller) submissionStatus(ctx context.Context, submissionID string) (model.SubmissionStatus, bool, error) {
+	if c.workflowStore == nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("workflow store required")
+	}
+
+	run, found, err := c.workflowStore.GetWorkflowRun(ctx, submissionID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("get workflow run %s: %w", submissionID, err)
+	}
+	if !found {
+		return model.SubmissionStatus{}, false, nil
+	}
+
+	counts, err := c.workflowStore.CountWorkItemsForRun(ctx, run.ID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("count work items for run %s: %w", run.ID, err)
+	}
+	terminalAttempts, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, run.ID)
+	if err != nil {
+		return model.SubmissionStatus{}, false, fmt.Errorf("list terminal attempts for run %s: %w", run.ID, err)
+	}
+
+	skipped := 0
+	for _, attempt := range terminalAttempts {
+		if attempt.TerminalState == "completed" && attempt.SkippedParentID != "" {
+			skipped++
+		}
+	}
+
+	completed := counts.Completed - skipped
+	if completed < 0 {
+		completed = 0
+	}
+
+	return model.SubmissionStatus{
+		SubmissionID:   run.ID,
+		WorkflowID:     run.WorkflowID,
+		Status:         submissionStatusName(counts.Queued, counts.Running, counts.Completed, counts.Failed),
+		KnownWorkItems: counts.Queued + counts.Running + counts.Completed + counts.Failed,
+		Queued:         counts.Queued,
+		Running:        counts.Running,
+		Completed:      completed,
+		Failed:         counts.Failed,
+		Skipped:        skipped,
+	}, true, nil
+}
+
+func submissionStatusName(queued int, running int, completed int, failed int) string {
+	switch {
+	case running > 0:
+		return "running"
+	case queued > 0:
+		return "queued"
+	case failed > 0:
+		return "failed"
+	case completed > 0:
+		return "completed"
+	default:
+		return "unknown"
+	}
+}
+
+func submissionIDFromStatusPath(path string) (string, bool) {
+	const prefix = "/submissions/"
+	const suffix = "/status"
+
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+
+	submissionID := strings.TrimPrefix(path, prefix)
+	submissionID = strings.TrimSuffix(submissionID, suffix)
+	if submissionID == "" || strings.Contains(submissionID, "/") {
+		return "", false
+	}
+
+	return submissionID, true
 }
 
 func (c *Controller) healthHandler(w http.ResponseWriter, r *http.Request) {

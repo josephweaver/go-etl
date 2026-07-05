@@ -23,7 +23,7 @@ func TestSubmitWorkflowRunToStoreAttachesPythonWorkItemSource(t *testing.T) {
 	writeLocalPythonSourceFiles(t, root)
 	writeLocalPythonWorkflowSource(t, root, pythonWorkflowFixture{})
 
-	if err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("submitWorkflowRunToStore() error = %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestSubmitWorkflowRunToStoreRejectsInvalidPythonSourceAdmission(t *testing.
 			writeLocalPythonSourceFiles(t, root)
 			writeLocalPythonWorkflowSource(t, root, test.fixture)
 
-			err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC))
+			_, err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC))
 			if err == nil || !strings.Contains(err.Error(), test.wantErrContain) {
 				t.Fatalf("error = %v, want substring %q", err, test.wantErrContain)
 			}
@@ -166,7 +166,7 @@ func TestSubmitWorkflowRunToStoreReplacesUserSuppliedPythonSourceLocator(t *test
 		extraWorkItemFields: `"Source":{"schema":"evil/schema","run_id":"evil-run","manifest_path":"evil-manifest"},`,
 	})
 
-	if err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("submitWorkflowRunToStore() error = %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestSubmitWorkflowRunToStoreLeavesNonPythonWorkItemsUnchanged(t *testing.T)
 	root := setupLocalWorkflowSource(t, controller)
 	writeLocalWorkflowSource(t, root, []int{2024}, "")
 
-	if err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
+	if _, err := controller.submitWorkflowRunToStore(context.Background(), localWorkflowRunSubmission(), time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("submitWorkflowRunToStore() error = %v", err)
 	}
 

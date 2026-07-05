@@ -1,8 +1,10 @@
 # Project State
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 ## Current Focus
+
+CLI submission and status commands now support `--json` output for acknowledgement, status, and wait-final results while preserving default human-readable output. The root README, customer API docs, and concept README now describe the implemented submit/status workflow and the lack of a built-in `--watch` option.
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
 
@@ -79,6 +81,34 @@ Later Python work remains intentionally deferred to separate concepts or later
 phases for environment management, execution observability, submission CLI
 status, dependency-aware workflows, resource constraints, and Python SDK/client
 behavior.
+
+The first `submission-cli-status` implementation slices have started in
+`cmd/demo-client` and `internal/client`. The executable now parses the public
+command shapes `goet submit` and `goet status`, validates the first
+submission/status flags, rejects `--watch`, and keeps the zero-argument local
+demo path usable. `goet submit` now reads explicit controller, project, and
+workflow JSON paths. `internal/client.LoadCLIInputs` validates controller JSON
+syntax, preserves a supplied controller config path for local startup with
+`go run ./cmd/controller --config <path>`, defaults local controller contact to
+`http://localhost:8080`, converts project top-level JSON fields into
+`project_config` variables, and loads the existing wrapped workflow submission
+shape. The command posts that loaded workflow through the current
+`POST /workflow` client path. Successful controller admission now returns `202
+Accepted` with a structured submission acknowledgement containing
+`submission_id`, `workflow_id`, and `initial_work_item_count`. The current
+`submission_id` is backed by the controller's persisted workflow-run ID. The
+default `goet submit` output prints those three acknowledgement facts in a
+human-readable form. `goet status <submission_id>` now calls the submission-
+scoped controller status endpoint and prints a human-readable summary. `goet
+submit --wait` now polls that submission status endpoint until the controller
+reports `completed` or `failed`, prints the final human-readable status, and
+returns a non-zero exit status for failed or otherwise unrecognized terminal
+states.
+The controller now also exposes `GET /submissions/{submission_id}/status`
+with a shared submission status response in `internal/model` that reports the
+submission's run-scoped work counts and controller-derived execution state.
+
+The submission-cli-status documentation slice is now implemented in the living docs. `README.md`, `docs/CUSTOMER_API.md`, `cmd/demo-client/README.md`, `internal/client/README.md`, and `cmd/controller/README.md` now describe the current `goet submit` and `goet status` contract, including `--wait`, `--json`, and shell-driven repeated status display.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
@@ -316,8 +346,9 @@ GET  /work/next      assign the next pending item, or return 204
 POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
-POST /workflow       submit source references for project and workflow JSON
+POST /workflow       submit source references for project and workflow JSON; success returns 202 with submission acknowledgement JSON
 GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
+GET  /submissions/{submission_id}/status  return per-submission execution status
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
@@ -924,6 +955,8 @@ Current client behavior:
 - Provides a `LocalControllerStarter` that resolves `controller_start_executable` plus `controller_start_args` and starts them as a background process.
 - Waits for a newly started controller to become reachable through repeated `GET /status` checks.
 - Sends workflow submissions to `POST /workflow`.
+- Can decode the `202 Accepted` submission acknowledgement returned by `POST /workflow`.
+- Keeps compatibility submission methods that return only `error` and discard the acknowledgement.
 - Loads serialized workflow submission files from disk.
 - Can submit a serialized workflow submission file directly.
 - Can fetch controller status and call `POST /shutdown` when pending and assigned work are both zero.
@@ -1075,6 +1108,7 @@ Current coverage includes:
 - Worker failure reporting.
 - Controller assignment, completion, and failure endpoints.
 - Controller raw work submission and status endpoint behavior.
+- Controller submission status endpoint behavior.
 - Controller source-bundle endpoint behavior for admitted Python source files,
   including missing-run, missing-source-context, unsafe-path, and cache
   miss/corruption errors.

@@ -1292,6 +1292,221 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestSubmissionStatusHandler(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, context.Context, *persistence.Store, persistence.WorkflowRunRecord)
+		want  model.SubmissionStatus
+	}{
+		{
+			name: "queued",
+			setup: func(t *testing.T, ctx context.Context, store *persistence.Store, run persistence.WorkflowRunRecord) {
+				work := testPersistenceWorkItem("persisted-queued", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+					t.Fatalf("EnqueueWorkItems() error = %v", err)
+				}
+			},
+			want: model.SubmissionStatus{
+				SubmissionID:   "run-001",
+				WorkflowID:     "workflow-001",
+				Status:         "queued",
+				KnownWorkItems: 1,
+				Queued:         1,
+			},
+		},
+		{
+			name: "running",
+			setup: func(t *testing.T, ctx context.Context, store *persistence.Store, run persistence.WorkflowRunRecord) {
+				work := testPersistenceWorkItem("persisted-running", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+					t.Fatalf("EnqueueWorkItems() error = %v", err)
+				}
+				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+					AttemptID:    "attempt-running",
+					ExecutorType: persistence.ExecutorTypeWorker,
+					StartedAt:    "2026-07-03T00:00:01Z",
+				}); err != nil || !found {
+					t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+				}
+			},
+			want: model.SubmissionStatus{
+				SubmissionID:   "run-001",
+				WorkflowID:     "workflow-001",
+				Status:         "running",
+				KnownWorkItems: 1,
+				Running:        1,
+			},
+		},
+		{
+			name: "completed",
+			setup: func(t *testing.T, ctx context.Context, store *persistence.Store, run persistence.WorkflowRunRecord) {
+				completedWork := testPersistenceWorkItem("persisted-completed", run.ID, 0, 0)
+				skippedWork := testPersistenceWorkItem("persisted-skipped", run.ID, 0, 1)
+				if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{completedWork, skippedWork}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{
+					{WorkItemRecord: completedWork, QueuedAt: "2026-07-03T00:00:00Z"},
+					{WorkItemRecord: skippedWork, QueuedAt: "2026-07-03T00:00:01Z"},
+				}); err != nil {
+					t.Fatalf("EnqueueWorkItems() error = %v", err)
+				}
+				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+					AttemptID:    "attempt-completed",
+					ExecutorType: persistence.ExecutorTypeWorker,
+					StartedAt:    "2026-07-03T00:00:02Z",
+				}); err != nil || !found {
+					t.Fatalf("ClaimNextWork(completed) found = %v error = %v, want success", found, err)
+				}
+				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+					AttemptID:    "attempt-skipped",
+					ExecutorType: persistence.ExecutorTypeWorker,
+					StartedAt:    "2026-07-03T00:00:03Z",
+				}); err != nil || !found {
+					t.Fatalf("ClaimNextWork(skipped) found = %v error = %v, want success", found, err)
+				}
+				if _, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+					AttemptID:        "attempt-completed",
+					OutputJSON:       `{"status":"ok"}`,
+					OutputJSONSHA256: strings.Repeat("a", 64),
+					PreStateSHA256:   strings.Repeat("b", 64),
+					PostStateSHA256:  strings.Repeat("c", 64),
+					CompletedAt:      "2026-07-03T00:00:04Z",
+				}); err != nil || !found {
+					t.Fatalf("CompleteAttempt(completed) found = %v error = %v, want success", found, err)
+				}
+				if _, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+					AttemptID:        "attempt-skipped",
+					SkippedParentID:  "attempt-completed",
+					OutputJSON:       `{"status":"skipped"}`,
+					OutputJSONSHA256: strings.Repeat("d", 64),
+					PreStateSHA256:   strings.Repeat("e", 64),
+					PostStateSHA256:  strings.Repeat("f", 64),
+					CompletedAt:      "2026-07-03T00:00:05Z",
+				}); err != nil || !found {
+					t.Fatalf("CompleteAttempt(skipped) found = %v error = %v, want success", found, err)
+				}
+			},
+			want: model.SubmissionStatus{
+				SubmissionID:   "run-001",
+				WorkflowID:     "workflow-001",
+				Status:         "completed",
+				KnownWorkItems: 2,
+				Completed:      1,
+				Skipped:        1,
+			},
+		},
+		{
+			name: "failed",
+			setup: func(t *testing.T, ctx context.Context, store *persistence.Store, run persistence.WorkflowRunRecord) {
+				work := testPersistenceWorkItem("persisted-failed", run.ID, 0, 0)
+				if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+					t.Fatalf("InsertWorkItems() error = %v", err)
+				}
+				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+					t.Fatalf("EnqueueWorkItems() error = %v", err)
+				}
+				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+					AttemptID:    "attempt-failed",
+					ExecutorType: persistence.ExecutorTypeWorker,
+					StartedAt:    "2026-07-03T00:00:01Z",
+				}); err != nil || !found {
+					t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+				}
+				if _, found, err := store.FailAttempt(ctx, persistence.FailAttemptRequest{
+					AttemptID: "attempt-failed",
+					Error:     "boom",
+					FailedAt:  "2026-07-03T00:00:02Z",
+				}); err != nil || !found {
+					t.Fatalf("FailAttempt() found = %v error = %v, want success", found, err)
+				}
+			},
+			want: model.SubmissionStatus{
+				SubmissionID:   "run-001",
+				WorkflowID:     "workflow-001",
+				Status:         "failed",
+				KnownWorkItems: 1,
+				Failed:         1,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openTestWorkflowExecutionStore(t)
+			defer store.Close()
+			run := insertTestPersistenceRunWithStage(t, ctx, store)
+			if tt.setup != nil {
+				tt.setup(t, ctx, store, run)
+			}
+
+			controller := newController()
+			controller.workflowStore = store
+
+			request := httptest.NewRequest(http.MethodGet, "/submissions/"+run.ID+"/status", nil)
+			response := httptest.NewRecorder()
+			controller.submissionStatusHandler(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+			}
+
+			var got model.SubmissionStatus
+			if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+				t.Fatalf("decode submission status: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("submission status = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubmissionStatusHandlerReturns404ForUnknownSubmission(t *testing.T) {
+	controller := newController()
+	controller.workflowStore = openTestWorkflowExecutionStore(t)
+	defer controller.workflowStore.Close()
+
+	request := httptest.NewRequest(http.MethodGet, "/submissions/missing-submission/status", nil)
+	response := httptest.NewRecorder()
+	controller.submissionStatusHandler(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status code = %d, want 404", response.Code)
+	}
+}
+
+func TestSubmissionStatusHandlerReturns404ForInvalidSubmissionStatusPath(t *testing.T) {
+	controller := newController()
+	controller.workflowStore = openTestWorkflowExecutionStore(t)
+	defer controller.workflowStore.Close()
+
+	tests := []string{
+		"/submissions//status",
+		"/submissions/run-001/attempts/status",
+		"/submissions/run-001",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			response := httptest.NewRecorder()
+			controller.submissionStatusHandler(response, request)
+
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status code = %d, want 404", response.Code)
+			}
+		})
+	}
+}
+
 func TestPendingReuseDecisionReasonsCountsReasons(t *testing.T) {
 	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
 		ID:                   "test-001",
@@ -1776,8 +1991,21 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, "")
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.SubmissionID == "" {
+		t.Fatal("submission id is empty")
+	}
+	if acknowledgement.WorkflowID != "cdl" {
+		t.Fatalf("workflow id = %q, want cdl", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
 	}
 
 	status := getStatus(t, controller)
@@ -1885,8 +2113,12 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204", response.Code)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202", response.Code)
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -1895,6 +2127,15 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 	if len(runs) != 1 {
 		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	if acknowledgement.SubmissionID != runs[0].ID {
+		t.Fatalf("submission id = %q, want persisted run id %q", acknowledgement.SubmissionID, runs[0].ID)
+	}
+	if acknowledgement.WorkflowID != "cdl-demo" {
+		t.Fatalf("workflow id = %q, want cdl-demo", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
 	}
 
 	gotProject, found, err := store.GetProject(context.Background(), runs[0].ProjectID)
@@ -2113,8 +2354,8 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -2287,8 +2528,8 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
 	if scheduler.calls != 1 {
 		t.Fatalf("scheduler calls = %d, want 1", scheduler.calls)
@@ -2314,7 +2555,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 		`)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 
@@ -2362,7 +2603,7 @@ func TestSubmitWorkflowHandlerPublishesSupplementalSourceManifestFiles(t *testin
 	}
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -2420,8 +2661,8 @@ func TestSubmitWorkflowHandlerRejectsUnsafeSupplementalSourceManifestPathBeforeR
 	}
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code == http.StatusNoContent {
-		t.Fatal("status code = 204, want rejection")
+	if response.Code == http.StatusAccepted {
+		t.Fatal("status code = 202, want rejection")
 	}
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
 	if err != nil {
@@ -2544,7 +2785,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2569,7 +2810,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 	if scheduler.calls != 1 {
@@ -2597,7 +2838,7 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 	if scheduler.calls != 1 {
@@ -2633,7 +2874,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2673,7 +2914,7 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		`)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2780,7 +3021,7 @@ func submitLocalWorkflowYears(t *testing.T, controller *Controller, root string,
 
 	writeLocalWorkflowSource(t, root, []int{year}, testSlurmWorkerVariables)
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }

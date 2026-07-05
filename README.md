@@ -56,6 +56,60 @@ The controller owns orchestration decisions while workers remain relatively simp
 - Strong separation between orchestration infrastructure and customer business logic.
 - Long-term maintainability suitable for research and commercial deployments.
 
+## CLI Submission
+
+The current user-facing submission path is the command-shaped CLI implemented in `cmd/demo-client`.
+
+Current supported examples:
+
+```bash
+goet submit \
+  --controller controller.json \
+  --project project.json \
+  --workflow workflow.json
+```
+
+```bash
+goet submit \
+  --controller-url http://localhost:8080 \
+  --project project.json \
+  --workflow workflow.json
+```
+
+```bash
+goet status <submission_id>
+```
+
+```bash
+goet submit \
+  --controller controller.json \
+  --project project.json \
+  --workflow workflow.json \
+  --wait
+```
+
+```bash
+goet submit \
+  --controller controller.json \
+  --project project.json \
+  --workflow workflow.json \
+  --json
+```
+
+```bash
+goet status <submission_id> --json
+```
+
+For repeated display, use operating-system tooling such as:
+
+```bash
+watch -n 5 goet status <submission_id>
+```
+
+GOET does not provide a built-in `--watch` option in this concept.
+
+When `--wait` is used, completed submissions exit with status code `0`; failed or otherwise unrecognized terminal states exit non-zero.
+
 ---
 
 ## Repository Status

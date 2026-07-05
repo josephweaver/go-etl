@@ -2,10 +2,12 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
@@ -34,7 +36,7 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		writeTestSubmissionAcknowledgement(t, w)
 	}))
 	defer server.Close()
 
@@ -86,6 +88,254 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 	}
 }
 
+func TestControllerClientSubmitWorkflowAcknowledgement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			writeTestSubmissionAcknowledgement(t, w)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	acknowledgement, err := client.SubmitWorkflowAcknowledgement(WorkflowSubmission{})
+	if err != nil {
+		t.Fatalf("SubmitWorkflowAcknowledgement() error = %v", err)
+	}
+
+	if acknowledgement.SubmissionID != "run-ack-001" {
+		t.Fatalf("submission id = %q, want run-ack-001", acknowledgement.SubmissionID)
+	}
+	if acknowledgement.WorkflowID != "cdl" {
+		t.Fatalf("workflow id = %q, want cdl", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
+	}
+}
+
+func TestControllerClientSubmissionStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected method: %s", r.Method)
+			}
+			if err := json.NewEncoder(w).Encode(model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				Status:         "running",
+				KnownWorkItems: 47,
+				Queued:         20,
+				Running:        4,
+				Completed:      23,
+				Failed:         0,
+				Skipped:        0,
+			}); err != nil {
+				t.Fatalf("encode status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	status, err := client.SubmissionStatus("sub_1234")
+	if err != nil {
+		t.Fatalf("SubmissionStatus() error = %v", err)
+	}
+
+	if status.SubmissionID != "sub_1234" {
+		t.Fatalf("submission id = %q, want sub_1234", status.SubmissionID)
+	}
+	if status.WorkflowID != "annual-report" {
+		t.Fatalf("workflow id = %q, want annual-report", status.WorkflowID)
+	}
+	if status.Running != 4 || status.Queued != 20 || status.Completed != 23 {
+		t.Fatalf("unexpected status counts: %+v", status)
+	}
+}
+
+func TestControllerClientSubmissionStatusReturnsUsefulErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/missing-submission/status":
+			http.Error(w, "submission not found", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	_, err := client.SubmissionStatus("missing-submission")
+	if err == nil {
+		t.Fatal("SubmissionStatus() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), `submission "missing-submission" not found`) {
+		t.Fatalf("SubmissionStatus() error = %q, want unknown submission message", err.Error())
+	}
+
+	failingClient := NewControllerClient(&http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("controller unavailable")
+		}),
+	}, testResolver(t, server.URL))
+
+	_, err = failingClient.SubmissionStatus("sub_1234")
+	if err == nil {
+		t.Fatal("SubmissionStatus() transport error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "controller unavailable") {
+		t.Fatalf("SubmissionStatus() transport error = %q, want wrapped transport message", err.Error())
+	}
+}
+
+func TestControllerClientWaitForSubmissionCompletesAfterPolling(t *testing.T) {
+	statusChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			statusChecks++
+			status := model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				KnownWorkItems: 1,
+			}
+			switch statusChecks {
+			case 1:
+				status.Status = "queued"
+				status.Queued = 1
+			case 2:
+				status.Status = "running"
+				status.Running = 1
+			default:
+				status.Status = "completed"
+				status.Completed = 1
+			}
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				t.Fatalf("encode status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	status, err := client.WaitForSubmission("sub_1234")
+	if err != nil {
+		t.Fatalf("WaitForSubmission() error = %v", err)
+	}
+
+	if status.Status != "completed" {
+		t.Fatalf("status = %q, want completed", status.Status)
+	}
+	if statusChecks != 3 {
+		t.Fatalf("status check count = %d, want 3", statusChecks)
+	}
+}
+
+func TestControllerClientWaitForSubmissionReturnsFailedStatus(t *testing.T) {
+	statusChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			statusChecks++
+			status := model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				KnownWorkItems: 1,
+			}
+			switch statusChecks {
+			case 1:
+				status.Status = "running"
+				status.Running = 1
+			default:
+				status.Status = "failed"
+				status.Failed = 1
+			}
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				t.Fatalf("encode status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	status, err := client.WaitForSubmission("sub_1234")
+	if err == nil {
+		t.Fatal("WaitForSubmission() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("WaitForSubmission() error = %q, want failed message", err.Error())
+	}
+	if status.Status != "failed" {
+		t.Fatalf("status = %q, want failed", status.Status)
+	}
+	if statusChecks != 2 {
+		t.Fatalf("status check count = %d, want 2", statusChecks)
+	}
+}
+
+func TestControllerClientWaitForSubmissionUsesDefaultPollIntervalWhenUnset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			if err := json.NewEncoder(w).Encode(model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				Status:         "completed",
+				KnownWorkItems: 1,
+				Completed:      1,
+			}); err != nil {
+				t.Fatalf("encode status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	status, err := client.WaitForSubmission("sub_1234")
+	if err != nil {
+		t.Fatalf("WaitForSubmission() error = %v", err)
+	}
+
+	if status.Status != "completed" {
+		t.Fatalf("status = %q, want completed", status.Status)
+	}
+}
+
+func TestControllerClientWaitForSubmissionReturnsUsefulErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	_, err := client.WaitForSubmission("sub_1234")
+	if err == nil {
+		t.Fatal("WaitForSubmission() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 503") {
+		t.Fatalf("WaitForSubmission() error = %q, want status error", err.Error())
+	}
+}
+
 func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 	var received WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +356,7 @@ func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		writeTestSubmissionAcknowledgement(t, w)
 	}))
 	defer server.Close()
 
@@ -270,7 +520,7 @@ func TestControllerClientSubmitWorkflowRunFile(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -298,7 +548,7 @@ func TestControllerClientSubmitWorkflowFile(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -340,7 +590,7 @@ func TestControllerClientChecksControllerBeforeSubmit(t *testing.T) {
 
 		if r.URL.Path == "/workflow" {
 			submitted = true
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 			return
 		}
 	}))
@@ -373,7 +623,7 @@ func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case "/workflow":
 			submitted = true
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -563,6 +813,19 @@ func (s *testControllerStarter) StartController() error {
 	return nil
 }
 
+func writeTestSubmissionAcknowledgement(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+		SubmissionID:         "run-ack-001",
+		WorkflowID:           "cdl",
+		InitialWorkItemCount: 2,
+	}); err != nil {
+		t.Fatalf("encode submission acknowledgement: %v", err)
+	}
+}
+
 func testResolver(t *testing.T, controllerURL string) variable.Resolver {
 	t.Helper()
 
@@ -588,4 +851,10 @@ func testResolverWithVariables(t *testing.T, variables ...variable.Variable) var
 	}
 
 	return variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }

@@ -215,8 +215,8 @@ func setupSourceBundleRun(t *testing.T) (*Controller, string, workflowRunSubmiss
 	}`))
 	response := httptest.NewRecorder()
 	controller.submitWorkflowHandler(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("submit workflow status code = %d, want 204", response.Code)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("submit workflow status code = %d, want 202", response.Code)
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -60,44 +62,60 @@ func NewControllerClientWithStarter(httpClient *http.Client, resolver variable.R
 }
 
 func (c ControllerClient) SubmitWorkflowRun(submission WorkflowRunSubmission) error {
-	return c.submitWorkflowPayload(submission)
+	_, err := c.SubmitWorkflowRunAcknowledgement(submission)
+	return err
 }
 
 // SubmitWorkflow submits a legacy inline workflow payload. Prefer SubmitWorkflowRun.
 func (c ControllerClient) SubmitWorkflow(submission WorkflowSubmission) error {
+	_, err := c.SubmitWorkflowAcknowledgement(submission)
+	return err
+}
+
+func (c ControllerClient) SubmitWorkflowRunAcknowledgement(submission WorkflowRunSubmission) (model.SubmissionAcknowledgement, error) {
+	return c.submitWorkflowPayload(submission)
+}
+
+// SubmitWorkflowAcknowledgement submits a legacy inline workflow payload and returns the controller acknowledgement.
+func (c ControllerClient) SubmitWorkflowAcknowledgement(submission WorkflowSubmission) (model.SubmissionAcknowledgement, error) {
 	if err := submission.SourceManifest.Validate(); err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	return c.submitWorkflowPayload(submission)
 }
 
-func (c ControllerClient) submitWorkflowPayload(submission any) error {
+func (c ControllerClient) submitWorkflowPayload(submission any) (model.SubmissionAcknowledgement, error) {
 	controllerURL, err := c.controllerURL()
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
 	if err := c.EnsureController(controllerURL); err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
 	body, err := json.Marshal(submission)
 	if err != nil {
-		return fmt.Errorf("encode workflow run submission: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("encode workflow run submission: %w", err)
 	}
 
 	url := strings.TrimRight(controllerURL, "/") + "/workflow"
 	response, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("submit workflow: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: %w", err)
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
+	if response.StatusCode != http.StatusAccepted {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
 	}
 
-	return nil
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode submission acknowledgement: %w", err)
+	}
+
+	return acknowledgement, nil
 }
 
 func (c ControllerClient) SubmitWorkflowRunFile(path string) error {
@@ -260,6 +278,105 @@ func (c ControllerClient) Status(controllerURL string) (model.ControllerStatus, 
 	var status model.ControllerStatus
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
 		return model.ControllerStatus{}, fmt.Errorf("decode controller status: %w", err)
+	}
+
+	return status, nil
+}
+
+func (c ControllerClient) SubmissionStatus(submissionID string) (model.SubmissionStatus, error) {
+	controllerURL, err := c.controllerURL()
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+
+	return c.submissionStatus(controllerURL, submissionID)
+}
+
+func (c ControllerClient) WaitForSubmission(submissionID string) (model.SubmissionStatus, error) {
+	controllerURL, err := c.controllerURL()
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+
+	interval, err := c.statusPollInterval()
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	return c.waitForSubmission(controllerURL, submissionID, interval)
+}
+
+func (c ControllerClient) waitForSubmission(controllerURL string, submissionID string, interval time.Duration) (model.SubmissionStatus, error) {
+	if strings.TrimSpace(submissionID) == "" {
+		return model.SubmissionStatus{}, fmt.Errorf("submission_id is required")
+	}
+
+	for {
+		status, err := c.submissionStatus(controllerURL, submissionID)
+		if err != nil {
+			return model.SubmissionStatus{}, err
+		}
+
+		switch status.Status {
+		case "queued", "running":
+			time.Sleep(interval)
+		case "completed":
+			return status, nil
+		case "failed":
+			return status, fmt.Errorf("submission %q failed", submissionID)
+		default:
+			return status, fmt.Errorf("submission %q has unrecognized status %q", submissionID, status.Status)
+		}
+	}
+}
+
+func (c ControllerClient) submissionStatus(controllerURL string, submissionID string) (model.SubmissionStatus, error) {
+	if strings.TrimSpace(submissionID) == "" {
+		return model.SubmissionStatus{}, fmt.Errorf("submission_id is required")
+	}
+
+	endpoint := strings.TrimRight(controllerURL, "/") + "/submissions/" + url.PathEscape(submissionID) + "/status"
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return model.SubmissionStatus{}, fmt.Errorf("create submission status request: %w", err)
+	}
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return model.SubmissionStatus{}, fmt.Errorf("get submission status: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNotFound {
+		message, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			return model.SubmissionStatus{}, fmt.Errorf("get submission status: 404 not found")
+		}
+		body := strings.TrimSpace(string(message))
+		if body != "" {
+			return model.SubmissionStatus{}, fmt.Errorf("submission %q not found: %s", submissionID, body)
+		}
+		return model.SubmissionStatus{}, fmt.Errorf("submission %q not found", submissionID)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		message, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d", response.StatusCode)
+		}
+		body := strings.TrimSpace(string(message))
+		if body != "" {
+			return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d: %s", response.StatusCode, body)
+		}
+		return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d", response.StatusCode)
+	}
+
+	var status model.SubmissionStatus
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		return model.SubmissionStatus{}, fmt.Errorf("decode submission status: %w", err)
 	}
 
 	return status, nil
