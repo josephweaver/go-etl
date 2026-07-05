@@ -1340,9 +1340,28 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("insert stage plan: %w", err)
 		}
 	}
-	items, queued, err := persistenceRecordsFromCompiledWorkflow(runRecord.ID, workflowSubmission.Workflow, compileResult, codeVersion, submittedAt)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, err
+
+	var memberships []compiledStageWorkItemMembership
+	var items []persistence.WorkItemRecord
+	var queued []persistence.QueuedWorkRecord
+
+	if len(compileResult.WorkItems) != 0 {
+		plan, err := workflow.NormalizeStages(workflowSubmission.Workflow)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("normalize workflow stages: %w", err)
+		}
+		if err := c.CreateWorkflowDependencyPlan(ctx, runRecord.ID, runRecord.WorkflowID, plan.Stages); err != nil {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow dependency plan: %w", err)
+		}
+
+		stageResults, err := splitCompiledWorkflowByStage(compileResult, plan)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
+		items, queued, memberships, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
 	}
 	if len(items) != 0 {
 		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
@@ -1350,6 +1369,11 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		}
 		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("enqueue work items: %w", err)
+		}
+	}
+	for _, membership := range memberships {
+		if err := c.RecordCompiledWorkItemMembership(ctx, runRecord.ID, membership.stageIndex, membership.stepIndex, membership.workItemID, membership.workItemIndex); err != nil {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("record compiled work item membership: %w", err)
 		}
 	}
 

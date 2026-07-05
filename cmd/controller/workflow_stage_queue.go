@@ -1,0 +1,173 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"time"
+
+	"goetl/internal/persistence"
+	"goetl/internal/workflow"
+)
+
+type compiledStageWorkItemMembership struct {
+	stageIndex    int
+	stepIndex     int
+	workItemID    string
+	workItemIndex int
+}
+
+func splitCompiledWorkflowByStage(compileResult workflow.CompileResult, plan workflow.WorkflowPlan) ([]workflow.CompileStageResult, error) {
+	stepIndexByID := make(map[string]int, len(compileResult.WorkItems))
+	stageIndexByID := make(map[string]int, len(compileResult.WorkItems))
+	for _, stage := range plan.Stages {
+		for _, stageStep := range stage.Steps {
+			stepIndexByID[stageStep.StepID] = stageStep.StepIndex
+			stageIndexByID[stageStep.StepID] = stage.Index
+		}
+	}
+
+	orderedStageIndexes := make([]int, 0, len(plan.Stages))
+	for _, stage := range plan.Stages {
+		orderedStageIndexes = append(orderedStageIndexes, stage.Index)
+	}
+	sort.Ints(orderedStageIndexes)
+
+	nextWorkItemIndex := make(map[string]int, len(plan.Stages))
+	stageItemsByIndex := make(map[int][]workflow.CompileStageWorkItem, len(plan.Stages))
+
+	for _, item := range compileResult.WorkItems {
+		stepIndex, hasStepIndex := stepIndexByID[item.StepID]
+		if !hasStepIndex {
+			return nil, fmt.Errorf("compiled work item references unknown step: %s", item.StepID)
+		}
+		stageIndex, hasStageIndex := stageIndexByID[item.StepID]
+		if !hasStageIndex {
+			return nil, fmt.Errorf("compiled work item step has no stage: %s", item.StepID)
+		}
+
+		workItemIndex := nextWorkItemIndex[item.StepID]
+		nextWorkItemIndex[item.StepID]++
+		stageItemsByIndex[stageIndex] = append(stageItemsByIndex[stageIndex], workflow.CompileStageWorkItem{
+			WorkflowID:    compileResult.WorkflowID,
+			StageIndex:    stageIndex,
+			StepIndex:     stepIndex,
+			StepID:        item.StepID,
+			WorkItemIndex: workItemIndex,
+			WorkItem:      item.WorkItem,
+		})
+	}
+
+	planStepsByStage := make(map[int][]workflow.WorkflowStageStep, len(plan.Stages))
+	for _, stage := range plan.Stages {
+		planStepsByStage[stage.Index] = append(planStepsByStage[stage.Index], stage.Steps...)
+	}
+
+	stageResults := make([]workflow.CompileStageResult, 0, len(orderedStageIndexes))
+	for _, stageIndex := range orderedStageIndexes {
+		steps := planStepsByStage[stageIndex]
+		workItems := stageItemsByIndex[stageIndex]
+		if len(workItems) == 0 {
+			continue
+		}
+
+		sort.Slice(steps, func(i, j int) bool {
+			return steps[i].StepIndex < steps[j].StepIndex
+		})
+
+		stageResults = append(stageResults, workflow.CompileStageResult{
+			WorkflowID: compileResult.WorkflowID,
+			StageIndex: stageIndex,
+			Steps:      steps,
+			WorkItems:  workItems,
+		})
+	}
+
+	return stageResults, nil
+}
+
+func persistenceRecordsFromCompiledStageResults(
+	runID string,
+	stageResults []workflow.CompileStageResult,
+	codeVersion string,
+	submittedAt time.Time,
+) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, []compiledStageWorkItemMembership, error) {
+	stepInstances := make(map[string]string, len(stageResults))
+	timestamp := submittedAt.UTC().Format(time.RFC3339)
+	persistenceItems := make([]persistence.WorkItemRecord, 0)
+	queued := make([]persistence.QueuedWorkRecord, 0)
+	memberships := make([]compiledStageWorkItemMembership, 0)
+
+	workflowID := ""
+	if len(stageResults) != 0 {
+		workflowID = stageResults[0].WorkflowID
+	}
+
+	workflowFingerprint := fingerprint("workflow", map[string]any{
+		"id": workflowID,
+	})
+
+	for _, stageResult := range stageResults {
+		for _, item := range stageResult.WorkItems {
+			if _, ok := stepInstances[item.StepID]; !ok {
+				stepInstances[item.StepID] = runID + ":step:" + strconv.Itoa(item.StepIndex)
+			}
+
+			itemPayload := item.WorkItem
+			itemPayload.WorkflowDefinitionID = stageResult.WorkflowID
+			itemPayload.WorkflowFingerprint = workflowFingerprint
+			itemPayload.WorkflowInstanceID = runID
+			itemPayload.StepDefinitionID = item.StepID
+			itemPayload.StepFingerprint = fingerprint("step", map[string]any{
+				"workflow_fingerprint": workflowFingerprint,
+				"id":                   item.StepID,
+			})
+			itemPayload.StepInstanceID = stepInstances[item.StepID]
+			itemPayload.WorkItemFingerprint = fingerprint("work-item", map[string]any{
+				"id":              itemPayload.ID,
+				"type":            itemPayload.Type,
+				"output_filename": itemPayload.OutputFilename,
+				"parameters":      itemPayload.Parameters,
+			})
+			itemPayload.InputFingerprint = fingerprint("input", itemPayload.Parameters)
+			itemPayload.OutputFingerprint = fingerprint("output", map[string]any{
+				"output_filename": itemPayload.OutputFilename,
+			})
+			itemPayload.CodeVersion = codeVersion
+
+			payload, err := json.Marshal(itemPayload)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("encode workflow work item: %w", err)
+			}
+			_, resolvedInputsSHA256, err := canonicalSourceDocument(payload)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("hash workflow work item: %w", err)
+			}
+
+			id := runID + ":" + itemPayload.ID
+			record := persistence.WorkItemRecord{
+				ID:                   id,
+				RunID:                runID,
+				StageIndex:           item.StageIndex,
+				WorkItemIndex:        item.WorkItemIndex,
+				WorkerPayloadJSON:    string(payload),
+				ResolvedInputsSHA256: resolvedInputsSHA256,
+				CreatedAt:            timestamp,
+			}
+			persistenceItems = append(persistenceItems, record)
+			queued = append(queued, persistence.QueuedWorkRecord{
+				WorkItemRecord: record,
+				QueuedAt:       timestamp,
+			})
+			memberships = append(memberships, compiledStageWorkItemMembership{
+				stageIndex:    item.StageIndex,
+				stepIndex:     item.StepIndex,
+				workItemID:    id,
+				workItemIndex: item.WorkItemIndex,
+			})
+		}
+	}
+
+	return persistenceItems, queued, memberships, nil
+}
