@@ -1,6 +1,6 @@
 # 005 Python Output Evidence Contract
 
-Status: proposed
+Status: complete
 
 ## Objective
 

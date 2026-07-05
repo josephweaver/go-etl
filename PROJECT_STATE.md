@@ -71,10 +71,18 @@ runtime code, tests, scripts, and low-level worker fixtures such as
 The sibling demo repo now also includes a minimal `python-hello` fixture that
 proves the source-admission-to-Python-execution vertical slice with local source
 admission, a system-Python placeholder, and a small standard-library script.
+The first Python WorkItem phase is implemented end to end: shared
+`python_script` work-item validation, controller source-bundle delivery, worker
+staging, subprocess execution, canonical output promotion, workflow admission
+validation, the sibling demo fixture, and the repeatable local smoke path.
+Later Python work remains intentionally deferred to separate concepts or later
+phases for environment management, execution observability, submission CLI
+status, dependency-aware workflows, resource constraints, and Python SDK/client
+behavior.
 
-Operational Slice 008 now adds the repeatable local smoke path for that
-fixture. `scripts/python-workitem-smoke.ps1` validates the sibling demo
-project, compiles `scripts/hello.py`, starts the controller from
+Operational Slice 008 records the repeatable local smoke path for that fixture.
+`scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
+`scripts/hello.py`, starts the controller from
 `cmd/controller/demo-config.json` with `--config`, waits for `/status`, submits
 `submissions/python-hello-local.json` with a `worker_max_count=0` override,
 starts the local worker explicitly with an absolute config path, and verifies

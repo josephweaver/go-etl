@@ -1,6 +1,6 @@
 # Python WorkItem and Staged Source Execution Strategic Concept
 
-Status: Proposed
+Status: Implemented for admitted-source system-Python execution
 Cadence: CSxIx
 
 ## Purpose
@@ -11,7 +11,34 @@ This concept lets a workflow run declare Python source files before admission, l
 
 This is not the future Python SDK. The Python SDK remains a client and interface layer for starting or calling the Go controller and submitting project and workflow files. Python WorkItem is worker-side execution inside the Go runtime.
 
+Phase 1 is implemented. The concept remains open only for later environment-management, observability, CLI, SDK, dependency, and resource work.
+
 Naming note: this document uses `GOET` because the repository and code still use that name. If the project name changes later, this concept should be read as part of the same governed orchestration runtime.
+
+## Implemented Slices
+
+- `001` - shared `python_script` work-item source contract.
+- `002` - controller source-bundle endpoint for admitted source files.
+- `003` - worker source-bundle download and safe staging.
+- `004` - Python subprocess execution with no environment creation.
+- `005` - Python output validation, promotion, and evidence wrapping.
+- `006` - workflow compilation validation and controller-generated source locators.
+- `007` - sibling demo-project fixture for the Python vertical slice.
+- `008` - repeatable local smoke path and runbook.
+
+## Current State
+
+GOET now supports admitted-source Python execution end to end:
+
+- the shared work-item contract includes `python_script` and `WorkItem.Source`;
+- the controller validates admitted `source_manifest` roles for Python work items;
+- the controller serves a read-only source bundle at `GET /workflow-runs/{run_id}/source-bundle.zip`;
+- the worker downloads that bundle and stages it safely under the attempt directory;
+- the worker runs a declared Python entrypoint with configured or system Python;
+- the worker validates and promotes canonical JSON output;
+- the worker returns completion evidence with top-level `input_sha256` and `output_sha256`;
+- the sibling demo project proves the source-admission-to-Python-execution path;
+- the smoke runbook documents the repeatable local verification path.
 
 ## Goals
 
@@ -104,35 +131,22 @@ The target product direction still keeps the Python package as an interface laye
 
 The future Python SDK must not own controller queue state, worker orchestration, scheduling policy, source-cache repair, or retry semantics.
 
-## Current State
+## Smoke / Runbook
 
-GOET already has a working local controller and worker runtime, a source-reference workflow admission path, a repository-source and cache package, and a restart verification path for admitted workflow source.
+The repeatable local verification path is documented in:
 
-The shared work-item model now includes:
+- [`python-workitem-smoke.md`](python-workitem-smoke.md)
 
-- `WorkItemTypePythonScript = "python_script"`
-- `WorkItem.Source`
-- `WorkItemSource`
+## Deferred Work
 
-`python_script` work items now require source validation in the shared model contract.
+The following work remains outside this first phase and should be owned by later concepts or later phases:
 
-The controller already serves a read-only source bundle for an admitted workflow run at `GET /workflow-runs/{run_id}/source-bundle.zip`. That endpoint reads the run's persisted source-admission context, reloads the admitted manifest from the controller-owned cache reference, and returns a zip containing only worker-stageable `source_manifest` files: `python_entrypoint`, `python_environment`, and `support_file`.
-
-That bundle is built from verified repository-cache reads. It does not reread provider source files, and it does not expose controller cache filesystem paths in the HTTP response.
-
-## Target State
-
-The system should support this flow:
-
-1. A workflow run declares Python source files before admission.
-2. The controller admits those files and records the manifest.
-3. The controller compiles a `python_script` work item with a source locator.
-4. The worker receives the work item and asks the controller for the source bundle.
-5. The worker stages only the admitted files under the attempt directory.
-6. The worker writes `GOET_INPUT_JSON`, runs Python, captures stdout and stderr, and validates `GOET_OUTPUT_JSON`.
-7. The worker promotes the output artifact and reports completion evidence.
-
-Later slices may add environment-spec interpretation and cached environment creation, but those belong after the basic admitted-source execution path is stable.
+- Python Environment Management - environment-spec interpretation, creation, caching, and package installation policy.
+- Execution Observability - controller-owned log routing, streaming, and retention.
+- Submission CLI Status - production CLI ergonomics and queryable submission status.
+- Dependency-Aware Workflows - workflow scheduling across upstream and downstream dependencies.
+- Resource Constraints - controller-owned admission limits for named resources.
+- Python SDK/client behavior - the user-facing package and API layer for starting or calling the controller.
 
 ## Notes
 

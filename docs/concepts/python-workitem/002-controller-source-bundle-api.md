@@ -1,6 +1,6 @@
 # 002 Controller Source Bundle API
 
-Status: proposed
+Status: complete
 
 ## Objective
 

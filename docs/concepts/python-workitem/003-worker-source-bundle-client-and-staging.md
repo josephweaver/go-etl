@@ -1,6 +1,6 @@
 # 003 Worker Source Bundle Client and Staging
 
-Status: implemented
+Status: complete
 
 Implementation note: `cmd/worker/source_bundle.go` now stages source bundles safely for attempt-local execution, with focused tests in `cmd/worker/source_bundle_test.go`.
 

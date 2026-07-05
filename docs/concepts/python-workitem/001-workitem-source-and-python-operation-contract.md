@@ -1,6 +1,6 @@
 # 001 WorkItem Source and Python Operation Contract
 
-Status: proposed
+Status: complete
 
 ## Objective
 

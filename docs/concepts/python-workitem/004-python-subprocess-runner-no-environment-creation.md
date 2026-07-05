@@ -1,6 +1,6 @@
 # 004 Python Subprocess Runner, No Environment Creation
 
-Status: proposed
+Status: complete
 
 ## Objective
 
