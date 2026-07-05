@@ -131,6 +131,102 @@ func TestParseSubmitCommandValidation(t *testing.T) {
 	}
 }
 
+func TestParseLogsCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want cliCommand
+	}{
+		{
+			name: "default controller URL",
+			args: []string{"goet", "logs", "sub_1234"},
+			want: cliCommand{
+				Kind:          commandLogs,
+				ControllerURL: defaultControllerURL,
+				SubmissionID:  "sub_1234",
+			},
+		},
+		{
+			name: "controller URL with filters and JSON",
+			args: []string{"goet", "logs", "sub_1234", "--controller-url", "http://controller:8080", "--tail", "50", "--level", "warn", "--stream", "stderr", "--attempt-id", "att_42", "--json"},
+			want: cliCommand{
+				Kind:          commandLogs,
+				ControllerURL: "http://controller:8080",
+				SubmissionID:  "sub_1234",
+				Tail:          50,
+				TailSet:       true,
+				Level:         "warn",
+				Stream:        "stderr",
+				AttemptID:     "att_42",
+				JSON:          true,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseCommand(test.args)
+			if err != nil {
+				t.Fatalf("parseCommand() unexpected error: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("parseCommand() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseLogsCommandValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "requires submission ID",
+			args:    []string{"goet", "logs"},
+			wantErr: "submission_id is required",
+		},
+		{
+			name:    "rejects extra positional",
+			args:    []string{"goet", "logs", "sub_1234", "extra"},
+			wantErr: "unexpected positional argument",
+		},
+		{
+			name:    "rejects non-positive tail",
+			args:    []string{"goet", "logs", "sub_1234", "--tail", "0"},
+			wantErr: "tail must be a positive integer",
+		},
+		{
+			name:    "rejects bad tail",
+			args:    []string{"goet", "logs", "sub_1234", "--tail", "zero"},
+			wantErr: "tail must be a positive integer",
+		},
+		{
+			name:    "rejects watch",
+			args:    []string{"goet", "logs", "sub_1234", "--watch"},
+			wantErr: "flag provided but not defined: -watch",
+		},
+		{
+			name:    "rejects follow",
+			args:    []string{"goet", "logs", "sub_1234", "--follow"},
+			wantErr: "flag provided but not defined: -follow",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseCommand(test.args)
+			if err == nil {
+				t.Fatal("parseCommand() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("parseCommand() error = %q, want substring %q", err.Error(), test.wantErr)
+			}
+		})
+	}
+}
+
 func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	var received client.WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -476,6 +572,120 @@ func TestExecuteStatusCommandReturnsUsefulErrorForUnknownSubmission(t *testing.T
 	}
 }
 
+func TestExecuteLogsCommandPrintsSubmissionLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/submissions/sub_1234/logs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("tail") != "2" {
+			t.Fatalf("unexpected tail query: %s", r.URL.Query().Get("tail"))
+		}
+
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(client.SubmissionLogsResponse{
+			SubmissionID: "sub_1234",
+			Tail:         2,
+			Truncated:    false,
+			Entries: []model.LogObservation{
+				{
+					Timestamp: "2026-07-05T11:00:00Z",
+					Level:     model.LogLevelInfo,
+					Component: "worker",
+					Stream:    "stdout",
+					AttemptID: "att_1",
+					Message:   "started item",
+				},
+				{
+					Timestamp: "2026-07-05T11:00:01Z",
+					Level:     model.LogLevelWarn,
+					Component: "worker",
+					Stream:    "stderr",
+					Message:   "minor warning",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("encode submission logs: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	output := captureMainTestOutput(t, func() {
+		err := executeCommand(cliCommand{
+			Kind:          commandLogs,
+			ControllerURL: server.URL,
+			SubmissionID:  "sub_1234",
+			Tail:          2,
+			TailSet:       true,
+		}, server.Client())
+		if err != nil {
+			t.Fatalf("executeCommand() error = %v", err)
+		}
+	})
+
+	want := strings.Join([]string{
+		"2026-07-05T11:00:00Z info worker stdout attempt=att_1 started item",
+		"2026-07-05T11:00:01Z warn worker stderr minor warning",
+	}, "\n")
+	if got := strings.TrimSpace(output); got != want {
+		t.Fatalf("logs output = %q, want %q", got, want)
+	}
+}
+
+func TestExecuteLogsCommandPrintsJsonPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/submissions/sub_1234/logs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(client.SubmissionLogsResponse{
+			SubmissionID: "sub_1234",
+			Tail:         1,
+			Truncated:    false,
+			Entries: []model.LogObservation{
+				{
+					Timestamp: "2026-07-05T11:00:00Z",
+					Level:     model.LogLevelInfo,
+					Component: "worker",
+					Message:   "hello",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("encode submission logs: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	output := captureMainTestOutput(t, func() {
+		err := executeCommand(cliCommand{
+			Kind:          commandLogs,
+			ControllerURL: server.URL,
+			SubmissionID:  "sub_1234",
+			JSON:          true,
+		}, server.Client())
+		if err != nil {
+			t.Fatalf("executeCommand() error = %v", err)
+		}
+	})
+
+	var got client.SubmissionLogsResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &got); err != nil {
+		t.Fatalf("unmarshal logs JSON = %v", err)
+	}
+	if got.SubmissionID != "sub_1234" {
+		t.Fatalf("submission_id = %q, want sub_1234", got.SubmissionID)
+	}
+	if got.Tail != 1 {
+		t.Fatalf("tail = %d, want 1", got.Tail)
+	}
+	if got.Truncated {
+		t.Fatal("truncated = true, want false")
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries length = %d, want 1", len(got.Entries))
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	tests := []struct {
 		name string
@@ -575,6 +785,21 @@ func TestFormatFinalStatusIncludesReuseCandidates(t *testing.T) {
 	want := "final status: pending=1 assigned=2 failed=3 pending_reuse_candidates=4 attempts=5 attempt_variables=6"
 	if got != want {
 		t.Fatalf("formatFinalStatus() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSubmissionLog(t *testing.T) {
+	got := formatSubmissionLog(model.LogObservation{
+		Timestamp: "2026-07-05T11:00:00Z",
+		Level:     model.LogLevelInfo,
+		Component: "worker",
+		Stream:    "stdout",
+		AttemptID: "att_1",
+		Message:   "hello",
+	})
+	want := "2026-07-05T11:00:00Z info worker stdout attempt=att_1 hello"
+	if got != want {
+		t.Fatalf("formatSubmissionLog() = %q, want %q", got, want)
 	}
 }
 

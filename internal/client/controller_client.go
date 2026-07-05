@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,21 @@ type ControllerClient struct {
 
 type ControllerStarter interface {
 	StartController() error
+}
+
+type SubmissionLogsFilters struct {
+	Tail      int
+	TailSet   bool
+	Level     string
+	Stream    string
+	AttemptID string
+}
+
+type SubmissionLogsResponse struct {
+	SubmissionID string                 `json:"submission_id"`
+	Entries      []model.LogObservation  `json:"entries"`
+	Tail         int                    `json:"tail"`
+	Truncated    bool                   `json:"truncated"`
 }
 
 func NewControllerClient(httpClient *http.Client, resolver variable.Resolver) ControllerClient {
@@ -290,6 +306,85 @@ func (c ControllerClient) SubmissionStatus(submissionID string) (model.Submissio
 	}
 
 	return c.submissionStatus(controllerURL, submissionID)
+}
+
+func (c ControllerClient) SubmissionLogs(submissionID string, filters SubmissionLogsFilters) (SubmissionLogsResponse, error) {
+	controllerURL, err := c.controllerURL()
+	if err != nil {
+		return SubmissionLogsResponse{}, err
+	}
+
+	if filters.TailSet && filters.Tail <= 0 {
+		return SubmissionLogsResponse{}, fmt.Errorf("tail must be positive")
+	}
+
+	return c.submissionLogs(controllerURL, submissionID, filters)
+}
+
+func (c ControllerClient) submissionLogs(controllerURL, submissionID string, filters SubmissionLogsFilters) (SubmissionLogsResponse, error) {
+	if strings.TrimSpace(submissionID) == "" {
+		return SubmissionLogsResponse{}, fmt.Errorf("submission_id is required")
+	}
+
+	query := url.Values{}
+	if filters.TailSet {
+		query.Set("tail", strconv.Itoa(filters.Tail))
+	}
+	if filters.Level != "" {
+		query.Set("level", filters.Level)
+	}
+	if filters.Stream != "" {
+		query.Set("stream", filters.Stream)
+	}
+	if filters.AttemptID != "" {
+		query.Set("attempt-id", filters.AttemptID)
+	}
+
+	endpoint := strings.TrimRight(controllerURL, "/") + "/submissions/" + url.PathEscape(submissionID) + "/logs"
+	if len(query) != 0 {
+		endpoint += "?" + query.Encode()
+	}
+
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return SubmissionLogsResponse{}, fmt.Errorf("create submission logs request: %w", err)
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNotFound {
+		message, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: 404 not found")
+		}
+		body := strings.TrimSpace(string(message))
+		if body != "" {
+			return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found: %s", submissionID, body)
+		}
+		return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found", submissionID)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		message, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d", response.StatusCode)
+		}
+		body := strings.TrimSpace(string(message))
+		if body != "" {
+			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d: %s", response.StatusCode, body)
+		}
+		return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d", response.StatusCode)
+	}
+
+	var responseBody SubmissionLogsResponse
+	if err := json.NewDecoder(response.Body).Decode(&responseBody); err != nil {
+		return SubmissionLogsResponse{}, fmt.Errorf("decode submission logs: %w", err)
+	}
+
+	return responseBody, nil
 }
 
 func (c ControllerClient) WaitForSubmission(submissionID string) (model.SubmissionStatus, error) {

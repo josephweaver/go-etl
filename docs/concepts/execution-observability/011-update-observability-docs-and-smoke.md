@@ -1,6 +1,6 @@
 # 011 Update Observability Docs And Smoke
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

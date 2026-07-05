@@ -4,11 +4,12 @@ Last updated: 2026-07-05
 
 ## Current Focus
 
-Operational observability slice 002 (`002-log-configuration`) is implemented: controller startup now resolves `controller_log_read_default_tail_lines` and `controller_log_read_max_tail_lines` defaults with validated bounds and allowed log levels.
+Operational observability slice 010 (`010-cli-logs-command`) is now implemented: the demo CLI now supports `goet logs <submission_id> [--controller-url <url>] [--tail <n>] [--level <level>] [--stream <stream>] [--attempt-id <id>] [--json]`, with bounded, submission-scoped log retrieval via `internal/client` and compact/default rendering.
+Operational observability slice 009 (`009-submission-log-read-api`) is now implemented: controller now exposes `GET /submissions/{submission_id}/logs` with bounded reads, optional level/stream/attempt filtering, known-submission validation, and bounded, deterministic tail metadata.
 
 Operational observability slice 003 (`003-controller-logging-endpoint`) is now implemented: controller now registers `POST /observations/logs` with bounded request-size handling, JSON decode/validation behavior, and a success response that does not mutate queue/work state.
 
-Operational observability slice 004 (`004-worker-logging-client`) is now implemented: the worker runtime has a dedicated log client that posts one `internal/model.LogObservation` to `POST /observations/logs`, validates each observation before send, and returns `LogDeliveryError` on non-2xx responses, transport failures, encoding failures, and validation failures.
+Operational observability slice 004 (`004-worker-logging-client`) is now implemented: the worker runtime has a dedicated log client that posts one `internal/model.LogObservation` to `POST /observations/logs`, validates each observation before send, and returns `*LogDeliveryError` on non-2xx responses, transport failures, encoding failures, and validation failures.
 
 Operational observability slice 005 (`005-controller-filesystem-log-sinks`) is now implemented: the controller now persists accepted `internal/model.LogObservation` payloads to controller-owned JSONL files under `controller_log_root_path`, routing by controller-wide, submission, and attempt paths using path-safe IDs and serialized file appends.
 
@@ -126,13 +127,15 @@ Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/hello.py`, starts the controller from
 `cmd/controller/demo-config.json` with `--config`, waits for `/status`, submits
 `submissions/python-hello-local.json` with a `worker_max_count=0` override,
-starts the local worker explicitly with an absolute config path, and verifies
-the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json` plus
-the worker attempt logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
-The smoke path checks the controller on `http://127.0.0.1:8080`, which is the
-loopback bind observed during validation.
+starts the local worker explicitly with an absolute config path, verifies
+the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json`,
+verifies that `goet logs <submission_id>` returns controller-owned submission logs.
+The smoke path checks the controller on `http://localhost:8080`, matching the
+demo controller configuration.
 It now resolves `python3` first and then `python`, and writes a temporary
-worker config with `python_executable` set explicitly for the smoke run.
+worker config with `python_executable` set to a smoke-only wrapper that emits
+one stdout line and one stderr line before delegating to the selected Python
+interpreter.
 The validated smoke path expects a Windows Python interpreter; WSL Python is
 not used because the worker and its staged attempt paths are Windows-native.
 The smoke script now writes per-run controller logs under
@@ -1459,6 +1462,11 @@ store. The older SQLite ledger remains an attempt snapshot helper for legacy
 skip/reuse code, but it is no longer the queue authority. Do not add retry rules
 or broad workflow parsing until the workflow-execution store boundary remains
 clear.
+
+Operational observability slice 007 is now implemented: Python subprocess stdout
+and stderr are replayed from the captured attempt logs into `internal/model`
+`LogObservation` records via the worker logging client, with best-effort
+delivery and fallback on failure.
 
 For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 

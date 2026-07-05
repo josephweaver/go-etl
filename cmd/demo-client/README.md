@@ -2,26 +2,27 @@
 
 This directory owns the local demo client executable.
 
-The demo client is a runnable example of the current CLI submission/status path and the first home of the command-shaped `goet` contract. The zero-argument compatibility path builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow-run source-reference file, waits for the controller to become idle, asks for shutdown, and prints the final status. The `submit` command reads explicit controller/project/workflow JSON paths through `internal/client`. The `status` command reads a submission ID and prints the controller-owned submission status.
+The demo client is a runnable example of the current CLI submission/status/logs path and the first home of the command-shaped `goet` contract. The zero-argument compatibility path builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow-run source-reference file, waits for the controller to become idle, asks for shutdown, and prints the final status. The `submit` command reads explicit controller/project/workflow JSON paths through `internal/client`. The `status` command reads a submission ID and prints the controller-owned submission status. The `logs` command reads a submission ID and prints bounded controller logs in text or JSON.
 
 It is not the reusable Python-facing API, the controller, the worker, the workflow compiler, or the variable system. It wires existing package boundaries together for a local demonstration.
 
 ## Files
 
-- `main.go` owns the demo executable entry point, `submit`/`status` parsing, submit command wiring, status command wiring, wait and JSON output handling, demo runtime variables, workflow-run submission file selection, final status formatting, and local client wiring.
+- `main.go` owns the demo executable entry point, `submit`/`status`/`logs` parsing, submit command wiring, status command wiring, logs command wiring, wait and JSON output handling, demo runtime variables, workflow-run submission file selection, final status formatting, and local client wiring.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
 ## Owned Concepts
 
 - Local demo execution path.
-- Initial `goet submit` and `goet status` command wiring.
+- Initial `goet submit`, `goet status`, and `goet logs` command wiring.
 - Demo defaults for controller contact and startup.
 - Demo workflow-run source-reference file selection.
 - Submission acknowledgement display.
 - Submission status display.
 - Wait and JSON output display.
 - Final local status display.
+- Bounded log output in text or JSON via submission ID.
 - Example wiring between the reusable client helper and the controller executable.
 
 ## Concepts Owned Elsewhere
@@ -39,7 +40,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Demo startup values are expressed as typed variables.
 - The demo submits workflow-run source-reference files, not raw work items or inline workflow JSON.
 - The demo waits for pending and assigned work to reach zero before requesting controller shutdown.
-- The public command shape includes `submit` and `status`; it does not include a built-in `--watch` option.
+- The public command shape includes `submit`, `status`, and `logs`; they do not include a built-in `--watch` or `--follow` option.
 - Reusable client behavior should live in `internal/client`, not be duplicated here.
 
 ## Major Dependencies

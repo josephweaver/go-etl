@@ -1,6 +1,6 @@
 # 009 Submission Log Read API
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

@@ -28,23 +28,23 @@ type LogClient struct {
 
 func (c LogClient) SendLogObservation(observation model.LogObservation) error {
 	if err := observation.Validate(); err != nil {
-		return LogDeliveryError{Err: fmt.Errorf("invalid log observation: %w", err)}
+		return &LogDeliveryError{Err: fmt.Errorf("invalid log observation: %w", err)}
 	}
 
 	url := logObservationsURL(c.ControllerURL)
 	body, err := json.Marshal(observation)
 	if err != nil {
-		return LogDeliveryError{Err: fmt.Errorf("encode log observation: %w", err)}
+		return &LogDeliveryError{Err: fmt.Errorf("encode log observation: %w", err)}
 	}
 
 	response, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return LogDeliveryError{Err: fmt.Errorf("post log observation to %s: %w", url, err)}
+		return &LogDeliveryError{Err: fmt.Errorf("post log observation to %s: %w", url, err)}
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return LogDeliveryError{Err: fmt.Errorf("post log observation to %s: unexpected status %s", url, response.Status)}
+		return &LogDeliveryError{Err: fmt.Errorf("post log observation to %s: unexpected status %s", url, response.Status)}
 	}
 
 	return nil
@@ -57,7 +57,7 @@ func (c LogClient) SendLogObservationWithFallback(observation model.LogObservati
 	}
 
 	if fallbackErr := appendFallbackLogObservation(fallbackLogDir, observation); fallbackErr != nil {
-		return LogDeliveryError{Err: fmt.Errorf("log delivery fallback failed: %v, %w", err, fallbackErr)}
+		return &LogDeliveryError{Err: fmt.Errorf("log delivery fallback failed: %v, %w", err, fallbackErr)}
 	}
 
 	return err

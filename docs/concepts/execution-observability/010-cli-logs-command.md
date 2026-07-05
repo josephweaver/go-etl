@@ -1,6 +1,6 @@
 # 010 CLI Logs Command
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

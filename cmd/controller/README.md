@@ -27,6 +27,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Controller-owned ledger write coordination.
 - Local aggregate status summary for clients and demos.
 - Submission-scoped status for `goet status <submission_id>`.
+- Submission log read API `GET /submissions/{submission_id}/logs`.
 
 ## Concepts Owned Elsewhere
 
@@ -48,6 +49,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Queue state is stored in the workflow-execution database; a controller without a workflow store rejects queue endpoints.
 - Successful workflow admission returns a submission acknowledgement with `submission_id`, `workflow_id`, and initial work-item count.
 - `GET /submissions/{submission_id}/status` is the controller-owned status endpoint for one submission.
+- `GET /submissions/{submission_id}/logs` is the controller-owned log-read endpoint.
 
 ## Major Dependencies
 

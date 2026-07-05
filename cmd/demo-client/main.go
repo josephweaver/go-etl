@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"goetl/internal/client"
@@ -37,6 +39,9 @@ func executeCommand(command cliCommand, httpClient *http.Client) error {
 	}
 	if command.Kind == commandStatus {
 		return statusCommand(command, httpClient)
+	}
+	if command.Kind == commandLogs {
+		return logsCommand(command, httpClient)
 	}
 	if command.Kind != commandDemo {
 		return nil
@@ -111,12 +116,46 @@ func statusCommand(command cliCommand, httpClient *http.Client) error {
 	return nil
 }
 
+func logsCommand(command cliCommand, httpClient *http.Client) error {
+	resolver, err := statusResolver(command.ControllerURL)
+	if err != nil {
+		return fmt.Errorf("goet logs: %w", err)
+	}
+
+	controllerClient := client.NewControllerClient(httpClient, resolver)
+	logs, err := controllerClient.SubmissionLogs(command.SubmissionID, client.SubmissionLogsFilters{
+		Tail:      command.Tail,
+		TailSet:   command.TailSet,
+		Level:     command.Level,
+		Stream:    command.Stream,
+		AttemptID: command.AttemptID,
+	})
+	if err != nil {
+		return fmt.Errorf("goet logs: %w", err)
+	}
+
+	if command.JSON {
+		payload, err := jsonMarshalLogs(logs)
+		if err != nil {
+			return fmt.Errorf("goet logs: encode logs: %w", err)
+		}
+		fmt.Println(payload)
+		return nil
+	}
+
+	for _, observation := range logs.Entries {
+		fmt.Println(formatSubmissionLog(observation))
+	}
+	return nil
+}
+
 type commandKind string
 
 const (
 	commandDemo   commandKind = "demo"
 	commandSubmit commandKind = "submit"
 	commandStatus commandKind = "status"
+	commandLogs   commandKind = "logs"
 )
 
 const defaultControllerURL = "http://localhost:8080"
@@ -129,6 +168,11 @@ type cliCommand struct {
 	ProjectPath     string
 	WorkflowPath    string
 	SubmissionID    string
+	Tail            int
+	TailSet         bool
+	Level           string
+	Stream          string
+	AttemptID       string
 	Wait            bool
 	JSON            bool
 }
@@ -146,8 +190,10 @@ func parseCommand(args []string) (cliCommand, error) {
 		return parseSubmitCommand(args[2:])
 	case "status":
 		return parseStatusCommand(args[2:])
+	case "logs":
+		return parseLogsCommand(args[2:])
 	default:
-		return cliCommand{}, fmt.Errorf("unknown goet command %q; expected submit or status", args[1])
+		return cliCommand{}, fmt.Errorf("unknown goet command %q; expected submit, status, or logs", args[1])
 	}
 }
 
@@ -219,6 +265,46 @@ func parseStatusCommand(args []string) (cliCommand, error) {
 	return command, nil
 }
 
+func parseLogsCommand(args []string) (cliCommand, error) {
+	flags := flag.NewFlagSet("goet logs", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	command := cliCommand{
+		Kind:          commandLogs,
+		ControllerURL: defaultControllerURL,
+	}
+	var tailValue string
+	flags.StringVar(&command.ControllerURL, "controller-url", defaultControllerURL, "controller URL")
+	flags.StringVar(&tailValue, "tail", "", "limit results to this many lines")
+	flags.StringVar(&command.Level, "level", "", "minimum level filter")
+	flags.StringVar(&command.Stream, "stream", "", "stream filter")
+	flags.StringVar(&command.AttemptID, "attempt-id", "", "attempt ID filter")
+	flags.BoolVar(&command.JSON, "json", false, "write JSON output")
+
+	flagArgs, positionals := splitFlagArgs(args)
+	if err := flags.Parse(flagArgs); err != nil {
+		return cliCommand{}, fmt.Errorf("goet logs: %w", err)
+	}
+	if len(positionals) == 0 {
+		return cliCommand{}, errors.New("goet logs: submission_id is required")
+	}
+	if len(positionals) > 1 {
+		return cliCommand{}, fmt.Errorf("goet logs: unexpected positional argument %q", positionals[1])
+	}
+
+	command.SubmissionID = positionals[0]
+	if tailValue != "" {
+		tail, err := strconv.Atoi(tailValue)
+		if err != nil || tail <= 0 {
+			return cliCommand{}, errors.New("goet logs: tail must be a positive integer")
+		}
+		command.Tail = tail
+		command.TailSet = true
+	}
+
+	return command, nil
+}
+
 func splitFlagArgs(args []string) ([]string, []string) {
 	var flagArgs []string
 	var positionals []string
@@ -233,7 +319,27 @@ func splitFlagArgs(args []string) ([]string, []string) {
 			}
 			continue
 		}
-		if arg == "--json" || strings.HasPrefix(arg, "--json=") || arg == "--watch" || strings.HasPrefix(arg, "--watch=") {
+		if arg == "--tail" || strings.HasPrefix(arg, "--tail=") {
+			flagArgs = append(flagArgs, arg)
+			if arg == "--tail" && index+1 < len(args) {
+				index++
+				flagArgs = append(flagArgs, args[index])
+			}
+			continue
+		}
+		if arg == "--level" || strings.HasPrefix(arg, "--level=") ||
+			arg == "--stream" || strings.HasPrefix(arg, "--stream=") ||
+			arg == "--attempt-id" || strings.HasPrefix(arg, "--attempt-id=") {
+			flagArgs = append(flagArgs, arg)
+			if (arg == "--level" || arg == "--stream" || arg == "--attempt-id") && index+1 < len(args) {
+				index++
+				flagArgs = append(flagArgs, args[index])
+			}
+			continue
+		}
+		if arg == "--json" || strings.HasPrefix(arg, "--json=") ||
+			arg == "--watch" || strings.HasPrefix(arg, "--watch=") ||
+			arg == "--follow" || strings.HasPrefix(arg, "--follow=") {
 			flagArgs = append(flagArgs, arg)
 			continue
 		}
@@ -276,6 +382,32 @@ func formatSubmissionStatus(status model.SubmissionStatus) string {
 		status.Failed,
 		status.Skipped,
 	)
+}
+
+func formatSubmissionLog(observation model.LogObservation) string {
+	parts := []string{
+		observation.Timestamp,
+		string(observation.Level),
+		observation.Component,
+	}
+
+	if observation.Stream != "" {
+		parts = append(parts, observation.Stream)
+	}
+	if observation.AttemptID != "" {
+		parts = append(parts, "attempt="+observation.AttemptID)
+	}
+
+	parts = append(parts, observation.Message)
+	return strings.Join(parts, " ")
+}
+
+func jsonMarshalLogs(logs client.SubmissionLogsResponse) (string, error) {
+	payload, err := json.Marshal(logs)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func demoWorkflowRunPath(args []string) string {
