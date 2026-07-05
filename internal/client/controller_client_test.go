@@ -161,6 +161,120 @@ func TestControllerClientSubmissionStatus(t *testing.T) {
 	}
 }
 
+func TestControllerClientSubmissionLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/submissions/sub_1234/logs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		query := r.URL.Query()
+		if query.Get("tail") != "20" {
+			t.Fatalf("unexpected tail query: %q", query.Get("tail"))
+		}
+		if query.Get("level") != "warn" {
+			t.Fatalf("unexpected level query: %q", query.Get("level"))
+		}
+		if query.Get("stream") != "stderr" {
+			t.Fatalf("unexpected stream query: %q", query.Get("stream"))
+		}
+		if query.Get("attempt-id") != "att_9001" {
+			t.Fatalf("unexpected attempt-id query: %q", query.Get("attempt-id"))
+		}
+
+		if err := json.NewEncoder(w).Encode(SubmissionLogsResponse{
+			SubmissionID: "sub_1234",
+			Tail:         20,
+			Truncated:    false,
+			Entries: []model.LogObservation{
+				{
+					Timestamp: "2026-07-05T11:00:00Z",
+					Level:     model.LogLevelInfo,
+					Component: "worker",
+					Stream:    "stdout",
+					AttemptID: "att_9001",
+					Message:   "started",
+				},
+			},
+		}); err != nil {
+			t.Fatalf("encode logs: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	got, err := client.SubmissionLogs("sub_1234", SubmissionLogsFilters{
+		Tail:      20,
+		TailSet:   true,
+		Level:     "warn",
+		Stream:    "stderr",
+		AttemptID: "att_9001",
+	})
+	if err != nil {
+		t.Fatalf("SubmissionLogs() error = %v", err)
+	}
+
+	if got.SubmissionID != "sub_1234" {
+		t.Fatalf("submission_id = %q, want sub_1234", got.SubmissionID)
+	}
+	if got.Tail != 20 {
+		t.Fatalf("tail = %d, want 20", got.Tail)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries count = %d, want 1", len(got.Entries))
+	}
+}
+
+func TestControllerClientSubmissionLogsRejectsInvalidSubmissionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected request: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	_, err := client.SubmissionLogs(" ", SubmissionLogsFilters{})
+	if err == nil {
+		t.Fatal("SubmissionLogs() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "submission_id is required") {
+		t.Fatalf("SubmissionLogs() error = %q, want submission_id is required", err.Error())
+	}
+}
+
+func TestControllerClientSubmissionLogsRejectsInvalidTail(t *testing.T) {
+	client := NewControllerClient(nil, testResolver(t, "http://example:8080"))
+	_, err := client.SubmissionLogs("sub_1234", SubmissionLogsFilters{
+		TailSet: true,
+		Tail:    0,
+	})
+	if err == nil {
+		t.Fatal("SubmissionLogs() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "tail must be positive") {
+		t.Fatalf("SubmissionLogs() error = %q, want tail must be positive", err.Error())
+	}
+}
+
+func TestControllerClientSubmissionLogsReturnsUsefulErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/missing-submission/logs":
+			http.Error(w, "submission not found", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	_, err := client.SubmissionLogs("missing-submission", SubmissionLogsFilters{})
+	if err == nil {
+		t.Fatal("SubmissionLogs() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), `submission "missing-submission" not found`) {
+		t.Fatalf("SubmissionLogs() error = %q, want missing-submission message", err.Error())
+	}
+}
+
 func TestControllerClientSubmissionStatusReturnsUsefulErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

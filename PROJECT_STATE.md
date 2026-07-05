@@ -4,6 +4,7 @@ Last updated: 2026-07-05
 
 ## Current Focus
 
+Operational observability slice 010 (`010-cli-logs-command`) is now implemented: the demo CLI now supports `goet logs <submission_id> [--controller-url <url>] [--tail <n>] [--level <level>] [--stream <stream>] [--attempt-id <id>] [--json]`, with bounded, submission-scoped log retrieval via `internal/client` and compact/default rendering.
 Operational observability slice 009 (`009-submission-log-read-api`) is now implemented: controller now exposes `GET /submissions/{submission_id}/logs` with bounded reads, optional level/stream/attempt filtering, known-submission validation, and bounded, deterministic tail metadata.
 
 Operational observability slice 003 (`003-controller-logging-endpoint`) is now implemented: controller now registers `POST /observations/logs` with bounded request-size handling, JSON decode/validation behavior, and a success response that does not mutate queue/work state.
