@@ -1,6 +1,6 @@
-# 001 CLI Client Contract
+﻿# 001 CLI Client Contract
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -176,3 +176,4 @@ Do not read unrelated files unless test failures directly require them.
 - Use standard library parsing unless there is a strong reason to add a dependency.
 - Prefer a small parsed command structure that later slices can pass to loader/submission/status helpers.
 - The public docs should not mention `--watch`; later documentation should show OS-level composition such as `watch -n 5 goet status <submission_id>`.
+

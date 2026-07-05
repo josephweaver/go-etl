@@ -15,7 +15,6 @@ Concept link for its authoritative scope.
 - [Execution Observability](execution-observability/README.md) - Collect, route, stream, and store execution logs through the controller.
 - [Resource Constraints](resource-constraint/README.md) - Add controller-owned admission limits for work items that share named resources.
 - [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Preserve sensitivity metadata through variable resolution, diagnostics, persistence, and execution boundaries.
-- [Submission CLI Status](submission-cli-status/README.md) - Establish a production-oriented CLI and a queryable submission model for workflow execution.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
 - [Workflow Dependency Resolution](workflow-dependency-resolution/README.md) - Resolve dependencies between complete workflows and delay dependent execution until prerequisites succeed.
 - [Workflow Execution Persistence](workflow-execution-persistence/README.md) - Make the database authoritative for workflow runs, steps, work items, attempts, resolver inputs, and outputs across controller restarts.
@@ -34,6 +33,7 @@ above.
 - [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
 - [Python WorkItem](complete/python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
+- [Submission CLI Status](complete/submission-cli-status/README.md) - Establishes a production-oriented CLI and queryable submission status model for workflow execution.
 
 ## Planning Guides
 

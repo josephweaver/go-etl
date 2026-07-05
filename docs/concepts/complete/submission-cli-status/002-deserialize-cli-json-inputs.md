@@ -1,6 +1,6 @@
-# 002 Deserialize CLI JSON Inputs
+﻿# 002 Deserialize CLI JSON Inputs
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -197,3 +197,4 @@ Do not read unrelated files unless test failures directly require them.
 - Do not implement hidden client state.
 - Do not infer orchestration state from input files.
 - This slice creates the typed input boundary that later acknowledgement, wait, and JSON slices will use.
+

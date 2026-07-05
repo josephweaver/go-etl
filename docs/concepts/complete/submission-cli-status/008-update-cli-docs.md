@@ -1,6 +1,6 @@
-# 008 Update CLI Documentation And Examples
+﻿# 008 Update CLI Documentation And Examples
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -151,3 +151,4 @@ None. This slice updates documentation only.
 - Updated `docs/CUSTOMER_API.md` to reflect the implemented CLI contract without introducing a built-in `--watch` option.
 - Updated `cmd/demo-client/README.md`, `internal/client/README.md`, and `cmd/controller/README.md` so the package-level docs match the current submission/status boundary.
 - Updated `PROJECT_STATE.md` to record the documented current state.
+

@@ -1,6 +1,6 @@
-# 007 Add JSON Output Support
+﻿# 007 Add JSON Output Support
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -169,3 +169,4 @@ Do not read unrelated files unless test failures directly require them.
 - JSON output is the primary automation interface.
 - The CLI should never mix progress text with JSON on standard output.
 - If wait mode eventually needs progress events, that should be a different output mode, not silent mutation of `--json` semantics.
+

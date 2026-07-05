@@ -1,6 +1,6 @@
-# 006 Add Wait Support
+﻿# 006 Add Wait Support
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -145,3 +145,4 @@ Do not read unrelated files unless test failures directly require them.
 
 - This follows the design principle: do not duplicate capabilities the operating system already provides well.
 - If GOET later needs native watch behavior for an environment without an equivalent OS-level tool, that should be a separate future Strategic Concept or Operational Slice.
+

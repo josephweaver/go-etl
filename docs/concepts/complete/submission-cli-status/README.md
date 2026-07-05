@@ -1,6 +1,6 @@
-# Submission CLI Status
+﻿# Submission CLI Status
 
-Status: Implemented
+Status: Complete
 
 ## Purpose
 
@@ -181,3 +181,4 @@ This Strategic Concept is complete when:
 - Unit tests cover parser validation, JSON input loading, acknowledgement handling, status API behavior, CLI status rendering, wait polling, and JSON output separation.
 - User-facing documentation reflects the implemented behavior and does not imply unsupported SDKs, artifact commands, retry policies, or workflow-authoring capabilities.
 - Public interfaces remain consistent with GOET's controller-owned orchestration architecture.
+

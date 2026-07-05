@@ -1,6 +1,6 @@
-# 005 Add CLI Status Command
+﻿# 005 Add CLI Status Command
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -53,7 +53,7 @@ Expected human-readable output may be simple:
 ```text
 Submission: sub_1234
 Workflow: annual-report
-Status: running
+Status: Complete
 Known work items: 47
 Queued: 20
 Running: 4
@@ -131,3 +131,4 @@ Do not read unrelated files unless test failures directly require them.
 - Do not add a separate `wait` command in this slice.
 - Do not implement continuous display.
 - This slice makes status lookup usable before adding wait or JSON output.
+

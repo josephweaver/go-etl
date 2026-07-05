@@ -1,6 +1,6 @@
-# 004 Add Submission Status API
+﻿# 004 Add Submission Status API
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -160,3 +160,4 @@ Do not read unrelated files unless test failures directly require them.
 - `skipped` may be zero until skipped work is represented in the same status data source.
 - Do not expose internal table names, row IDs unrelated to the public submission ID, or local filesystem paths.
 - This endpoint should be stable enough for CLI and SDK wrappers but does not need final hierarchical observability.
+

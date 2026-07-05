@@ -1,6 +1,6 @@
-# 003 Return Submission Acknowledgement
+﻿# 003 Return Submission Acknowledgement
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -151,3 +151,4 @@ Do not read unrelated files unless test failures directly require them.
 - Do not attempt to compute the final number of work items for workflows that may expand dynamically during future dependency-aware execution.
 - `initial_work_item_count` is an admission fact, not a promise that the final workflow will never create more work.
 - A later status endpoint will report `known_work_items` for the current status view.
+
