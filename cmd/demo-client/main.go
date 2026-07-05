@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,31 +21,60 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-	if command.Kind != commandDemo {
+
+	if err := executeCommand(command, nil); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return
+	}
+}
+
+func executeCommand(command cliCommand, httpClient *http.Client) error {
+	if command.Kind == commandSubmit {
+		return submitCommand(command, httpClient)
+	}
+	if command.Kind != commandDemo {
+		return nil
 	}
 
 	resolver, err := demoResolver()
 	if err != nil {
-		fmt.Println("invalid demo variables:", err)
-		return
+		return fmt.Errorf("invalid demo variables: %w", err)
 	}
 
 	starter := client.NewLocalControllerStarter(resolver)
-	controllerClient := client.NewControllerClientWithStarter(nil, resolver, starter)
+	controllerClient := client.NewControllerClientWithStarter(httpClient, resolver, starter)
 
 	if err := controllerClient.SubmitWorkflowRunFile(command.WorkflowRunPath); err != nil {
-		fmt.Println("submit workflow:", err)
-		return
+		return fmt.Errorf("submit workflow: %w", err)
 	}
 
 	status, err := controllerClient.ShutdownWhenIdle(60)
 	if err != nil {
-		fmt.Println("wait for shutdown:", err)
-		return
+		return fmt.Errorf("wait for shutdown: %w", err)
 	}
 
 	fmt.Println(formatFinalStatus(status))
+	return nil
+}
+
+func submitCommand(command cliCommand, httpClient *http.Client) error {
+	inputs, err := client.LoadCLIInputs(client.CLIInputPaths{
+		ControllerPath: command.ControllerPath,
+		ControllerURL:  command.ControllerURL,
+		ProjectPath:    command.ProjectPath,
+		WorkflowPath:   command.WorkflowPath,
+	})
+	if err != nil {
+		return fmt.Errorf("goet submit: %w", err)
+	}
+
+	controllerClient := client.NewControllerClientWithStarter(httpClient, inputs.Resolver, inputs.Starter)
+	if err := controllerClient.SubmitWorkflow(inputs.Submission); err != nil {
+		return fmt.Errorf("goet submit: %w", err)
+	}
+
+	fmt.Println("workflow submitted")
+	return nil
 }
 
 type commandKind string

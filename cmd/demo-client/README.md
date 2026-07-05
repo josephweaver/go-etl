@@ -2,19 +2,20 @@
 
 This directory owns the local demo client executable.
 
-The demo client is a runnable example of the current local workflow path. It builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow-run source-reference file, waits for the controller to become idle, asks for shutdown, and prints the final status.
+The demo client is a runnable example of the current local workflow path and the first home of the command-shaped `goet` CLI contract. The zero-argument compatibility path builds a small typed-variable resolver, starts or contacts the local controller through `internal/client`, submits a workflow-run source-reference file, waits for the controller to become idle, asks for shutdown, and prints the final status. The `submit` command reads explicit controller/project/workflow JSON paths through `internal/client` and posts the loaded workflow through the current controller workflow endpoint.
 
 It is not the reusable Python-facing API, the controller, the worker, the workflow compiler, or the variable system. It wires existing package boundaries together for a local demonstration.
 
 ## Files
 
-- `main.go` owns the demo executable entry point, demo runtime variables, workflow-run submission file selection, final status formatting, and local client wiring.
+- `main.go` owns the demo executable entry point, `submit`/`status` parsing, submit command wiring, demo runtime variables, workflow-run submission file selection, final status formatting, and local client wiring.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
 ## Owned Concepts
 
 - Local demo execution path.
+- Initial `goet submit` command wiring.
 - Demo defaults for controller contact and startup.
 - Demo workflow-run source-reference file selection.
 - Final local status display.

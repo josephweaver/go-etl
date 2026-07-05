@@ -80,13 +80,21 @@ phases for environment management, execution observability, submission CLI
 status, dependency-aware workflows, resource constraints, and Python SDK/client
 behavior.
 
-The first `submission-cli-status` implementation slice has started in
-`cmd/demo-client`. The executable now parses the public command shapes
-`goet submit` and `goet status`, validates the first submission/status flags,
-rejects `--watch`, and keeps the zero-argument local demo path usable. These
-commands do not yet load CLI JSON inputs, submit through the new public shape,
-return submission acknowledgements, call a submission status endpoint, wait, or
-emit final JSON output.
+The first `submission-cli-status` implementation slices have started in
+`cmd/demo-client` and `internal/client`. The executable now parses the public
+command shapes `goet submit` and `goet status`, validates the first
+submission/status flags, rejects `--watch`, and keeps the zero-argument local
+demo path usable. `goet submit` now reads explicit controller, project, and
+workflow JSON paths. `internal/client.LoadCLIInputs` validates controller JSON
+syntax, preserves a supplied controller config path for local startup with
+`go run ./cmd/controller --config <path>`, defaults local controller contact to
+`http://localhost:8080`, converts project top-level JSON fields into
+`project_config` variables, and loads the existing wrapped workflow submission
+shape. The command posts that loaded workflow through the current
+`POST /workflow` client path, which still treats `204 No Content` as success and
+prints a simple human-readable success message. The commands do not yet return
+submission acknowledgements, call a submission status endpoint, wait, or emit
+final JSON output.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles

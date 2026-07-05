@@ -1,6 +1,6 @@
 # 001 CLI Client Contract
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

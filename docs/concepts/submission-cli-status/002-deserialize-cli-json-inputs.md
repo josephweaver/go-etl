@@ -1,6 +1,6 @@
 # 002 Deserialize CLI JSON Inputs
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

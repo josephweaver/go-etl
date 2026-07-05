@@ -1,11 +1,17 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"goetl/internal/client"
 	"goetl/internal/model"
+	"goetl/internal/variable"
 )
 
 func TestDemoWorkflowRunPath(t *testing.T) {
@@ -124,6 +130,66 @@ func TestParseSubmitCommandValidation(t *testing.T) {
 	}
 }
 
+func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
+	var received client.WorkflowSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method = %s, want POST", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode workflow submission: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	projectPath := writeMainTestFile(t, dir, "project.json", `{"id":"go-etl-demo"}`)
+	workflowPath := writeMainTestFile(t, dir, "workflow.json", `{
+		"workflow": {
+			"ID": "cdl-demo",
+			"Variables": [
+				{"name":{"namespace":"workflow","key":"years"},"type":"list","expression":[{"type":"int","expression":2026}]}
+			],
+			"Steps": []
+		},
+		"source_manifest": {},
+		"variables": [
+			{"name":{"namespace":"override","key":"code_version"},"type":"string","expression":"test-version"}
+		]
+	}`)
+
+	err := executeCommand(cliCommand{
+		Kind:          commandSubmit,
+		ControllerURL: server.URL,
+		ProjectPath:   projectPath,
+		WorkflowPath:  workflowPath,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("executeCommand() error = %v", err)
+	}
+
+	if received.Workflow.ID != "cdl-demo" {
+		t.Fatalf("received workflow ID = %q, want cdl-demo", received.Workflow.ID)
+	}
+	if len(received.Workflow.Variables) != 1 {
+		t.Fatalf("workflow variable count = %d, want 1", len(received.Workflow.Variables))
+	}
+	if len(received.Variables) != 2 {
+		t.Fatalf("submission variable count = %d, want 2", len(received.Variables))
+	}
+	if received.Variables[0].Name != (variable.Name{Namespace: variable.NamespaceProjectConfig, Key: "id"}) {
+		t.Fatalf("first submission variable = %+v, want project_config.id", received.Variables[0].Name)
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	tests := []struct {
 		name string
@@ -224,4 +290,14 @@ func TestFormatFinalStatusIncludesReuseCandidates(t *testing.T) {
 	if got != want {
 		t.Fatalf("formatFinalStatus() = %q, want %q", got, want)
 	}
+}
+
+func writeMainTestFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", name, err)
+	}
+	return path
 }
