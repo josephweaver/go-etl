@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"goetl/internal/client"
 	"goetl/internal/model"
@@ -11,6 +15,15 @@ import (
 )
 
 func main() {
+	command, err := parseCommand(os.Args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	if command.Kind != commandDemo {
+		return
+	}
+
 	resolver, err := demoResolver()
 	if err != nil {
 		fmt.Println("invalid demo variables:", err)
@@ -20,7 +33,7 @@ func main() {
 	starter := client.NewLocalControllerStarter(resolver)
 	controllerClient := client.NewControllerClientWithStarter(nil, resolver, starter)
 
-	if err := controllerClient.SubmitWorkflowRunFile(demoWorkflowRunPath(os.Args)); err != nil {
+	if err := controllerClient.SubmitWorkflowRunFile(command.WorkflowRunPath); err != nil {
 		fmt.Println("submit workflow:", err)
 		return
 	}
@@ -32,6 +45,139 @@ func main() {
 	}
 
 	fmt.Println(formatFinalStatus(status))
+}
+
+type commandKind string
+
+const (
+	commandDemo   commandKind = "demo"
+	commandSubmit commandKind = "submit"
+	commandStatus commandKind = "status"
+)
+
+const defaultControllerURL = "http://localhost:8080"
+
+type cliCommand struct {
+	Kind            commandKind
+	WorkflowRunPath string
+	ControllerPath  string
+	ControllerURL   string
+	ProjectPath     string
+	WorkflowPath    string
+	SubmissionID    string
+	Wait            bool
+	JSON            bool
+}
+
+func parseCommand(args []string) (cliCommand, error) {
+	if len(args) <= 1 {
+		return cliCommand{
+			Kind:            commandDemo,
+			WorkflowRunPath: demoWorkflowRunPath(args),
+		}, nil
+	}
+
+	switch args[1] {
+	case "submit":
+		return parseSubmitCommand(args[2:])
+	case "status":
+		return parseStatusCommand(args[2:])
+	default:
+		return cliCommand{}, fmt.Errorf("unknown goet command %q; expected submit or status", args[1])
+	}
+}
+
+func parseSubmitCommand(args []string) (cliCommand, error) {
+	flags := flag.NewFlagSet("goet submit", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	command := cliCommand{Kind: commandSubmit}
+	flags.StringVar(&command.ControllerPath, "controller", "", "controller configuration path")
+	flags.StringVar(&command.ControllerURL, "controller-url", "", "controller URL")
+	flags.StringVar(&command.ProjectPath, "project", "", "project configuration path")
+	flags.StringVar(&command.WorkflowPath, "workflow", "", "workflow configuration path")
+	flags.BoolVar(&command.Wait, "wait", false, "wait for completion")
+	flags.BoolVar(&command.JSON, "json", false, "write JSON output")
+
+	if err := flags.Parse(args); err != nil {
+		return cliCommand{}, fmt.Errorf("goet submit: %w", err)
+	}
+	if flags.NArg() > 0 {
+		return cliCommand{}, fmt.Errorf("goet submit: unexpected positional argument %q", flags.Arg(0))
+	}
+	if err := validateSubmitCommand(command); err != nil {
+		return cliCommand{}, err
+	}
+
+	return command, nil
+}
+
+func validateSubmitCommand(command cliCommand) error {
+	if command.ControllerPath == "" && command.ControllerURL == "" {
+		return errors.New("goet submit: exactly one of --controller or --controller-url is required")
+	}
+	if command.ControllerPath != "" && command.ControllerURL != "" {
+		return errors.New("goet submit: --controller and --controller-url cannot both be supplied")
+	}
+	if command.ProjectPath == "" {
+		return errors.New("goet submit: --project is required")
+	}
+	if command.WorkflowPath == "" {
+		return errors.New("goet submit: --workflow is required")
+	}
+
+	return nil
+}
+
+func parseStatusCommand(args []string) (cliCommand, error) {
+	flags := flag.NewFlagSet("goet status", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	command := cliCommand{
+		Kind:          commandStatus,
+		ControllerURL: defaultControllerURL,
+	}
+	flags.StringVar(&command.ControllerURL, "controller-url", defaultControllerURL, "controller URL")
+	flags.BoolVar(&command.JSON, "json", false, "write JSON output")
+
+	flagArgs, positionals := splitFlagArgs(args)
+	if err := flags.Parse(flagArgs); err != nil {
+		return cliCommand{}, fmt.Errorf("goet status: %w", err)
+	}
+	if len(positionals) == 0 {
+		return cliCommand{}, errors.New("goet status: submission_id is required")
+	}
+	if len(positionals) > 1 {
+		return cliCommand{}, fmt.Errorf("goet status: unexpected positional argument %q", positionals[1])
+	}
+
+	command.SubmissionID = positionals[0]
+	return command, nil
+}
+
+func splitFlagArgs(args []string) ([]string, []string) {
+	var flagArgs []string
+	var positionals []string
+
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--controller-url" || strings.HasPrefix(arg, "--controller-url=") {
+			flagArgs = append(flagArgs, arg)
+			if arg == "--controller-url" && index+1 < len(args) {
+				index++
+				flagArgs = append(flagArgs, args[index])
+			}
+			continue
+		}
+		if arg == "--json" || strings.HasPrefix(arg, "--json=") || arg == "--watch" || strings.HasPrefix(arg, "--watch=") {
+			flagArgs = append(flagArgs, arg)
+			continue
+		}
+
+		positionals = append(positionals, arg)
+	}
+
+	return flagArgs, positionals
 }
 
 func formatFinalStatus(status model.ControllerStatus) string {

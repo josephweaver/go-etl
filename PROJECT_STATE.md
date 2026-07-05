@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 ## Current Focus
 
@@ -79,6 +79,14 @@ Later Python work remains intentionally deferred to separate concepts or later
 phases for environment management, execution observability, submission CLI
 status, dependency-aware workflows, resource constraints, and Python SDK/client
 behavior.
+
+The first `submission-cli-status` implementation slice has started in
+`cmd/demo-client`. The executable now parses the public command shapes
+`goet submit` and `goet status`, validates the first submission/status flags,
+rejects `--watch`, and keeps the zero-argument local demo path usable. These
+commands do not yet load CLI JSON inputs, submit through the new public shape,
+return submission acknowledgements, call a submission status endpoint, wait, or
+emit final JSON output.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
