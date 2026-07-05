@@ -53,6 +53,9 @@ type Controller struct {
 	recoveryStartedAt   time.Time
 	normalAdmission     bool
 	maxRequestBytes     int
+	logRootPath         string
+	logReadDefaultTail  int
+	logReadMaxTail      int
 }
 
 type WorkflowSubmission struct {
@@ -319,6 +322,9 @@ func buildControllerServer(
 		MaxHeaderBytes:    httpSettings.MaxHeaderBytes,
 	}
 	controller.shutdown = server.Shutdown
+	controller.logRootPath = policy.LogRootPath
+	controller.logReadDefaultTail = policy.LogReadDefaultTailLines
+	controller.logReadMaxTail = policy.LogReadMaxTailLines
 
 	registerControllerRoutes(mux, controller)
 
@@ -339,11 +345,23 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
-	mux.HandleFunc("/submissions/", controller.submissionStatusHandler)
+	mux.HandleFunc("/submissions/", controller.submissionHandler)
 	mux.HandleFunc("/work", controller.submitWorkHandler)
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
 	mux.HandleFunc("/observations/logs", controller.logObservationsHandler)
+}
+
+func (c *Controller) submissionHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := strings.CutSuffix(r.URL.Path, "/status"); ok {
+		c.submissionStatusHandler(w, r)
+		return
+	}
+	if _, ok := strings.CutSuffix(r.URL.Path, "/logs"); ok {
+		c.submissionLogsHandler(w, r)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
@@ -2127,8 +2145,15 @@ func submissionStatusName(queued int, running int, completed int, failed int) st
 }
 
 func submissionIDFromStatusPath(path string) (string, bool) {
+	return submissionIDFromSubmissionPath(path, "/status")
+}
+
+func submissionIDFromLogsPath(path string) (string, bool) {
+	return submissionIDFromSubmissionPath(path, "/logs")
+}
+
+func submissionIDFromSubmissionPath(path string, suffix string) (string, bool) {
 	const prefix = "/submissions/"
-	const suffix = "/status"
 
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return "", false

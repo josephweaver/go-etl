@@ -4,7 +4,7 @@ Last updated: 2026-07-05
 
 ## Current Focus
 
-Operational observability slice 002 (`002-log-configuration`) is implemented: controller startup now resolves `controller_log_read_default_tail_lines` and `controller_log_read_max_tail_lines` defaults with validated bounds and allowed log levels.
+Operational observability slice 009 (`009-submission-log-read-api`) is now implemented: controller now exposes `GET /submissions/{submission_id}/logs` with bounded reads, optional level/stream/attempt filtering, known-submission validation, and bounded, deterministic tail metadata.
 
 Operational observability slice 003 (`003-controller-logging-endpoint`) is now implemented: controller now registers `POST /observations/logs` with bounded request-size handling, JSON decode/validation behavior, and a success response that does not mutate queue/work state.
 
