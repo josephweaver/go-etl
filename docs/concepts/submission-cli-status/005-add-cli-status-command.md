@@ -1,6 +1,6 @@
 # 005 Add CLI Status Command
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
@@ -9,6 +9,9 @@ Implement `goet status <submission_id>` in `cmd/demo-client`.
 This slice connects the CLI to the submission-scoped controller endpoint added in slice 004 and prints a simple human-readable status summary.
 
 ## Current State
+
+This slice is implemented in `cmd/demo-client/main.go` and
+`internal/client/controller_client.go`.
 
 Before this slice:
 

@@ -32,6 +32,9 @@ func executeCommand(command cliCommand, httpClient *http.Client) error {
 	if command.Kind == commandSubmit {
 		return submitCommand(command, httpClient)
 	}
+	if command.Kind == commandStatus {
+		return statusCommand(command, httpClient)
+	}
 	if command.Kind != commandDemo {
 		return nil
 	}
@@ -75,6 +78,22 @@ func submitCommand(command cliCommand, httpClient *http.Client) error {
 	}
 
 	fmt.Println(formatSubmissionAcknowledgement(acknowledgement))
+	return nil
+}
+
+func statusCommand(command cliCommand, httpClient *http.Client) error {
+	resolver, err := statusResolver(command.ControllerURL)
+	if err != nil {
+		return fmt.Errorf("goet status: %w", err)
+	}
+
+	controllerClient := client.NewControllerClient(httpClient, resolver)
+	status, err := controllerClient.SubmissionStatus(command.SubmissionID)
+	if err != nil {
+		return fmt.Errorf("goet status: %w", err)
+	}
+
+	fmt.Println(formatSubmissionStatus(status))
 	return nil
 }
 
@@ -230,6 +249,21 @@ func formatSubmissionAcknowledgement(acknowledgement model.SubmissionAcknowledge
 	)
 }
 
+func formatSubmissionStatus(status model.SubmissionStatus) string {
+	return fmt.Sprintf(
+		"Submission: %s\nWorkflow: %s\nStatus: %s\nKnown work items: %d\nQueued: %d\nRunning: %d\nCompleted: %d\nFailed: %d\nSkipped: %d",
+		status.SubmissionID,
+		status.WorkflowID,
+		status.Status,
+		status.KnownWorkItems,
+		status.Queued,
+		status.Running,
+		status.Completed,
+		status.Failed,
+		status.Skipped,
+	)
+}
+
 func demoWorkflowRunPath(args []string) string {
 	if len(args) > 1 {
 		return args[1]
@@ -254,6 +288,17 @@ func demoResolver() (variable.Resolver, error) {
 		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "controller-start.lock"}},
 
 		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "1s"}},
+	)
+	if err != nil {
+		return variable.Resolver{}, err
+	}
+
+	return variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{}), nil
+}
+
+func statusResolver(controllerURL string) (variable.Resolver, error) {
+	scope, err := variable.NewScope(
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: controllerURL}},
 	)
 	if err != nil {
 		return variable.Resolver{}, err

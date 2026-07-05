@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -197,6 +198,83 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	}
 }
 
+func TestExecuteStatusCommandPrintsSubmissionStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			if r.Method != http.MethodGet {
+				t.Fatalf("method = %s, want GET", r.Method)
+			}
+			if err := json.NewEncoder(w).Encode(model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				Status:         "running",
+				KnownWorkItems: 47,
+				Queued:         20,
+				Running:        4,
+				Completed:      23,
+				Failed:         0,
+				Skipped:        0,
+			}); err != nil {
+				t.Fatalf("encode submission status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureMainTestOutput(t, func() {
+		err := executeCommand(cliCommand{
+			Kind:          commandStatus,
+			ControllerURL: server.URL,
+			SubmissionID:  "sub_1234",
+		}, server.Client())
+		if err != nil {
+			t.Fatalf("executeCommand() error = %v", err)
+		}
+	})
+
+	want := strings.Join([]string{
+		"Submission: sub_1234",
+		"Workflow: annual-report",
+		"Status: running",
+		"Known work items: 47",
+		"Queued: 20",
+		"Running: 4",
+		"Completed: 23",
+		"Failed: 0",
+		"Skipped: 0",
+	}, "\n")
+	if got := strings.TrimSpace(output); got != want {
+		t.Fatalf("status output = %q, want %q", got, want)
+	}
+}
+
+func TestExecuteStatusCommandReturnsUsefulErrorForUnknownSubmission(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/missing-submission/status":
+			http.Error(w, "submission not found", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := executeCommand(cliCommand{
+		Kind:          commandStatus,
+		ControllerURL: server.URL,
+		SubmissionID:  "missing-submission",
+	}, server.Client())
+	if err == nil {
+		t.Fatal("executeCommand() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), `submission "missing-submission" not found`) {
+		t.Fatalf("executeCommand() error = %q, want unknown submission message", err.Error())
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	tests := []struct {
 		name string
@@ -309,6 +387,58 @@ func TestFormatSubmissionAcknowledgement(t *testing.T) {
 	if got != want {
 		t.Fatalf("formatSubmissionAcknowledgement() = %q, want %q", got, want)
 	}
+}
+
+func TestFormatSubmissionStatus(t *testing.T) {
+	got := formatSubmissionStatus(model.SubmissionStatus{
+		SubmissionID:   "sub_1234",
+		WorkflowID:     "annual-report",
+		Status:         "running",
+		KnownWorkItems: 47,
+		Queued:         20,
+		Running:        4,
+		Completed:      23,
+		Failed:         0,
+		Skipped:        0,
+	})
+	want := strings.Join([]string{
+		"Submission: sub_1234",
+		"Workflow: annual-report",
+		"Status: running",
+		"Known work items: 47",
+		"Queued: 20",
+		"Running: 4",
+		"Completed: 23",
+		"Failed: 0",
+		"Skipped: 0",
+	}, "\n")
+	if got != want {
+		t.Fatalf("formatSubmissionStatus() = %q, want %q", got, want)
+	}
+}
+
+func captureMainTestOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	originalStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = writer
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdout pipe writer: %v", err)
+	}
+	os.Stdout = originalStdout
+
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read stdout pipe: %v", err)
+	}
+	return string(output)
 }
 
 func writeMainTestFile(t *testing.T, dir, name, content string) string {

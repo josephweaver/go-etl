@@ -96,8 +96,9 @@ Accepted` with a structured submission acknowledgement containing
 `submission_id`, `workflow_id`, and `initial_work_item_count`. The current
 `submission_id` is backed by the controller's persisted workflow-run ID. The
 default `goet submit` output prints those three acknowledgement facts in a
-human-readable form. The commands do not yet call a submission status endpoint,
-wait, or emit final JSON output.
+human-readable form. `goet status <submission_id>` now calls the submission-
+scoped controller status endpoint and prints a human-readable summary. `goet
+submit` still does not wait or emit final JSON output.
 The controller now also exposes `GET /submissions/{submission_id}/status`
 with a shared submission status response in `internal/model` that reports the
 submission's run-scoped work counts and controller-derived execution state.

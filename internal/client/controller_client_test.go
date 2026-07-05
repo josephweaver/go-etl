@@ -2,10 +2,12 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
@@ -113,6 +115,84 @@ func TestControllerClientSubmitWorkflowAcknowledgement(t *testing.T) {
 	}
 	if acknowledgement.InitialWorkItemCount != 2 {
 		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
+	}
+}
+
+func TestControllerClientSubmissionStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected method: %s", r.Method)
+			}
+			if err := json.NewEncoder(w).Encode(model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				Status:         "running",
+				KnownWorkItems: 47,
+				Queued:         20,
+				Running:        4,
+				Completed:      23,
+				Failed:         0,
+				Skipped:        0,
+			}); err != nil {
+				t.Fatalf("encode status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	status, err := client.SubmissionStatus("sub_1234")
+	if err != nil {
+		t.Fatalf("SubmissionStatus() error = %v", err)
+	}
+
+	if status.SubmissionID != "sub_1234" {
+		t.Fatalf("submission id = %q, want sub_1234", status.SubmissionID)
+	}
+	if status.WorkflowID != "annual-report" {
+		t.Fatalf("workflow id = %q, want annual-report", status.WorkflowID)
+	}
+	if status.Running != 4 || status.Queued != 20 || status.Completed != 23 {
+		t.Fatalf("unexpected status counts: %+v", status)
+	}
+}
+
+func TestControllerClientSubmissionStatusReturnsUsefulErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/missing-submission/status":
+			http.Error(w, "submission not found", http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	_, err := client.SubmissionStatus("missing-submission")
+	if err == nil {
+		t.Fatal("SubmissionStatus() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), `submission "missing-submission" not found`) {
+		t.Fatalf("SubmissionStatus() error = %q, want unknown submission message", err.Error())
+	}
+
+	failingClient := NewControllerClient(&http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("controller unavailable")
+		}),
+	}, testResolver(t, server.URL))
+
+	_, err = failingClient.SubmissionStatus("sub_1234")
+	if err == nil {
+		t.Fatal("SubmissionStatus() transport error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "controller unavailable") {
+		t.Fatalf("SubmissionStatus() transport error = %q, want wrapped transport message", err.Error())
 	}
 }
 
@@ -631,4 +711,10 @@ func testResolverWithVariables(t *testing.T, variables ...variable.Variable) var
 	}
 
 	return variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }
