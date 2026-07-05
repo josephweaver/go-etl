@@ -1,6 +1,6 @@
-# Python WorkItem End-to-End Smoke Path
+﻿# Python WorkItem End-to-End Smoke Path
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -150,3 +150,4 @@ This slice is a smoke/runbook slice. It should validate behavior by running comm
 - If `python3` is not available, skip only Python compile/execution validation and report that clearly.
 - If the controller or worker command-line shape differs from the assumptions above, follow the code and document the exact commands that work.
 - If a future workflow needs broader submission ergonomics, record that as a reason to advance the Submission CLI Status Strategic Concept.
+

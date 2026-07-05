@@ -1,6 +1,6 @@
-# 003 Worker Source Bundle Client and Staging
+﻿# 003 Worker Source Bundle Client and Staging
 
-Status: complete
+Status: Complete
 
 Implementation note: `cmd/worker/source_bundle.go` now stages source bundles safely for attempt-local execution, with focused tests in `cmd/worker/source_bundle_test.go`.
 
@@ -136,3 +136,4 @@ Do not read controller, repository-source internals, scheduler, transport, or cl
 - Do not let the worker read or interpret controller repository cache paths.
 - Use the attempt ID from the work item when present. If no attempt ID exists, follow the worker's existing attempt-ID convention or fail clearly; do not invent a conflicting attempt identity policy.
 - Do not delete staging directories automatically in this slice. Later cleanup can be explicit.
+

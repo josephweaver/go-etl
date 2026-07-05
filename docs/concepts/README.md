@@ -27,13 +27,13 @@ Strategic Concept status and planning structure used by the proposed concepts
 above.
 
 - [Logging Framework](logging/README.md) - Sketches hierarchical logging from clients, controllers, workers, and worker subprocesses.
-- [Python WorkItem](python-workitem/README.md) - Phase 1 implemented for admitted-source system-Python execution; later environment, SDK, and observability work remains open.
 
 ## Completed Strategic Concepts
 
 - [Controller Startup Resolution](complete/controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
+- [Python WorkItem](complete/python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
 
 ## Planning Guides
 

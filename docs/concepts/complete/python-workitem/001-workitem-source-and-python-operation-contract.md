@@ -1,6 +1,6 @@
-# 001 WorkItem Source and Python Operation Contract
+﻿# 001 WorkItem Source and Python Operation Contract
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -123,3 +123,4 @@ Do not read unrelated controller, worker, scheduler, transport, or repository-so
 - `manifest_path` should identify the admitted source manifest or manifest reference known to the controller. Do not make the worker interpret controller cache filesystem paths.
 - Keep validation structural. Do not validate whether the run ID or manifest exists in this slice.
 - Update `PROJECT_STATE.md` only if this model change should be recorded as current implementation state. If no update is needed, the implementation report should say why.
+

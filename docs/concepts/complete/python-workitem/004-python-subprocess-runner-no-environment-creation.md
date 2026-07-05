@@ -1,6 +1,6 @@
-# 004 Python Subprocess Runner, No Environment Creation
+﻿# 004 Python Subprocess Runner, No Environment Creation
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -129,3 +129,4 @@ Do not read controller, scheduler, transport, repository-source internals, or cl
 - This slice should not decide final environment semantics. It only passes the optional environment file path through to the script.
 - Keep subprocess launch behavior boring and explicit. Do not use shell interpolation.
 - Use `exec.Command` with argument slices rather than constructing a shell command string.
+

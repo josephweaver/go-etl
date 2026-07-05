@@ -1,6 +1,6 @@
-# 007 Python Demo Project Fixture
+﻿# 007 Python Demo Project Fixture
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -139,3 +139,4 @@ None.
 - If the implementation cannot prove execution end-to-end because local controller/worker orchestration needs manual setup, the report should state the exact manual command sequence and which parts were tested.
 - Keep the fixture intentionally small. It should prove the Python WorkItem path, not demonstrate a realistic research pipeline yet.
 - Do not include secrets, credentials, hostnames, usernames, or private paths in the demo project.
+

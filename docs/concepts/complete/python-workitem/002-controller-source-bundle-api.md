@@ -1,6 +1,6 @@
-# 002 Controller Source Bundle API
+﻿# 002 Controller Source Bundle API
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -128,3 +128,4 @@ Do not read worker, scheduler, transport, SSH, Docker, or client setup files unl
 - If there is no clean persistence API for admitted source context, add the smallest necessary query/helper inside the allowed persistence files and test it narrowly.
 - The route name should be recorded in `PROJECT_STATE.md` if this slice lands.
 - Do not add `python_script` workflow compilation in this slice.
+

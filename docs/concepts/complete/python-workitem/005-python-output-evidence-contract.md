@@ -1,6 +1,6 @@
-# 005 Python Output Evidence Contract
+﻿# 005 Python Output Evidence Contract
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -139,3 +139,4 @@ Do not read scheduler, transport, repository-source internals, or client setup f
 - The first Python runner should not skip execution based on reuse candidates. It should still emit hashes so later reuse policies have evidence.
 - Hash inputs should include enough operation context to distinguish the Python runner contract from existing demo work.
 - Do not put stdout/stderr contents into `OutputJSON`; store hashes and log paths/evidence instead.
+

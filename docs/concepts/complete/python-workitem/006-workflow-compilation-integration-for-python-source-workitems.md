@@ -1,6 +1,6 @@
-# 006 Workflow Compilation Integration for Python Source WorkItems
+﻿# 006 Workflow Compilation Integration for Python Source WorkItems
 
-Status: complete
+Status: Complete
 
 ## Objective
 
@@ -145,3 +145,4 @@ Do not read worker subprocess code, scheduler, transport, SSH, Docker, or client
 - The controller should validate paths against admitted source facts, not against the live provider repository.
 - Do not let user-authored workflow JSON provide the source locator. The source locator is controller-generated.
 - If adding fixtures in `../go-etl-demo-project` is too broad for this slice, report that and leave demo fixture creation for slice 007.
+
