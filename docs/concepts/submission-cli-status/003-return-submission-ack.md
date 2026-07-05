@@ -1,87 +1,141 @@
 # 003 Return Submission Acknowledgement
 
-Status: Proposed
+Status: Ready
 
 ## Objective
 
-Extend the existing workflow submission path so that a successful workflow submission returns a structured submission acknowledgement.
+Extend successful workflow submission so the controller returns a structured submission acknowledgement.
 
-The current `POST /workflow` endpoint already accepts workflow submissions. This slice enhances that endpoint so the client receives a stable `submission_id` and enough information to identify and monitor the submitted workflow.
+The acknowledgement gives the user a stable `submission_id` and basic admission facts that future status, wait, JSON output, and Python/R wrappers can use.
 
-Any internal controller structures required to support this acknowledgement should be introduced as part of this slice.
+## Current State
+
+Before this slice:
+
+- The CLI can parse `goet submit` and load explicit controller/project/workflow JSON inputs.
+- `internal/client.ControllerClient` submits workflow payloads to `POST /workflow`.
+- The existing client submission path treats `204 No Content` as success.
+- `cmd/controller/main.go` accepts `POST /workflow`, compiles or admits workflow work, persists/queues generated work items, and currently has no public submission acknowledgement body.
+- There is no `submission_id` returned to the client.
+- There is no shared submission acknowledgement type in `internal/model`.
+
+## Target State
+
+A successful `POST /workflow` returns a structured acknowledgement body.
+
+Recommended HTTP status:
+
+```text
+202 Accepted
+```
+
+Recommended JSON shape:
+
+```json
+{
+  "submission_id": "sub_1234",
+  "workflow_id": "annual-report",
+  "initial_work_item_count": 47
+}
+```
+
+The acknowledgement fields mean:
+
+- `submission_id`: stable public identifier for the submitted workflow run.
+- `workflow_id`: the workflow definition ID accepted by the controller.
+- `initial_work_item_count`: number of work items created or queued during initial admission/compilation.
+
+The `submission_id` may be backed by the existing workflow-run ID for this phase if that is the narrowest controller-owned implementation. The public name remains `submission_id` so CLI and future SDKs do not expose internal persistence naming.
+
+The CLI should print a simple human-readable acknowledgement after successful `goet submit`, for example:
+
+```text
+Submission: sub_1234
+Workflow: annual-report
+Initial work items: 47
+```
+
+Existing internal client methods that return only `error` may remain for compatibility, but the client package should expose a submission method that returns the acknowledgement for CLI use.
+
+## Concept Decision
+
+This slice adds the first public Submission transport concept.
+
+Create or update `internal/model/submission.go` for submission acknowledgement types rather than placing submission concepts in `internal/model/work_item.go`. `WorkItem` and `Submission` are separate public model concepts.
+
+The controller remains the owner of the submitted workflow identity and initial work-item count. The CLI must not synthesize `submission_id` locally.
 
 ## Required Context
 
 Read these files first:
 
-* docs/concepts/submission-cli-status/README.md
-* docs/concepts/submission-cli-status/001-upgrade-demo-client-cli-arguments.md
-* docs/concepts/submission-cli-status/002-deserialize-cli-json-inputs.md
-* docs/CUSTOMER_API.md
-* cmd/controller/main.go
-* internal/client/local_controller.go
-* internal/workflow/workflow.go
-* internal/model/work_item.go
+- `docs/concepts/submission-cli-status/README.md`
+- `docs/concepts/submission-cli-status/001-cli-client-contract.md`
+- `docs/concepts/submission-cli-status/002-deserialize-cli-json-inputs.md`
+- `docs/CUSTOMER_API.md`
+- `docs/ARCHITECTURE_OVERVIEW.md`
+- `cmd/controller/README.md`
+- `cmd/controller/main.go`
+- `cmd/controller/main_test.go`
+- `cmd/demo-client/main.go`
+- `cmd/demo-client/main_test.go`
+- `internal/client/README.md`
+- `internal/client/controller_client.go`
+- `internal/client/controller_client_test.go`
+- `internal/model/work_item.go`
+- `internal/workflow/workflow.go`
 
 Do not read unrelated files unless test failures directly require them.
 
 ## Allowed Production Files
 
-* cmd/controller/main.go
-* internal/client/local_controller.go
-* internal/model/work_item.go
+- `cmd/controller/main.go`
+- `cmd/demo-client/main.go`
+- `internal/client/controller_client.go`
+- `internal/model/submission.go`
 
 ## Allowed Test Files
 
-* cmd/controller/main_test.go
-* internal/client/local_controller_test.go
-
-## Required Behavior
-
-Update the existing workflow submission path so that a successful submission returns a structured acknowledgement.
-
-The acknowledgement should include at least:
-
-* `submission_id`
-* `workflow_id`
-* number of work items initially queued
-
-The `submission_id` must be stable for the lifetime of the submission and will be used by future status APIs.
-
-The controller may introduce whatever internal submission tracking is required to support this behavior, provided orchestration ownership remains with the controller.
-
-The reported work-item count represents the work items created during the initial workflow compilation. It should not imply that the controller already knows the final number of work items that may exist after later workflow expansion.
+- `cmd/controller/main_test.go`
+- `cmd/demo-client/main_test.go`
+- `internal/client/controller_client_test.go`
+- `internal/model/submission_test.go`
 
 ## Out Of Scope
 
-* Implementing `goet status`.
-* Implementing submission progress reporting.
-* Implementing workflow or step status.
-* Implementing `--wait`.
-* Implementing `--watch`.
-* Persisting submissions to SQLite.
-* Durable queue redesign.
-* Retry behavior.
-* Artifact tracking.
-* Python or R SDKs.
-* Authentication or authorization.
-* Redesigning workflow compilation.
-* Changing worker execution behavior.
-* Changing scheduler behavior.
+- Implementing `GET /submissions/{submission_id}/status`.
+- Implementing `goet status` against the controller.
+- Implementing submission progress reporting.
+- Implementing workflow or step hierarchy in status.
+- Implementing `--wait` behavior.
+- Implementing `--json` output.
+- Implementing or accepting `--watch`.
+- Persisting a separate submissions table unless the existing workflow-run identity/state is insufficient.
+- Durable queue redesign.
+- Retry behavior.
+- Artifact tracking.
+- Authentication or authorization.
+- Redesigning workflow compilation.
+- Changing worker execution behavior.
+- Python or R SDKs.
 
 ## Acceptance Criteria
 
-* Successful workflow submission returns a structured acknowledgement.
-* The acknowledgement includes a stable `submission_id`.
-* The acknowledgement includes the submitted `workflow_id`.
-* The acknowledgement reports the number of work items created during the initial workflow compilation.
-* Existing workflow submission behavior continues to function.
-* Unit tests verify the acknowledgement response.
-* Any internal submission tracking introduced remains controller-owned and does not change existing orchestration responsibilities.
+- Successful workflow submission returns a structured acknowledgement body.
+- The acknowledgement includes a stable `submission_id`.
+- The acknowledgement includes the submitted `workflow_id`.
+- The acknowledgement includes the number of work items created or queued during initial admission/compilation.
+- The client package can return the acknowledgement to callers.
+- `goet submit` prints a human-readable acknowledgement by default.
+- Existing client tests are updated so intentional acknowledgement behavior is explicit.
+- Any compatibility method that discards the acknowledgement remains covered if retained.
+- Unit tests verify the controller acknowledgement response.
+- Unit tests verify client acknowledgement decoding.
+- Any internal submission tracking introduced remains controller-owned and does not change existing orchestration responsibilities.
 
 ## Notes
 
-* Reuse the existing `POST /workflow` endpoint rather than introducing a new submission endpoint.
-* The exact implementation of submission tracking is intentionally left to the implementation.
-* Do not attempt to compute the final number of work items for workflows that may expand dynamically during execution.
-* This slice establishes the public acknowledgement contract that later status slices will build upon.
+- Prefer using the existing workflow-run identity as the backing ID if that keeps this slice small and correct.
+- Do not attempt to compute the final number of work items for workflows that may expand dynamically during future dependency-aware execution.
+- `initial_work_item_count` is an admission fact, not a promise that the final workflow will never create more work.
+- A later status endpoint will report `known_work_items` for the current status view.
