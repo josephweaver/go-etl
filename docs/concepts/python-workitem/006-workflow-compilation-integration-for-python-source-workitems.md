@@ -1,6 +1,6 @@
 # 006 Workflow Compilation Integration for Python Source WorkItems
 
-Status: proposed
+Status: complete
 
 ## Objective
 
@@ -84,12 +84,20 @@ Do not read worker subprocess code, scheduler, transport, SSH, Docker, or client
 - `cmd/controller/python_workitem.go`
 - `cmd/controller/source_control.go`
 - `internal/reposource/source_declaration.go`
+- `internal/model/work_item.go`
+- `internal/workflow/fanout.go`
+- `internal/workflow/workflow.go`
+- `internal/workflow/step.go`
 
 ## Allowed Test Files
 
 - `cmd/controller/main_test.go`
 - `cmd/controller/python_workitem_test.go`
 - `internal/reposource/source_declaration_test.go`
+- `internal/model/work_item_test.go`
+- `internal/workflow/fanout_test.go`
+- `internal/workflow/workflow_test.go`
+- `internal/workflow/step_test.go`
 
 ## Allowed Fixture Files
 
@@ -132,6 +140,8 @@ Do not read worker subprocess code, scheduler, transport, SSH, Docker, or client
 ## Notes
 
 - This slice assumes slices 001 through 005 have landed, or at minimum that `model.WorkItem.Source` and `model.WorkItemTypePythonScript` exist.
+- Workflow compilation may emit a source-less `python_script` item only as an intermediate internal compile result. Controller admission must attach `WorkItem.Source` and use strict `model.WorkItem.Validate()` before queue insertion.
+- Completion note: controller admission now validates `python_entrypoint` / `python_environment` against admitted manifest roles, generates `WorkItem.Source` from the admitted run and manifest reference, and runs strict `model.WorkItem.Validate()` before persistence.
 - The controller should validate paths against admitted source facts, not against the live provider repository.
 - Do not let user-authored workflow JSON provide the source locator. The source locator is controller-generated.
 - If adding fixtures in `../go-etl-demo-project` is too broad for this slice, report that and leave demo fixture creation for slice 007.

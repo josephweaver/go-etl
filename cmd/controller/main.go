@@ -1266,6 +1266,10 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	if err != nil {
 		return err
 	}
+	compileResult, err = prepareCompiledWorkflowForAdmission(c.repoCacheLayout, manifest, compileResult)
+	if err != nil {
+		return err
+	}
 
 	runRecord, err := workflowRunRecordFromAdmittedManifest(runID, projectRecord.ID, workflowRecord.ID, manifest, submission.Variables, submittedAt, c.repoCacheLayout)
 	if err != nil {

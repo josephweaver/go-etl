@@ -125,6 +125,14 @@ func (source WorkItemSource) Validate() error {
 }
 
 func (item WorkItem) Validate() error {
+	return item.validate(false)
+}
+
+func (item WorkItem) ValidateForWorkflowCompile() error {
+	return item.validate(true)
+}
+
+func (item WorkItem) validate(allowMissingPythonSource bool) error {
 	if item.ID == "" {
 		return fmt.Errorf("work item id is required")
 	}
@@ -142,11 +150,13 @@ func (item WorkItem) Validate() error {
 	}
 
 	if item.Type == WorkItemTypePythonScript {
-		if item.Source == nil {
+		if item.Source == nil && !allowMissingPythonSource {
 			return fmt.Errorf("work item source is required for %s", item.Type)
 		}
-		if err := item.Source.Validate(); err != nil {
-			return err
+		if item.Source != nil {
+			if err := item.Source.Validate(); err != nil {
+				return err
+			}
 		}
 	}
 

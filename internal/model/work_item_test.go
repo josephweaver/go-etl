@@ -146,6 +146,88 @@ func TestWorkItemValidate(t *testing.T) {
 	}
 }
 
+func TestWorkItemValidateForWorkflowCompile(t *testing.T) {
+	tests := []struct {
+		name    string
+		item    WorkItem
+		wantErr bool
+	}{
+		{
+			name: "python script may omit source during workflow compile",
+			item: WorkItem{
+				ID:             "python-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.json",
+				Parameters: Parameters{
+					"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+				},
+			},
+		},
+		{
+			name: "missing id",
+			item: WorkItem{
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.json",
+				Parameters: Parameters{
+					"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing type",
+			item: WorkItem{
+				ID:             "python-001",
+				OutputFilename: "output.json",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing output filename",
+			item: WorkItem{
+				ID:   "python-001",
+				Type: WorkItemTypePythonScript,
+			},
+			wantErr: true,
+		},
+		{
+			name: "output filename contains directory",
+			item: WorkItem{
+				ID:             "python-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "outputs/output.json",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid parameters still fail",
+			item: WorkItem{
+				ID:             "python-001",
+				Type:           WorkItemTypePythonScript,
+				OutputFilename: "output.json",
+				Parameters: Parameters{
+					"python_entrypoint": {Value: "scripts/run.py"},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.item.ValidateForWorkflowCompile()
+
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkItemSourceValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -209,9 +291,9 @@ func TestWorkItemSourceValidate(t *testing.T) {
 
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
-		ID:                   "work-item-001",
-		AttemptID:            "attempt-001",
-		Type:                 WorkItemTypeWriteDemoOutput,
+		ID:        "work-item-001",
+		AttemptID: "attempt-001",
+		Type:      WorkItemTypeWriteDemoOutput,
 		Source: &WorkItemSource{
 			Schema:       "goet/work-item-source/v1alpha1",
 			RunID:        "run-001",

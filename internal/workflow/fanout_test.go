@@ -284,6 +284,62 @@ func TestCompileFanOutWorkItemsRejectsInvalidTemplate(t *testing.T) {
 	}
 }
 
+func TestCompileFanOutWorkItemsAllowsPythonScriptWithoutSource(t *testing.T) {
+	scope, err := variable.NewScope(testIntListVariable("years", 2024))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	items, err := CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${years[*]}",
+		Type:             model.WorkItemTypePythonScript,
+		IDPrefix:         "python",
+		OutputPrefix:     "python",
+		OutputExtension:  ".json",
+		Parameters: model.Parameters{
+			"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("unexpected item count: %d", len(items))
+	}
+	if items[0].Source != nil {
+		t.Fatalf("compiled python source = %+v, want nil intermediate source", items[0].Source)
+	}
+	if err := items[0].Validate(); err == nil {
+		t.Fatal("strict validation unexpectedly accepted python_script without source")
+	}
+}
+
+func TestCompileFanOutWorkItemsStillRejectsPythonShapeErrors(t *testing.T) {
+	scope, err := variable.NewScope(testIntListVariable("years", 2024))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	_, err = CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${years[*]}",
+		Type:             model.WorkItemTypePythonScript,
+		IDPrefix:         "python",
+		OutputPrefix:     "python",
+		OutputExtension:  ".json",
+		Parameters: model.Parameters{
+			"python_entrypoint": {Value: "scripts/run.py"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func testIntListVariable(key string, values ...int) variable.Variable {
 	items := make([]variable.TypedExpression, 0, len(values))
 	for _, value := range values {
