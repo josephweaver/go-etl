@@ -1,62 +1,99 @@
 # 006 Worker Fallback Logging
 
-Status: proposed
+Status: Ready
 
 ## Objective
 
-Add worker-side fallback logging for emergency diagnostics when the Worker cannot reach the Controller logging endpoint. This slice provides a limited local fallback path without making workers the normal owner of GOET logs.
+Add worker-side fallback logging for emergency diagnostics when the worker cannot deliver a log observation to the controller.
+
+This slice provides a limited local fallback path without making workers the normal owner of GOET logs.
+
+## Current State
+
+Slice 004 added worker-side delivery of one `LogObservation` to the controller.
+
+If controller log delivery fails, the worker currently has no explicit emergency diagnostic path for the dropped observation. Existing worker local log directories may exist for runtime or attempt files, but they are not a structured fallback observation store.
+
+The controller must remain the authoritative normal log owner. Worker fallback files are only for controller separation, development debugging, and post-failure inspection.
+
+## Target State
+
+When controller log delivery fails, the worker can write a local fallback JSONL entry under its existing configured log directory.
+
+Expected behavior:
+
+- Fallback logging is attempted only after controller log delivery fails.
+- Fallback entries use the same structured `LogObservation` payload when possible.
+- The fallback path is stable and obvious, such as:
+
+  ```text
+  <worker_log_dir>/fallback-observations.jsonl
+  ```
+
+- Fallback write failure becomes a warning or returned logging error only.
+- Fallback write failure does not fail work execution.
+- Healthy controller-connected logging does not create fallback entries.
+
+## Concept Decision
+
+This slice updates the worker logging client concept and adds a small worker fallback file concept. A new fallback helper file is justified if it keeps local file append behavior separate from HTTP delivery.
+
+Reuse the worker's existing configured log directory if available. Do not add a second worker log-root configuration unless the existing configuration cannot safely represent fallback files.
 
 ## Required Context
 
 Read these files first:
 
-- docs/concepts/execution-observability/README.md
-- docs/concepts/execution-observability/001-logging-model.md
-- docs/concepts/execution-observability/002-log-configuration.md
-- docs/concepts/execution-observability/004-worker-logging-client.md
-- docs/ARCHITECTURE_OVERVIEW.md
-- cmd/worker/config.go
-- cmd/worker/config_test.go
-- cmd/worker/worker.go
-- cmd/worker/worker_test.go
-- internal/model/log_observation.go
+- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/execution-observability/001-logging-model.md`
+- `docs/concepts/execution-observability/004-worker-logging-client.md`
+- `docs/ARCHITECTURE_OVERVIEW.md`
+- `cmd/worker/README.md`
+- `cmd/worker/config.go`
+- `cmd/worker/config_test.go`
+- `cmd/worker/log_client.go`
+- `cmd/worker/log_client_test.go`
+- `internal/model/log_observation.go`
 
-Do not read unrelated files unless test failures directly require it.
+Do not read unrelated files unless test failures directly require them.
 
 ## Allowed Production Files
 
-- cmd/worker/config.go
-- cmd/worker/worker.go
+- `cmd/worker/config.go`
+- `cmd/worker/log_client.go`
+- `cmd/worker/fallback_log.go`
 
 ## Allowed Test Files
 
-- cmd/worker/config_test.go
-- cmd/worker/worker_test.go
+- `cmd/worker/config_test.go`
+- `cmd/worker/log_client_test.go`
+- `cmd/worker/fallback_log_test.go`
 
 ## Out Of Scope
 
-- Controller logging endpoint changes.
+- Controller endpoint changes.
 - Controller filesystem sink changes.
-- Subprocess stdout/stderr capture.
-- Python work item execution.
+- Python subprocess stdout/stderr emission.
+- Submission-log read endpoint.
+- CLI log command.
+- Reconciliation or upload of fallback logs into controller-owned logs.
 - Attempt Ledger changes.
 - Execution event generalization.
-- Reconciliation of fallback logs into Controller logs.
+- Metrics, tracing, or monitoring UI.
 
 ## Acceptance Criteria
 
-- Worker can be configured with a fallback log path or fallback log root.
-- When Controller log submission fails, Worker can write a fallback diagnostic log entry locally.
-- Fallback logging is used only when Controller logging is unavailable.
-- Fallback logging failure produces a warning/error value only and does not fail work execution.
-- Fallback log entries render from structured log observations using a simple stable format.
-- Tests cover fallback logging when Controller submission fails.
-- Tests cover fallback logging write failure without work-item failure.
-- Tests verify normal Controller-connected logging does not write fallback logs.
+- Worker fallback logging writes structured JSONL when controller log delivery fails.
+- Fallback logging uses the existing worker log directory or a clearly validated configured fallback path.
+- Fallback logging is not used when controller delivery succeeds.
+- Fallback logging write failure does not fail work execution.
+- Tests cover fallback write after controller delivery failure.
+- Tests cover no fallback write after successful controller delivery.
+- Tests cover fallback write failure as a non-work failure.
+- Fallback logs are documented in code/tests as emergency diagnostics, not authoritative GOET logs.
 
 ## Notes
 
-- Worker fallback logs are emergency diagnostics, not a second authoritative logging system.
-- During healthy execution, GOET-owned logs should stream to the Controller.
-- Logging is best-effort. Failed logging must never fail work execution.
-- Reconciliation or upload of fallback logs can be considered later but is not part of this slice.
+- Do not add retries in this slice unless they are already part of the worker HTTP helper pattern. A retry policy belongs to a separate reliability concept.
+- Do not make fallback logs visible through `goet logs`; that command must read controller-owned logs only.
+- Keep the fallback format structured JSONL so it can be inspected manually without inventing a different format.
