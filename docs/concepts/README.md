@@ -27,7 +27,7 @@ Strategic Concept status and planning structure used by the proposed concepts
 above.
 
 - [Logging Framework](logging/README.md) - Sketches hierarchical logging from clients, controllers, workers, and worker subprocesses.
-- [Python WorkItem](python-workitem/README.md) - Sketches a worker plugin for preparing an environment and executing generic Python scripts.
+- [Python WorkItem](python-workitem/README.md) - Phase 1 implemented for admitted-source system-Python execution; later environment, SDK, and observability work remains open.
 
 ## Completed Strategic Concepts
 

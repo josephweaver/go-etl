@@ -45,7 +45,21 @@ recomputes canonical JSON SHA-256, and compares those hashes with persisted
 project/workflow rows. GitHub-backed cache misses or corruptions are repaired by
 reading the recorded immutable revision and admitted source paths. Local-backed
 cache misses or corruptions fail recovery with a provenance error and do not
-reread local filesystem source files.
+reread local filesystem source files. The controller can now also serve a
+read-only source bundle for an admitted workflow run at
+`GET /workflow-runs/{run_id}/source-bundle.zip`. That endpoint reads the run's
+persisted source-admission context, reloads the admitted manifest from the
+controller-owned cache reference, and returns a zip containing only
+worker-stageable `source_manifest` files (`python_entrypoint`,
+`python_environment`, and `support_file`) using verified repository-cache reads.
+It does not reread provider source files or expose controller cache filesystem
+paths in the HTTP response. The bundle's `.goet/source-manifest.json` entry is
+now a worker-facing sanitized manifest that omits `CachePath` and other
+controller filesystem details.
+`internal/model/work_item.go` now also carries `WorkItemTypePythonScript = "python_script"` and the optional `WorkItem.Source` / `WorkItemSource` locator used for admitted Python execution. `WorkItem.Validate()` remains strict and still requires a source locator for `python_script` items in raw/controller-submitted and queued worker payloads. `WorkItem.ValidateForWorkflowCompile()` is now the narrow internal compile-time boundary used by `internal/workflow` so workflow compilation can emit a source-less `python_script` item only as an intermediate result before controller admission attaches `Source` and reruns strict validation. The worker now has a source-bundle staging helper that downloads `GET /workflow-runs/{run_id}/source-bundle.zip` and extracts safe entries into attempt-local `source/`, `work/`, and `logs/` directories under `TmpDir`.
+Source-reference workflow admission in `cmd/controller` now validates compiled `python_script` work items against admitted `source_manifest` facts before insertion. The controller requires `python_entrypoint`, optionally validates `python_environment`, checks both paths against admitted manifest roles instead of live provider state, replaces any would-be workflow-authored source locator with a controller-generated `WorkItem.Source`, and then reruns strict `WorkItem.Validate()` before persisting and queueing the work item payload.
+`cmd/worker` now also dispatches `python_script` items through a subprocess runner that stages admitted source first, requires `python_entrypoint`, optionally accepts `python_environment` and `python_args`, writes `work/input.json`, captures stdout and stderr under the attempt log directory, and promotes the script's `work/output.json` into the worker data directory. The runner defaults to `python3` when `Config.PythonExecutable` is unset.
+PW-005 is now complete: the Python runner decodes exactly one `GOET_OUTPUT_JSON` document, rejects invalid or trailing content, canonicalizes the logical output, promotes the canonical output into `DataDir/{output_filename}`, and returns wrapper evidence with top-level `input_sha256` / `output_sha256` plus optional stdout/stderr hashes.
 
 Client-facing demo project artifacts now live in the sibling `../go-etl-demo-project`
 repository. That repo owns source-control-style customer files such as
@@ -53,6 +67,40 @@ repository. That repo owns source-control-style customer files such as
 `submissions/`, and demo input data under `data/`. The reusable Go ETL repo keeps
 runtime code, tests, scripts, and low-level worker fixtures such as
 `demo-item.json`.
+
+The sibling demo repo now also includes a minimal `python-hello` fixture that
+proves the source-admission-to-Python-execution vertical slice with local source
+admission, a system-Python placeholder, and a small standard-library script.
+The first Python WorkItem phase is implemented end to end: shared
+`python_script` work-item validation, controller source-bundle delivery, worker
+staging, subprocess execution, canonical output promotion, workflow admission
+validation, the sibling demo fixture, and the repeatable local smoke path.
+Later Python work remains intentionally deferred to separate concepts or later
+phases for environment management, execution observability, submission CLI
+status, dependency-aware workflows, resource constraints, and Python SDK/client
+behavior.
+
+Operational Slice 008 records the repeatable local smoke path for that fixture.
+`scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
+`scripts/hello.py`, starts the controller from
+`cmd/controller/demo-config.json` with `--config`, waits for `/status`, submits
+`submissions/python-hello-local.json` with a `worker_max_count=0` override,
+starts the local worker explicitly with an absolute config path, and verifies
+the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json` plus
+the worker attempt logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
+The smoke path checks the controller on `http://127.0.0.1:8080`, which is the
+loopback bind observed during validation.
+It now resolves `python3` first and then `python`, and writes a temporary
+worker config with `python_executable` set explicitly for the smoke run.
+The validated smoke path expects a Windows Python interpreter; WSL Python is
+not used because the worker and its staged attempt paths are Windows-native.
+The smoke script now writes per-run controller logs under
+`.run/python-workitem-smoke/<run-id>/` to avoid reusing locked log files across
+retries.
+
+The worker container image under `containers/goetl-worker/Dockerfile` now also
+installs `python3` alongside `ca-certificates` so the packaged worker image can
+run the same system-Python contract used by the demo fixture.
 
 Epistemic-control process artifacts now live in sibling `../epistemic-control`.
 That folder owns the HCI/control-level notes, agent review instructions, and
@@ -269,6 +317,7 @@ POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
 POST /workflow       submit source references for project and workflow JSON
+GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
@@ -562,9 +611,12 @@ The local paths are relative to the directory where the worker is run.
 ```go
 type WorkItem struct {
 	ID                   string       `json:"id"`
+	AttemptID            string       `json:"attempt_id,omitempty"`
 	Type                 WorkItemType `json:"type"`
+	Source               *WorkItemSource `json:"source,omitempty"`
 	OutputFilename       string       `json:"output_filename"`
 	Parameters           Parameters   `json:"parameters,omitempty"`
+	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
 	WorkflowDefinitionID string       `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string       `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string       `json:"workflow_instance_id,omitempty"`
@@ -577,9 +629,27 @@ type WorkItem struct {
 	CodeVersion          string       `json:"code_version,omitempty"`
 }
 
+type WorkItemSource struct {
+	Schema       string `json:"schema,omitempty"`
+	RunID        string `json:"run_id"`
+	ManifestPath string `json:"manifest_path"`
+}
+
 type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
+	Skipped              bool       `json:"skipped,omitempty"`
+	SkippedParentID      string     `json:"skipped_parent_id,omitempty"`
+	SkipReason           string     `json:"skip_reason,omitempty"`
+	InputSHA256          string     `json:"input_sha256,omitempty"`
+	OutputSHA256         string     `json:"output_sha256,omitempty"`
+	PreStateSHA256       string     `json:"pre_state_sha256,omitempty"`
+	PostStateSHA256      string     `json:"post_state_sha256,omitempty"`
+	ControllerSHA256     string     `json:"controller_sha256,omitempty"`
+	PluginSHA256         string     `json:"plugin_sha256,omitempty"`
+	OutputJSON           string     `json:"output_json,omitempty"`
+	PreStateJSON         string     `json:"pre_state_json,omitempty"`
+	PostStateJSON        string     `json:"post_state_json,omitempty"`
 	WorkflowDefinitionID string     `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string     `json:"workflow_fingerprint,omitempty"`
 	WorkflowInstanceID   string     `json:"workflow_instance_id,omitempty"`
@@ -634,6 +704,7 @@ Workflow-generated assignments set `code_version` from the resolved variable `co
 - A non-empty type.
 - A non-empty output filename.
 - An output filename without directory components.
+- A valid `source` object for `python_script` work items.
 - Parameter names, types, and values when parameters are present.
 
 Operation support is separate from structural validity. The worker dispatcher rejects unsupported operation types.
@@ -1004,6 +1075,9 @@ Current coverage includes:
 - Worker failure reporting.
 - Controller assignment, completion, and failure endpoints.
 - Controller raw work submission and status endpoint behavior.
+- Controller source-bundle endpoint behavior for admitted Python source files,
+  including missing-run, missing-source-context, unsafe-path, and cache
+  miss/corruption errors.
 - Controller workflow submission into the pending queue.
 - Controller worker-start hook selection from submitted variables.
 - Controller local worker command resolution.

@@ -303,14 +303,7 @@ func buildControllerServer(
 	}
 	controller.shutdown = server.Shutdown
 
-	mux.HandleFunc("/work/next", controller.nextWorkHandler)
-	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
-	mux.HandleFunc("/work/fail", controller.failWorkHandler)
-	mux.HandleFunc("/healthz", controller.healthHandler)
-	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
-	mux.HandleFunc("/work", controller.submitWorkHandler)
-	mux.HandleFunc("/shutdown", controller.shutdownHandler)
-	mux.HandleFunc("/status", controller.statusHandler)
+	registerControllerRoutes(mux, controller)
 
 	return server, func() error {
 		if releaseDatabaseOwnership != nil {
@@ -320,6 +313,18 @@ func buildControllerServer(
 		}
 		return workflowStore.Close()
 	}, nil
+}
+
+func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
+	mux.HandleFunc("/work/next", controller.nextWorkHandler)
+	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
+	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/healthz", controller.healthHandler)
+	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
+	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
+	mux.HandleFunc("/work", controller.submitWorkHandler)
+	mux.HandleFunc("/shutdown", controller.shutdownHandler)
+	mux.HandleFunc("/status", controller.statusHandler)
 }
 
 func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
@@ -1258,6 +1263,10 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return err
 	}
 	compileResult, err := workflow.CompileWorkflowResult(resolver, workflowSubmission.Workflow)
+	if err != nil {
+		return err
+	}
+	compileResult, err = prepareCompiledWorkflowForAdmission(c.repoCacheLayout, manifest, compileResult)
 	if err != nil {
 		return err
 	}

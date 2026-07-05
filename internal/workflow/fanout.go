@@ -61,7 +61,7 @@ func CompileFanOutWorkItems(resolver variable.Resolver, template FanOutWorkItemT
 		if err := bindParameterAccessors(item.Parameters, value, template.ParameterAccessors); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
 		}
-		if err := item.Validate(); err != nil {
+		if err := item.ValidateForWorkflowCompile(); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
 		}
 

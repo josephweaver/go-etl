@@ -14,7 +14,8 @@ func TestLoadConfig(t *testing.T) {
 		"log_dir": "logs",
 		"tmp_dir": "tmp",
 		"data_dir": "data",
-		"controller_url": "https://controller.local"
+		"controller_url": "https://controller.local",
+		"python_executable": "python3"
 	}`)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
@@ -40,6 +41,10 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.ControllerURL != "https://controller.local" {
 		t.Fatalf("unexpected controller url: %q", config.ControllerURL)
+	}
+
+	if config.PythonExecutable != "python3" {
+		t.Fatalf("unexpected python executable: %q", config.PythonExecutable)
 	}
 }
 
