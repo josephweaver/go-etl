@@ -127,13 +127,15 @@ Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/hello.py`, starts the controller from
 `cmd/controller/demo-config.json` with `--config`, waits for `/status`, submits
 `submissions/python-hello-local.json` with a `worker_max_count=0` override,
-starts the local worker explicitly with an absolute config path, and verifies
-the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json` plus
-the worker attempt logs under `cmd/worker/.run/tmp/attempts/<attempt-id>/logs/`.
-The smoke path checks the controller on `http://127.0.0.1:8080`, which is the
-loopback bind observed during validation.
+starts the local worker explicitly with an absolute config path, verifies
+the promoted output JSON at `cmd/worker/.run/data/python-hello-hello.json`,
+verifies that `goet logs <submission_id>` returns controller-owned submission logs.
+The smoke path checks the controller on `http://localhost:8080`, matching the
+demo controller configuration.
 It now resolves `python3` first and then `python`, and writes a temporary
-worker config with `python_executable` set explicitly for the smoke run.
+worker config with `python_executable` set to a smoke-only wrapper that emits
+one stdout line and one stderr line before delegating to the selected Python
+interpreter.
 The validated smoke path expects a Windows Python interpreter; WSL Python is
 not used because the worker and its staged attempt paths are Windows-native.
 The smoke script now writes per-run controller logs under

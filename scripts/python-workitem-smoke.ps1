@@ -19,7 +19,7 @@ What it does:
   - starts the controller from cmd/controller/demo-config.json
   - submits the python-hello workflow submission
   - waits for the controller to become idle
-  - verifies the worker output file and attempt logs
+  - verifies the worker output file and controller logs by submission_id
   - shuts down the controller cleanly
 '@ | Write-Host
 }
@@ -84,12 +84,13 @@ function Invoke-CurlRequest {
     )
 
     $responsePath = [System.IO.Path]::GetTempFileName()
+    $headerPath = [System.IO.Path]::GetTempFileName()
     $bodyPath = $null
     try {
-        $curlArgs = @('-sS', '-X', $Method, '-o', $responsePath, '-w', '%{http_code}')
+        $curlArgs = @('-sS', '-D', $headerPath, '-X', $Method.ToUpperInvariant(), '-o', $responsePath, '-w', '%{http_code}')
         if ($null -ne $Body) {
             $bodyPath = [System.IO.Path]::GetTempFileName()
-            Set-Content -LiteralPath $bodyPath -Value $Body -NoNewline -Encoding utf8
+            [System.IO.File]::WriteAllText($bodyPath, $Body, [System.Text.UTF8Encoding]::new($false))
             $curlArgs += @('-H', 'Content-Type: application/json', '--data-binary', ('@' + $bodyPath))
         }
 
@@ -104,9 +105,23 @@ function Invoke-CurlRequest {
             $bodyText = Get-Content -Raw -LiteralPath $responsePath
         }
 
+        $headers = @{}
+        if (Test-Path -LiteralPath $headerPath -PathType Leaf) {
+            foreach ($line in Get-Content -LiteralPath $headerPath) {
+                if ($line -match '^\s*$' -or $line -like 'HTTP/*') {
+                    continue
+                }
+                $parts = $line -split ':\s*', 2
+                if ($parts.Count -eq 2) {
+                    $headers[$parts[0].ToLowerInvariant()] = $parts[1].Trim()
+                }
+            }
+        }
+
         return [pscustomobject]@{
             StatusCode = $statusCode
             Body       = $bodyText
+            Headers    = $headers
         }
     } finally {
         if ($bodyPath -and (Test-Path -LiteralPath $bodyPath)) {
@@ -115,7 +130,39 @@ function Invoke-CurlRequest {
         if (Test-Path -LiteralPath $responsePath) {
             Remove-Item -LiteralPath $responsePath -Force
         }
+        if (Test-Path -LiteralPath $headerPath) {
+            Remove-Item -LiteralPath $headerPath -Force
+        }
     }
+}
+
+function Parse-SubmissionId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Response
+    )
+
+    if (-not $Response) {
+        return $null
+    }
+
+    if ($Response.Body) {
+        try {
+            $submission = $Response.Body | ConvertFrom-Json
+            if ($submission.submission_id) {
+                return [string]$submission.submission_id
+            }
+        } catch {
+            # Continue to header-based extraction.
+        }
+    }
+
+    $location = $Response.Headers['location']
+    if ($location -and $location -match '/submissions/([^/?#]+)') {
+        return [string]$Matches[1]
+    }
+
+    return $null
 }
 
 function Test-JsonSyntax {
@@ -339,12 +386,11 @@ $workerRuntimeDir = Join-Path $repoRoot 'cmd\worker\.run'
 $workerLogDir = Join-Path $workerRuntimeDir 'logs'
 $workerTmpDir = Join-Path $workerRuntimeDir 'tmp'
 $workerDataDir = Join-Path $workerRuntimeDir 'data'
-$controllerBinary = Join-Path $repoRoot '.run\goetl-controller.exe'
-$workerBinary = Join-Path $repoRoot '.run\goetl-worker.exe'
 $workerSmokeConfig = Join-Path $repoRoot '.run\python-workitem-smoke-worker-config.json'
 $python3ShimDir = Join-Path $repoRoot '.run\python3-shim'
 $python3ShimPath = Join-Path $python3ShimDir 'python3.cmd'
-$controllerBaseUrl = 'http://127.0.0.1:8080'
+$pythonSmokeWrapperPath = Join-Path ([System.IO.Path]::GetTempPath()) ("goet-python-smoke-wrapper-{0}.cmd" -f $PID)
+$controllerBaseUrl = 'http://localhost:8080'
 
 try {
     [void](Invoke-CurlRequest -Method Post -Uri ($controllerBaseUrl + '/shutdown'))
@@ -368,6 +414,7 @@ foreach ($dir in @($workerRuntimeDir, $workerLogDir, $workerTmpDir, $workerDataD
 }
 New-Item -ItemType Directory -Force -Path $python3ShimDir | Out-Null
 Set-Content -LiteralPath $python3ShimPath -Value ("@echo off`r`n""{0}"" %*`r`n" -f $pythonExecutable) -Encoding ascii
+Set-Content -LiteralPath $pythonSmokeWrapperPath -Value ("@echo off`r`necho goet smoke stdout`r`necho goet smoke stderr 1>&2`r`n""{0}"" %*`r`nexit /b %ERRORLEVEL%`r`n" -f $pythonExecutable) -Encoding ascii
 $env:PATH = $python3ShimDir + ';' + $env:PATH
 
 $workerSmokeConfigBody = [pscustomobject]@{
@@ -375,17 +422,13 @@ $workerSmokeConfigBody = [pscustomobject]@{
     tmp_dir           = $workerTmpDir
     data_dir          = $workerDataDir
     controller_url    = $controllerBaseUrl
-    python_executable = $pythonExecutable
+    python_executable = $pythonSmokeWrapperPath
 } | ConvertTo-Json
-Set-Content -LiteralPath $workerSmokeConfig -Value $workerSmokeConfigBody -Encoding utf8
+[System.IO.File]::WriteAllText($workerSmokeConfig, $workerSmokeConfigBody, [System.Text.UTF8Encoding]::new($false))
 
 $go = Get-Command go -ErrorAction Stop
-if (Test-Path -LiteralPath $controllerBinary -PathType Leaf) {
-    $controllerProcess = Start-Process -FilePath $controllerBinary -ArgumentList @('--config', './cmd/controller/demo-config.json') -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
-} else {
-    $controllerArgs = @('run', './cmd/controller', '--config', './cmd/controller/demo-config.json')
-    $controllerProcess = Start-Process -FilePath $go.Path -ArgumentList $controllerArgs -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
-}
+$controllerArgs = @('run', './cmd/controller', '--config', './cmd/controller/demo-config.json')
+$controllerProcess = Start-Process -FilePath $go.Path -ArgumentList $controllerArgs -WorkingDirectory $repoRoot -PassThru -WindowStyle Hidden -RedirectStandardOutput $controllerStdout -RedirectStandardError $controllerStderr
 
 try {
     Wait-ForHttpGet -Uri ($controllerBaseUrl + '/healthz') -ExpectedStatusCode 204 -TimeoutSeconds 300
@@ -404,16 +447,19 @@ try {
     $submission.variables = @($submission.variables) + @($override)
     $submissionBody = $submission | ConvertTo-Json -Depth 20
     $submitResponse = Invoke-CurlRequest -Method Post -Uri ($controllerBaseUrl + '/workflow') -Body $submissionBody
-    if ([int]$submitResponse.StatusCode -ne 204) {
-        throw "workflow submission returned HTTP $([int]$submitResponse.StatusCode), want 204"
+    if ([int]$submitResponse.StatusCode -notin @(200, 201, 202)) {
+        throw "workflow submission returned HTTP $([int]$submitResponse.StatusCode), want 200/201/202; body: $($submitResponse.Body)"
     }
 
-    Write-Host "Starting worker with absolute config path..."
-    if (Test-Path -LiteralPath $workerBinary -PathType Leaf) {
-        $workerOutput = & $workerBinary $workerSmokeConfig
-    } else {
-        $workerOutput = & $go.Path run ./cmd/worker $workerSmokeConfig
+    $submissionId = Parse-SubmissionId -Response $submitResponse
+    if (-not $submissionId) {
+        throw "submission response did not include a submission_id or submission location"
     }
+
+    Write-Host "Submission ID: $submissionId"
+
+    Write-Host "Starting worker with absolute config path..."
+    $workerOutput = & $go.Path run ./cmd/worker $workerSmokeConfig
 
     $finalStatus = Wait-ForControllerIdle -ControllerUrl $controllerBaseUrl -TimeoutSeconds 300
     Write-Host ("Controller idle: pending={0}, assigned={1}" -f $finalStatus.pending, $finalStatus.assigned)
@@ -425,20 +471,23 @@ try {
     $output = Get-Content -Raw -LiteralPath $expectedOutputPath | ConvertFrom-Json
     Assert-OutputFields -Output $output
 
-    $attemptRoot = Join-Path $repoRoot 'cmd\worker\.run\tmp\attempts'
-    Assert-DirectoryExists -Path $attemptRoot -Label 'worker attempt root'
-    $attemptDir = Get-ChildItem -LiteralPath $attemptRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $attemptDir) {
-        throw "no worker attempt directory found under $attemptRoot"
+    Write-Host "Verifying controller logs for submission..."
+    $logsPayload = & $go.Path run ./cmd/demo-client logs $submissionId --controller-url $controllerBaseUrl --json
+    if ($LASTEXITCODE -ne 0) {
+        throw "goet logs failed for submission_id=$submissionId"
+    }
+    $logs = $logsPayload | ConvertFrom-Json
+    if (($logs | Get-Member -Name entries) -eq $null -or $logs.entries.Count -eq 0) {
+        throw "goet logs returned no entries for submission_id=$submissionId"
     }
 
-    $attemptLogDir = Join-Path $attemptDir.FullName 'logs'
-    Assert-DirectoryExists -Path $attemptLogDir -Label 'worker attempt logs'
-    Assert-LeafExists -Path (Join-Path $attemptLogDir 'stdout.log') -Label 'stdout log'
-    Assert-LeafExists -Path (Join-Path $attemptLogDir 'stderr.log') -Label 'stderr log'
+    $stdoutOrStderrEntries = @($logs.entries | Where-Object { $_.stream -eq 'stdout' -or $_.stream -eq 'stderr' })
+    if ($stdoutOrStderrEntries.Count -eq 0) {
+        throw "goet logs for submission_id=$submissionId did not include stdout/stderr entries"
+    }
 
     Write-Host "Output file: $expectedOutputPath"
-    Write-Host "Attempt logs: $attemptLogDir"
+    Write-Host "Submission logs entries: $($logs.entries.Count)"
     Write-Host "Controller log: $controllerStdout"
     if ($workerOutput) {
         Write-Host "Worker output:"
