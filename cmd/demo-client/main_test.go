@@ -198,6 +198,207 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	}
 }
 
+func TestExecuteSubmitCommandWaitsForCompletedSubmission(t *testing.T) {
+	var received client.WorkflowSubmission
+	statusChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode workflow submission: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		case "/submissions/run-ack-001/status":
+			statusChecks++
+			status := model.SubmissionStatus{
+				SubmissionID:   "run-ack-001",
+				WorkflowID:     "cdl-demo",
+				KnownWorkItems: 1,
+			}
+			switch statusChecks {
+			case 1:
+				status.Status = "queued"
+				status.Queued = 1
+			case 2:
+				status.Status = "running"
+				status.Running = 1
+			default:
+				status.Status = "completed"
+				status.Completed = 1
+			}
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				t.Fatalf("encode submission status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	projectPath, workflowPath := writeSubmitCommandInputs(t)
+
+	output := captureMainTestOutput(t, func() {
+		err := executeCommand(cliCommand{
+			Kind:          commandSubmit,
+			ControllerURL: server.URL,
+			ProjectPath:   projectPath,
+			WorkflowPath:  workflowPath,
+			Wait:          true,
+		}, server.Client())
+		if err != nil {
+			t.Fatalf("executeCommand() error = %v", err)
+		}
+	})
+
+	if statusChecks != 3 {
+		t.Fatalf("status check count = %d, want 3", statusChecks)
+	}
+
+	want := strings.Join([]string{
+		"Submission: run-ack-001",
+		"Workflow: cdl-demo",
+		"Initial work items: 0",
+		"Submission: run-ack-001",
+		"Workflow: cdl-demo",
+		"Status: completed",
+		"Known work items: 1",
+		"Queued: 0",
+		"Running: 0",
+		"Completed: 1",
+		"Failed: 0",
+		"Skipped: 0",
+	}, "\n")
+	if got := strings.TrimSpace(output); got != want {
+		t.Fatalf("wait output = %q, want %q", got, want)
+	}
+	if received.Workflow.ID != "cdl-demo" {
+		t.Fatalf("received workflow ID = %q, want cdl-demo", received.Workflow.ID)
+	}
+}
+
+func TestExecuteSubmitCommandReturnsErrorForFailedSubmission(t *testing.T) {
+	statusChecks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		case "/submissions/run-ack-001/status":
+			statusChecks++
+			status := model.SubmissionStatus{
+				SubmissionID:   "run-ack-001",
+				WorkflowID:     "cdl-demo",
+				KnownWorkItems: 1,
+				Status:         "failed",
+				Failed:         1,
+			}
+			if statusChecks == 1 {
+				status.Status = "running"
+				status.Running = 1
+				status.Failed = 0
+			}
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				t.Fatalf("encode submission status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	projectPath, workflowPath := writeSubmitCommandInputs(t)
+
+	var execErr error
+	output := captureMainTestOutput(t, func() {
+		execErr = executeCommand(cliCommand{
+			Kind:          commandSubmit,
+			ControllerURL: server.URL,
+			ProjectPath:   projectPath,
+			WorkflowPath:  workflowPath,
+			Wait:          true,
+		}, server.Client())
+	})
+
+	if execErr == nil {
+		t.Fatal("executeCommand() error = nil, want error")
+	}
+	if !strings.Contains(execErr.Error(), "failed") {
+		t.Fatalf("executeCommand() error = %q, want failed message", execErr.Error())
+	}
+	if statusChecks != 2 {
+		t.Fatalf("status check count = %d, want 2", statusChecks)
+	}
+	if !strings.Contains(output, "Status: failed") {
+		t.Fatalf("wait output = %q, want failed status", strings.TrimSpace(output))
+	}
+}
+
+func TestExecuteSubmitCommandReturnsErrorForStatusCommunicationFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		case "/submissions/run-ack-001/status":
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	projectPath, workflowPath := writeSubmitCommandInputs(t)
+
+	var execErr error
+	output := captureMainTestOutput(t, func() {
+		execErr = executeCommand(cliCommand{
+			Kind:          commandSubmit,
+			ControllerURL: server.URL,
+			ProjectPath:   projectPath,
+			WorkflowPath:  workflowPath,
+			Wait:          true,
+		}, server.Client())
+	})
+
+	if execErr == nil {
+		t.Fatal("executeCommand() error = nil, want error")
+	}
+	if !strings.Contains(execErr.Error(), "unexpected status 503") {
+		t.Fatalf("executeCommand() error = %q, want status error", execErr.Error())
+	}
+	if !strings.Contains(output, "Submission: run-ack-001") {
+		t.Fatalf("wait output = %q, want acknowledgement", strings.TrimSpace(output))
+	}
+	if strings.Contains(output, "Status:") {
+		t.Fatalf("wait output = %q, want no final status after communication failure", strings.TrimSpace(output))
+	}
+}
+
 func TestExecuteStatusCommandPrintsSubmissionStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -439,6 +640,28 @@ func captureMainTestOutput(t *testing.T, fn func()) string {
 		t.Fatalf("read stdout pipe: %v", err)
 	}
 	return string(output)
+}
+
+func writeSubmitCommandInputs(t *testing.T) (string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	projectPath := writeMainTestFile(t, dir, "project.json", `{"id":"go-etl-demo"}`)
+	workflowPath := writeMainTestFile(t, dir, "workflow.json", `{
+		"workflow": {
+			"ID": "cdl-demo",
+			"Variables": [
+				{"name":{"namespace":"workflow","key":"years"},"type":"list","expression":[{"type":"int","expression":2026}]}
+			],
+			"Steps": []
+		},
+		"source_manifest": {},
+		"variables": [
+			{"name":{"namespace":"override","key":"code_version"},"type":"string","expression":"test-version"}
+		]
+	}`)
+
+	return projectPath, workflowPath
 }
 
 func writeMainTestFile(t *testing.T, dir, name, content string) string {

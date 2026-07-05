@@ -292,6 +292,47 @@ func (c ControllerClient) SubmissionStatus(submissionID string) (model.Submissio
 	return c.submissionStatus(controllerURL, submissionID)
 }
 
+func (c ControllerClient) WaitForSubmission(submissionID string) (model.SubmissionStatus, error) {
+	controllerURL, err := c.controllerURL()
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+
+	interval, err := c.statusPollInterval()
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	return c.waitForSubmission(controllerURL, submissionID, interval)
+}
+
+func (c ControllerClient) waitForSubmission(controllerURL string, submissionID string, interval time.Duration) (model.SubmissionStatus, error) {
+	if strings.TrimSpace(submissionID) == "" {
+		return model.SubmissionStatus{}, fmt.Errorf("submission_id is required")
+	}
+
+	for {
+		status, err := c.submissionStatus(controllerURL, submissionID)
+		if err != nil {
+			return model.SubmissionStatus{}, err
+		}
+
+		switch status.Status {
+		case "queued", "running":
+			time.Sleep(interval)
+		case "completed":
+			return status, nil
+		case "failed":
+			return status, fmt.Errorf("submission %q failed", submissionID)
+		default:
+			return status, fmt.Errorf("submission %q has unrecognized status %q", submissionID, status.Status)
+		}
+	}
+}
+
 func (c ControllerClient) submissionStatus(controllerURL string, submissionID string) (model.SubmissionStatus, error) {
 	if strings.TrimSpace(submissionID) == "" {
 		return model.SubmissionStatus{}, fmt.Errorf("submission_id is required")

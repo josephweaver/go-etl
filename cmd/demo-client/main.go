@@ -16,16 +16,19 @@ import (
 )
 
 func main() {
-	command, err := parseCommand(os.Args)
-	if err != nil {
+	if err := run(os.Args, nil); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return
+		os.Exit(1)
+	}
+}
+
+func run(args []string, httpClient *http.Client) error {
+	command, err := parseCommand(args)
+	if err != nil {
+		return err
 	}
 
-	if err := executeCommand(command, nil); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
+	return executeCommand(command, httpClient)
 }
 
 func executeCommand(command cliCommand, httpClient *http.Client) error {
@@ -78,6 +81,17 @@ func submitCommand(command cliCommand, httpClient *http.Client) error {
 	}
 
 	fmt.Println(formatSubmissionAcknowledgement(acknowledgement))
+	if !command.Wait {
+		return nil
+	}
+
+	status, waitErr := controllerClient.WaitForSubmission(acknowledgement.SubmissionID)
+	if status.SubmissionID != "" {
+		fmt.Println(formatSubmissionStatus(status))
+	}
+	if waitErr != nil {
+		return fmt.Errorf("goet submit: %w", waitErr)
+	}
 	return nil
 }
 

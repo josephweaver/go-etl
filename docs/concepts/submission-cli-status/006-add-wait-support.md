@@ -1,6 +1,6 @@
 # 006 Add Wait Support
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

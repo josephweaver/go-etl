@@ -98,7 +98,10 @@ Accepted` with a structured submission acknowledgement containing
 default `goet submit` output prints those three acknowledgement facts in a
 human-readable form. `goet status <submission_id>` now calls the submission-
 scoped controller status endpoint and prints a human-readable summary. `goet
-submit` still does not wait or emit final JSON output.
+submit --wait` now polls that submission status endpoint until the controller
+reports `completed` or `failed`, prints the final human-readable status, and
+returns a non-zero exit status for failed or otherwise unrecognized terminal
+states.
 The controller now also exposes `GET /submissions/{submission_id}/status`
 with a shared submission status response in `internal/model` that reports the
 submission's run-scoped work counts and controller-derived execution state.
