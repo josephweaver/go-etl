@@ -1483,6 +1483,30 @@ func TestSubmissionStatusHandlerReturns404ForUnknownSubmission(t *testing.T) {
 	}
 }
 
+func TestSubmissionStatusHandlerReturns404ForInvalidSubmissionStatusPath(t *testing.T) {
+	controller := newController()
+	controller.workflowStore = openTestWorkflowExecutionStore(t)
+	defer controller.workflowStore.Close()
+
+	tests := []string{
+		"/submissions//status",
+		"/submissions/run-001/attempts/status",
+		"/submissions/run-001",
+	}
+
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			response := httptest.NewRecorder()
+			controller.submissionStatusHandler(response, request)
+
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status code = %d, want 404", response.Code)
+			}
+		})
+	}
+}
+
 func TestPendingReuseDecisionReasonsCountsReasons(t *testing.T) {
 	controller := newControllerWithCompletedAttempt(t, model.WorkCompletion{
 		ID:                   "test-001",
