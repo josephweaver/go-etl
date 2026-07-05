@@ -1,6 +1,6 @@
 # 003 Return Submission Acknowledgement
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
@@ -56,6 +56,18 @@ Initial work items: 47
 ```
 
 Existing internal client methods that return only `error` may remain for compatibility, but the client package should expose a submission method that returns the acknowledgement for CLI use.
+
+## Implemented State
+
+Implemented in this slice:
+
+- `internal/model.SubmissionAcknowledgement` owns the shared acknowledgement transport shape.
+- Successful `POST /workflow` admission returns `202 Accepted` with acknowledgement JSON.
+- The current `submission_id` value is the controller-generated workflow-run ID.
+- `workflow_id` comes from the admitted workflow definition.
+- `initial_work_item_count` comes from the number of initial compiled work items inserted/queued during admission.
+- `internal/client.ControllerClient` exposes acknowledgement-returning submission methods while retaining error-only compatibility methods that discard the acknowledgement.
+- `goet submit` prints the human-readable acknowledgement by default.
 
 ## Concept Decision
 

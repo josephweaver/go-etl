@@ -60,44 +60,60 @@ func NewControllerClientWithStarter(httpClient *http.Client, resolver variable.R
 }
 
 func (c ControllerClient) SubmitWorkflowRun(submission WorkflowRunSubmission) error {
-	return c.submitWorkflowPayload(submission)
+	_, err := c.SubmitWorkflowRunAcknowledgement(submission)
+	return err
 }
 
 // SubmitWorkflow submits a legacy inline workflow payload. Prefer SubmitWorkflowRun.
 func (c ControllerClient) SubmitWorkflow(submission WorkflowSubmission) error {
+	_, err := c.SubmitWorkflowAcknowledgement(submission)
+	return err
+}
+
+func (c ControllerClient) SubmitWorkflowRunAcknowledgement(submission WorkflowRunSubmission) (model.SubmissionAcknowledgement, error) {
+	return c.submitWorkflowPayload(submission)
+}
+
+// SubmitWorkflowAcknowledgement submits a legacy inline workflow payload and returns the controller acknowledgement.
+func (c ControllerClient) SubmitWorkflowAcknowledgement(submission WorkflowSubmission) (model.SubmissionAcknowledgement, error) {
 	if err := submission.SourceManifest.Validate(); err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 	return c.submitWorkflowPayload(submission)
 }
 
-func (c ControllerClient) submitWorkflowPayload(submission any) error {
+func (c ControllerClient) submitWorkflowPayload(submission any) (model.SubmissionAcknowledgement, error) {
 	controllerURL, err := c.controllerURL()
 	if err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
 	if err := c.EnsureController(controllerURL); err != nil {
-		return err
+		return model.SubmissionAcknowledgement{}, err
 	}
 
 	body, err := json.Marshal(submission)
 	if err != nil {
-		return fmt.Errorf("encode workflow run submission: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("encode workflow run submission: %w", err)
 	}
 
 	url := strings.TrimRight(controllerURL, "/") + "/workflow"
 	response, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("submit workflow: %w", err)
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: %w", err)
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
+	if response.StatusCode != http.StatusAccepted {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
 	}
 
-	return nil
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode submission acknowledgement: %w", err)
+	}
+
+	return acknowledgement, nil
 }
 
 func (c ControllerClient) SubmitWorkflowRunFile(path string) error {

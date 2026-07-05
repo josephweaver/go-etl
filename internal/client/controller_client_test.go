@@ -34,7 +34,7 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		writeTestSubmissionAcknowledgement(t, w)
 	}))
 	defer server.Close()
 
@@ -86,6 +86,36 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 	}
 }
 
+func TestControllerClientSubmitWorkflowAcknowledgement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			writeTestSubmissionAcknowledgement(t, w)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	acknowledgement, err := client.SubmitWorkflowAcknowledgement(WorkflowSubmission{})
+	if err != nil {
+		t.Fatalf("SubmitWorkflowAcknowledgement() error = %v", err)
+	}
+
+	if acknowledgement.SubmissionID != "run-ack-001" {
+		t.Fatalf("submission id = %q, want run-ack-001", acknowledgement.SubmissionID)
+	}
+	if acknowledgement.WorkflowID != "cdl" {
+		t.Fatalf("workflow id = %q, want cdl", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
+	}
+}
+
 func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 	var received WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +136,7 @@ func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		writeTestSubmissionAcknowledgement(t, w)
 	}))
 	defer server.Close()
 
@@ -270,7 +300,7 @@ func TestControllerClientSubmitWorkflowRunFile(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -298,7 +328,7 @@ func TestControllerClientSubmitWorkflowFile(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -340,7 +370,7 @@ func TestControllerClientChecksControllerBeforeSubmit(t *testing.T) {
 
 		if r.URL.Path == "/workflow" {
 			submitted = true
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 			return
 		}
 	}))
@@ -373,7 +403,7 @@ func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case "/workflow":
 			submitted = true
-			w.WriteHeader(http.StatusNoContent)
+			writeTestSubmissionAcknowledgement(t, w)
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -561,6 +591,19 @@ type testControllerStarter struct {
 func (s *testControllerStarter) StartController() error {
 	s.calls++
 	return nil
+}
+
+func writeTestSubmissionAcknowledgement(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+
+	w.WriteHeader(http.StatusAccepted)
+	if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+		SubmissionID:         "run-ack-001",
+		WorkflowID:           "cdl",
+		InitialWorkItemCount: 2,
+	}); err != nil {
+		t.Fatalf("encode submission acknowledgement: %v", err)
+	}
 }
 
 func testResolver(t *testing.T, controllerURL string) variable.Resolver {

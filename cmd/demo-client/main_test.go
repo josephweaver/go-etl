@@ -143,7 +143,14 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode workflow submission: %v", err)
 			}
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -289,6 +296,18 @@ func TestFormatFinalStatusIncludesReuseCandidates(t *testing.T) {
 	want := "final status: pending=1 assigned=2 failed=3 pending_reuse_candidates=4 attempts=5 attempt_variables=6"
 	if got != want {
 		t.Fatalf("formatFinalStatus() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSubmissionAcknowledgement(t *testing.T) {
+	got := formatSubmissionAcknowledgement(model.SubmissionAcknowledgement{
+		SubmissionID:         "run-ack-001",
+		WorkflowID:           "cdl-demo",
+		InitialWorkItemCount: 2,
+	})
+	want := "Submission: run-ack-001\nWorkflow: cdl-demo\nInitial work items: 2"
+	if got != want {
+		t.Fatalf("formatSubmissionAcknowledgement() = %q, want %q", got, want)
 	}
 }
 

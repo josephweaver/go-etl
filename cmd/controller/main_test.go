@@ -1776,8 +1776,21 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, "")
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.SubmissionID == "" {
+		t.Fatal("submission id is empty")
+	}
+	if acknowledgement.WorkflowID != "cdl" {
+		t.Fatalf("workflow id = %q, want cdl", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
 	}
 
 	status := getStatus(t, controller)
@@ -1885,8 +1898,12 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204", response.Code)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202", response.Code)
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -1895,6 +1912,15 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 	if len(runs) != 1 {
 		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	if acknowledgement.SubmissionID != runs[0].ID {
+		t.Fatalf("submission id = %q, want persisted run id %q", acknowledgement.SubmissionID, runs[0].ID)
+	}
+	if acknowledgement.WorkflowID != "cdl-demo" {
+		t.Fatalf("workflow id = %q, want cdl-demo", acknowledgement.WorkflowID)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
 	}
 
 	gotProject, found, err := store.GetProject(context.Background(), runs[0].ProjectID)
@@ -2113,8 +2139,8 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
 
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -2287,8 +2313,8 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
 	if scheduler.calls != 1 {
 		t.Fatalf("scheduler calls = %d, want 1", scheduler.calls)
@@ -2314,7 +2340,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 		`)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 
@@ -2362,7 +2388,7 @@ func TestSubmitWorkflowHandlerPublishesSupplementalSourceManifestFiles(t *testin
 	}
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
@@ -2420,8 +2446,8 @@ func TestSubmitWorkflowHandlerRejectsUnsafeSupplementalSourceManifestPathBeforeR
 	}
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code == http.StatusNoContent {
-		t.Fatal("status code = 204, want rejection")
+	if response.Code == http.StatusAccepted {
+		t.Fatal("status code = 202, want rejection")
 	}
 	runs, err := store.ListActiveWorkflowRuns(context.Background())
 	if err != nil {
@@ -2544,7 +2570,7 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2569,7 +2595,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 	if scheduler.calls != 1 {
@@ -2597,7 +2623,7 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
 	if scheduler.calls != 1 {
@@ -2633,7 +2659,7 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2673,7 +2699,7 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		`)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
@@ -2780,7 +2806,7 @@ func submitLocalWorkflowYears(t *testing.T, controller *Controller, root string,
 
 	writeLocalWorkflowSource(t, root, []int{year}, testSlurmWorkerVariables)
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusNoContent {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }

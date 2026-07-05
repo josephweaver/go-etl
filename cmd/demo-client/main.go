@@ -69,11 +69,12 @@ func submitCommand(command cliCommand, httpClient *http.Client) error {
 	}
 
 	controllerClient := client.NewControllerClientWithStarter(httpClient, inputs.Resolver, inputs.Starter)
-	if err := controllerClient.SubmitWorkflow(inputs.Submission); err != nil {
+	acknowledgement, err := controllerClient.SubmitWorkflowAcknowledgement(inputs.Submission)
+	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
 
-	fmt.Println("workflow submitted")
+	fmt.Println(formatSubmissionAcknowledgement(acknowledgement))
 	return nil
 }
 
@@ -218,6 +219,14 @@ func formatFinalStatus(status model.ControllerStatus) string {
 		status.PendingReuseCandidates,
 		status.Attempts,
 		status.AttemptVariables,
+	)
+}
+
+func formatSubmissionAcknowledgement(acknowledgement model.SubmissionAcknowledgement) string {
+	return fmt.Sprintf("Submission: %s\nWorkflow: %s\nInitial work items: %d",
+		acknowledgement.SubmissionID,
+		acknowledgement.WorkflowID,
+		acknowledgement.InitialWorkItemCount,
 	)
 }
 

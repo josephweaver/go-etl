@@ -91,10 +91,13 @@ syntax, preserves a supplied controller config path for local startup with
 `http://localhost:8080`, converts project top-level JSON fields into
 `project_config` variables, and loads the existing wrapped workflow submission
 shape. The command posts that loaded workflow through the current
-`POST /workflow` client path, which still treats `204 No Content` as success and
-prints a simple human-readable success message. The commands do not yet return
-submission acknowledgements, call a submission status endpoint, wait, or emit
-final JSON output.
+`POST /workflow` client path. Successful controller admission now returns `202
+Accepted` with a structured submission acknowledgement containing
+`submission_id`, `workflow_id`, and `initial_work_item_count`. The current
+`submission_id` is backed by the controller's persisted workflow-run ID. The
+default `goet submit` output prints those three acknowledgement facts in a
+human-readable form. The commands do not yet call a submission status endpoint,
+wait, or emit final JSON output.
 
 Operational Slice 008 records the repeatable local smoke path for that fixture.
 `scripts/python-workitem-smoke.ps1` validates the sibling demo project, compiles
@@ -332,7 +335,7 @@ GET  /work/next      assign the next pending item, or return 204
 POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
 POST /work           submit one raw work item
-POST /workflow       submit source references for project and workflow JSON
+POST /workflow       submit source references for project and workflow JSON; success returns 202 with submission acknowledgement JSON
 GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
@@ -940,6 +943,8 @@ Current client behavior:
 - Provides a `LocalControllerStarter` that resolves `controller_start_executable` plus `controller_start_args` and starts them as a background process.
 - Waits for a newly started controller to become reachable through repeated `GET /status` checks.
 - Sends workflow submissions to `POST /workflow`.
+- Can decode the `202 Accepted` submission acknowledgement returned by `POST /workflow`.
+- Keeps compatibility submission methods that return only `error` and discard the acknowledgement.
 - Loads serialized workflow submission files from disk.
 - Can submit a serialized workflow submission file directly.
 - Can fetch controller status and call `POST /shutdown` when pending and assigned work are both zero.
