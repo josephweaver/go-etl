@@ -12,6 +12,8 @@ Operational observability slice 004 (`004-worker-logging-client`) is now impleme
 
 Operational observability slice 005 (`005-controller-filesystem-log-sinks`) is now implemented: the controller now persists accepted `internal/model.LogObservation` payloads to controller-owned JSONL files under `controller_log_root_path`, routing by controller-wide, submission, and attempt paths using path-safe IDs and serialized file appends.
 
+Operational observability slice 006 (`006-worker-fallback-logging`) is now implemented: the worker logging client can now write emergency fallback diagnostics as JSONL to `<log_dir>/fallback-observations.jsonl` when `POST /observations/logs` delivery fails, while keeping controller ownership of normal GOET logs and preserving work execution flow.
+
 CLI submission and status commands now support `--json` output for acknowledgement, status, and wait-final results while preserving default human-readable output. The root README, customer API docs, and concept README now describe the implemented submit/status workflow and the lack of a built-in `--watch` option.
 
 We now have a minimal local Go controller and worker runtime with the first SQLite-backed attempt ledger. The controller owns an in-memory work queue and owns all direct SQLite access. The worker loads local runtime config, repeatedly pulls assigned work over HTTP, dispatches supported work-item types, writes completed output through mounted-style local directories, and reports completion or failure.
