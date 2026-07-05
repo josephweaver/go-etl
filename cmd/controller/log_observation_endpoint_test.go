@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"goetl/internal/model"
 )
 
 func TestRegisterControllerRoutesRegistersLogObservationEndpoint(t *testing.T) {
@@ -99,6 +102,34 @@ func TestLogObservationsHandlerWorksDuringRecoveryMode(t *testing.T) {
   "level": "warn",
   "timestamp": "2026-07-05T12:00:00Z",
   "message": "controller starting"
+}`))
+	response := httptest.NewRecorder()
+
+	controller.logObservationsHandler(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("response code = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+type failingLogSink struct{}
+
+func (f failingLogSink) Write(model.LogObservation) error {
+	return errors.New("write failure")
+}
+
+func TestLogObservationsHandlerSwallowsSinkWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	controller := newController()
+	controller.maxRequestBytes = 1024
+	controller.logSink = failingLogSink{}
+
+	request := httptest.NewRequest(http.MethodPost, "/observations/logs", strings.NewReader(`{
+  "submission_id": "sub-1",
+  "component": "worker",
+  "level": "warn",
+  "timestamp": "2026-07-05T12:00:00Z",
+  "message": "streaming"
 }`))
 	response := httptest.NewRecorder()
 

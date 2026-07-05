@@ -1,6 +1,6 @@
 # 005 Controller Filesystem Log Sinks
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

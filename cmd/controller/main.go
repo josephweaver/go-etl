@@ -45,6 +45,7 @@ type Controller struct {
 	repoSourceProviders map[string]reposource.Provider
 	repoCacheLayout     reposource.CacheLayout
 	workerStarter       WorkerStarter
+	logSink             logObservationSink
 	shutdown            func(context.Context) error
 	env                 *ExecutionEnvironment
 	scaler              WorkerScaleState
@@ -248,7 +249,8 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller filesystem failed: %w", err)
 	}
-	if _, err := resolveControllerOperationalPolicy(resolver, workingDirectory); err != nil {
+	policy, err := resolveControllerOperationalPolicy(resolver, workingDirectory)
+	if err != nil {
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
@@ -274,6 +276,17 @@ func buildControllerServer(
 	}
 
 	controller := newController()
+	if policy.FilesystemLoggingEnabled {
+		logSink, err := newFilesystemLogSink(policy.LogRootPath, policy.LogLevel)
+		if err != nil {
+			if releaseDatabaseOwnership != nil {
+				_ = releaseDatabaseOwnership()
+			}
+			workflowStore.Close()
+			return nil, nil, fmt.Errorf("controller log sink failed: %w", err)
+		}
+		controller.logSink = logSink
+	}
 	controller.workflowStore = workflowStore
 	controller.repoSourceProviders = initRepositorySourceProviders(workingDirectory)
 	controller.repoCacheLayout, err = reposource.NewCacheLayout(paths.RepoCache)

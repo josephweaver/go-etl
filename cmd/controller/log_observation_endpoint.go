@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"errors"
 	"io"
@@ -61,6 +62,13 @@ func (c *Controller) logObservationsHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (c *Controller) AcceptLogObservation(ctx context.Context, observation model.LogObservation) error {
+	if c.logSink == nil {
+		return nil
+	}
+
+	if err := c.logSink.Write(observation); err != nil {
+		fmt.Printf("log sink write failure: %v\n", err)
+	}
 	return nil
 }
 
