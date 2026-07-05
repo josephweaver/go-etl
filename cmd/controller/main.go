@@ -51,6 +51,7 @@ type Controller struct {
 	scaleCfg            WorkerScaleConfig
 	recoveryStartedAt   time.Time
 	normalAdmission     bool
+	maxRequestBytes     int
 }
 
 type WorkflowSubmission struct {
@@ -102,6 +103,8 @@ type controllerOperationalPolicy struct {
 	FilesystemLoggingEnabled        bool
 	LogRootPath                     string
 	LogLevel                        string
+	LogReadDefaultTailLines         int
+	LogReadMaxTailLines             int
 }
 
 type controllerHTTPSettings struct {
@@ -282,6 +285,7 @@ func buildControllerServer(
 		return nil, nil, fmt.Errorf("controller repository cache failed: %w", err)
 	}
 	controller.env = executionEnvironment
+	controller.maxRequestBytes = httpSettings.MaxRequestBytes
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
 		if releaseDatabaseOwnership != nil {
@@ -326,6 +330,7 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/work", controller.submitWorkHandler)
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
+	mux.HandleFunc("/observations/logs", controller.logObservationsHandler)
 }
 
 func controllerConfigFromArgs(args []string, executablePath func() (string, error)) (ControllerConfig, error) {
@@ -701,6 +706,20 @@ func resolveControllerOperationalPolicy(resolver variable.Resolver, workingDirec
 	}
 	if policy.LogLevel, err = resolveStringPolicy(resolver, "controller_log_level", "controller startup policy"); err != nil {
 		return controllerOperationalPolicy{}, err
+	}
+	policy.LogReadDefaultTailLines, err = resolvePositiveIntPolicy(resolver, "controller_log_read_default_tail_lines", "controller startup policy")
+	if err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	policy.LogReadMaxTailLines, err = resolvePositiveIntPolicy(resolver, "controller_log_read_max_tail_lines", "controller startup policy")
+	if err != nil {
+		return controllerOperationalPolicy{}, err
+	}
+	if policy.LogReadMaxTailLines < policy.LogReadDefaultTailLines {
+		return controllerOperationalPolicy{}, fmt.Errorf("controller startup policy: controller_log_read_max_tail_lines must be greater than or equal to controller_log_read_default_tail_lines")
+	}
+	if _, err = model.CompareLogLevel(policy.LogLevel, string(model.LogLevelDebug)); err != nil {
+		return controllerOperationalPolicy{}, fmt.Errorf("controller startup policy: invalid controller_log_level: %w", err)
 	}
 
 	return policy, nil
