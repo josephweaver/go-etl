@@ -2321,7 +2321,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	_, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
+	failed, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
 		AttemptID: failure.AttemptID,
 		Error:     failure.Error,
 		FailedAt:  failedAt,
@@ -2338,6 +2338,10 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
 	}
+	if err := c.recordWorkItemDependencyTerminal(r.Context(), failed.WorkItemID, model.WorkItemMembershipStateFailed); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	fmt.Println("persisted work item failed:", failure.ID, failure.AttemptID, failure.Error)
 	w.WriteHeader(http.StatusNoContent)
@@ -2350,7 +2354,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		return
 	}
 
-	_, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
+	completed, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
 	if err != nil {
 		if strings.Contains(err.Error(), "conflicts with existing") {
 			http.Error(w, "complete attempt conflict", http.StatusConflict)
@@ -2363,9 +2367,31 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
 	}
+	terminalState := model.WorkItemMembershipStateCompleted
+	if completion.Skipped {
+		terminalState = model.WorkItemMembershipStateSkipped
+	}
+	if err := c.recordWorkItemDependencyTerminal(r.Context(), completed.WorkItemID, terminalState); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *Controller) recordWorkItemDependencyTerminal(ctx context.Context, workItemID string, terminalState model.WorkItemMembershipState) error {
+	if c.workflowStore == nil {
+		return nil
+	}
+	workItem, found, err := c.workflowStore.GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return fmt.Errorf("get work item %s: %w", workItemID, err)
+	}
+	if !found {
+		return fmt.Errorf("work item %s not found", workItemID)
+	}
+	return c.RecordWorkItemTerminalState(ctx, workItem.RunID, workItem.ID, terminalState)
 }
 
 func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallbackCompletedAt time.Time) (persistence.CompleteAttemptRequest, error) {

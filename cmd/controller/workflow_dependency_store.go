@@ -197,6 +197,42 @@ func (c *Controller) RecordCompiledWorkItemMembership(ctx context.Context, submi
 	return nil
 }
 
+func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submissionID string, workItemID string, terminalState model.WorkItemMembershipState) error {
+	if c.workflowStore == nil {
+		return fmt.Errorf("workflow store required")
+	}
+	if submissionID == "" {
+		return fmt.Errorf("submission id is required")
+	}
+	if workItemID == "" {
+		return fmt.Errorf("work item id is required")
+	}
+	if err := terminalState.Validate(); err != nil {
+		return err
+	}
+
+	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+
+	updated, err := updateDependencyPlanForWorkItemTerminal(plan, workItemID, terminalState)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return nil
+	}
+
+	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Controller) ReadStepState(ctx context.Context, submissionID string, stepIndex int) (model.WorkflowDependencyStep, bool, error) {
 	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
 	if err != nil {
@@ -229,6 +265,105 @@ func (c *Controller) ReadStageState(ctx context.Context, submissionID string, st
 		}
 	}
 	return model.WorkflowDependencyStage{}, false, nil
+}
+
+func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan, workItemID string, terminalState model.WorkItemMembershipState) (bool, error) {
+	if plan == nil {
+		return false, nil
+	}
+
+	step, stage, membershipIndex, found := findDependencyWorkItem(plan, workItemID)
+	if !found {
+		return false, nil
+	}
+	if membershipIndex < 0 || membershipIndex >= len(step.WorkItems) {
+		return false, fmt.Errorf("invalid membership index for work item %s", workItemID)
+	}
+
+	if step.WorkItems[membershipIndex].State == terminalState {
+		return false, nil
+	}
+	step.WorkItems[membershipIndex].State = terminalState
+
+	step.State = updateStepStateFromWorkItems(step.WorkItems, step.State)
+	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
+	updateWorkflowStateFromStages(plan)
+	return true, nil
+}
+
+func findDependencyWorkItem(plan *model.WorkflowDependencyPlan, workItemID string) (*model.WorkflowDependencyStep, *model.WorkflowDependencyStage, int, bool) {
+	for stageIndex := range plan.Stages {
+		for stepIndex := range plan.Stages[stageIndex].Steps {
+			for membershipIndex, membership := range plan.Stages[stageIndex].Steps[stepIndex].WorkItems {
+				if membership.WorkItemID != workItemID {
+					continue
+				}
+				return &plan.Stages[stageIndex].Steps[stepIndex], &plan.Stages[stageIndex], membershipIndex, true
+			}
+		}
+	}
+	return nil, nil, 0, false
+}
+
+func updateStepStateFromWorkItems(workItems []model.WorkflowDependencyWorkItemMembership, currentState model.WorkflowStepState) model.WorkflowStepState {
+	completed := 0
+	hasTerminal := false
+	for _, workItem := range workItems {
+		switch workItem.State {
+		case model.WorkItemMembershipStateFailed:
+			return model.WorkflowStepStateFailed
+		case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped:
+			completed++
+			hasTerminal = true
+		}
+	}
+
+	if len(workItems) == completed {
+		return model.WorkflowStepStateCompleted
+	}
+	if hasTerminal {
+		return model.WorkflowStepStateActive
+	}
+	return currentState
+}
+
+func updateStageStateFromSteps(steps []model.WorkflowDependencyStep, currentState model.WorkflowStageState) model.WorkflowStageState {
+	allCompleted := true
+	for _, step := range steps {
+		if step.State == model.WorkflowStepStateFailed {
+			return model.WorkflowStageStateFailed
+		}
+		if step.State != model.WorkflowStepStateCompleted {
+			allCompleted = false
+		}
+	}
+	if allCompleted {
+		return model.WorkflowStageStateCompleted
+	}
+	if currentState == model.WorkflowStageStateFailed {
+		return currentState
+	}
+	for _, step := range steps {
+		if step.State == model.WorkflowStepStateActive {
+			return model.WorkflowStageStateActive
+		}
+	}
+	for _, step := range steps {
+		if step.State == model.WorkflowStepStateCompleted {
+			return model.WorkflowStageStateActive
+		}
+	}
+	return currentState
+}
+
+func updateWorkflowStateFromStages(plan *model.WorkflowDependencyPlan) {
+	for _, stage := range plan.Stages {
+		if stage.State != model.WorkflowStageStateCompleted {
+			plan.State = model.WorkflowStateRunning
+			return
+		}
+	}
+	plan.State = model.WorkflowStateCompleted
 }
 
 func (c *Controller) getWorkflowDependencyState(ctx context.Context, submissionID string) (*model.WorkflowDependencyPlan, bool, error) {
