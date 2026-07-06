@@ -5,12 +5,12 @@ Review date: 2026-07-05
 Reviewed branch:
 
 ```text
-https://github.com/josephweaver/go-etl/tree/concept/dependency-aware-workflows
+https://github.com/josephweaver/go-etl/tree/main
 ```
 
 ## Applied Document Changes
 
-- Kept the bundle path under `docs/concepts/dependency-aware-workflows/`, which matches the current concept branch.
+- Kept the bundle path under `docs/concepts/complete/dependency-aware-workflows/`, which matches the current concept branch.
 - Removed the earlier `docs/epics/...` alignment from the prior zip because that was based on the wrong branch.
 - Marked slices 001, 002, and 003 as implemented on the visible branch and converted them into regression/verification checklists.
 - Marked slice 004 as the active in-progress handoff slice.
@@ -19,7 +19,7 @@ https://github.com/josephweaver/go-etl/tree/concept/dependency-aware-workflows
 
 ## Verification Notes
 
-The visible branch contains the Strategic Concept bundle in `docs/concepts/dependency-aware-workflows/` and lists slices `001` through `012`.
+The visible branch contains the Strategic Concept bundle in `docs/concepts/complete/dependency-aware-workflows/` and lists slices `001` through `012`.
 
 The visible branch also contains:
 

@@ -1,6 +1,6 @@
 # 008 Compile Next Ready Stage
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -58,11 +58,11 @@ This slice updates the controller completion and workflow-submission concepts. I
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/002-compile-single-workflow-stage.md`
-- `docs/concepts/dependency-aware-workflows/005-submit-only-initial-ready-stage.md`
-- `docs/concepts/dependency-aware-workflows/006-record-terminal-work-item-state.md`
-- `docs/concepts/dependency-aware-workflows/007-capture-typed-step-outputs.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/002-compile-single-workflow-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/005-submit-only-initial-ready-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/006-record-terminal-work-item-state.md`
+- `docs/concepts/complete/dependency-aware-workflows/007-capture-typed-step-outputs.md`
 - `cmd/controller/main.go`
 - `cmd/controller/workflow_dependency_store.go`
 - `cmd/controller/workflow_completion.go`

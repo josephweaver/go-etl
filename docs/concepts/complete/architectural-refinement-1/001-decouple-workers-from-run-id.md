@@ -1,6 +1,6 @@
 # 001 Decouple Workers From `run_id`
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -53,18 +53,18 @@ That column can imply the wrong ownership model:
 
 ```text
 workflow_instances
-  └── workers
+  â””â”€â”€ workers
 ```
 
 But the intended model is:
 
 ```text
 workflow_instances
-  └── work_items
-        └── queued_work
+  â””â”€â”€ work_items
+        â””â”€â”€ queued_work
 
 workers
-  └── claim queued_work globally
+  â””â”€â”€ claim queued_work globally
 ```
 
 The queue already appears conceptually global because work claiming should operate through `queued_work -> work_items`, where `work_items.run_id` identifies the owning workflow run.
@@ -212,7 +212,7 @@ Do not implement:
 
 ## Implementation Guidance
 
-### Step 1 — Inspect actual usage
+### Step 1 â€” Inspect actual usage
 
 Identify every read/write/reference to `workers.run_id`.
 
@@ -229,7 +229,7 @@ test fixture
 documentation
 ```
 
-### Step 2 — Preserve global queue semantics
+### Step 2 â€” Preserve global queue semantics
 
 Verify that `ClaimNextWork` or equivalent work-claim logic does not filter by worker run.
 
@@ -244,7 +244,7 @@ LIMIT 1
 
 The selected `work_items.run_id` should travel with the claimed work item as metadata, but it should not be matched against `workers.run_id`.
 
-### Step 3 — Decide schema action
+### Step 3 â€” Decide schema action
 
 If low-risk, remove `workers.run_id` from:
 
@@ -266,7 +266,7 @@ or document it as deprecated and non-authoritative.
 
 Do not silently leave the misleading ownership model in docs.
 
-### Step 4 — Add focused tests
+### Step 4 â€” Add focused tests
 
 At minimum, add a persistence/controller test proving:
 

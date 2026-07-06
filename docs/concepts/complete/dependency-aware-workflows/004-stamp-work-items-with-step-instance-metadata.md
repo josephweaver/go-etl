@@ -1,6 +1,6 @@
 # 004 Stamp Work Items With Step Instance Metadata
 
-Status: In Progress — active slice on branch
+Status: Complete
 
 ## Objective
 
@@ -48,9 +48,9 @@ Prefer controller-owned membership state for dependency-only metadata such as `s
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/002-compile-single-workflow-stage.md`
-- `docs/concepts/dependency-aware-workflows/003-persist-workflow-stage-state.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/002-compile-single-workflow-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/003-persist-workflow-stage-state.md`
 - the actual stage compiler file created by 002, such as `internal/workflow/compile_stage.go`
 - the actual dependency-state owner created by 003, such as `cmd/controller/workflow_dependency_store.go` or an `internal/persistence` owner
 - `internal/model/work_item.go`

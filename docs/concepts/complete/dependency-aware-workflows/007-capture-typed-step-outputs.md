@@ -1,6 +1,6 @@
 # 007 Capture Typed Step Outputs
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -61,8 +61,8 @@ A new file such as `cmd/controller/workflow_outputs.go` is justified because JSO
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/006-record-terminal-work-item-state.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/006-record-terminal-work-item-state.md`
 - `cmd/controller/workflow_dependency_store.go`
 - `internal/model/work_item.go`
 - `internal/variable/variable.go`

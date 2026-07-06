@@ -1,6 +1,6 @@
 # 010 Propagate Step And Workflow Failure
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -46,10 +46,10 @@ This slice updates the dependency state machine and completion handling. It shou
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/006-record-terminal-work-item-state.md`
-- `docs/concepts/dependency-aware-workflows/007-capture-typed-step-outputs.md`
-- `docs/concepts/dependency-aware-workflows/008-compile-next-ready-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/006-record-terminal-work-item-state.md`
+- `docs/concepts/complete/dependency-aware-workflows/007-capture-typed-step-outputs.md`
+- `docs/concepts/complete/dependency-aware-workflows/008-compile-next-ready-stage.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/workflow_completion.go`

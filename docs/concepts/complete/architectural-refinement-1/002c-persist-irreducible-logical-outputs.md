@@ -1,4 +1,4 @@
-# Architectural Refinement 1 — Revised 002
+# Architectural Refinement 1 â€” Revised 002
 
 Shared architecture:
 
@@ -24,7 +24,7 @@ CSx(IR)x
 
 # 002c Persist Irreducible Logical Outputs
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -104,8 +104,8 @@ cmd/controller/workflow_dependency_store.go
 cmd/controller/workflow_stage_queue.go
 internal/persistence/store.go
 internal/model/workflow_dependency.go
-docs/concepts/dependency-aware-workflows/007-capture-typed-step-outputs.md
-docs/concepts/dependency-aware-workflows/009-handle-empty-fanout-and-auto-advance.md
+docs/concepts/complete/dependency-aware-workflows/007-capture-typed-step-outputs.md
+docs/concepts/complete/dependency-aware-workflows/009-handle-empty-fanout-and-auto-advance.md
 ```
 
 ## Acceptance Criteria

@@ -1,6 +1,6 @@
 # 005 Submit Only Initial Ready Stage
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -44,11 +44,11 @@ The public API shape created by Submission CLI Status remains unchanged. The cha
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/001-normalize-workflow-stages.md`
-- `docs/concepts/dependency-aware-workflows/002-compile-single-workflow-stage.md`
-- `docs/concepts/dependency-aware-workflows/003-persist-workflow-stage-state.md`
-- `docs/concepts/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/001-normalize-workflow-stages.md`
+- `docs/concepts/complete/dependency-aware-workflows/002-compile-single-workflow-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/003-persist-workflow-stage-state.md`
+- `docs/concepts/complete/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`

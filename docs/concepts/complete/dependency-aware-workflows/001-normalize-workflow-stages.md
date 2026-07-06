@@ -1,6 +1,6 @@
 # 001 Normalize Workflow Stages
 
-Status: Implemented on visible branch — preserve as regression checklist
+Status: Complete
 
 ## Objective
 
@@ -8,7 +8,7 @@ Preserve and verify the completed stage-normalization work in `internal/workflow
 
 ## Current State
 
-This slice is visible as implemented on `concept/dependency-aware-workflows`.
+This slice is visible as implemented on `docs/concepts/complete/dependency-aware-workflows`.
 
 Expected completed artifacts include:
 
@@ -35,7 +35,7 @@ Do not move stage parsing into `cmd/controller`, and do not create a second norm
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
 - `internal/workflow/workflow.go`
 - `internal/workflow/step.go`
 - `internal/workflow/workflow_test.go`

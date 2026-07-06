@@ -1,4 +1,4 @@
-# Architectural Refinement 1 — Revised 002
+# Architectural Refinement 1 â€” Revised 002
 
 Shared architecture:
 
@@ -24,7 +24,7 @@ CSx(IR)x
 
 # 002d Switch Controller Reads To Derived Recovery Model
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 

@@ -1,6 +1,6 @@
 # 011 Surface Dependency State In Status And Logs
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -56,7 +56,7 @@ This slice updates existing status and observability concepts. Do not create new
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `docs/concepts/execution-observability/README.md`
 - `cmd/controller/main.go`

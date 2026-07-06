@@ -1,4 +1,4 @@
-# Architectural Refinement 1 — Revised 002
+# Architectural Refinement 1 â€” Revised 002
 
 Shared architecture:
 
@@ -24,7 +24,7 @@ CSx(IR)x
 
 # 002a Add Dependency Identity Facts
 
-Status: Implemented (2026-07-06)
+Status: Complete
 
 ## Implementation Notes
 

@@ -1,6 +1,6 @@
 # 002 Compile Single Workflow Stage
 
-Status: Implemented on visible branch — preserve as regression checklist
+Status: Complete
 
 ## Objective
 
@@ -8,7 +8,7 @@ Preserve and verify the completed stage-scoped compiler entry point so controlle
 
 ## Current State
 
-This slice is visible as implemented on `concept/dependency-aware-workflows`.
+This slice is visible as implemented on `docs/concepts/complete/dependency-aware-workflows`.
 
 Expected completed artifacts include:
 
@@ -36,8 +36,8 @@ Do not add controller-local fan-out or workflow compilation logic in later slice
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/001-normalize-workflow-stages.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/001-normalize-workflow-stages.md`
 - `internal/workflow/stage.go`
 - `internal/workflow/workflow.go`
 - `internal/workflow/step.go`

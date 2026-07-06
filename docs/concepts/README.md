@@ -10,7 +10,6 @@ Concept link for its authoritative scope.
 - [Attempt Liveness and Caretaker Recovery](attempt-liveness-recovery/README.md) - Detect workers that stop reporting, recover abandoned attempts, and requeue their logical work.
 - [Controller Resilience](controller-resilience/README.md) - Define controller process identity and restart behavior for work, reports, and orchestration state.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
-- [Dependency-Aware Workflow Execution](dependency-aware-workflows/README.md) - Compile and queue workflow steps only when their predecessor steps have completed successfully.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
 - [Resource Constraints](resource-constraint/README.md) - Add controller-owned admission limits for work items that share named resources.
 - [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Preserve sensitivity metadata through variable resolution, diagnostics, persistence, and execution boundaries.
@@ -35,6 +34,8 @@ above.
 - [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
 - [Python WorkItem](complete/python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
 - [Submission CLI Status](complete/submission-cli-status/README.md) - Establishes a production-oriented CLI and queryable submission status model for workflow execution.
+- [Dependency-Aware Workflow Execution](complete/dependency-aware-workflows/README.md) - Compiles and queues workflow steps only when their predecessor steps have completed successfully.
+- [Miscellaneous Architecture Refinements](complete/architectural-refinement-1/README.md) - Tracks small architectural refinements and technical-debt cleanup slices.
 
 ## Planning Guides
 

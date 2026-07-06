@@ -1,6 +1,6 @@
 # 009 Handle Empty Fan-Out And Auto-Advance
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -50,11 +50,11 @@ This slice updates the controller stage activation concept. Empty fan-out is a n
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/002-compile-single-workflow-stage.md`
-- `docs/concepts/dependency-aware-workflows/005-submit-only-initial-ready-stage.md`
-- `docs/concepts/dependency-aware-workflows/007-capture-typed-step-outputs.md`
-- `docs/concepts/dependency-aware-workflows/008-compile-next-ready-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/002-compile-single-workflow-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/005-submit-only-initial-ready-stage.md`
+- `docs/concepts/complete/dependency-aware-workflows/007-capture-typed-step-outputs.md`
+- `docs/concepts/complete/dependency-aware-workflows/008-compile-next-ready-stage.md`
 - `cmd/controller/workflow_completion.go`
 - `cmd/controller/workflow_dependency_store.go`
 - `cmd/controller/workflow_stage_queue.go`

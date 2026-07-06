@@ -1,6 +1,6 @@
 # Dependency-Aware Workflow Execution
 
-Status: Complete on `concept/dependency-aware-workflows`
+Status: Complete
 
 ## Purpose
 
@@ -8,14 +8,14 @@ Make workflow execution dependency-aware so the controller only makes dependency
 
 After this Strategic Concept is complete, GOET workflows execute in dependency stages instead of submitting every generated work item to the queue at once. Sequential workflow steps run sequentially by default. Contiguous steps with the same `parallel_with` label run in the same stage and may be assigned concurrently after their shared predecessor stage completes.
 
-This bundle is aligned to the current repo convention on `concept/dependency-aware-workflows`: place it under `docs/concepts/dependency-aware-workflows/`.
+This bundle is aligned to the current repo convention on `docs/concepts/complete/dependency-aware-workflows`: place it under `docs/concepts/complete/dependency-aware-workflows/`.
 
 ## Branch Alignment And Implementation Tracker
 
 Repository branch used for this implementation:
 
 ```text
-https://github.com/josephweaver/go-etl/tree/concept/dependency-aware-workflows
+https://github.com/josephweaver/go-etl/tree/main
 ```
 
 Implementation status:

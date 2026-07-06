@@ -93,7 +93,7 @@ Read these files first:
 - `docs/concepts/submission-cli-status/README.md`
 - `docs/concepts/complete/execution-observability/README.md`
 - `docs/concepts/resource-constraint/README.md`
-- `docs/concepts/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
 
 Do not read unrelated files unless documentation references or status checks directly require it.
 

@@ -1,6 +1,6 @@
 # 003 Persist Workflow Stage State
 
-Status: Implemented on visible branch — preserve as regression checklist
+Status: Complete
 
 ## Objective
 
@@ -8,7 +8,7 @@ Preserve and verify the completed dependency-state persistence layer for workflo
 
 ## Current State
 
-This slice is visible as implemented on `concept/dependency-aware-workflows`.
+This slice is visible as implemented on `docs/concepts/complete/dependency-aware-workflows`.
 
 Expected completed behavior includes a controller-owned state/persistence owner that can record:
 
@@ -41,8 +41,8 @@ Do not add this state to `internal/ledger`; the attempt ledger records attempts 
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/dependency-aware-workflows/001-normalize-workflow-stages.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/001-normalize-workflow-stages.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`

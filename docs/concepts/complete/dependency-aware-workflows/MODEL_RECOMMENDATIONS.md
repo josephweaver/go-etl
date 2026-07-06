@@ -67,13 +67,13 @@ Escalate only the failed slice, not the whole concept.
 While 004 is active:
 
 ```text
-please read docs/concepts/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md and finish or review only that slice
+please read docs/concepts/complete/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md and finish or review only that slice
 ```
 
 After 004 lands:
 
 ```text
-please read docs/concepts/dependency-aware-workflows/005-submit-only-initial-ready-stage.md and implement only that slice
+please read docs/concepts/complete/dependency-aware-workflows/005-submit-only-initial-ready-stage.md and implement only that slice
 ```
 
 For slices 005, 006, 007, 008, and 010, add:

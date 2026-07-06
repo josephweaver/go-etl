@@ -1,6 +1,6 @@
 # 002 Persist Minimal Dependency Recovery Facts And Derive Current State With SQL Views
 
-Status: Revised architecture direction
+Status: Complete
 
 ## Purpose
 

@@ -1,6 +1,6 @@
 # 012 Update Dependency Workflow Docs And Smoke
 
-Status: Ready — final docs/smoke slice
+Status: Complete
 
 ## Objective
 
@@ -10,7 +10,7 @@ Document dependency-aware workflow execution and add a repeatable smoke path tha
 
 The controller now supports dependency-aware stage execution internally after slices 001-011, but repo docs and smoke scripts may still describe workflow submission as compiling or queueing all steps at once.
 
-The branch uses `docs/concepts`, so any final docs updates should keep this Strategic Concept bundle under `docs/concepts/dependency-aware-workflows/` and should not reintroduce the earlier mistaken `docs/epics` path.
+The branch uses `docs/concepts`, so any final docs updates should keep this Strategic Concept bundle under `docs/concepts/complete/dependency-aware-workflows/` and should not reintroduce the earlier mistaken `docs/epics` path.
 
 The sibling demo project may not yet include a small workflow fixture that demonstrates sequential-by-default execution or contiguous `parallel_with` execution.
 
@@ -50,7 +50,7 @@ This slice updates documentation and smoke coverage. It should not make further 
 
 Read these files first:
 
-- `docs/concepts/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `docs/concepts/execution-observability/README.md`
 - `PROJECT_STATE.md`
@@ -75,7 +75,7 @@ Only modify tests if a narrow dependency-aware smoke assertion belongs in Go tes
 
 ## Allowed Documentation And Script Files
 
-- `docs/concepts/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
