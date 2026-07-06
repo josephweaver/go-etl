@@ -1,6 +1,6 @@
 # Dependency-Aware Workflow Execution
 
-Status: Ready — concept-branch-aligned for 2026-07-05 handoff
+Status: Complete on `concept/dependency-aware-workflows`
 
 ## Purpose
 
@@ -12,31 +12,30 @@ This bundle is aligned to the current repo convention on `concept/dependency-awa
 
 ## Branch Alignment And Implementation Tracker
 
-Repository branch used for this handoff:
+Repository branch used for this implementation:
 
 ```text
 https://github.com/josephweaver/go-etl/tree/concept/dependency-aware-workflows
 ```
 
-Implementation status used by this revision:
+Implementation status:
 
-| Slice | Status for next handoff |
+| Slice | Status |
 |---|---|
-| `001-normalize-workflow-stages.md` | Implemented on the visible branch; preserve as regression checklist. |
-| `002-compile-single-workflow-stage.md` | Implemented on the visible branch; preserve as regression checklist. |
-| `003-persist-workflow-stage-state.md` | Implemented on the visible branch; preserve as regression checklist. |
-| `004-stamp-work-items-with-step-instance-metadata.md` | In progress per handoff; active slice. |
-| `005` through `012` | Pending, ready after 004 lands and helper/store names are stable. |
+| `001-normalize-workflow-stages.md` | Implemented; preserve as normalization and validation regression checklist. |
+| `002-compile-single-workflow-stage.md` | Implemented; preserve as stage-scoped compiler regression checklist. |
+| `003-persist-workflow-stage-state.md` | Implemented; preserve as dependency-state persistence regression checklist. |
+| `004-stamp-work-items-with-step-instance-metadata.md` | Implemented. |
+| `005-submit-only-initial-ready-stage.md` | Implemented. |
+| `006-record-terminal-work-item-state.md` | Implemented. |
+| `007-capture-typed-step-outputs.md` | Implemented. |
+| `008-compile-next-ready-stage.md` | Implemented. |
+| `009-handle-empty-fanout-and-auto-advance.md` | Implemented. |
+| `010-propagate-step-and-workflow-failure.md` | Implemented. |
+| `011-surface-dependency-state-in-status-and-logs.md` | Implemented. |
+| `012-update-dependency-workflow-docs-and-smoke.md` | Implemented by the final docs and smoke update. |
 
-Visible branch evidence on 2026-07-05:
-
-- `docs/concepts/dependency-aware-workflows/` contains the Strategic Concept README plus slices `001` through `012`.
-- `internal/workflow` contains `stage.go`, `compile_stage.go`, and matching tests, so slices 001 and 002 are present.
-- `cmd/controller` contains `workflow_dependency_store.go` and its test, and `internal/model` contains `workflow_dependency.go` and its test, so slice 003 is present.
-- `cmd/controller/workflow_stage_queue.go` is not visible in the public branch tree yet, which is consistent with 004 still running or not yet pushed.
-
-Use this README as the handoff tracker. If the local Codex workspace already has additional 004 files, treat those local files as the current implementation state and update slices 005-011 with the final helper names after 004 completes.
-
+Use this README as the completed concept tracker. The implementation queues only dependency-ready stage work, activates later stages after predecessor success, exposes dependency summaries through `goet status`, and emits dependency transition observations readable through `goet logs`.
 ## Strategic Decision
 
 Dependency readiness is controller-owned orchestration state.
@@ -261,29 +260,20 @@ workflow failed because step X failed
 - Python/R SDKs can show stage-aware status through the existing submission/status API.
 - Cross-workflow dependencies can later build on the workflow-instance lifecycle introduced here.
 
-## Proposed Slices
+## Implemented Slices
 
-1. `001-normalize-workflow-stages.md` — implemented; keep as normalization and validation regression checklist.
-2. `002-compile-single-workflow-stage.md` — implemented; keep as stage-scoped compiler regression checklist.
-3. `003-persist-workflow-stage-state.md` — implemented; keep as dependency-state persistence regression checklist.
-4. `004-stamp-work-items-with-step-instance-metadata.md` — in progress; active slice for queue-ready work-item plus membership association.
-5. `005-submit-only-initial-ready-stage.md` — make workflow submission persist the plan and queue only stage 0.
-6. `006-record-terminal-work-item-state.md` — update dependency state when work completion or failure is reported.
-7. `007-capture-typed-step-outputs.md` — convert successful terminal outputs into typed step outputs and expose `workflow.step[index]` scope construction.
-8. `008-compile-next-ready-stage.md` — activate and JIT-compile the next stage after a predecessor stage completes.
-9. `009-handle-empty-fanout-and-auto-advance.md` — complete zero-work-item steps/stages without synthetic attempts and continue activation.
-10. `010-propagate-step-and-workflow-failure.md` — make failure transitions terminal and prevent downstream activation.
-11. `011-surface-dependency-state-in-status-and-logs.md` — extend submission status and observations with stage/step dependency state.
-12. `012-update-dependency-workflow-docs-and-smoke.md` — update docs and add repeatable smoke coverage for sequential and parallel-stage workflows.
-
-## Handoff Rules For Remaining Slices
-
-- Finish or review 004 before starting 005.
-- If 004 creates helper names different from these documents, update slices 005-011 as part of the 004 implementation report.
-- From 005 forward, use the 001 stage plan, 002 stage compiler, and 003 store owner. Do not compile future stages early just to validate later work-item IDs.
-- Keep every queue/state transition idempotent before moving to the next slice.
-- Preserve the public submission/status/log surfaces from previous concepts unless a slice explicitly extends them.
-
+1. `001-normalize-workflow-stages.md` - implemented; keep as normalization and validation regression checklist.
+2. `002-compile-single-workflow-stage.md` - implemented; keep as stage-scoped compiler regression checklist.
+3. `003-persist-workflow-stage-state.md` - implemented; keep as dependency-state persistence regression checklist.
+4. `004-stamp-work-items-with-step-instance-metadata.md` - implemented.
+5. `005-submit-only-initial-ready-stage.md` - implemented.
+6. `006-record-terminal-work-item-state.md` - implemented.
+7. `007-capture-typed-step-outputs.md` - implemented.
+8. `008-compile-next-ready-stage.md` - implemented.
+9. `009-handle-empty-fanout-and-auto-advance.md` - implemented.
+10. `010-propagate-step-and-workflow-failure.md` - implemented.
+11. `011-surface-dependency-state-in-status-and-logs.md` - implemented.
+12. `012-update-dependency-workflow-docs-and-smoke.md` - implemented.
 ## Completion Criteria
 
 - Invalid non-contiguous `parallel_with` labels are rejected before queue mutation.
@@ -302,3 +292,34 @@ workflow failed because step X failed
 - `goet status <submission_id>` reflects dependency-aware state.
 - `goet logs <submission_id>` includes useful dependency transition observations when observability is enabled.
 - Relevant workflow, controller, status, and smoke tests pass.
+
+## Implemented State And Smoke
+
+Current dependency-aware workflow behavior:
+
+- steps are sequential by default;
+- adjacent steps with the same `parallel_with` label form one parallel stage;
+- non-contiguous reuse of a `parallel_with` label is rejected before run or queue mutation;
+- workflow submission compiles and queues only the initial ready stage;
+- later stages are compiled just in time after the previous stage completes successfully;
+- downstream expressions can read predecessor outputs through generated `workflow.step[index]` state;
+- logical step output is stored on dependency step state while the workflow is running;
+- `workflow_stages.output_json` is not the canonical source for `workflow.step[index]`;
+- output JSON is bounded control-plane handoff data, not provenance storage or bulk result storage;
+- large results should be external artifacts referenced by small output JSON metadata;
+- `goet status <submission_id>` shows dependency stage and step state;
+- `goet logs <submission_id>` shows dependency transition observations when logging is enabled.
+
+Repeat the smoke path from the repository root:
+
+```powershell
+powershell -NoProfile -File scripts/dependency-aware-workflow-smoke.ps1
+```
+
+The smoke script creates temporary workflow fixtures in the sibling `../go-etl-demo-project` repository and verifies:
+
+- a two-stage sequential workflow initially exposes only stage 0 as assignable;
+- completing stage 0 activates stage 1 and materializes downstream work from `workflow.step`;
+- a contiguous `parallel_with` group exposes both sibling steps as assignable in the same stage;
+- non-contiguous reuse of a `parallel_with` label is rejected without changing queue counts;
+- dependency transition observations are visible through `goet logs`.

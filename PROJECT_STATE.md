@@ -4,6 +4,8 @@ Last updated: 2026-07-06
 
 ## Current Focus
 
+Dependency-aware workflow slice `012-update-dependency-workflow-docs-and-smoke` is now implemented: the concept README, architecture overview, controller README, demo-client README, and project state describe sequential-by-default dependency stages, contiguous `parallel_with` groups, just-in-time downstream compilation, `workflow.step[index]` output access, bounded output JSON, dependency-aware `goet status`, dependency transition `goet logs`, and the repeatable smoke path. `scripts/dependency-aware-workflow-smoke.ps1` creates temporary sibling demo-project workflow fixtures, starts the local controller, proves downstream sequential work is not assignable before upstream completion, proves a valid contiguous `parallel_with` stage exposes sibling work together, proves invalid non-contiguous `parallel_with` reuse is rejected without queue mutation, and checks dependency transition observations through `goet logs`.
+
 Dependency-aware workflow slice `011-surface-dependency-state-in-status-and-logs` is now implemented: `GET /submissions/{submission_id}/status` returns an optional dependency summary with workflow state, current stage index, stage count, per-stage/per-step state summaries, assignable-vs-blocked dependency counts, and failed stage/step/work-item reason without exposing retained dependency output JSON. `goet status --json` now prints the structured status response, human-readable `goet status` adds compact dependency stage lines, and controller-owned dependency transitions are emitted through the existing log-observation path so `goet logs <submission_id>` can show normalization, queued-stage, activation, completion, and failure messages.
 
 Dependency-aware workflow slice `010-propagate-step-and-workflow-failure` is now implemented: dependency failure transitions are centralized in `cmd/controller/workflow_dependency_store.go`, failed workflow state is terminal across conflicting duplicate reports, late sibling completions can update their own membership without reactivating downstream stages, output-capture failures and downstream activation failures mark the dependency workflow failed with `failure_reason` metadata, and activation now enqueues downstream work only after membership and stage readiness are safely recorded. Submission status already reads dependency-plan terminal state, so failed dependency workflows report `failed`.
@@ -1180,6 +1182,14 @@ Run the local workflow demo from the repository root:
 cd "c:\Joe Local Only\College\Research\go-etl"
 go run ./cmd/demo-client
 ```
+
+Run the dependency-aware workflow smoke path from the repository root:
+
+```powershell
+powershell -NoProfile -File scripts/dependency-aware-workflow-smoke.ps1
+```
+
+This starts a local controller, writes temporary sibling demo-project workflow fixtures, and verifies sequential stage readiness, contiguous `parallel_with` readiness, invalid non-contiguous `parallel_with` rejection, `goet status --json`, and `goet logs --json`.
 
 Run the parameterized summary workflow demo from the repository root:
 

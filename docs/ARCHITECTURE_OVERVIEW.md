@@ -1,6 +1,6 @@
 # GOET Architecture Overview
 
-Last updated: 2026-07-03
+Last updated: 2026-07-06
 
 ## Purpose
 
@@ -76,6 +76,8 @@ A Project provides customer or research context, including configuration, defaul
 
 A Workflow defines reusable work. It specifies tasks, dependencies, variables, and expected artifacts without embedding deployment-specific details.
 
+Workflow steps are dependency-aware. By default, steps execute in definition order, one stage after another. Adjacent steps with the same `parallel_with` label form one parallel stage and may be assigned together. The controller rejects non-contiguous reuse of a `parallel_with` label before it creates a run or queues work.
+
 ## Execution Environment
 
 Execution environments isolate backend-specific behavior behind stable interfaces. Current architectural roles include:
@@ -100,10 +102,10 @@ Customer
 Submission
     |
     v
-Workflow Compilation
+Initial Ready-Stage Compilation
     |
     v
-Work Items
+Dependency-Ready Work Items
     |
     v
 Queue
@@ -120,6 +122,8 @@ Attempt Ledger
     v
 Status
 ```
+
+Submission does not queue every workflow step immediately. The controller persists the stage plan, compiles only the initial ready stage, and compiles later stages just in time after predecessor stages complete successfully. Small logical output JSON from completed steps is available to downstream compilation through generated `workflow.step[index]` values; large results should remain external artifacts referenced by that small control-plane data.
 
 ## Architectural Principles
 
