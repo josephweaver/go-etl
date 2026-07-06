@@ -4,6 +4,7 @@ Last updated: 2026-07-06
 
 ## Current Focus
 
+- Resource-constrained work admission concept slice `001-resource-constraint-model-and-schema` is now implemented: `work_item_resource_constraints`, `queued_resource_constraint_checks`, and schema-version `5` are in place in `internal/persistence`, and model validation was added for constraint operators and numeric invariants.
 - Architecturally refactor worker/run ownership in `operational-refinement` OS 001 (`001-decouple-workers-from-run-id.md`): `workers.run_id` is kept as nullable, deprecated launch-context metadata and is no longer required for scheduling or work claiming.
 - Architectural Refinement 1 OS `002a-add-dependency-identity-facts` is now implemented: dependency identity and membership facts are now persisted in `workflow_dependency_steps` and `workflow_dependency_work_items` (`files(4)+test+doc` slice), while dependency execution state and transitions remain in admission JSON for this phase.
 - Architectural Refinement 1 OS `002c-persist-irreducible-logical-outputs` is now implemented: SQLite schema version 4 adds `workflow_step_output_facts`, and the controller records irreducible logical step output facts for aggregate outputs and empty fan-out `[]` outputs while preserving existing dependency-state output pruning behavior.

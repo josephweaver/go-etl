@@ -138,6 +138,24 @@ var sqliteSchemaStatements = []string{
 
 		FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id)
 	);`,
+	`CREATE TABLE work_item_resource_constraints (
+		work_item_id TEXT NOT NULL,
+		constraint_index INTEGER NOT NULL,
+		resource_key TEXT NOT NULL,
+		requested_units INTEGER NOT NULL,
+		operator TEXT NOT NULL CHECK (operator IN ('=', '!=', '<', '>', '<=', '>=')),
+		target_units INTEGER NOT NULL,
+		created_at TEXT NOT NULL,
+
+		PRIMARY KEY (work_item_id, constraint_index),
+		UNIQUE (work_item_id, resource_key),
+		FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+
+		CHECK (constraint_index >= 0),
+		CHECK (resource_key <> ''),
+		CHECK (requested_units > 0),
+		CHECK (target_units >= 0)
+	);`,
 	`CREATE TABLE running_work (
 		attempt_id TEXT PRIMARY KEY,
 		work_item_id TEXT NOT NULL UNIQUE,
@@ -193,6 +211,32 @@ var sqliteIndexStatements = []string{
 	ON completed_work(work_item_id, completed_at, attempt_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_failed_work_item_failed_at
 	ON failed_work(work_item_id, failed_at, attempt_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_work_item_resource_constraints_resource_key
+	ON work_item_resource_constraints(resource_key);`,
+	`CREATE INDEX IF NOT EXISTS idx_work_item_resource_constraints_work_item_id
+	ON work_item_resource_constraints(work_item_id);`,
+}
+
+var sqliteViewStatements = []string{
+	`CREATE VIEW IF NOT EXISTS queued_resource_constraint_checks AS
+	SELECT
+		q.work_item_id,
+		q.queued_at,
+		c.constraint_index,
+		c.resource_key,
+		COALESCE((
+			SELECT SUM(r.requested_units)
+			FROM running_work rw
+			JOIN work_item_resource_constraints r
+				ON r.work_item_id = rw.work_item_id
+			WHERE r.resource_key = c.resource_key
+		), 0) AS total_units,
+		c.requested_units,
+		c.operator,
+		c.target_units
+	FROM queued_work q
+	JOIN work_item_resource_constraints c
+		ON c.work_item_id = q.work_item_id;`,
 }
 
 func openSQLiteStore(ctx context.Context, connectionString string) (*Store, error) {
@@ -261,6 +305,9 @@ func initSQLiteStoreSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureSQLiteStoreIndexes(ctx, tx); err != nil {
 		return err
 	}
+	if err := ensureSQLiteStoreViews(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite schema initialization: %w", err)
@@ -277,6 +324,9 @@ func createSQLiteStoreSchema(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, SupportedSchemaVersion); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
 	}
+	if err := createSQLiteStoreViews(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -284,6 +334,24 @@ func ensureSQLiteStoreIndexes(ctx context.Context, tx *sql.Tx) error {
 	for _, statement := range sqliteIndexStatements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize sqlite indexes: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureSQLiteStoreViews(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range sqliteViewStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("initialize sqlite views: %w", err)
+		}
+	}
+	return nil
+}
+
+func createSQLiteStoreViews(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range sqliteViewStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create sqlite views: %w", err)
 		}
 	}
 	return nil
@@ -331,6 +399,7 @@ func sqliteCoreSchemaExists(ctx context.Context, tx *sql.Tx) (bool, error) {
 			'workflow_step_output_facts',
 			'work_items',
 			'workers',
+			'work_item_resource_constraints',
 			'work_item_attempts',
 			'queued_work',
 			'running_work',

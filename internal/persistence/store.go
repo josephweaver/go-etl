@@ -10,7 +10,7 @@ import (
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 4
+	SupportedSchemaVersion = 5
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -88,6 +88,27 @@ type WorkItemRecord struct {
 	WorkerPayloadJSON    string
 	ResolvedInputsSHA256 string
 	CreatedAt            string
+}
+
+type WorkItemResourceConstraintRecord struct {
+	WorkItemID      string
+	ConstraintIndex int
+	ResourceKey     string
+	RequestedUnits  int
+	Operator        string
+	TargetUnits     int
+	CreatedAt       string
+}
+
+type QueuedResourceConstraintCheckRecord struct {
+	WorkItemID      string
+	QueuedAt        string
+	ConstraintIndex int
+	ResourceKey     string
+	TotalUnits      int
+	RequestedUnits  int
+	Operator        string
+	TargetUnits     int
 }
 
 type WorkflowDependencyWorkItemRecord struct {

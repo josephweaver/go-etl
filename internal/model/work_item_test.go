@@ -289,6 +289,129 @@ func TestWorkItemSourceValidate(t *testing.T) {
 	}
 }
 
+func TestWorkItemResourceConstraintValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		item    WorkItemResourceConstraint
+		wantErr bool
+	}{
+		{
+			name: "valid constraint",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1024,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     65536,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+		},
+		{
+			name: "missing work item id",
+			item: WorkItemResourceConstraint{
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative constraint index",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: -1,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing resource key",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				RequestedUnits:  1,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "requested units must be positive",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  0,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsupported operator",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1,
+				Operator:        "invalid",
+				TargetUnits:     1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative target units",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     -1,
+				CreatedAt:       "2026-07-03T00:00:00Z",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing created at",
+			item: WorkItemResourceConstraint{
+				WorkItemID:      "work-item-001",
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  1,
+				Operator:        WorkItemResourceConstraintOperatorLessEq,
+				TargetUnits:     1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.item.Validate()
+
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:        "work-item-001",

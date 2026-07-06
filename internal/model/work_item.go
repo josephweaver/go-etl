@@ -34,6 +34,27 @@ type WorkItem struct {
 	CodeVersion          string               `json:"code_version,omitempty"`
 }
 
+type WorkItemResourceConstraintOperator string
+
+const (
+	WorkItemResourceConstraintOperatorEqual     WorkItemResourceConstraintOperator = "="
+	WorkItemResourceConstraintOperatorNotEqual  WorkItemResourceConstraintOperator = "!="
+	WorkItemResourceConstraintOperatorLessThan  WorkItemResourceConstraintOperator = "<"
+	WorkItemResourceConstraintOperatorGreater   WorkItemResourceConstraintOperator = ">"
+	WorkItemResourceConstraintOperatorLessEq    WorkItemResourceConstraintOperator = "<="
+	WorkItemResourceConstraintOperatorGreaterEq WorkItemResourceConstraintOperator = ">="
+)
+
+type WorkItemResourceConstraint struct {
+	WorkItemID      string                             `json:"work_item_id"`
+	ConstraintIndex int                                `json:"constraint_index"`
+	ResourceKey     string                             `json:"resource_key"`
+	RequestedUnits  int                                `json:"requested_units"`
+	Operator        WorkItemResourceConstraintOperator `json:"operator"`
+	TargetUnits     int                                `json:"target_units"`
+	CreatedAt       string                             `json:"created_at"`
+}
+
 type WorkItemSource struct {
 	Schema       string `json:"schema,omitempty"`
 	RunID        string `json:"run_id"`
@@ -187,4 +208,43 @@ func (skip WorkSkip) Validate() error {
 	}
 
 	return nil
+}
+
+func (c WorkItemResourceConstraint) Validate() error {
+	if strings.TrimSpace(c.WorkItemID) == "" {
+		return fmt.Errorf("work item id is required")
+	}
+	if c.ConstraintIndex < 0 {
+		return fmt.Errorf("constraint index must be non-negative")
+	}
+	if strings.TrimSpace(c.ResourceKey) == "" {
+		return fmt.Errorf("resource key is required")
+	}
+	if c.RequestedUnits <= 0 {
+		return fmt.Errorf("requested units must be greater than 0")
+	}
+	if !isSupportedWorkItemResourceConstraintOperator(c.Operator) {
+		return fmt.Errorf("unsupported resource constraint operator %q", c.Operator)
+	}
+	if c.TargetUnits < 0 {
+		return fmt.Errorf("target units must be non-negative")
+	}
+	if strings.TrimSpace(c.CreatedAt) == "" {
+		return fmt.Errorf("created at is required")
+	}
+	return nil
+}
+
+func isSupportedWorkItemResourceConstraintOperator(operator WorkItemResourceConstraintOperator) bool {
+	switch operator {
+	case WorkItemResourceConstraintOperatorEqual,
+		WorkItemResourceConstraintOperatorNotEqual,
+		WorkItemResourceConstraintOperatorLessThan,
+		WorkItemResourceConstraintOperatorGreater,
+		WorkItemResourceConstraintOperatorLessEq,
+		WorkItemResourceConstraintOperatorGreaterEq:
+		return true
+	default:
+		return false
+	}
 }
