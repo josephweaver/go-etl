@@ -42,7 +42,7 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		if err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
-		items, queued, memberships, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
+		items, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
 		if err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
@@ -185,9 +185,10 @@ func (c *Controller) compileActivationStage(ctx context.Context, runID string, p
 	}
 	for _, item := range result.WorkItems {
 		compileResult.WorkItems = append(compileResult.WorkItems, workflow.CompiledWorkItem{
-			WorkflowID: result.WorkflowID,
-			StepID:     item.StepID,
-			WorkItem:   item.WorkItem,
+			WorkflowID:          result.WorkflowID,
+			StepID:              item.StepID,
+			WorkItem:            item.WorkItem,
+			ResourceConstraints: item.ResourceConstraints,
 		})
 	}
 	compileResult, err = prepareCompiledWorkflowForAdmission(c.repoCacheLayout, manifest, compileResult)
@@ -199,6 +200,7 @@ func (c *Controller) compileActivationStage(ctx context.Context, runID string, p
 	}
 	for index := range result.WorkItems {
 		result.WorkItems[index].WorkItem = compileResult.WorkItems[index].WorkItem
+		result.WorkItems[index].ResourceConstraints = compileResult.WorkItems[index].ResourceConstraints
 	}
 	return result, resolver, codeVersion, nil
 }

@@ -14,9 +14,10 @@ type Workflow struct {
 }
 
 type CompiledWorkItem struct {
-	WorkflowID string
-	StepID     string
-	WorkItem   model.WorkItem
+	WorkflowID          string
+	StepID              string
+	WorkItem            model.WorkItem
+	ResourceConstraints []model.WorkItemResourceConstraint
 }
 
 type CompileResult struct {
@@ -62,21 +63,22 @@ func CompileWorkflowResult(resolver variable.Resolver, workflow Workflow) (Compi
 		}
 		seenSteps[step.ID] = true
 
-		compiled, err := CompileStep(resolver, step)
+		compiled, err := CompileStepItems(resolver, step)
 		if err != nil {
 			return CompileResult{}, fmt.Errorf("compile workflow step %d: %w", index, err)
 		}
 
 		for _, item := range compiled {
-			if seenWorkItems[item.ID] {
-				return CompileResult{}, fmt.Errorf("duplicate generated work item id: %s", item.ID)
+			if seenWorkItems[item.WorkItem.ID] {
+				return CompileResult{}, fmt.Errorf("duplicate generated work item id: %s", item.WorkItem.ID)
 			}
-			seenWorkItems[item.ID] = true
+			seenWorkItems[item.WorkItem.ID] = true
 
 			items = append(items, CompiledWorkItem{
-				WorkflowID: workflow.ID,
-				StepID:     step.ID,
-				WorkItem:   item,
+				WorkflowID:          workflow.ID,
+				StepID:              step.ID,
+				WorkItem:            item.WorkItem,
+				ResourceConstraints: item.ResourceConstraints,
 			})
 		}
 	}

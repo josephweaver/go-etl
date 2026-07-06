@@ -8,12 +8,13 @@ import (
 )
 
 type CompileStageWorkItem struct {
-	WorkflowID    string
-	StageIndex    int
-	StepIndex     int
-	StepID        string
-	WorkItemIndex int
-	WorkItem      model.WorkItem
+	WorkflowID          string
+	StageIndex          int
+	StepIndex           int
+	StepID              string
+	WorkItemIndex       int
+	WorkItem            model.WorkItem
+	ResourceConstraints []model.WorkItemResourceConstraint
 }
 
 type CompileStageResult struct {
@@ -46,7 +47,7 @@ func CompileWorkflowStage(resolver variable.Resolver, workflow Workflow, plan Wo
 	}
 
 	for _, workflowStep := range stage.Steps {
-		compiled, err := CompileStep(resolver, workflowStep.Step)
+		compiled, err := CompileStepItems(resolver, workflowStep.Step)
 		if err != nil {
 			return CompileStageResult{}, fmt.Errorf(
 				"compile workflow stage %d step %d (%s): %w",
@@ -58,22 +59,23 @@ func CompileWorkflowStage(resolver variable.Resolver, workflow Workflow, plan Wo
 		}
 
 		for itemIndex, item := range compiled {
-			if seenWorkItems[item.ID] {
+			if seenWorkItems[item.WorkItem.ID] {
 				return CompileStageResult{}, fmt.Errorf(
 					"duplicate generated work-item id in stage %d: %s",
 					stageIndex,
-					item.ID,
+					item.WorkItem.ID,
 				)
 			}
-			seenWorkItems[item.ID] = true
+			seenWorkItems[item.WorkItem.ID] = true
 
 			result.WorkItems = append(result.WorkItems, CompileStageWorkItem{
-				WorkflowID:    workflow.ID,
-				StageIndex:    stageIndex,
-				StepIndex:     workflowStep.StepIndex,
-				StepID:        workflowStep.StepID,
-				WorkItemIndex: itemIndex,
-				WorkItem:      item,
+				WorkflowID:          workflow.ID,
+				StageIndex:          stageIndex,
+				StepIndex:           workflowStep.StepIndex,
+				StepID:              workflowStep.StepID,
+				WorkItemIndex:       itemIndex,
+				WorkItem:            item.WorkItem,
+				ResourceConstraints: item.ResourceConstraints,
 			})
 		}
 	}

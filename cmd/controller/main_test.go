@@ -1846,6 +1846,85 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 	}
 }
 
+func TestSubmitWorkHandlerAcceptsRawWorkWrapperWithResourceConstraints(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"work_item": {
+			"id":"test-001",
+			"type":"write_demo_output",
+			"output_filename":"result.txt"
+		},
+		"resource_constraints": [
+			{
+				"resource_key": "ctlr/python-env:torch",
+				"requested_units": 1,
+				"operator": "<=",
+				"target_units": 1
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want 1", len(queued))
+	}
+	var persisted model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &persisted); err != nil {
+		t.Fatalf("decode worker payload json: %v", err)
+	}
+	if persisted.ID != "test-001" || persisted.OutputFilename != "result.txt" {
+		t.Fatalf("persisted payload = %+v, want wrapped work item only", persisted)
+	}
+}
+
+func TestSubmitWorkHandlerRejectsInvalidRawResourceConstraintsBeforeQueueMutation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"work_item": {
+			"id":"test-001",
+			"type":"write_demo_output",
+			"output_filename":"result.txt"
+		},
+		"resource_constraints": [
+			{
+				"resource_key": "ctlr/python-env:torch",
+				"requested_units": 0,
+				"operator": "<=",
+				"target_units": 1
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued count = %d, want 0", len(queued))
+	}
+}
+
 func TestSubmitWorkHandlerRejectsDuplicatePersistedRawWork(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

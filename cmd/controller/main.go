@@ -64,6 +64,11 @@ type WorkflowSubmission struct {
 	Variables      []variable.Variable                  `json:"variables"`
 }
 
+type RawWorkSubmission struct {
+	WorkItem            model.WorkItem                           `json:"work_item"`
+	ResourceConstraints []workflow.ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
+}
+
 type WorkflowRunSubmission struct {
 	Project   SourceDocumentReference `json:"project"`
 	Workflow  SourceDocumentReference `json:"workflow"`
@@ -996,8 +1001,14 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var item model.WorkItem
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read work item", http.StatusBadRequest)
+		return
+	}
+	submittedAt := time.Now().UTC()
+	item, constraints, err := decodeRawWorkSubmission(body, submittedAt)
+	if err != nil {
 		http.Error(w, "decode work item", http.StatusBadRequest)
 		return
 	}
@@ -1011,8 +1022,9 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
+	_ = constraints
 
-	if err := c.submitRawWorkToStore(r.Context(), item, time.Now().UTC()); err != nil {
+	if err := c.submitRawWorkToStore(r.Context(), item, submittedAt); err != nil {
 		if isPersistenceConflict(err) {
 			http.Error(w, "work item id already exists", http.StatusConflict)
 			return
@@ -1021,6 +1033,40 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func decodeRawWorkSubmission(data []byte, submittedAt time.Time) (model.WorkItem, []model.WorkItemResourceConstraint, error) {
+	var envelope struct {
+		WorkItem json.RawMessage `json:"work_item"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return model.WorkItem{}, nil, err
+	}
+	if len(envelope.WorkItem) == 0 {
+		var item model.WorkItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			return model.WorkItem{}, nil, err
+		}
+		return item, nil, nil
+	}
+
+	var submission RawWorkSubmission
+	if err := json.Unmarshal(data, &submission); err != nil {
+		return model.WorkItem{}, nil, err
+	}
+	if err := submission.WorkItem.Validate(); err != nil {
+		return model.WorkItem{}, nil, err
+	}
+	constraints, err := workflow.ResolveResourceConstraints(
+		variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}),
+		submission.WorkItem.ID,
+		submission.ResourceConstraints,
+		submittedAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return model.WorkItem{}, nil, err
+	}
+	return submission.WorkItem, constraints, nil
 }
 
 func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkItem, submittedAt time.Time) error {
@@ -1342,9 +1388,10 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		compiledItems := make([]workflow.CompiledWorkItem, 0, len(result.WorkItems))
 		for _, item := range result.WorkItems {
 			compiledItems = append(compiledItems, workflow.CompiledWorkItem{
-				WorkflowID: result.WorkflowID,
-				StepID:     item.StepID,
-				WorkItem:   item.WorkItem,
+				WorkflowID:          result.WorkflowID,
+				StepID:              item.StepID,
+				WorkItem:            item.WorkItem,
+				ResourceConstraints: item.ResourceConstraints,
 			})
 		}
 		compileResult.WorkItems = compiledItems
@@ -1359,6 +1406,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		}
 		for index := range stageResult.WorkItems {
 			stageResult.WorkItems[index].WorkItem = compileResult.WorkItems[index].WorkItem
+			stageResult.WorkItems[index].ResourceConstraints = compileResult.WorkItems[index].ResourceConstraints
 		}
 	}
 
@@ -1390,7 +1438,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	if stageResult != nil {
 		stageResults = append(stageResults, *stageResult)
 	}
-	items, queued, memberships, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
+	items, queued, memberships, _, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}

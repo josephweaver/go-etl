@@ -155,7 +155,7 @@ func TestPersistenceRecordsFromCompiledStageResultsIncludesDeterministicMetadata
 		},
 	}
 
-	records, queued, memberships, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	records, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
 	}
@@ -206,7 +206,7 @@ func TestPersistenceRecordsFromCompiledStageResultsIncludesDeterministicMetadata
 		t.Fatalf("firstPayload.CodeVersion = %q, want v1", firstPayload.CodeVersion)
 	}
 
-	recordsAgain, _, _, err := persistenceRecordsFromCompiledStageResults("run-002", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	recordsAgain, _, _, _, err := persistenceRecordsFromCompiledStageResults("run-002", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("persistenceRecordsFromCompiledStageResults(second run) error = %v", err)
 	}
@@ -216,5 +216,53 @@ func TestPersistenceRecordsFromCompiledStageResultsIncludesDeterministicMetadata
 	}
 	if secondPayload.StepInstanceID == firstPayload.StepInstanceID {
 		t.Fatal("step instance id must differ across submissions")
+	}
+}
+
+func TestPersistenceRecordsFromCompiledStageResultsStampsResourceConstraints(t *testing.T) {
+	stageResult := workflow.CompileStageResult{
+		WorkflowID: "cdl",
+		StageIndex: 0,
+		WorkItems: []workflow.CompileStageWorkItem{
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    0,
+				StepIndex:     0,
+				StepID:        "download",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "download-001",
+					Type:           model.WorkItemTypeWriteDemoOutput,
+					OutputFilename: "download-001.txt",
+				},
+				ResourceConstraints: []model.WorkItemResourceConstraint{
+					{
+						WorkItemID:      "download-001",
+						ConstraintIndex: 0,
+						ResourceKey:     "target:local/memory-mib",
+						RequestedUnits:  512,
+						Operator:        model.WorkItemResourceConstraintOperatorLessEq,
+						TargetUnits:     2048,
+					},
+				},
+			},
+		},
+	}
+
+	_, _, _, constraints, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
+	}
+	if len(constraints) != 1 {
+		t.Fatalf("constraint count = %d, want 1", len(constraints))
+	}
+	if constraints[0].WorkItemID != "run-001:download-001" {
+		t.Fatalf("constraint work item id = %q, want run-scoped id", constraints[0].WorkItemID)
+	}
+	if constraints[0].CreatedAt != "2026-07-05T12:00:00Z" {
+		t.Fatalf("constraint created_at = %q, want submitted timestamp", constraints[0].CreatedAt)
+	}
+	if constraints[0].RequestedUnits != 512 {
+		t.Fatalf("constraint requested units = %d, want 512", constraints[0].RequestedUnits)
 	}
 }
