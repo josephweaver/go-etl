@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"goetl/internal/model"
 )
 
 const (
@@ -1086,17 +1088,8 @@ func (s *Store) ListQueuedResourceConstraintChecks(ctx context.Context) ([]Queue
 
 	checks := []QueuedResourceConstraintCheckRecord{}
 	for rows.Next() {
-		var check QueuedResourceConstraintCheckRecord
-		if err := rows.Scan(
-			&check.WorkItemID,
-			&check.QueuedAt,
-			&check.ConstraintIndex,
-			&check.ResourceKey,
-			&check.TotalUnits,
-			&check.RequestedUnits,
-			&check.Operator,
-			&check.TargetUnits,
-		); err != nil {
+		check, err := scanQueuedResourceConstraintCheck(rows)
+		if err != nil {
 			return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
 		}
 		checks = append(checks, check)
@@ -1369,26 +1362,29 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 	}
 	defer tx.Rollback()
 
-	queued, err := scanQueuedWork(tx.QueryRowContext(ctx, `SELECT
-		work_items.work_item_id,
-		work_items.run_id,
-		work_items.stage_index,
-		work_items.work_item_index,
-		work_items.worker_payload_json,
-		work_items.resolved_inputs_sha256,
-		work_items.created_at,
-		queued_work.queued_at
-	FROM queued_work
-	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
-	ORDER BY queued_work.queued_at, queued_work.work_item_id
-	LIMIT 1`))
-	if err == sql.ErrNoRows {
-		return ClaimedWorkRecord{}, false, nil
-	}
+	queuedItems, err := listQueuedWorkForClaim(ctx, tx)
 	if err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work: %w", err)
 	}
 
+	for _, queued := range queuedItems {
+		allowed, err := queuedResourceConstraintsAllow(ctx, tx, queued.ID)
+		if err != nil {
+			return ClaimedWorkRecord{}, false, fmt.Errorf("claim queued work %s: %w", queued.ID, err)
+		}
+		if !allowed {
+			continue
+		}
+		return claimQueuedWork(ctx, tx, request, queued)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("commit empty claim next work: %w", err)
+	}
+	return ClaimedWorkRecord{}, false, nil
+}
+
+func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, queued QueuedWorkRecord) (ClaimedWorkRecord, bool, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_attempts (
 		attempt_id,
 		work_item_id,
@@ -2029,6 +2025,88 @@ func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, b
 	return queuedAt, true, nil
 }
 
+func listQueuedWorkForClaim(ctx context.Context, tx *sql.Tx) ([]QueuedWorkRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		queued_work.queued_at
+	FROM queued_work
+	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
+	ORDER BY queued_work.queued_at, queued_work.work_item_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	queued := []QueuedWorkRecord{}
+	for rows.Next() {
+		item, err := scanQueuedWork(rows)
+		if err != nil {
+			return nil, err
+		}
+		queued = append(queued, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return queued, nil
+}
+
+func queuedResourceConstraintsAllow(ctx context.Context, tx *sql.Tx, workItemID string) (bool, error) {
+	checks, err := listQueuedResourceConstraintChecksForWorkItem(ctx, tx, workItemID)
+	if err != nil {
+		return false, err
+	}
+
+	modelChecks := make([]model.ResourceConstraintCheck, 0, len(checks))
+	for _, check := range checks {
+		modelChecks = append(modelChecks, model.ResourceConstraintCheck{
+			TotalUnits:     check.TotalUnits,
+			RequestedUnits: check.RequestedUnits,
+			Operator:       model.ResourceOperator(check.Operator),
+			TargetUnits:    check.TargetUnits,
+		})
+	}
+	return model.ResourceConstraintChecksAllow(modelChecks)
+}
+
+func listQueuedResourceConstraintChecksForWorkItem(ctx context.Context, tx *sql.Tx, workItemID string) ([]QueuedResourceConstraintCheckRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		work_item_id,
+		queued_at,
+		constraint_index,
+		resource_key,
+		total_units,
+		requested_units,
+		operator,
+		target_units
+	FROM queued_resource_constraint_checks
+	WHERE work_item_id = ?
+	ORDER BY constraint_index`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	checks := []QueuedResourceConstraintCheckRecord{}
+	for rows.Next() {
+		check, err := scanQueuedResourceConstraintCheck(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+		}
+		checks = append(checks, check)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+	}
+	return checks, nil
+}
+
 func getWorkflowDependencyWorkItem(ctx context.Context, q queryer, runID, workItemID string) (WorkflowDependencyWorkItemRecord, bool, error) {
 	if runID == "" {
 		return WorkflowDependencyWorkItemRecord{}, false, fmt.Errorf("run id is required")
@@ -2227,6 +2305,21 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 		&item.QueuedAt,
 	)
 	return item, err
+}
+
+func scanQueuedResourceConstraintCheck(row scanner) (QueuedResourceConstraintCheckRecord, error) {
+	var check QueuedResourceConstraintCheckRecord
+	err := row.Scan(
+		&check.WorkItemID,
+		&check.QueuedAt,
+		&check.ConstraintIndex,
+		&check.ResourceKey,
+		&check.TotalUnits,
+		&check.RequestedUnits,
+		&check.Operator,
+		&check.TargetUnits,
+	)
+	return check, err
 }
 
 func scanWorkflowDependencyStep(row scanner) (WorkflowDependencyStepRecord, error) {

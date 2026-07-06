@@ -1915,6 +1915,251 @@ func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameWorker(t *testing.T) {
 	assertAttempt(t, ctx, store, claimB.AttemptID, claimedB.WorkItem.ID, "worker-001", claimB.ExecutorType, claimB.StartedAt)
 }
 
+func TestStoreClaimNextWorkClaimsOldestEligibleConstrainedWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "target:local/memory-mib"
+	running := testWorkItemRecord("work-running", run.ID, 0, 0)
+	older := testWorkItemRecord("work-older", run.ID, 0, 1)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 2)
+	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running", resourceKey, 2)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{newer, older},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(newer.ID, 0, resourceKey, 1, "<=", 3),
+			testResourceConstraintRecord(older.ID, 0, resourceKey, 1, "<=", 3),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+			{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	request := testClaimWorkRequest()
+
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+	if claimed.WorkItem != older {
+		t.Fatalf("claimed work item = %+v, want %+v", claimed.WorkItem, older)
+	}
+	assertQueuedWorkMissing(t, ctx, store, older.ID)
+	assertQueuedWork(t, ctx, store, newer.ID, "2026-07-03T00:00:02Z")
+	assertRunningWork(t, ctx, store, request.AttemptID, older.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
+	assertAttempt(t, ctx, store, request.AttemptID, older.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+}
+
+func TestStoreClaimNextWorkSkipsBlockedOldestConstrainedWork(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "target:local/memory-mib"
+	running := testWorkItemRecord("work-running", run.ID, 0, 0)
+	older := testWorkItemRecord("work-older", run.ID, 0, 1)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 2)
+	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running", resourceKey, 2)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{newer, older},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(older.ID, 0, resourceKey, 2, "<=", 3),
+			testResourceConstraintRecord(newer.ID, 0, resourceKey, 1, "<=", 3),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	request := testClaimWorkRequest()
+
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+	if claimed.WorkItem != newer {
+		t.Fatalf("claimed work item = %+v, want %+v", claimed.WorkItem, newer)
+	}
+	assertQueuedWork(t, ctx, store, older.ID, "2026-07-03T00:00:01Z")
+	assertQueuedWorkMissing(t, ctx, store, newer.ID)
+	assertRunningWork(t, ctx, store, request.AttemptID, newer.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
+	assertAttempt(t, ctx, store, request.AttemptID, newer.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+}
+
+func TestStoreClaimNextWorkReturnsNoWorkWhenAllResourceBlocked(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "target:local/memory-mib"
+	running := testWorkItemRecord("work-running", run.ID, 0, 0)
+	older := testWorkItemRecord("work-older", run.ID, 0, 1)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 2)
+	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running", resourceKey, 3)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{newer, older},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(older.ID, 0, resourceKey, 1, "<=", 3),
+			testResourceConstraintRecord(newer.ID, 0, resourceKey, 1, "<", 4),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	request := testClaimWorkRequest()
+
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("ClaimNextWork() found = true with claim %+v, want false", claimed)
+	}
+	assertQueuedWork(t, ctx, store, older.ID, "2026-07-03T00:00:01Z")
+	assertQueuedWork(t, ctx, store, newer.ID, "2026-07-03T00:00:02Z")
+	assertRunningWorkMissingForAttempt(t, ctx, store, request.AttemptID)
+	assertAttemptMissing(t, ctx, store, request.AttemptID)
+}
+
+func TestStoreClaimNextWorkSecondClaimSeesFirstRunningResourceUsage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "ctlr/python-env:torch"
+	older := testWorkItemRecord("work-older", run.ID, 0, 0)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 1)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{older, newer},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(older.ID, 0, resourceKey, 1, "<=", 1),
+			testResourceConstraintRecord(newer.ID, 0, resourceKey, 1, "<=", 1),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	firstClaim := testClaimWorkRequest()
+	firstClaim.AttemptID = "attempt-first"
+	first, found, err := store.ClaimNextWork(ctx, firstClaim)
+	if err != nil {
+		t.Fatalf("first ClaimNextWork() error = %v", err)
+	}
+	if !found || first.WorkItem.ID != older.ID {
+		t.Fatalf("first ClaimNextWork() = %+v found %v, want %s", first, found, older.ID)
+	}
+
+	secondClaim := testClaimWorkRequest()
+	secondClaim.AttemptID = "attempt-second"
+	second, found, err := store.ClaimNextWork(ctx, secondClaim)
+	if err != nil {
+		t.Fatalf("second ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("second ClaimNextWork() found = true with claim %+v, want false", second)
+	}
+	assertQueuedWork(t, ctx, store, newer.ID, "2026-07-03T00:00:02Z")
+	assertRunningWorkMissingForAttempt(t, ctx, store, secondClaim.AttemptID)
+	assertAttemptMissing(t, ctx, store, secondClaim.AttemptID)
+
+	if _, found, err := store.CompleteAttempt(ctx, testCompleteAttemptRequest(firstClaim.AttemptID)); err != nil {
+		t.Fatalf("CompleteAttempt() error = %v", err)
+	} else if !found {
+		t.Fatal("CompleteAttempt() found = false, want true")
+	}
+	thirdClaim := testClaimWorkRequest()
+	thirdClaim.AttemptID = "attempt-third"
+	third, found, err := store.ClaimNextWork(ctx, thirdClaim)
+	if err != nil {
+		t.Fatalf("third ClaimNextWork() error = %v", err)
+	}
+	if !found || third.WorkItem.ID != newer.ID {
+		t.Fatalf("third ClaimNextWork() = %+v found %v, want %s", third, found, newer.ID)
+	}
+}
+
+func TestStoreClaimNextWorkAppliesAllResourceOperators(t *testing.T) {
+	tests := []struct {
+		name      string
+		operator  string
+		target    int
+		wantFound bool
+	}{
+		{name: "equal allows", operator: "=", target: 5, wantFound: true},
+		{name: "equal blocks", operator: "=", target: 4, wantFound: false},
+		{name: "not equal allows", operator: "!=", target: 4, wantFound: true},
+		{name: "not equal blocks", operator: "!=", target: 5, wantFound: false},
+		{name: "less than allows", operator: "<", target: 6, wantFound: true},
+		{name: "less than blocks", operator: "<", target: 5, wantFound: false},
+		{name: "greater than allows", operator: ">", target: 4, wantFound: true},
+		{name: "greater than blocks", operator: ">", target: 5, wantFound: false},
+		{name: "less than or equal allows", operator: "<=", target: 5, wantFound: true},
+		{name: "less than or equal blocks", operator: "<=", target: 4, wantFound: false},
+		{name: "greater than or equal allows", operator: ">=", target: 5, wantFound: true},
+		{name: "greater than or equal blocks", operator: ">=", target: 6, wantFound: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+			defer store.Close()
+			run := insertTestRunWithStage(t, ctx, store)
+			resourceKey := "target:local/operator-resource"
+			running := testWorkItemRecord("work-running", run.ID, 0, 0)
+			candidate := testWorkItemRecord("work-candidate", run.ID, 0, 1)
+			insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running", resourceKey, 4)
+			if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+				WorkItems: []WorkItemRecord{candidate},
+				ResourceConstraints: []WorkItemResourceConstraintRecord{
+					testResourceConstraintRecord(candidate.ID, 0, resourceKey, 1, tt.operator, tt.target),
+				},
+				QueuedWork: []QueuedWorkRecord{{WorkItemRecord: candidate, QueuedAt: "2026-07-03T00:00:01Z"}},
+			}); err != nil {
+				t.Fatalf("QueueWorkItems() error = %v", err)
+			}
+			request := testClaimWorkRequest()
+
+			claimed, found, err := store.ClaimNextWork(ctx, request)
+			if err != nil {
+				t.Fatalf("ClaimNextWork() error = %v", err)
+			}
+			if found != tt.wantFound {
+				t.Fatalf("ClaimNextWork() found = %v with claim %+v, want %v", found, claimed, tt.wantFound)
+			}
+			if tt.wantFound {
+				if claimed.WorkItem.ID != candidate.ID {
+					t.Fatalf("claimed work item id = %q, want %q", claimed.WorkItem.ID, candidate.ID)
+				}
+				assertQueuedWorkMissing(t, ctx, store, candidate.ID)
+				assertRunningWork(t, ctx, store, request.AttemptID, candidate.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
+				assertAttempt(t, ctx, store, request.AttemptID, candidate.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+				return
+			}
+			assertQueuedWork(t, ctx, store, candidate.ID, "2026-07-03T00:00:01Z")
+			assertRunningWorkMissingForAttempt(t, ctx, store, request.AttemptID)
+			assertAttemptMissing(t, ctx, store, request.AttemptID)
+		})
+	}
+}
+
 func TestStoreCompleteAttemptCompletesRunningWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
@@ -2456,6 +2701,18 @@ func assertAttempt(t *testing.T, ctx context.Context, store *Store, attemptID st
 	}
 }
 
+func assertAttemptMissing(t *testing.T, ctx context.Context, store *Store, attemptID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_item_attempts WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		t.Fatalf("count attempts: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("attempt count = %d, want 0", count)
+	}
+}
+
 func insertTestRunningWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string) {
 	t.Helper()
 
@@ -2475,6 +2732,28 @@ func insertTestRunningWork(t *testing.T, ctx context.Context, store *Store, atte
 	) VALUES (?, ?, '2026-07-03T00:00:00Z', '2026-07-03T00:00:01Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert running work: %v", err)
 	}
+}
+
+func insertTestRunningWorkWithResourceConstraint(t *testing.T, ctx context.Context, store *Store, item WorkItemRecord, attemptID string, resourceKey string, requestedUnits int) {
+	t.Helper()
+
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{item}); err != nil {
+		t.Fatalf("InsertWorkItems(running) error = %v", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin running resource constraint tx: %v", err)
+	}
+	if err := insertWorkItemResourceConstraints(ctx, tx, []WorkItemResourceConstraintRecord{
+		testResourceConstraintRecord(item.ID, 0, resourceKey, requestedUnits, "<=", requestedUnits),
+	}); err != nil {
+		tx.Rollback()
+		t.Fatalf("insert running resource constraint: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit running resource constraint: %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, attemptID, item.ID)
 }
 
 func insertTestCompletedWork(t *testing.T, ctx context.Context, store *Store, attemptID string, workItemID string) {

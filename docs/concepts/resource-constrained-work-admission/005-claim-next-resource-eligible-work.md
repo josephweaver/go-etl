@@ -1,6 +1,6 @@
 # 005 Claim Next Resource Eligible Work
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

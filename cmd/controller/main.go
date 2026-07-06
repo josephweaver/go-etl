@@ -40,6 +40,7 @@ var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference wor
 
 type Controller struct {
 	mu                  sync.Mutex
+	claimMu             sync.Mutex
 	ledger              *sql.DB
 	workflowStore       *persistence.Store
 	repoSourceProviders map[string]reposource.Provider
@@ -2871,11 +2872,16 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {
-	claim, found, err := c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-" + randomHex(16),
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    time.Now().UTC().Format(time.RFC3339),
-	})
+	claim, found, err := func() (persistence.ClaimedWorkRecord, bool, error) {
+		c.claimMu.Lock()
+		defer c.claimMu.Unlock()
+
+		return c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
+			AttemptID:    "attempt-" + randomHex(16),
+			ExecutorType: persistence.ExecutorTypeWorker,
+			StartedAt:    time.Now().UTC().Format(time.RFC3339),
+		})
+	}()
 	if err != nil {
 		http.Error(w, "claim work", http.StatusInternalServerError)
 		return
