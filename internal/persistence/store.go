@@ -105,10 +105,10 @@ type QueuedResourceConstraintCheckRecord struct {
 	QueuedAt        string
 	ConstraintIndex int
 	ResourceKey     string
-	TotalUnits      int
-	RequestedUnits  int
+	TotalUnits      int64
+	RequestedUnits  int64
 	Operator        string
-	TargetUnits     int
+	TargetUnits     int64
 }
 
 type WorkflowDependencyWorkItemRecord struct {
@@ -1061,6 +1061,50 @@ func (s *Store) ListWorkItemResourceConstraints(ctx context.Context, workItemID 
 		return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
 	}
 	return constraints, nil
+}
+
+func (s *Store) ListQueuedResourceConstraintChecks(ctx context.Context) ([]QueuedResourceConstraintCheckRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_item_id,
+		queued_at,
+		constraint_index,
+		resource_key,
+		total_units,
+		requested_units,
+		operator,
+		target_units
+	FROM queued_resource_constraint_checks
+	ORDER BY queued_at, work_item_id, constraint_index`)
+	if err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+	}
+	defer rows.Close()
+
+	checks := []QueuedResourceConstraintCheckRecord{}
+	for rows.Next() {
+		var check QueuedResourceConstraintCheckRecord
+		if err := rows.Scan(
+			&check.WorkItemID,
+			&check.QueuedAt,
+			&check.ConstraintIndex,
+			&check.ResourceKey,
+			&check.TotalUnits,
+			&check.RequestedUnits,
+			&check.Operator,
+			&check.TargetUnits,
+		); err != nil {
+			return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+		}
+		checks = append(checks, check)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+	}
+	return checks, nil
 }
 
 func (s *Store) ListQueuedWorkItems(ctx context.Context) ([]QueuedWorkRecord, error) {

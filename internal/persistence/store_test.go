@@ -926,6 +926,98 @@ func TestStoreQueueWorkItemsPersistsResourceConstraints(t *testing.T) {
 	}
 }
 
+func TestStoreListQueuedResourceConstraintChecksReadsViewRows(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+
+	runningMemory := testWorkItemRecord("work-running-memory", run.ID, 0, 0)
+	runningGPU := testWorkItemRecord("work-running-gpu", run.ID, 0, 1)
+	newer := testWorkItemRecord("work-newer", run.ID, 0, 2)
+	older := testWorkItemRecord("work-older", run.ID, 0, 3)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{runningMemory, runningGPU}); err != nil {
+		t.Fatalf("InsertWorkItems(running) error = %v", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin running constraints tx: %v", err)
+	}
+	if err := insertWorkItemResourceConstraints(ctx, tx, []WorkItemResourceConstraintRecord{
+		testResourceConstraintRecord(runningMemory.ID, 0, "target:local/memory-mib", 4, "<=", 10),
+		testResourceConstraintRecord(runningGPU.ID, 0, "target:local/gpu-count", 99, "<=", 100),
+	}); err != nil {
+		tx.Rollback()
+		t.Fatalf("insert running constraints: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit running constraints: %v", err)
+	}
+	insertTestRunningWork(t, ctx, store, "attempt-memory", runningMemory.ID)
+	insertTestRunningWork(t, ctx, store, "attempt-gpu", runningGPU.ID)
+
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{newer, older},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(newer.ID, 0, "target:local/memory-mib", 3, "<=", 10),
+			testResourceConstraintRecord(older.ID, 1, "target:local/gpu-count", 1, "<=", 100),
+			testResourceConstraintRecord(older.ID, 0, "target:local/memory-mib", 2, "<=", 10),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: newer, QueuedAt: "2026-07-03T00:00:02Z"},
+			{WorkItemRecord: older, QueuedAt: "2026-07-03T00:00:01Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	checks, err := store.ListQueuedResourceConstraintChecks(ctx)
+	if err != nil {
+		t.Fatalf("ListQueuedResourceConstraintChecks() error = %v", err)
+	}
+
+	want := []QueuedResourceConstraintCheckRecord{
+		{
+			WorkItemID:      older.ID,
+			QueuedAt:        "2026-07-03T00:00:01Z",
+			ConstraintIndex: 0,
+			ResourceKey:     "target:local/memory-mib",
+			TotalUnits:      4,
+			RequestedUnits:  2,
+			Operator:        "<=",
+			TargetUnits:     10,
+		},
+		{
+			WorkItemID:      older.ID,
+			QueuedAt:        "2026-07-03T00:00:01Z",
+			ConstraintIndex: 1,
+			ResourceKey:     "target:local/gpu-count",
+			TotalUnits:      99,
+			RequestedUnits:  1,
+			Operator:        "<=",
+			TargetUnits:     100,
+		},
+		{
+			WorkItemID:      newer.ID,
+			QueuedAt:        "2026-07-03T00:00:02Z",
+			ConstraintIndex: 0,
+			ResourceKey:     "target:local/memory-mib",
+			TotalUnits:      4,
+			RequestedUnits:  3,
+			Operator:        "<=",
+			TargetUnits:     10,
+		},
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("checks = %+v, want %+v", checks, want)
+	}
+	for index := range checks {
+		if checks[index] != want[index] {
+			t.Fatalf("check %d = %+v, want %+v", index, checks[index], want[index])
+		}
+	}
+}
+
 func TestStoreQueueWorkItemsRollsBackWhenConstraintInsertFails(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
@@ -2146,6 +2238,18 @@ func testWorkItemRecord(id string, runID string, stageIndex int, workItemIndex i
 		WorkerPayloadJSON:    `{"plugin":"plugin-name","parameters":{"param1":"param1value"}}`,
 		ResolvedInputsSHA256: strings.Repeat("c", 64),
 		CreatedAt:            "2026-07-03T00:00:00Z",
+	}
+}
+
+func testResourceConstraintRecord(workItemID string, constraintIndex int, resourceKey string, requestedUnits int, operator string, targetUnits int) WorkItemResourceConstraintRecord {
+	return WorkItemResourceConstraintRecord{
+		WorkItemID:      workItemID,
+		ConstraintIndex: constraintIndex,
+		ResourceKey:     resourceKey,
+		RequestedUnits:  requestedUnits,
+		Operator:        operator,
+		TargetUnits:     targetUnits,
+		CreatedAt:       "2026-07-03T00:00:00Z",
 	}
 }
 
