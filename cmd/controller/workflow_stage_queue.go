@@ -94,13 +94,13 @@ func persistenceRecordsFromCompiledStageResults(
 	stageResults []workflow.CompileStageResult,
 	codeVersion string,
 	submittedAt time.Time,
-) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, []compiledStageWorkItemMembership, []model.WorkItemResourceConstraint, error) {
+) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, []compiledStageWorkItemMembership, []persistence.WorkItemResourceConstraintRecord, error) {
 	stepInstances := make(map[string]string, len(stageResults))
 	timestamp := submittedAt.UTC().Format(time.RFC3339)
 	persistenceItems := make([]persistence.WorkItemRecord, 0)
 	queued := make([]persistence.QueuedWorkRecord, 0)
 	memberships := make([]compiledStageWorkItemMembership, 0)
-	resourceConstraints := make([]model.WorkItemResourceConstraint, 0)
+	resourceConstraints := make([]persistence.WorkItemResourceConstraintRecord, 0)
 	nextWorkItemIndexByStage := make(map[int]int, len(stageResults))
 
 	workflowID := ""
@@ -179,10 +179,30 @@ func persistenceRecordsFromCompiledStageResults(
 				if err := constraint.Validate(); err != nil {
 					return nil, nil, nil, nil, fmt.Errorf("validate resource constraint for work item %s: %w", id, err)
 				}
-				resourceConstraints = append(resourceConstraints, constraint)
+				resourceConstraints = append(resourceConstraints, persistenceResourceConstraintRecord(constraint))
 			}
 		}
 	}
 
 	return persistenceItems, queued, memberships, resourceConstraints, nil
+}
+
+func persistenceResourceConstraintRecords(constraints []model.WorkItemResourceConstraint) []persistence.WorkItemResourceConstraintRecord {
+	records := make([]persistence.WorkItemResourceConstraintRecord, 0, len(constraints))
+	for _, constraint := range constraints {
+		records = append(records, persistenceResourceConstraintRecord(constraint))
+	}
+	return records
+}
+
+func persistenceResourceConstraintRecord(constraint model.WorkItemResourceConstraint) persistence.WorkItemResourceConstraintRecord {
+	return persistence.WorkItemResourceConstraintRecord{
+		WorkItemID:      constraint.WorkItemID,
+		ConstraintIndex: constraint.ConstraintIndex,
+		ResourceKey:     constraint.ResourceKey,
+		RequestedUnits:  constraint.RequestedUnits,
+		Operator:        string(constraint.Operator),
+		TargetUnits:     constraint.TargetUnits,
+		CreatedAt:       constraint.CreatedAt,
+	}
 }

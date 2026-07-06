@@ -1022,9 +1022,7 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
 		return
 	}
-	_ = constraints
-
-	if err := c.submitRawWorkToStore(r.Context(), item, submittedAt); err != nil {
+	if err := c.submitRawWorkToStore(r.Context(), item, constraints, submittedAt); err != nil {
 		if isPersistenceConflict(err) {
 			http.Error(w, "work item id already exists", http.StatusConflict)
 			return
@@ -1069,7 +1067,7 @@ func decodeRawWorkSubmission(data []byte, submittedAt time.Time) (model.WorkItem
 	return submission.WorkItem, constraints, nil
 }
 
-func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkItem, submittedAt time.Time) error {
+func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkItem, constraints []model.WorkItemResourceConstraint, submittedAt time.Time) error {
 	if err := c.ensureRawPersistenceRun(ctx); err != nil {
 		return err
 	}
@@ -1083,10 +1081,11 @@ func (c *Controller) submitRawWorkToStore(ctx context.Context, item model.WorkIt
 	} else if found {
 		return fmt.Errorf("work item %s already exists", record.ID)
 	}
-	if err := c.workflowStore.InsertWorkItems(ctx, []persistence.WorkItemRecord{record}); err != nil {
-		return err
-	}
-	if err := c.workflowStore.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{queued}); err != nil {
+	if err := c.workflowStore.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
+		WorkItems:           []persistence.WorkItemRecord{record},
+		ResourceConstraints: persistenceResourceConstraintRecords(constraints),
+		QueuedWork:          []persistence.QueuedWorkRecord{queued},
+	}); err != nil {
 		return err
 	}
 	return nil
@@ -1438,16 +1437,18 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	if stageResult != nil {
 		stageResults = append(stageResults, *stageResult)
 	}
-	items, queued, memberships, _, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
+	var resourceConstraints []persistence.WorkItemResourceConstraintRecord
+	items, queued, memberships, resourceConstraints, err = persistenceRecordsFromCompiledStageResults(runRecord.ID, stageResults, codeVersion, submittedAt)
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
 	if len(items) != 0 {
-		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
-			return model.SubmissionAcknowledgement{}, fmt.Errorf("insert work items: %w", err)
-		}
-		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
-			return model.SubmissionAcknowledgement{}, fmt.Errorf("enqueue work items: %w", err)
+		if err := c.workflowStore.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
+			WorkItems:           items,
+			ResourceConstraints: resourceConstraints,
+			QueuedWork:          queued,
+		}); err != nil {
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("queue work items: %w", err)
 		}
 	}
 	for _, membership := range memberships {

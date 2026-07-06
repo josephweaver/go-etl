@@ -1887,6 +1887,19 @@ func TestSubmitWorkHandlerAcceptsRawWorkWrapperWithResourceConstraints(t *testin
 	if persisted.ID != "test-001" || persisted.OutputFilename != "result.txt" {
 		t.Fatalf("persisted payload = %+v, want wrapped work item only", persisted)
 	}
+	constraints, err := store.ListWorkItemResourceConstraints(context.Background(), queued[0].ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 1 {
+		t.Fatalf("constraint count = %d, want 1", len(constraints))
+	}
+	if constraints[0].WorkItemID != queued[0].ID || constraints[0].ResourceKey != "ctlr/python-env:torch" {
+		t.Fatalf("persisted constraint = %+v, want raw queued work constraint", constraints[0])
+	}
+	if constraints[0].RequestedUnits != 1 || constraints[0].Operator != "<=" || constraints[0].TargetUnits != 1 {
+		t.Fatalf("persisted constraint values = %+v, want resolved units/operator", constraints[0])
+	}
 }
 
 func TestSubmitWorkHandlerRejectsInvalidRawResourceConstraintsBeforeQueueMutation(t *testing.T) {
@@ -3581,7 +3594,15 @@ func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
 					"FanOutExpression": "${years[*]}",
 					"Type": "write_demo_output",
 					"OutputPrefix": "download",
-					"OutputExtension": ".txt"
+					"OutputExtension": ".txt",
+					"resource_constraints": [
+						{
+							"resource_key": "target:local/memory-mib",
+							"requested_units": 512,
+							"operator": "<=",
+							"target_units": 2048
+						}
+					]
 				}
 			}
 		},
@@ -3619,6 +3640,13 @@ func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
 	for _, item := range queued {
 		if item.StageIndex != 0 {
 			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+		constraints, err := store.ListWorkItemResourceConstraints(context.Background(), item.ID)
+		if err != nil {
+			t.Fatalf("ListWorkItemResourceConstraints(%s) error = %v", item.ID, err)
+		}
+		if len(constraints) != 1 || constraints[0].ResourceKey != "target:local/memory-mib" {
+			t.Fatalf("constraints for %s = %+v, want memory constraint", item.ID, constraints)
 		}
 	}
 }

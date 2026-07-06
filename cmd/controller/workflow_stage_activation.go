@@ -42,7 +42,7 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		if err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
-		items, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
+		items, queued, memberships, resourceConstraints, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
 		if err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
@@ -67,8 +67,12 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 			return nil
 		}
 		if len(items) != 0 {
-			if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
-				return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, fmt.Errorf("insert activated stage work items: %w", err))
+			if err := c.workflowStore.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
+				WorkItems:           items,
+				ResourceConstraints: resourceConstraints,
+				QueuedWork:          queued,
+			}); err != nil {
+				return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, fmt.Errorf("queue activated stage work items: %w", err))
 			}
 		}
 		for _, membership := range memberships {
@@ -79,10 +83,6 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		if err := c.MarkWorkflowStageReady(ctx, runID, nextStageIndex); err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
-		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
-			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, fmt.Errorf("enqueue activated stage work items: %w", err))
-		}
-
 		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
 		if err != nil {
 			return err

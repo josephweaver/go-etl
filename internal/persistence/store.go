@@ -137,6 +137,12 @@ type QueuedWorkRecord struct {
 	QueuedAt string
 }
 
+type QueueWorkItemsRequest struct {
+	WorkItems           []WorkItemRecord
+	ResourceConstraints []WorkItemResourceConstraintRecord
+	QueuedWork          []QueuedWorkRecord
+}
+
 type WorkItemStatusCounts struct {
 	Queued    int
 	Running   int
@@ -178,13 +184,14 @@ type TerminalAttemptRecord struct {
 }
 
 type CompleteStageRequest struct {
-	RunID            string
-	StageIndex       int
-	OutputJSON       string
-	OutputJSONSHA256 string
-	CompletedAt      string
-	ReadyWorkItems   []WorkItemRecord
-	ReadyQueuedWork  []QueuedWorkRecord
+	RunID                    string
+	StageIndex               int
+	OutputJSON               string
+	OutputJSONSHA256         string
+	CompletedAt              string
+	ReadyWorkItems           []WorkItemRecord
+	ReadyResourceConstraints []WorkItemResourceConstraintRecord
+	ReadyQueuedWork          []QueuedWorkRecord
 }
 
 type CompleteStageResult struct {
@@ -947,6 +954,38 @@ func (s *Store) InsertWorkItems(ctx context.Context, items []WorkItemRecord) err
 	return nil
 }
 
+func (s *Store) QueueWorkItems(ctx context.Context, request QueueWorkItemsRequest) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := request.validate(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin queued work item insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := insertWorkItems(ctx, tx, request.WorkItems); err != nil {
+		return err
+	}
+	if len(request.ResourceConstraints) != 0 {
+		if err := insertWorkItemResourceConstraints(ctx, tx, request.ResourceConstraints); err != nil {
+			return err
+		}
+	}
+	if err := enqueueWorkItems(ctx, tx, request.QueuedWork); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit queued work item insert: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) EnqueueWorkItems(ctx context.Context, items []QueuedWorkRecord) error {
 	if err := s.requireOpen(); err != nil {
 		return err
@@ -976,6 +1015,52 @@ func (s *Store) GetWorkItem(ctx context.Context, workItemID string) (WorkItemRec
 		return WorkItemRecord{}, false, err
 	}
 	return getWorkItem(ctx, s.db, workItemID)
+}
+
+func (s *Store) ListWorkItemResourceConstraints(ctx context.Context, workItemID string) ([]WorkItemResourceConstraintRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if workItemID == "" {
+		return nil, fmt.Errorf("work item id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	FROM work_item_resource_constraints
+	WHERE work_item_id = ?
+	ORDER BY constraint_index`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	constraints := []WorkItemResourceConstraintRecord{}
+	for rows.Next() {
+		var constraint WorkItemResourceConstraintRecord
+		if err := rows.Scan(
+			&constraint.WorkItemID,
+			&constraint.ConstraintIndex,
+			&constraint.ResourceKey,
+			&constraint.RequestedUnits,
+			&constraint.Operator,
+			&constraint.TargetUnits,
+			&constraint.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+	}
+	return constraints, nil
 }
 
 func (s *Store) ListQueuedWorkItems(ctx context.Context) ([]QueuedWorkRecord, error) {
@@ -1202,6 +1287,11 @@ func (s *Store) CompleteStageIfReady(ctx context.Context, request CompleteStageR
 
 	if len(request.ReadyWorkItems) != 0 {
 		if err := insertWorkItems(ctx, tx, request.ReadyWorkItems); err != nil {
+			return CompleteStageResult{}, err
+		}
+	}
+	if len(request.ReadyResourceConstraints) != 0 {
+		if err := insertWorkItemResourceConstraints(ctx, tx, request.ReadyResourceConstraints); err != nil {
 			return CompleteStageResult{}, err
 		}
 	}
@@ -1664,6 +1754,42 @@ func enqueueWorkItems(ctx context.Context, tx *sql.Tx, items []QueuedWorkRecord)
 	return nil
 }
 
+func insertWorkItemResourceConstraints(ctx context.Context, tx *sql.Tx, constraints []WorkItemResourceConstraintRecord) error {
+	for _, constraint := range constraints {
+		existing, found, err := getWorkItemResourceConstraint(ctx, tx, constraint.WorkItemID, constraint.ConstraintIndex)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existing != constraint {
+				return fmt.Errorf("work item resource constraint %s/%d already exists with different values", constraint.WorkItemID, constraint.ConstraintIndex)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			constraint.WorkItemID,
+			constraint.ConstraintIndex,
+			constraint.ResourceKey,
+			constraint.RequestedUnits,
+			constraint.Operator,
+			constraint.TargetUnits,
+			constraint.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert work item resource constraint %s/%d: %w", constraint.WorkItemID, constraint.ConstraintIndex, err)
+		}
+	}
+	return nil
+}
+
 func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord, bool, error) {
 	if projectID == "" {
 		return ProjectRecord{}, false, fmt.Errorf("project id is required")
@@ -1802,6 +1928,45 @@ func getWorkItem(ctx context.Context, q queryer, workItemID string) (WorkItemRec
 		return WorkItemRecord{}, false, fmt.Errorf("get work item %s: %w", workItemID, err)
 	}
 	return item, true, nil
+}
+
+func getWorkItemResourceConstraint(ctx context.Context, q queryer, workItemID string, constraintIndex int) (WorkItemResourceConstraintRecord, bool, error) {
+	if workItemID == "" {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("work item id is required")
+	}
+	if constraintIndex < 0 {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("constraint index must be non-negative")
+	}
+
+	var constraint WorkItemResourceConstraintRecord
+	err := q.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	FROM work_item_resource_constraints
+	WHERE work_item_id = ? AND constraint_index = ?`,
+		workItemID,
+		constraintIndex,
+	).Scan(
+		&constraint.WorkItemID,
+		&constraint.ConstraintIndex,
+		&constraint.ResourceKey,
+		&constraint.RequestedUnits,
+		&constraint.Operator,
+		&constraint.TargetUnits,
+		&constraint.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return WorkItemResourceConstraintRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("get work item resource constraint %s/%d: %w", workItemID, constraintIndex, err)
+	}
+	return constraint, true, nil
 }
 
 func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, bool, error) {
@@ -2273,6 +2438,21 @@ func (s *Store) requireOpen() error {
 	return nil
 }
 
+func (r QueueWorkItemsRequest) validate() error {
+	if err := validateWorkItems(r.WorkItems); err != nil {
+		return err
+	}
+	if err := validateQueuedWorkItems(r.QueuedWork); err != nil {
+		return err
+	}
+	if len(r.ResourceConstraints) != 0 {
+		if err := validateWorkItemResourceConstraints(r.ResourceConstraints); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r WorkflowRunRecord) validate() error {
 	if r.ID == "" {
 		return fmt.Errorf("run id is required")
@@ -2344,6 +2524,11 @@ func (r CompleteStageRequest) validate() error {
 			return fmt.Errorf("ready work: %w", err)
 		}
 	}
+	if len(r.ReadyResourceConstraints) != 0 {
+		if err := validateWorkItemResourceConstraints(r.ReadyResourceConstraints); err != nil {
+			return fmt.Errorf("ready resource constraints: %w", err)
+		}
+	}
 	if len(r.ReadyQueuedWork) != 0 {
 		if err := validateQueuedWorkItems(r.ReadyQueuedWork); err != nil {
 			return fmt.Errorf("ready queue: %w", err)
@@ -2385,6 +2570,31 @@ func (w WorkItemRecord) validate() error {
 	}
 	if w.CreatedAt == "" {
 		return fmt.Errorf("work item created at is required")
+	}
+	return nil
+}
+
+func (r WorkItemResourceConstraintRecord) validate() error {
+	if r.WorkItemID == "" {
+		return fmt.Errorf("resource constraint work item id is required")
+	}
+	if r.ConstraintIndex < 0 {
+		return fmt.Errorf("resource constraint index must be non-negative")
+	}
+	if r.ResourceKey == "" {
+		return fmt.Errorf("resource constraint key is required")
+	}
+	if r.RequestedUnits <= 0 {
+		return fmt.Errorf("resource constraint requested units must be positive")
+	}
+	if !validResourceConstraintOperator(r.Operator) {
+		return fmt.Errorf("unsupported resource constraint operator: %s", r.Operator)
+	}
+	if r.TargetUnits < 0 {
+		return fmt.Errorf("resource constraint target units must be non-negative")
+	}
+	if r.CreatedAt == "" {
+		return fmt.Errorf("resource constraint created at is required")
 	}
 	return nil
 }
@@ -2465,6 +2675,18 @@ func validateWorkItems(items []WorkItemRecord) error {
 	for index, item := range items {
 		if err := item.validate(); err != nil {
 			return fmt.Errorf("work item %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateWorkItemResourceConstraints(constraints []WorkItemResourceConstraintRecord) error {
+	if len(constraints) == 0 {
+		return fmt.Errorf("resource constraints are required")
+	}
+	for index, constraint := range constraints {
+		if err := constraint.validate(); err != nil {
+			return fmt.Errorf("resource constraint %d: %w", index, err)
 		}
 	}
 	return nil
@@ -2587,6 +2809,15 @@ func stageMatchesCompletionRequest(stage WorkflowStageRecord, request CompleteSt
 func validExecutorType(executorType string) bool {
 	switch executorType {
 	case ExecutorTypeWorker, ExecutorTypeController:
+		return true
+	default:
+		return false
+	}
+}
+
+func validResourceConstraintOperator(operator string) bool {
+	switch operator {
+	case "=", "!=", "<", ">", "<=", ">=":
 		return true
 	default:
 		return false

@@ -877,6 +877,104 @@ func TestStoreInsertAndGetWorkItem(t *testing.T) {
 	}
 }
 
+func TestStoreQueueWorkItemsPersistsResourceConstraints(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	item := testWorkItemRecord("work-001", run.ID, 0, 0)
+	queued := QueuedWorkRecord{WorkItemRecord: item, QueuedAt: "2026-07-03T00:00:01Z"}
+	constraint := WorkItemResourceConstraintRecord{
+		WorkItemID:      item.ID,
+		ConstraintIndex: 0,
+		ResourceKey:     "target:local/memory-mib",
+		RequestedUnits:  512,
+		Operator:        "<=",
+		TargetUnits:     2048,
+		CreatedAt:       "2026-07-03T00:00:01Z",
+	}
+
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems:           []WorkItemRecord{item},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{constraint},
+		QueuedWork:          []QueuedWorkRecord{queued},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems:           []WorkItemRecord{item},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{constraint},
+		QueuedWork:          []QueuedWorkRecord{queued},
+	}); err != nil {
+		t.Fatalf("second QueueWorkItems() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	}
+	if !found || got != item {
+		t.Fatalf("work item = %+v found %v, want %+v", got, found, item)
+	}
+	assertQueuedWork(t, ctx, store, item.ID, queued.QueuedAt)
+	constraints, err := store.ListWorkItemResourceConstraints(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 1 || constraints[0] != constraint {
+		t.Fatalf("constraints = %+v, want %+v", constraints, []WorkItemResourceConstraintRecord{constraint})
+	}
+}
+
+func TestStoreQueueWorkItemsRollsBackWhenConstraintInsertFails(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	item := testWorkItemRecord("work-001", run.ID, 0, 0)
+
+	err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{item},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			{
+				WorkItemID:      item.ID,
+				ConstraintIndex: 0,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  512,
+				Operator:        "<=",
+				TargetUnits:     2048,
+				CreatedAt:       "2026-07-03T00:00:01Z",
+			},
+			{
+				WorkItemID:      item.ID,
+				ConstraintIndex: 1,
+				ResourceKey:     "target:local/memory-mib",
+				RequestedUnits:  256,
+				Operator:        "<=",
+				TargetUnits:     2048,
+				CreatedAt:       "2026-07-03T00:00:01Z",
+			},
+		},
+		QueuedWork: []QueuedWorkRecord{{WorkItemRecord: item, QueuedAt: "2026-07-03T00:00:01Z"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "insert work item resource constraint") {
+		t.Fatalf("QueueWorkItems() error = %v, want constraint insert failure", err)
+	}
+	if _, found, err := store.GetWorkItem(ctx, item.ID); err != nil {
+		t.Fatalf("GetWorkItem() error = %v", err)
+	} else if found {
+		t.Fatal("work item persisted after failed constraint insert")
+	}
+	assertQueuedWorkMissing(t, ctx, store, item.ID)
+	constraints, err := store.ListWorkItemResourceConstraints(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 0 {
+		t.Fatalf("constraints = %+v, want none", constraints)
+	}
+}
+
 func TestStoreInsertWorkItemsRejectsConflict(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
@@ -1209,6 +1307,17 @@ func TestStoreCompleteStageIfReadyPublishesReadyWork(t *testing.T) {
 	insertTestCompletedWork(t, ctx, store, "attempt-completed", work.ID)
 	request := testCompleteStageRequest(run.ID, 0)
 	request.ReadyWorkItems = []WorkItemRecord{next}
+	request.ReadyResourceConstraints = []WorkItemResourceConstraintRecord{
+		{
+			WorkItemID:      next.ID,
+			ConstraintIndex: 0,
+			ResourceKey:     "ctlr/python-env:torch",
+			RequestedUnits:  1,
+			Operator:        "<=",
+			TargetUnits:     1,
+			CreatedAt:       "2026-07-03T00:00:03Z",
+		},
+	}
 	request.ReadyQueuedWork = []QueuedWorkRecord{{WorkItemRecord: next, QueuedAt: "2026-07-03T00:00:03Z"}}
 
 	result, err := store.CompleteStageIfReady(ctx, request)
@@ -1226,6 +1335,13 @@ func TestStoreCompleteStageIfReadyPublishesReadyWork(t *testing.T) {
 		t.Fatalf("published work = %+v found %v, want %+v", got, found, next)
 	}
 	assertQueuedWork(t, ctx, store, next.ID, "2026-07-03T00:00:03Z")
+	constraints, err := store.ListWorkItemResourceConstraints(ctx, next.ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 1 || constraints[0].ResourceKey != "ctlr/python-env:torch" {
+		t.Fatalf("ready work constraints = %+v, want persisted python-env constraint", constraints)
+	}
 }
 
 func TestStoreCompleteStageIfReadyIsIdempotent(t *testing.T) {
