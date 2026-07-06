@@ -195,6 +195,161 @@ func TestCompleteWorkHandlerFailsWorkflowWhenDownstreamStageCannotCompile(t *tes
 	}
 }
 
+func TestCompleteWorkHandlerAdvancesMixedParallelStageWhenOnlyNonEmptyStepCompletes(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "empty_years"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "years"},
+				"type": "list",
+				"expression": [
+					{"type": "int", "expression": 2024},
+					{"type": "int", "expression": 2025}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "download-empty",
+				"parallel_with": "group-a",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "download-work",
+				"parallel_with": "group-a",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-work",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "summarize",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "summarize",
+						"OutputExtension": ".txt"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("submit status = %d, body: %s", response.Code, response.Body.String())
+	}
+
+	initial, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(initial) != 2 {
+		t.Fatalf("initial queued work count = %d, want 2", len(initial))
+	}
+	for _, item := range initial {
+		if item.StageIndex != 0 {
+			t.Fatalf("initial queued stage index = %d, want 0", item.StageIndex)
+		}
+	}
+
+	stage0, found, err := controller.ReadStageState(context.Background(), initial[0].RunID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState(0) error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 not found")
+	}
+	if stage0.State != model.WorkflowStageStateReady && stage0.State != model.WorkflowStageStateActive {
+		t.Fatalf("stage 0 state = %q, want ready or active", stage0.State)
+	}
+	if len(stage0.Steps) != 2 {
+		t.Fatalf("stage 0 step count = %d, want 2", len(stage0.Steps))
+	}
+	for _, step := range stage0.Steps {
+		if step.StepID == "download-empty" {
+			if step.OutputJSON != "[]" {
+				t.Fatalf("empty parallel step output = %q, want []", step.OutputJSON)
+			}
+			if len(step.WorkItems) != 0 {
+				t.Fatalf("empty parallel step work item count = %d, want 0", len(step.WorkItems))
+			}
+			if step.State != model.WorkflowStepStateCompleted {
+				t.Fatalf("empty parallel step state = %q, want completed", step.State)
+			}
+		}
+	}
+
+	first := claimNextWorkForActivationTest(t, controller)
+	complete := completeClaimForActivationTest(t, controller, first, `{"value":"first"}`)
+	if complete.Code != http.StatusNoContent {
+		t.Fatalf("complete status = %d, body: %s", complete.Code, complete.Body.String())
+	}
+
+	mid, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() after first completion error = %v", err)
+	}
+	if len(mid) != 1 {
+		t.Fatalf("queued work count after first completion = %d, want 1", len(mid))
+	}
+	if mid[0].StageIndex != 0 {
+		t.Fatalf("queued stage index after first completion = %d, want 0", mid[0].StageIndex)
+	}
+
+	second := claimNextWorkForActivationTest(t, controller)
+	final := completeClaimForActivationTest(t, controller, second, `{"value":"second"}`)
+	if final.Code != http.StatusNoContent {
+		t.Fatalf("final complete status = %d, body: %s", final.Code, final.Body.String())
+	}
+
+	after, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() after parallel stage completion error = %v", err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("queued work count after stage advancement = %d, want 2", len(after))
+	}
+	if after[0].StageIndex != 1 || after[1].StageIndex != 1 {
+		t.Fatalf("queued stage indexes after advancement = %d/%d, want 1/1", after[0].StageIndex, after[1].StageIndex)
+	}
+
+	stage0, found, err = controller.ReadStageState(context.Background(), after[0].RunID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState(0) after completion error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 not found after completion")
+	}
+	if stage0.State != model.WorkflowStageStateCompleted {
+		t.Fatalf("stage 0 state after completion = %q, want completed", stage0.State)
+	}
+}
+
 func claimNextWorkForActivationTest(t *testing.T, controller *Controller) model.WorkItem {
 	t.Helper()
 

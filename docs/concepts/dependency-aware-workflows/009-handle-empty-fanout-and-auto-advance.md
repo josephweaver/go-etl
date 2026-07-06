@@ -1,6 +1,6 @@
 # 009 Handle Empty Fan-Out And Auto-Advance
 
-Status: Ready — start after 008 lands
+Status: Implemented
 
 ## Objective
 

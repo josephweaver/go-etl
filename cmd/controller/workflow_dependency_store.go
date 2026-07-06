@@ -9,6 +9,7 @@ import (
 
 	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
+	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
@@ -322,6 +323,74 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 		return err
 	}
 	return nil
+}
+
+func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, submissionID string, stageResult workflow.CompileStageResult) (bool, error) {
+	emptyStepOutputJSON, emptyStepOutputJSONSHA256, err := canonicalOutputFromEmptyList()
+	if err != nil {
+		return false, err
+	}
+	if err := validateLogicalStepOutputJSONSize(emptyStepOutputJSON); err != nil {
+		return false, err
+	}
+
+	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	stepsByIndex := make(map[int]bool, len(stageResult.WorkItems))
+	for _, item := range stageResult.WorkItems {
+		stepsByIndex[item.StepIndex] = true
+	}
+
+	stage, found := findDependencyStage(plan, stageResult.StageIndex)
+	if !found {
+		return false, nil
+	}
+
+	updated := false
+	for index := range stage.Steps {
+		step := &stage.Steps[index]
+		if stepsByIndex[step.StepIndex] {
+			continue
+		}
+		if len(step.WorkItems) > 0 {
+			continue
+		}
+		if step.State == model.WorkflowStepStateCompleted || step.State == model.WorkflowStepStateFailed {
+			continue
+		}
+		step.State = model.WorkflowStepStateCompleted
+		step.OutputJSON = emptyStepOutputJSON
+		step.OutputJSONSHA256 = emptyStepOutputJSONSHA256
+		step.OutputJSONBytes = len([]byte(emptyStepOutputJSON))
+		step.OutputJSONPruned = false
+		updated = true
+	}
+	if !updated {
+		return false, nil
+	}
+
+	allCompleted := true
+	for _, step := range stage.Steps {
+		if step.State != model.WorkflowStepStateCompleted {
+			allCompleted = false
+			break
+		}
+	}
+	if allCompleted {
+		stage.State = model.WorkflowStageStateCompleted
+		updateWorkflowStateFromStages(plan)
+	}
+
+	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
+		return false, err
+	}
+	return allCompleted, nil
 }
 
 func (c *Controller) ReadStepState(ctx context.Context, submissionID string, stepIndex int) (model.WorkflowDependencyStep, bool, error) {
@@ -675,6 +744,17 @@ func (c *Controller) setWorkflowDependencyState(ctx context.Context, submissionI
 		return fmt.Errorf("persist workflow dependency state: %w", err)
 	}
 	return nil
+}
+
+func canonicalOutputFromEmptyList() (string, string, error) {
+	json, sha256, err := canonicalOutputJSONFromResolved(variable.ResolvedValue{
+		Type: variable.TypeList,
+		List: []variable.ResolvedValue{},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return json, sha256, nil
 }
 
 func (c *Controller) requireDependencyRunExists(ctx context.Context, submissionID string) error {

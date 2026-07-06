@@ -171,6 +171,19 @@ func TestAggregateStepOutputFanoutIgnoresCompletionOrder(t *testing.T) {
 	}
 }
 
+func TestAggregateStepOutputReturnsEmptyListForEmptyFanoutStep(t *testing.T) {
+	output, _, err := aggregateStepOutputJSON(model.WorkflowDependencyStep{
+		StepIndex: 0,
+		WorkItems: []model.WorkflowDependencyWorkItemMembership{},
+	})
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	if output != "[]" {
+		t.Fatalf("output = %q, want []", output)
+	}
+}
+
 func TestAggregateStepOutputRejectsMissingItemOutput(t *testing.T) {
 	_, _, err := aggregateStepOutputJSON(model.WorkflowDependencyStep{
 		StepIndex: 0,

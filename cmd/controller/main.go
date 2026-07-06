@@ -1379,6 +1379,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	var memberships []compiledStageWorkItemMembership
 	var items []persistence.WorkItemRecord
 	var queued []persistence.QueuedWorkRecord
+	autoAdvanced := false
 	if len(plan.Stages) != 0 {
 		if err := c.CreateWorkflowDependencyPlan(ctx, runRecord.ID, runRecord.WorkflowID, plan.Stages); err != nil {
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow dependency plan: %w", err)
@@ -1407,18 +1408,34 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		}
 	}
 
-	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, err
+	if stageResult != nil {
+		stageCompleted, err := c.markCompiledStageEmptyStepsCompleted(ctx, runRecord.ID, *stageResult)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
+
+		autoAdvanced = stageCompleted
+		if stageCompleted {
+			if err := c.activateNextReadyWorkflowStage(ctx, runRecord.ID, stageResult.StageIndex, submittedAt); err != nil {
+				return model.SubmissionAcknowledgement{}, err
+			}
+		}
 	}
-	queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, err
-	}
-	startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
-	c.scaler.RecordStart(submittedAt, startCount, runningCount)
-	if err := c.startWorkers(ctx, resolver, startCount); err != nil {
-		return model.SubmissionAcknowledgement{}, err
+
+	if !autoAdvanced {
+		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
+		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
+		if err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
+		startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
+		c.scaler.RecordStart(submittedAt, startCount, runningCount)
+		if err := c.startWorkers(ctx, resolver, startCount); err != nil {
+			return model.SubmissionAcknowledgement{}, err
+		}
 	}
 
 	return model.SubmissionAcknowledgement{

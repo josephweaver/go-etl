@@ -3543,6 +3543,203 @@ func TestSubmitWorkflowHandlerQueuesOnlyInitialParallelStage(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerAutoAdvancesEmptyInitialStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "empty_years"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "years"},
+				"type": "list",
+				"expression": [
+					{"type": "int", "expression": 2024},
+					{"type": "int", "expression": 2025}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "download",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "summarize",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "summarize",
+						"OutputExtension": ".txt"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 0 {
+		t.Fatalf("initial work item count = %d, want 0", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 1 {
+			t.Fatalf("queued work has stage index %d, want 1", item.StageIndex)
+		}
+	}
+
+	stage0, found, err := controller.ReadStageState(context.Background(), acknowledgement.SubmissionID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState(0) error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 not found")
+	}
+	if stage0.State != model.WorkflowStageStateCompleted {
+		t.Fatalf("stage 0 state = %q, want completed", stage0.State)
+	}
+	if len(stage0.Steps) != 1 || stage0.Steps[0].OutputJSON != "[]" {
+		t.Fatalf("stage 0 empty step output = %q, want []", stage0.Steps[0].OutputJSON)
+	}
+}
+
+func TestSubmitWorkflowHandlerAutoAdvancesThroughEmptyStages(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "empty_one"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "empty_two"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "years"},
+				"type": "list",
+				"expression": [
+					{"type": "int", "expression": 2024}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "download-empty-one",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_one[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty-one",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "download-empty-two",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_two[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty-two",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "summarize",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "summarize",
+						"OutputExtension": ".txt"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 0 {
+		t.Fatalf("initial work item count = %d, want 0", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued work count = %d, want 1", len(queued))
+	}
+	if queued[0].StageIndex != 2 {
+		t.Fatalf("queued work stage index = %d, want 2", queued[0].StageIndex)
+	}
+
+	for _, stageIndex := range []int{0, 1} {
+		stage, found, err := controller.ReadStageState(context.Background(), acknowledgement.SubmissionID, stageIndex)
+		if err != nil {
+			t.Fatalf("ReadStageState(%d) error = %v", stageIndex, err)
+		}
+		if !found {
+			t.Fatalf("stage %d not found", stageIndex)
+		}
+		if stage.State != model.WorkflowStageStateCompleted {
+			t.Fatalf("stage %d state = %q, want completed", stageIndex, stage.State)
+		}
+		if len(stage.Steps) != 1 || stage.Steps[0].OutputJSON != "[]" {
+			t.Fatalf("stage %d empty step output = %q, want []", stageIndex, stage.Steps[0].OutputJSON)
+		}
+	}
+}
+
 func TestSubmitWorkflowHandlerRejectsInvalidParallelWithBeforeQueueMutation(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -3618,6 +3815,28 @@ func TestSubmitWorkflowHandlerRejectsInvalidParallelWithBeforeQueueMutation(t *t
 	}
 	if len(queued) != 0 {
 		t.Fatalf("queued work count = %d, want 0", len(queued))
+	}
+}
+
+func writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+	t *testing.T,
+	root string,
+	workflowVariables string,
+	variables string,
+	steps string,
+) {
+	t.Helper()
+
+	workflowJSON := `{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [` + workflowVariables + `],
+			"Steps": [` + steps + `]
+		},
+		"variables": [` + variables + `]
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

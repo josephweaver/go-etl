@@ -162,7 +162,17 @@ func outputCanonicalValue(value variable.ResolvedValue) (any, error) {
 
 func aggregateStepOutputJSON(step model.WorkflowDependencyStep) (string, string, error) {
 	if len(step.WorkItems) == 0 {
-		return "", "", fmt.Errorf("step %d has no work items to aggregate", step.StepIndex)
+		outputJSON, outputJSONSHA256, err := canonicalOutputJSONFromResolved(variable.ResolvedValue{
+			Type: variable.TypeList,
+			List: []variable.ResolvedValue{},
+		})
+		if err != nil {
+			return "", "", err
+		}
+		if err := validateLogicalStepOutputJSONSize(outputJSON); err != nil {
+			return "", "", err
+		}
+		return outputJSON, outputJSONSHA256, nil
 	}
 
 	ordered := append([]model.WorkflowDependencyWorkItemMembership(nil), step.WorkItems...)

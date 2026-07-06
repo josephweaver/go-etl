@@ -30,55 +30,74 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		return nil
 	}
 
-	nextStageIndex := completedStageIndex + 1
-	nextStage, found := findDependencyStage(plan, nextStageIndex)
-	if !found {
-		return nil
-	}
-	if nextStage.State != model.WorkflowStageStateBlocked || dependencyStageHasWorkItems(*nextStage) {
-		return nil
-	}
+	nextStageIndex := completedStageIndex
+	for {
+		nextStageIndex++
+		nextStage, found := findDependencyStage(plan, nextStageIndex)
+		if !found || nextStage.State != model.WorkflowStageStateBlocked {
+			return nil
+		}
 
-	stageResult, resolver, codeVersion, err := c.compileActivationStage(ctx, runID, *plan, nextStageIndex)
-	if err != nil {
-		if failErr := c.markWorkflowStageActivationFailed(ctx, runID, nextStageIndex); failErr != nil {
-			return fmt.Errorf("%w; additionally failed to mark workflow failed: %v", err, failErr)
+		stageResult, resolver, codeVersion, err := c.compileActivationStage(ctx, runID, *plan, nextStageIndex)
+		if err != nil {
+			if failErr := c.markWorkflowStageActivationFailed(ctx, runID, nextStageIndex); failErr != nil {
+				return fmt.Errorf("%w; additionally failed to mark workflow failed: %v", err, failErr)
+			}
+			return nil
 		}
-		return nil
-	}
+		items, queued, memberships, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
+		if err != nil {
+			return err
+		}
+		nextStageCompleted, err := c.markCompiledStageEmptyStepsCompleted(ctx, runID, stageResult)
+		if err != nil {
+			return err
+		}
 
-	items, queued, memberships, err := persistenceRecordsFromCompiledStageResults(runID, []workflow.CompileStageResult{stageResult}, codeVersion, activatedAt)
-	if err != nil {
-		return err
-	}
-	if len(items) != 0 {
-		if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
-			return fmt.Errorf("insert activated stage work items: %w", err)
+		if nextStageCompleted {
+			nextPlan, found, err := c.getWorkflowDependencyState(ctx, runID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return nil
+			}
+			plan = nextPlan
+			continue
 		}
-		if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
-			return fmt.Errorf("enqueue activated stage work items: %w", err)
-		}
-	}
-	for _, membership := range memberships {
-		if err := c.RecordCompiledWorkItemMembership(ctx, runID, membership.stageIndex, membership.stepIndex, membership.workItemID, membership.workItemIndex); err != nil {
-			return fmt.Errorf("record activated stage membership: %w", err)
-		}
-	}
-	if err := c.MarkWorkflowStageReady(ctx, runID, nextStageIndex); err != nil {
-		return err
-	}
 
-	scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-	if err != nil {
-		return err
+		if len(items) == 0 {
+			return nil
+		}
+		if len(items) != 0 {
+			if err := c.workflowStore.InsertWorkItems(ctx, items); err != nil {
+				return fmt.Errorf("insert activated stage work items: %w", err)
+			}
+			if err := c.workflowStore.EnqueueWorkItems(ctx, queued); err != nil {
+				return fmt.Errorf("enqueue activated stage work items: %w", err)
+			}
+		}
+		for _, membership := range memberships {
+			if err := c.RecordCompiledWorkItemMembership(ctx, runID, membership.stageIndex, membership.stepIndex, membership.workItemID, membership.workItemIndex); err != nil {
+				return fmt.Errorf("record activated stage membership: %w", err)
+			}
+		}
+		if err := c.MarkWorkflowStageReady(ctx, runID, nextStageIndex); err != nil {
+			return err
+		}
+
+		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
+		if err != nil {
+			return err
+		}
+		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
+		if err != nil {
+			return err
+		}
+		startCount := c.scaler.PlanStarts(activatedAt, queuedCount, runningCount, scaleCfg)
+		c.scaler.RecordStart(activatedAt, startCount, runningCount)
+		return c.startWorkers(ctx, resolver, startCount)
 	}
-	queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
-	if err != nil {
-		return err
-	}
-	startCount := c.scaler.PlanStarts(activatedAt, queuedCount, runningCount, scaleCfg)
-	c.scaler.RecordStart(activatedAt, startCount, runningCount)
-	return c.startWorkers(ctx, resolver, startCount)
 }
 
 func (c *Controller) compileActivationStage(ctx context.Context, runID string, plan model.WorkflowDependencyPlan, stageIndex int) (workflow.CompileStageResult, variable.Resolver, string, error) {
