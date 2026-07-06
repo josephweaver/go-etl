@@ -2348,8 +2348,16 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 }
 
 func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http.Request, completion model.WorkCompletion) {
+	if err := validateCompletedWorkOutputJSONSize(completion.OutputJSON); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	request, err := completeAttemptRequestFromCompletion(completion, time.Now().UTC())
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateCompletedWorkOutputJSONSize(request.OutputJSON); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -2366,6 +2374,30 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 	if !found {
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
+	}
+	workItem, found, err := c.workflowStore.GetWorkItem(r.Context(), completed.WorkItemID)
+	if err != nil {
+		http.Error(w, "get completed work item", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "completed work item not found", http.StatusInternalServerError)
+		return
+	}
+	if completion.OutputJSON != "" {
+		if err := c.RecordCompletedWorkItemOutput(r.Context(), RecordCompletedWorkItemOutputRequest{
+			SubmissionID:     workItem.RunID,
+			WorkItemID:       workItem.ID,
+			OutputJSON:       completed.OutputJSON,
+			OutputJSONSHA256: completed.OutputJSONSHA256,
+		}); err != nil {
+			if failErr := c.RecordWorkItemTerminalState(r.Context(), workItem.RunID, workItem.ID, model.WorkItemMembershipStateFailed); failErr != nil {
+				http.Error(w, fmt.Sprintf("%s; additionally failed to mark dependency output capture failure: %v", err.Error(), failErr), http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	terminalState := model.WorkItemMembershipStateCompleted
 	if completion.Skipped {

@@ -2050,6 +2050,102 @@ func TestCompletePersistedWorkHandlerRecordsDependencyTerminalState(t *testing.T
 	}
 }
 
+func TestCompletePersistedWorkHandlerMarksDependencyFailedWhenOutputCaptureFails(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{
+				{
+					StageIndex: 0,
+					StepIndex:  0,
+					StepID:     "write-a",
+				},
+			},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("dep-invalid-output", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, work.WorkItemIndex); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-invalid-output",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"`+claimed.WorkItem.ID+`",
+		"attempt_id":"`+claimed.AttemptID+`",
+		"output_json":"null",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+	controller.completeWorkHandler(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("complete status code = %d, want 500: %s", response.Code, response.Body.String())
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStepState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step not found after output-capture failure")
+	}
+	if step.State != model.WorkflowStepStateFailed {
+		t.Fatalf("step state = %q, want failed", step.State)
+	}
+	if step.WorkItems[0].State != model.WorkItemMembershipStateFailed {
+		t.Fatalf("membership state = %q, want failed", step.WorkItems[0].State)
+	}
+
+	stage, found, err := controller.ReadStageState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage not found after output-capture failure")
+	}
+	if stage.State != model.WorkflowStageStateFailed {
+		t.Fatalf("stage state = %q, want failed", stage.State)
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow run missing after output-capture failure")
+	}
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateFailed {
+		t.Fatalf("dependency workflow state = %+v, want failed", context.DependencyState)
+	}
+}
+
 func TestCompleteAttemptRequestFromCompletionMapsWorkerObservedSkipEvidence(t *testing.T) {
 	preStateSHA256 := strings.Repeat("a", 64)
 	postStateSHA256 := strings.Repeat("b", 64)

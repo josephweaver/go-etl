@@ -1,6 +1,6 @@
 # Dependency-Aware Workflow Execution
 
-Status: Ready
+Status: Ready — concept-branch-aligned for 2026-07-05 handoff
 
 ## Purpose
 
@@ -8,12 +8,34 @@ Make workflow execution dependency-aware so the controller only makes dependency
 
 After this Strategic Concept is complete, GOET workflows execute in dependency stages instead of submitting every generated work item to the queue at once. Sequential workflow steps run sequentially by default. Contiguous steps with the same `parallel_with` label run in the same stage and may be assigned concurrently after their shared predecessor stage completes.
 
-This concept assumes these previous Strategic Concepts have already been completed and merged:
+This bundle is aligned to the current repo convention on `concept/dependency-aware-workflows`: place it under `docs/concepts/dependency-aware-workflows/`.
 
-- `submission-cli-status`: workflow submission returns a stable `submission_id`; `goet status`, `goet submit ... --wait`, and JSON output exist.
-- `execution-observability`: controller-owned log observations exist; submission-scoped logs are readable through the controller and CLI.
+## Branch Alignment And Implementation Tracker
 
-Those assumptions let this concept focus on dependency readiness instead of creating another public run handle or another observation surface.
+Repository branch used for this handoff:
+
+```text
+https://github.com/josephweaver/go-etl/tree/concept/dependency-aware-workflows
+```
+
+Implementation status used by this revision:
+
+| Slice | Status for next handoff |
+|---|---|
+| `001-normalize-workflow-stages.md` | Implemented on the visible branch; preserve as regression checklist. |
+| `002-compile-single-workflow-stage.md` | Implemented on the visible branch; preserve as regression checklist. |
+| `003-persist-workflow-stage-state.md` | Implemented on the visible branch; preserve as regression checklist. |
+| `004-stamp-work-items-with-step-instance-metadata.md` | In progress per handoff; active slice. |
+| `005` through `012` | Pending, ready after 004 lands and helper/store names are stable. |
+
+Visible branch evidence on 2026-07-05:
+
+- `docs/concepts/dependency-aware-workflows/` contains the Strategic Concept README plus slices `001` through `012`.
+- `internal/workflow` contains `stage.go`, `compile_stage.go`, and matching tests, so slices 001 and 002 are present.
+- `cmd/controller` contains `workflow_dependency_store.go` and its test, and `internal/model` contains `workflow_dependency.go` and its test, so slice 003 is present.
+- `cmd/controller/workflow_stage_queue.go` is not visible in the public branch tree yet, which is consistent with 004 still running or not yet pushed.
+
+Use this README as the handoff tracker. If the local Codex workspace already has additional 004 files, treat those local files as the current implementation state and update slices 005-011 with the final helper names after 004 completes.
 
 ## Strategic Decision
 
@@ -27,7 +49,7 @@ The first dependency-aware workflow model is stage-based, not a general graph la
 workflow definition order + contiguous parallel_with groups => ordered dependency stages
 ```
 
-This keeps the user-facing workflow format simple while fixing the current scheduling bug: downstream work cannot race ahead of upstream work merely because all steps were compiled during submission.
+This keeps the user-facing workflow format simple while fixing the scheduling bug: downstream work cannot race ahead of upstream work merely because all steps were compiled during submission.
 
 ## Goals
 
@@ -41,7 +63,7 @@ This keeps the user-facing workflow format simple while fixing the current sched
 - Treat a step as complete only after all required work items belonging to that step have reached a success-equivalent terminal state.
 - Treat a stage as complete only after every step in that stage completes successfully.
 - Capture typed logical step outputs so downstream expressions can resolve `workflow.step[index]` through the existing variable resolver.
-- Preserve deterministic output order for fan-out steps by using the original fan-out item order, not completion order or work-item ID sorting.
+- Preserve deterministic output order for fan-out steps by using original fan-out item order, not completion order or work-item ID sorting.
 - Fail the workflow instance when any step fails, and prevent later stages from being compiled after that failure.
 - Surface dependency state through the already-existing submission status and observability surfaces.
 
@@ -61,9 +83,9 @@ This keeps the user-facing workflow format simple while fixing the current sched
 
 ## Architectural Context
 
-GOET's controller owns orchestration, queueing, source admission, workflow compilation, and direct SQLite/database access. Workers interact through HTTP, execute assigned work, and report completion or failure.
+GOET's controller owns orchestration, queueing, source admission, workflow compilation, and completion/failure handling. Workers interact through HTTP, execute assigned work, and report completion or failure.
 
-Before this concept, workflow submission compiles every step immediately and queues every generated work item. That makes queue order the only accidental barrier between upstream and downstream work. Queue order is not a dependency model. With multiple workers, a downstream item can be assigned before the upstream stage has completed.
+Before this concept, workflow submission compiles every step immediately and queues every generated work item. Queue order is not a dependency model. With multiple workers, a downstream item can be assigned before the upstream stage has completed.
 
 After this concept, the controller owns a workflow-instance state machine:
 
@@ -84,17 +106,17 @@ This concept builds on the existing variable package. Downstream step parameters
 
 ## Current State
 
-This current state is the expected state after the previous two Strategic Concepts have landed.
+Use this current-state description for slices 004-012.
 
-- `goet submit` submits a workflow and returns a `submission_id`.
-- `goet status <submission_id>` can read workflow/submission status from the controller.
-- `goet submit ... --wait` can wait for a terminal submission state.
-- `goet logs <submission_id>` can read controller-owned execution observations.
-- Python work items can execute admitted source and return a canonical logical `output.json` through the worker completion path.
-- The controller can compile a workflow into work items through `internal/workflow`.
-- The workflow compiler currently treats the workflow as a flat list of steps and compiles all steps during submission.
-- The current `workflow.Step` shape does not yet encode stage readiness or dependency grouping.
-- The queue is assignable-work oriented; it does not represent future blocked steps as assignable work.
+- Slices 001-003 are implemented on the visible concept branch.
+- Stage normalization and stage-scoped compilation exist in `internal/workflow`; later slices should reuse those owners.
+- The dependency-state owner introduced by slice 003 persists workflow/run, stage, step, and compiled work-item membership state through the existing controller workflow-store context.
+- Slice 004 is the active boundary between compiled stage results and queue-ready work-item plus membership records.
+- The live submission path is not considered dependency-aware until slice 005 changes it to queue only stage 0.
+- The completion/failure paths are not considered dependency-aware until slice 006 updates dependency state from terminal work reports.
+- Typed output capture, generated `workflow.step[index]` resolver scopes, JIT activation, empty fan-out auto-advance, terminal failure propagation, and status/log exposure remain later slices.
+
+If a working copy does not contain the visible-branch 001-003 implementation files or tests, stop and reconcile before running 004 or later slices. Do not paper over that by creating duplicate planner, compiler, or store concepts under new names.
 
 ## Target State
 
@@ -206,6 +228,8 @@ WorkflowWorkItemMembership
   terminal state and terminal evidence
 ```
 
+The store owner introduced in slice 003 is authoritative. Later slices must reuse that owner, even if its file name differs from examples in these slice documents. Do not create a second controller-local state layer for the same lifecycle.
+
 The controller should transition this state idempotently. Replaying or retrying a terminal work-result handler must not double-complete a stage or double-queue the next stage.
 
 ## Failure Contract
@@ -218,7 +242,7 @@ When a step fails inside a parallel stage, sibling work items that were already 
 
 The completed Submission CLI Status concept owns the public submission handle and status command. This concept should extend those existing surfaces, not replace them.
 
-Status should be able to tell a user whether a submission is blocked, active, completed, or failed because of dependency state. It does not need a rich UI, but it should expose enough structured data for `goet status --json` to show the current stage and step states.
+Status should be able to tell a user whether a submission is blocked, active, completed, or failed because of dependency state. It does not need a rich UI, but it should expose enough structured data for `goet status --json` to show current stage and step states.
 
 The completed Execution Observability concept owns log observations. This concept should emit observations for meaningful dependency transitions, such as:
 
@@ -239,10 +263,10 @@ workflow failed because step X failed
 
 ## Proposed Slices
 
-1. `001-normalize-workflow-stages.md` — add `parallel_with` to workflow steps and normalize definitions into ordered stages.
-2. `002-compile-single-workflow-stage.md` — let the workflow compiler compile one normalized stage without compiling future stages.
-3. `003-persist-workflow-stage-state.md` — add controller-owned workflow/stage/step/work-item dependency state records.
-4. `004-stamp-work-items-with-step-instance-metadata.md` — attach workflow, stage, step, and item-order metadata to compiled work items before queue insertion.
+1. `001-normalize-workflow-stages.md` — implemented; keep as normalization and validation regression checklist.
+2. `002-compile-single-workflow-stage.md` — implemented; keep as stage-scoped compiler regression checklist.
+3. `003-persist-workflow-stage-state.md` — implemented; keep as dependency-state persistence regression checklist.
+4. `004-stamp-work-items-with-step-instance-metadata.md` — in progress; active slice for queue-ready work-item plus membership association.
 5. `005-submit-only-initial-ready-stage.md` — make workflow submission persist the plan and queue only stage 0.
 6. `006-record-terminal-work-item-state.md` — update dependency state when work completion or failure is reported.
 7. `007-capture-typed-step-outputs.md` — convert successful terminal outputs into typed step outputs and expose `workflow.step[index]` scope construction.
@@ -251,6 +275,14 @@ workflow failed because step X failed
 10. `010-propagate-step-and-workflow-failure.md` — make failure transitions terminal and prevent downstream activation.
 11. `011-surface-dependency-state-in-status-and-logs.md` — extend submission status and observations with stage/step dependency state.
 12. `012-update-dependency-workflow-docs-and-smoke.md` — update docs and add repeatable smoke coverage for sequential and parallel-stage workflows.
+
+## Handoff Rules For Remaining Slices
+
+- Finish or review 004 before starting 005.
+- If 004 creates helper names different from these documents, update slices 005-011 as part of the 004 implementation report.
+- From 005 forward, use the 001 stage plan, 002 stage compiler, and 003 store owner. Do not compile future stages early just to validate later work-item IDs.
+- Keep every queue/state transition idempotent before moving to the next slice.
+- Preserve the public submission/status/log surfaces from previous concepts unless a slice explicitly extends them.
 
 ## Completion Criteria
 

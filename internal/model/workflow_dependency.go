@@ -1,6 +1,9 @@
 package model
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type WorkflowState string
 
@@ -77,9 +80,13 @@ func (state WorkItemMembershipState) Validate() error {
 }
 
 type WorkflowDependencyWorkItemMembership struct {
-	WorkItemID    string                  `json:"work_item_id"`
-	WorkItemIndex int                     `json:"work_item_index"`
-	State         WorkItemMembershipState `json:"state"`
+	WorkItemID       string                  `json:"work_item_id"`
+	WorkItemIndex    int                     `json:"work_item_index"`
+	State            WorkItemMembershipState `json:"state"`
+	OutputJSON       string                  `json:"output_json,omitempty"`
+	OutputJSONSHA256 string                  `json:"output_json_sha256,omitempty"`
+	OutputJSONBytes  int                     `json:"output_json_bytes,omitempty"`
+	OutputJSONPruned bool                    `json:"output_json_pruned,omitempty"`
 }
 
 func (membership WorkflowDependencyWorkItemMembership) Validate() error {
@@ -92,15 +99,25 @@ func (membership WorkflowDependencyWorkItemMembership) Validate() error {
 	if err := membership.State.Validate(); err != nil {
 		return err
 	}
+	if membership.OutputJSON != "" && !json.Valid([]byte(membership.OutputJSON)) {
+		return fmt.Errorf("output json must be valid JSON")
+	}
+	if membership.OutputJSONBytes < 0 {
+		return fmt.Errorf("output json bytes must be non-negative")
+	}
 	return nil
 }
 
 type WorkflowDependencyStep struct {
-	StageIndex int                                    `json:"stage_index"`
-	StepIndex  int                                    `json:"step_index"`
-	StepID     string                                 `json:"step_id"`
-	State      WorkflowStepState                      `json:"state"`
-	WorkItems  []WorkflowDependencyWorkItemMembership `json:"work_items"`
+	StageIndex       int                                    `json:"stage_index"`
+	StepIndex        int                                    `json:"step_index"`
+	StepID           string                                 `json:"step_id"`
+	State            WorkflowStepState                      `json:"state"`
+	OutputJSON       string                                 `json:"output_json,omitempty"`
+	OutputJSONSHA256 string                                 `json:"output_json_sha256,omitempty"`
+	OutputJSONBytes  int                                    `json:"output_json_bytes,omitempty"`
+	OutputJSONPruned bool                                   `json:"output_json_pruned,omitempty"`
+	WorkItems        []WorkflowDependencyWorkItemMembership `json:"work_items"`
 }
 
 func (step WorkflowDependencyStep) Validate() error {
@@ -115,6 +132,12 @@ func (step WorkflowDependencyStep) Validate() error {
 	}
 	if err := step.State.Validate(); err != nil {
 		return err
+	}
+	if step.OutputJSON != "" && !json.Valid([]byte(step.OutputJSON)) {
+		return fmt.Errorf("output json must be valid JSON")
+	}
+	if step.OutputJSONBytes < 0 {
+		return fmt.Errorf("output json bytes must be non-negative")
 	}
 	for _, membership := range step.WorkItems {
 		if err := membership.Validate(); err != nil {

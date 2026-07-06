@@ -5,10 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
+	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
 	"goetl/internal/workflow"
 )
+
+type RecordCompletedWorkItemOutputRequest struct {
+	SubmissionID     string
+	WorkItemID       string
+	OutputJSON       string
+	OutputJSONSHA256 string
+}
 
 func (c *Controller) CreateWorkflowDependencyPlan(ctx context.Context, submissionID string, workflowID string, stages []workflow.WorkflowStage) error {
 	if c.workflowStore == nil {
@@ -233,6 +242,88 @@ func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submission
 	return nil
 }
 
+func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req RecordCompletedWorkItemOutputRequest) error {
+	if c.workflowStore == nil {
+		return fmt.Errorf("workflow store required")
+	}
+	if req.SubmissionID == "" {
+		return fmt.Errorf("submission id is required")
+	}
+	if req.WorkItemID == "" {
+		return fmt.Errorf("work item id is required")
+	}
+	if strings.TrimSpace(req.OutputJSON) == "" {
+		return fmt.Errorf("output json is required")
+	}
+	if err := validateCompletedWorkOutputJSONSize(req.OutputJSON); err != nil {
+		return err
+	}
+
+	resolved, err := resolvedOutputFromJSON(req.OutputJSON)
+	if err != nil {
+		return err
+	}
+	outputJSON, outputJSONSHA256, err := canonicalOutputJSONFromResolved(resolved)
+	if err != nil {
+		return err
+	}
+	if err := validateCompletedWorkOutputJSONSize(outputJSON); err != nil {
+		return err
+	}
+	if req.OutputJSONSHA256 != "" {
+		if err := fp.ValidateSHA256Hex(req.OutputJSONSHA256); err != nil {
+			return fmt.Errorf("output_json_sha256: %w", err)
+		}
+		if req.OutputJSONSHA256 != outputJSONSHA256 {
+			return fmt.Errorf("output_json_sha256 does not match canonical output JSON")
+		}
+	}
+
+	plan, found, err := c.getWorkflowDependencyState(ctx, req.SubmissionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+
+	step, stage, membershipIndex, found := findDependencyWorkItem(plan, req.WorkItemID)
+	if !found {
+		return fmt.Errorf("work item %s not found in dependency plan for submission %s", req.WorkItemID, req.SubmissionID)
+	}
+	membership := &step.WorkItems[membershipIndex]
+	membership.State = model.WorkItemMembershipStateCompleted
+	membership.OutputJSON = outputJSON
+	membership.OutputJSONSHA256 = outputJSONSHA256
+	membership.OutputJSONBytes = len([]byte(outputJSON))
+	membership.OutputJSONPruned = false
+
+	step.State = updateStepStateFromWorkItems(step.WorkItems, step.State)
+	if dependencyStepOutputsReady(*step) {
+		stepOutputJSON, stepOutputJSONSHA256, err := aggregateStepOutputJSON(*step)
+		if err != nil {
+			return err
+		}
+		if err := validateLogicalStepOutputJSONSize(stepOutputJSON); err != nil {
+			return err
+		}
+		step.OutputJSON = stepOutputJSON
+		step.OutputJSONSHA256 = stepOutputJSONSHA256
+		step.OutputJSONBytes = len([]byte(stepOutputJSON))
+		step.OutputJSONPruned = false
+		step.State = model.WorkflowStepStateCompleted
+		pruneWorkItemOutputJSON(step)
+	}
+	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
+	updateWorkflowStateFromStages(plan)
+	pruneDependencyOutputsIfTerminal(plan)
+
+	if err := c.setWorkflowDependencyState(ctx, req.SubmissionID, *plan); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Controller) ReadStepState(ctx context.Context, submissionID string, stepIndex int) (model.WorkflowDependencyStep, bool, error) {
 	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
 	if err != nil {
@@ -288,6 +379,7 @@ func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan,
 	step.State = updateStepStateFromWorkItems(step.WorkItems, step.State)
 	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
 	updateWorkflowStateFromStages(plan)
+	pruneDependencyOutputsIfTerminal(plan)
 	return true, nil
 }
 
@@ -303,6 +395,53 @@ func findDependencyWorkItem(plan *model.WorkflowDependencyPlan, workItemID strin
 		}
 	}
 	return nil, nil, 0, false
+}
+
+func findDependencyMembershipByWorkItemID(plan *model.WorkflowDependencyPlan, workItemID string) (*model.WorkflowDependencyStep, *model.WorkflowDependencyWorkItemMembership, bool) {
+	if plan == nil {
+		return nil, nil, false
+	}
+	for stageIndex := range plan.Stages {
+		for stepIndex := range plan.Stages[stageIndex].Steps {
+			for membershipIndex := range plan.Stages[stageIndex].Steps[stepIndex].WorkItems {
+				membership := &plan.Stages[stageIndex].Steps[stepIndex].WorkItems[membershipIndex]
+				if membership.WorkItemID != workItemID {
+					continue
+				}
+				return &plan.Stages[stageIndex].Steps[stepIndex], membership, true
+			}
+		}
+	}
+	return nil, nil, false
+}
+
+func dependencyStepOutputsReady(step model.WorkflowDependencyStep) bool {
+	if len(step.WorkItems) == 0 {
+		return false
+	}
+	for _, item := range step.WorkItems {
+		switch item.State {
+		case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped:
+			if item.OutputJSON == "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func dependencyStepHasIncompleteWork(step model.WorkflowDependencyStep) bool {
+	for _, item := range step.WorkItems {
+		switch item.State {
+		case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped, model.WorkItemMembershipStateFailed:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func updateStepStateFromWorkItems(workItems []model.WorkflowDependencyWorkItemMembership, currentState model.WorkflowStepState) model.WorkflowStepState {
@@ -358,12 +497,55 @@ func updateStageStateFromSteps(steps []model.WorkflowDependencyStep, currentStat
 
 func updateWorkflowStateFromStages(plan *model.WorkflowDependencyPlan) {
 	for _, stage := range plan.Stages {
+		if stage.State == model.WorkflowStageStateFailed {
+			plan.State = model.WorkflowStateFailed
+			return
+		}
+	}
+	for _, stage := range plan.Stages {
 		if stage.State != model.WorkflowStageStateCompleted {
 			plan.State = model.WorkflowStateRunning
 			return
 		}
 	}
 	plan.State = model.WorkflowStateCompleted
+}
+
+func pruneWorkItemOutputJSON(step *model.WorkflowDependencyStep) {
+	if step == nil {
+		return
+	}
+	for index := range step.WorkItems {
+		item := &step.WorkItems[index]
+		if item.OutputJSON == "" {
+			continue
+		}
+		item.OutputJSONBytes = len([]byte(item.OutputJSON))
+		item.OutputJSON = ""
+		item.OutputJSONPruned = true
+	}
+}
+
+func pruneStepOutputJSON(step *model.WorkflowDependencyStep) {
+	if step == nil || step.OutputJSON == "" {
+		return
+	}
+	step.OutputJSONBytes = len([]byte(step.OutputJSON))
+	step.OutputJSON = ""
+	step.OutputJSONPruned = true
+}
+
+func pruneDependencyOutputsIfTerminal(plan *model.WorkflowDependencyPlan) {
+	if plan == nil || (plan.State != model.WorkflowStateCompleted && plan.State != model.WorkflowStateFailed) {
+		return
+	}
+	for stageIndex := range plan.Stages {
+		for stepIndex := range plan.Stages[stageIndex].Steps {
+			step := &plan.Stages[stageIndex].Steps[stepIndex]
+			pruneWorkItemOutputJSON(step)
+			pruneStepOutputJSON(step)
+		}
+	}
 }
 
 func (c *Controller) getWorkflowDependencyState(ctx context.Context, submissionID string) (*model.WorkflowDependencyPlan, bool, error) {
@@ -543,17 +725,25 @@ func cloneDependencyStage(stage model.WorkflowDependencyStage) model.WorkflowDep
 
 func cloneDependencyStep(step model.WorkflowDependencyStep) model.WorkflowDependencyStep {
 	clone := model.WorkflowDependencyStep{
-		StageIndex: step.StageIndex,
-		StepIndex:  step.StepIndex,
-		StepID:     step.StepID,
-		State:      step.State,
-		WorkItems:  make([]model.WorkflowDependencyWorkItemMembership, 0, len(step.WorkItems)),
+		StageIndex:       step.StageIndex,
+		StepIndex:        step.StepIndex,
+		StepID:           step.StepID,
+		State:            step.State,
+		OutputJSON:       step.OutputJSON,
+		OutputJSONSHA256: step.OutputJSONSHA256,
+		OutputJSONBytes:  step.OutputJSONBytes,
+		OutputJSONPruned: step.OutputJSONPruned,
+		WorkItems:        make([]model.WorkflowDependencyWorkItemMembership, 0, len(step.WorkItems)),
 	}
 	for _, item := range step.WorkItems {
 		clone.WorkItems = append(clone.WorkItems, model.WorkflowDependencyWorkItemMembership{
-			WorkItemID:    item.WorkItemID,
-			WorkItemIndex: item.WorkItemIndex,
-			State:         item.State,
+			WorkItemID:       item.WorkItemID,
+			WorkItemIndex:    item.WorkItemIndex,
+			State:            item.State,
+			OutputJSON:       item.OutputJSON,
+			OutputJSONSHA256: item.OutputJSONSHA256,
+			OutputJSONBytes:  item.OutputJSONBytes,
+			OutputJSONPruned: item.OutputJSONPruned,
 		})
 	}
 	return clone

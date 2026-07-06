@@ -1,10 +1,17 @@
 # 007 Capture Typed Step Outputs
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
+Implementation status: Implemented in controller dependency-state/output helpers.
+
 Convert successful terminal work outputs into typed step outputs and expose a helper that builds the generated `workflow.step[index]` resolver scope for later-stage compilation.
+
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
 
 ## Current State
 
@@ -13,6 +20,10 @@ Convert successful terminal work outputs into typed step outputs and expose a he
 Dependency state can now mark work items, steps, and stages completed, but it does not yet retain typed logical step outputs for downstream expressions.
 
 The variable package already represents resolved objects and lists through `variable.ResolvedValue`, `variable.ResolvedObject`, and `variable.ResolvedList`. It also already supports the `workflow` namespace.
+
+Use the actual output-capable store owner from slices 003 and 006. If that owner currently stores only stage-level output, add or adapt step-level output storage so `workflow.step[index]` can represent every workflow step, including multiple steps inside one parallel stage.
+
+Implementation note: OS 007 stores logical outputs on dependency **step** state, not on `workflow_stages.output_json`. The existing nullable stage-level column remains unused for dependency-aware `workflow.step[index]` semantics because one stage may contain multiple logical steps.
 
 ## Target State
 
@@ -37,6 +48,8 @@ Step aggregation rules:
 - A completed step with missing required output fails output capture and should transition the workflow to failure with a clear reason.
 
 The generated scope helper should produce a read-only `workflow.step` variable containing completed step outputs in workflow-definition order. It should include only outputs available to the stage being compiled; future unavailable outputs must cause normal resolver errors if referenced.
+
+Output JSON is retained only as controller handoff data. Completed work output JSON and logical step aggregate JSON are byte-limited; membership-level output JSON is pruned after step aggregation; step-level output JSON is retained while the dependency workflow is running and pruned after terminal completion or failure while retaining hashes, byte counts, and pruned flags.
 
 ## Concept Decision
 
@@ -103,3 +116,4 @@ Modify `internal/variable` only if a very small helper is necessary to build a t
 
 - Prefer testing conversion helpers without HTTP first.
 - Keep the first output contract conservative. Reject shapes GOET cannot type safely yet.
+- Do not build `workflow.step` from `workflow_stages.output_json`, and do not duplicate logical step output into that stage-level column.

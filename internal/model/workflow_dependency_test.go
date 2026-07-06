@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestWorkflowStateValidation(t *testing.T) {
 	validStates := []WorkflowState{WorkflowStateRunning, WorkflowStateCompleted, WorkflowStateFailed}
@@ -92,5 +95,49 @@ func TestWorkflowDependencyStepValidateRejectsBadData(t *testing.T) {
 	}
 	if err := step.Validate(); err == nil {
 		t.Fatal("negative work item index should be rejected")
+	}
+}
+
+func TestWorkflowDependencyPlanValidateAcceptsOldStateWithoutOutputs(t *testing.T) {
+	oldState := `{
+		"run_id": "submission-1",
+		"workflow_id": "workflow-1",
+		"state": "running",
+		"stages": [
+			{
+				"stage_index": 0,
+				"state": "ready",
+				"parallel_with": "",
+				"steps": [
+					{
+						"stage_index": 0,
+						"step_index": 0,
+						"step_id": "step-0",
+						"state": "ready",
+						"work_items": [
+							{
+								"work_item_id": "work-0",
+								"work_item_index": 0,
+								"state": "queued"
+							}
+						]
+					}
+				]
+			}
+		]
+	}`
+
+	var plan WorkflowDependencyPlan
+	if err := json.Unmarshal([]byte(oldState), &plan); err != nil {
+		t.Fatalf("unmarshal old dependency state: %v", err)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if err := plan.Stages[0].Validate(); err != nil {
+		t.Fatalf("stage Validate() error = %v", err)
+	}
+	if plan.Stages[0].Steps[0].OutputJSON != "" || plan.Stages[0].Steps[0].WorkItems[0].OutputJSON != "" {
+		t.Fatalf("old state should leave output fields empty: %+v", plan.Stages[0].Steps[0])
 	}
 }

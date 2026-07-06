@@ -1,6 +1,6 @@
 # 012 Update Dependency Workflow Docs And Smoke
 
-Status: Ready
+Status: Ready — final docs/smoke slice
 
 ## Objective
 
@@ -8,7 +8,9 @@ Document dependency-aware workflow execution and add a repeatable smoke path tha
 
 ## Current State
 
-The controller now supports dependency-aware stage execution internally, but repo docs and smoke scripts may still describe workflow submission as compiling or queueing all steps at once.
+The controller now supports dependency-aware stage execution internally after slices 001-011, but repo docs and smoke scripts may still describe workflow submission as compiling or queueing all steps at once.
+
+The branch uses `docs/concepts`, so any final docs updates should keep this Strategic Concept bundle under `docs/concepts/dependency-aware-workflows/` and should not reintroduce the earlier mistaken `docs/epics` path.
 
 The sibling demo project may not yet include a small workflow fixture that demonstrates sequential-by-default execution or contiguous `parallel_with` execution.
 
@@ -20,6 +22,8 @@ Documentation explains the new current behavior:
 - `parallel_with` groups adjacent steps into one parallel stage;
 - downstream stages are compiled just in time;
 - `workflow.step[index]` exposes predecessor outputs;
+- logical step output is stored at dependency step level while a workflow is running, not in `workflow_stages.output_json`;
+- output JSON is bounded control-plane handoff data, not provenance or bulk result storage;
 - `goet status` shows dependency-aware state;
 - `goet logs` shows dependency transition observations when logging is enabled.
 
@@ -94,6 +98,8 @@ Only modify tests if a narrow dependency-aware smoke assertion belongs in Go tes
 - Documentation describes sequential-by-default stage execution.
 - Documentation describes valid and invalid `parallel_with` examples.
 - Documentation describes `workflow.step[index]` output access and its limitations.
+- Documentation says `workflow_stages.output_json` is not the canonical source for `workflow.step[index]`.
+- Documentation explains that large results should be external artifacts referenced by small output JSON metadata.
 - A smoke script or narrow integration test proves downstream work is not assignable before upstream completion.
 - A smoke script or narrow integration test proves a valid contiguous `parallel_with` group can make sibling steps assignable in the same stage.
 - A smoke script or narrow integration test proves non-contiguous label reuse is rejected.
