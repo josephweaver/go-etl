@@ -358,6 +358,50 @@ func (c *Controller) ReadStageState(ctx context.Context, submissionID string, st
 	return model.WorkflowDependencyStage{}, false, nil
 }
 
+func (c *Controller) MarkWorkflowStageReady(ctx context.Context, submissionID string, stageIndex int) error {
+	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
+	if err != nil {
+		return err
+	}
+	if !found || plan.State != model.WorkflowStateRunning {
+		return nil
+	}
+	stage, found := findDependencyStage(plan, stageIndex)
+	if !found {
+		return fmt.Errorf("stage %d not found for submission %s", stageIndex, submissionID)
+	}
+	if stage.State != model.WorkflowStageStateBlocked {
+		return nil
+	}
+	stage.State = model.WorkflowStageStateReady
+	for index := range stage.Steps {
+		if stage.Steps[index].State == model.WorkflowStepStateBlocked {
+			stage.Steps[index].State = model.WorkflowStepStateReady
+		}
+	}
+	return c.setWorkflowDependencyState(ctx, submissionID, *plan)
+}
+
+func (c *Controller) markWorkflowStageActivationFailed(ctx context.Context, submissionID string, stageIndex int) error {
+	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	stage, found := findDependencyStage(plan, stageIndex)
+	if found {
+		stage.State = model.WorkflowStageStateFailed
+		for index := range stage.Steps {
+			stage.Steps[index].State = model.WorkflowStepStateFailed
+		}
+	}
+	plan.State = model.WorkflowStateFailed
+	pruneDependencyOutputsIfTerminal(plan)
+	return c.setWorkflowDependencyState(ctx, submissionID, *plan)
+}
+
 func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan, workItemID string, terminalState model.WorkItemMembershipState) (bool, error) {
 	if plan == nil {
 		return false, nil
@@ -413,6 +457,37 @@ func findDependencyMembershipByWorkItemID(plan *model.WorkflowDependencyPlan, wo
 		}
 	}
 	return nil, nil, false
+}
+
+func findDependencyStage(plan *model.WorkflowDependencyPlan, stageIndex int) (*model.WorkflowDependencyStage, bool) {
+	if plan == nil {
+		return nil, false
+	}
+	for index := range plan.Stages {
+		if plan.Stages[index].StageIndex == stageIndex {
+			return &plan.Stages[index], true
+		}
+	}
+	return nil, false
+}
+
+func dependencyStageHasWorkItems(stage model.WorkflowDependencyStage) bool {
+	for _, step := range stage.Steps {
+		if len(step.WorkItems) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func firstDependencyStepIndex(stage model.WorkflowDependencyStage) int {
+	first := -1
+	for _, step := range stage.Steps {
+		if first == -1 || step.StepIndex < first {
+			first = step.StepIndex
+		}
+	}
+	return first
 }
 
 func dependencyStepOutputsReady(step model.WorkflowDependencyStep) bool {

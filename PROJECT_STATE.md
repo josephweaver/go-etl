@@ -1,8 +1,10 @@
 # Project State
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 ## Current Focus
+
+Dependency-aware workflow slice `008-compile-next-ready-stage` is now implemented: after a successful stage completion, the controller reconstructs the admitted workflow from the retained source cache, builds a resolver from workflow/submission scopes plus generated `workflow.step` outputs, compiles only the next blocked stage through `internal/workflow.CompileWorkflowStage`, stamps and queues the activated work items, records dependency memberships, marks the activated stage ready, and invokes the existing worker-scaling path. Downstream compile failures now mark the dependency workflow failed, and submission status consults dependency-plan terminal state so such failures report `failed`.
 
 Dependency-aware workflow slice `003-persist-workflow-stage-state` is now implemented: controller dependency-plan state now persists in workflow run submission context with deterministic read/list/readback paths for stages, steps, and work-item memberships via `workflow_dependency_store.go`; typed state enums and duplicate checks are added in `internal/model`.
 

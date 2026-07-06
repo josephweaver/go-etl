@@ -1,0 +1,237 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"goetl/internal/model"
+)
+
+func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024}, "",
+		`
+		{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${workflow.step[*]}",
+					"TokenAccessor": ".next_year",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("submit status = %d, body: %s", response.Code, response.Body.String())
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 || queued[0].StageIndex != 0 {
+		t.Fatalf("initial queued work = %+v, want one stage 0 item", queued)
+	}
+
+	claim := claimNextWorkForActivationTest(t, controller)
+	completeResponse := completeClaimForActivationTest(t, controller, claim, `{"next_year":2026}`)
+	if completeResponse.Code != http.StatusNoContent {
+		t.Fatalf("complete status = %d, body: %s", completeResponse.Code, completeResponse.Body.String())
+	}
+
+	queued, err = store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued work count after activation = %d, want 1", len(queued))
+	}
+	if queued[0].StageIndex != 1 {
+		t.Fatalf("activated queued stage index = %d, want 1", queued[0].StageIndex)
+	}
+	var payload model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &payload); err != nil {
+		t.Fatalf("decode activated payload: %v", err)
+	}
+	if payload.ID != "summarize-2026" || payload.OutputFilename != "summarize-2026.txt" {
+		t.Fatalf("activated payload = %+v, want workflow.step output token 2026", payload)
+	}
+
+	stage1, found, err := controller.ReadStageState(context.Background(), queued[0].RunID, 1)
+	if err != nil {
+		t.Fatalf("ReadStageState(1) error = %v", err)
+	}
+	if !found || stage1.State != model.WorkflowStageStateReady {
+		t.Fatalf("stage 1 = %+v found=%v, want ready", stage1, found)
+	}
+
+	next := claimNextWorkForActivationTest(t, controller)
+	if next.ID != "summarize-2026" {
+		t.Fatalf("next assigned work id = %q, want summarize-2026", next.ID)
+	}
+	finalResponse := completeClaimForActivationTest(t, controller, next, `{"final":true}`)
+	if finalResponse.Code != http.StatusNoContent {
+		t.Fatalf("final complete status = %d, body: %s", finalResponse.Code, finalResponse.Body.String())
+	}
+	status, found, err := controller.submissionStatus(context.Background(), claim.WorkflowInstanceID)
+	if err != nil {
+		t.Fatalf("submissionStatus() error = %v", err)
+	}
+	if !found || status.Status != "completed" {
+		t.Fatalf("submission status = %+v found=%v, want completed", status, found)
+	}
+
+	duplicate := completeClaimForActivationTest(t, controller, claim, `{"next_year":2026}`)
+	if duplicate.Code != http.StatusNoContent {
+		t.Fatalf("duplicate complete status = %d, want idempotent 204", duplicate.Code)
+	}
+	queued, err = store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("duplicate completion queued %d extra items, want 0", len(queued))
+	}
+	counts, err := store.CountWorkItemsForRun(context.Background(), claim.WorkflowInstanceID)
+	if err != nil {
+		t.Fatalf("CountWorkItemsForRun() error = %v", err)
+	}
+	if counts.Queued+counts.Running+counts.Completed+counts.Failed != 2 {
+		t.Fatalf("work item count after duplicate completion = %+v, want exactly two records", counts)
+	}
+}
+
+func TestCompleteWorkHandlerFailsWorkflowWhenDownstreamStageCannotCompile(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024}, "",
+		`
+		{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${workflow.step[*]}",
+					"TokenAccessor": ".missing",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("submit status = %d, body: %s", response.Code, response.Body.String())
+	}
+	var ack model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode acknowledgement: %v", err)
+	}
+	claim := claimNextWorkForActivationTest(t, controller)
+	completeResponse := completeClaimForActivationTest(t, controller, claim, `{"next_year":2026}`)
+	if completeResponse.Code != http.StatusNoContent {
+		t.Fatalf("complete status = %d, body: %s", completeResponse.Code, completeResponse.Body.String())
+	}
+
+	stage1, found, err := controller.ReadStageState(context.Background(), ack.SubmissionID, 1)
+	if err != nil {
+		t.Fatalf("ReadStageState(1) error = %v", err)
+	}
+	if !found || stage1.State != model.WorkflowStageStateFailed {
+		t.Fatalf("stage 1 = %+v found=%v, want failed", stage1, found)
+	}
+	status, found, err := controller.submissionStatus(context.Background(), ack.SubmissionID)
+	if err != nil {
+		t.Fatalf("submissionStatus() error = %v", err)
+	}
+	if !found || status.Status != "failed" {
+		t.Fatalf("submission status = %+v found=%v, want failed", status, found)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued work count after failed activation = %d, want 0", len(queued))
+	}
+}
+
+func claimNextWorkForActivationTest(t *testing.T, controller *Controller) model.WorkItem {
+	t.Helper()
+
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	response := httptest.NewRecorder()
+	controller.nextWorkHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("next work status = %d, body: %s", response.Code, response.Body.String())
+	}
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatalf("decode next work: %v", err)
+	}
+	if item.ID == "" || item.AttemptID == "" {
+		t.Fatalf("claimed item missing id or attempt: %+v", item)
+	}
+	return item
+}
+
+func completeClaimForActivationTest(t *testing.T, controller *Controller, item model.WorkItem, outputJSON string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	body := `{
+		"id":` + quoteJSONString(item.ID) + `,
+		"attempt_id":` + quoteJSONString(item.AttemptID) + `,
+		"output_json":` + quoteJSONString(outputJSON) + `,
+		"pre_state_json":"{}",
+		"post_state_json":"{}",
+		"completed_at":"2026-07-06T12:00:00Z"
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(body))
+	response := httptest.NewRecorder()
+	controller.completeWorkHandler(response, request)
+	return response
+}
+
+func quoteJSONString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return strings.TrimSpace(string(encoded))
+}

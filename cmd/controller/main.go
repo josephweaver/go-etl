@@ -2171,10 +2171,26 @@ func (c *Controller) submissionStatus(ctx context.Context, submissionID string) 
 		completed = 0
 	}
 
+	status := submissionStatusName(counts.Queued, counts.Running, counts.Completed, counts.Failed)
+	if plan, found, err := c.getWorkflowDependencyState(ctx, run.ID); err != nil {
+		return model.SubmissionStatus{}, false, err
+	} else if found {
+		switch plan.State {
+		case model.WorkflowStateFailed:
+			status = "failed"
+		case model.WorkflowStateCompleted:
+			status = "completed"
+		case model.WorkflowStateRunning:
+			if status == "completed" || status == "unknown" {
+				status = "running"
+			}
+		}
+	}
+
 	return model.SubmissionStatus{
 		SubmissionID:   run.ID,
 		WorkflowID:     run.WorkflowID,
-		Status:         submissionStatusName(counts.Queued, counts.Running, counts.Completed, counts.Failed),
+		Status:         status,
 		KnownWorkItems: counts.Queued + counts.Running + counts.Completed + counts.Failed,
 		Queued:         counts.Queued,
 		Running:        counts.Running,
@@ -2406,6 +2422,12 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 	if err := c.recordWorkItemDependencyTerminal(r.Context(), completed.WorkItemID, terminalState); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if terminalState == model.WorkItemMembershipStateCompleted || terminalState == model.WorkItemMembershipStateSkipped {
+		if err := c.activateNextReadyWorkflowStage(r.Context(), workItem.RunID, workItem.StageIndex, activationTimeFromCompletedWork(completed)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)

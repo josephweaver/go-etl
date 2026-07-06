@@ -1,6 +1,6 @@
 # 008 Compile Next Ready Stage
 
-Status: Ready — start after 007 lands
+Status: Implemented
 
 ## Objective
 
