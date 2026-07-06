@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
@@ -122,6 +123,7 @@ func (c *Controller) CreateWorkflowDependencyPlan(ctx context.Context, submissio
 	if err := c.setWorkflowDependencyState(ctx, submissionID, dependencyState); err != nil {
 		return err
 	}
+	c.emitDependencyObservation(ctx, submissionID, workflowID, model.LogLevelInfo, fmt.Sprintf("normalized workflow into %d stages", len(stages)))
 	return nil
 }
 
@@ -208,6 +210,14 @@ func (c *Controller) RecordCompiledWorkItemMembership(ctx context.Context, submi
 }
 
 func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submissionID string, workItemID string, terminalState model.WorkItemMembershipState) error {
+	return c.recordWorkItemTerminalState(ctx, submissionID, workItemID, terminalState, "")
+}
+
+func (c *Controller) RecordWorkItemTerminalFailure(ctx context.Context, submissionID string, workItemID string, reason string) error {
+	return c.recordWorkItemTerminalState(ctx, submissionID, workItemID, model.WorkItemMembershipStateFailed, reason)
+}
+
+func (c *Controller) recordWorkItemTerminalState(ctx context.Context, submissionID string, workItemID string, terminalState model.WorkItemMembershipState, failureReason string) error {
 	if c.workflowStore == nil {
 		return fmt.Errorf("workflow store required")
 	}
@@ -220,6 +230,9 @@ func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submission
 	if err := terminalState.Validate(); err != nil {
 		return err
 	}
+	if !isTerminalMembershipState(terminalState) {
+		return fmt.Errorf("work item membership terminal state must be completed, skipped, or failed")
+	}
 
 	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
 	if err != nil {
@@ -229,7 +242,8 @@ func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submission
 		return nil
 	}
 
-	updated, err := updateDependencyPlanForWorkItemTerminal(plan, workItemID, terminalState)
+	before := cloneDependencyPlan(*plan)
+	updated, err := updateDependencyPlanForWorkItemTerminal(plan, workItemID, terminalState, failureReason)
 	if err != nil {
 		return err
 	}
@@ -240,6 +254,7 @@ func (c *Controller) RecordWorkItemTerminalState(ctx context.Context, submission
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
 		return err
 	}
+	c.emitDependencyTransitions(ctx, &before, plan)
 	return nil
 }
 
@@ -292,7 +307,14 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 	if !found {
 		return fmt.Errorf("work item %s not found in dependency plan for submission %s", req.WorkItemID, req.SubmissionID)
 	}
+	before := cloneDependencyPlan(*plan)
 	membership := &step.WorkItems[membershipIndex]
+	if isTerminalMembershipState(membership.State) && membership.State != model.WorkItemMembershipStateCompleted && membership.State != model.WorkItemMembershipStateSkipped {
+		return nil
+	}
+	if plan.State != model.WorkflowStateRunning && isTerminalMembershipState(membership.State) {
+		return nil
+	}
 	membership.State = model.WorkItemMembershipStateCompleted
 	membership.OutputJSON = outputJSON
 	membership.OutputJSONSHA256 = outputJSONSHA256
@@ -316,12 +338,15 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 		pruneWorkItemOutputJSON(step)
 	}
 	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
-	updateWorkflowStateFromStages(plan)
+	if plan.State == model.WorkflowStateRunning {
+		updateWorkflowStateFromStages(plan)
+	}
 	pruneDependencyOutputsIfTerminal(plan)
 
 	if err := c.setWorkflowDependencyState(ctx, req.SubmissionID, *plan); err != nil {
 		return err
 	}
+	c.emitDependencyTransitions(ctx, &before, plan)
 	return nil
 }
 
@@ -352,6 +377,7 @@ func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, s
 		return false, nil
 	}
 
+	before := cloneDependencyPlan(*plan)
 	updated := false
 	for index := range stage.Steps {
 		step := &stage.Steps[index]
@@ -390,6 +416,7 @@ func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, s
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
 		return false, err
 	}
+	c.emitDependencyTransitions(ctx, &before, plan)
 	return allCompleted, nil
 }
 
@@ -442,16 +469,21 @@ func (c *Controller) MarkWorkflowStageReady(ctx context.Context, submissionID st
 	if stage.State != model.WorkflowStageStateBlocked {
 		return nil
 	}
+	before := cloneDependencyPlan(*plan)
 	stage.State = model.WorkflowStageStateReady
 	for index := range stage.Steps {
 		if stage.Steps[index].State == model.WorkflowStepStateBlocked {
 			stage.Steps[index].State = model.WorkflowStepStateReady
 		}
 	}
-	return c.setWorkflowDependencyState(ctx, submissionID, *plan)
+	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
+		return err
+	}
+	c.emitDependencyTransitions(ctx, &before, plan)
+	return nil
 }
 
-func (c *Controller) markWorkflowStageActivationFailed(ctx context.Context, submissionID string, stageIndex int) error {
+func (c *Controller) markWorkflowStageActivationFailed(ctx context.Context, submissionID string, stageIndex int, reason string) error {
 	plan, found, err := c.getWorkflowDependencyState(ctx, submissionID)
 	if err != nil {
 		return err
@@ -459,19 +491,17 @@ func (c *Controller) markWorkflowStageActivationFailed(ctx context.Context, subm
 	if !found {
 		return nil
 	}
-	stage, found := findDependencyStage(plan, stageIndex)
-	if found {
-		stage.State = model.WorkflowStageStateFailed
-		for index := range stage.Steps {
-			stage.Steps[index].State = model.WorkflowStepStateFailed
-		}
-	}
-	plan.State = model.WorkflowStateFailed
+	before := cloneDependencyPlan(*plan)
+	markDependencyPlanFailed(plan, stageIndex, -1, "", reason)
 	pruneDependencyOutputsIfTerminal(plan)
-	return c.setWorkflowDependencyState(ctx, submissionID, *plan)
+	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
+		return err
+	}
+	c.emitDependencyTransitions(ctx, &before, plan)
+	return nil
 }
 
-func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan, workItemID string, terminalState model.WorkItemMembershipState) (bool, error) {
+func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan, workItemID string, terminalState model.WorkItemMembershipState, failureReason string) (bool, error) {
 	if plan == nil {
 		return false, nil
 	}
@@ -484,16 +514,98 @@ func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan,
 		return false, fmt.Errorf("invalid membership index for work item %s", workItemID)
 	}
 
-	if step.WorkItems[membershipIndex].State == terminalState {
+	membership := &step.WorkItems[membershipIndex]
+	if membership.State == terminalState {
 		return false, nil
 	}
-	step.WorkItems[membershipIndex].State = terminalState
+	if isTerminalMembershipState(membership.State) {
+		return false, nil
+	}
 
+	if terminalState == model.WorkItemMembershipStateFailed {
+		markDependencyPlanFailed(plan, stage.StageIndex, step.StepIndex, workItemID, failureReason)
+		pruneDependencyOutputsIfTerminal(plan)
+		return true, nil
+	}
+
+	membership.State = terminalState
 	step.State = updateStepStateFromWorkItems(step.WorkItems, step.State)
 	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
-	updateWorkflowStateFromStages(plan)
+	if plan.State == model.WorkflowStateRunning {
+		updateWorkflowStateFromStages(plan)
+	}
 	pruneDependencyOutputsIfTerminal(plan)
 	return true, nil
+}
+
+func markDependencyPlanFailed(plan *model.WorkflowDependencyPlan, stageIndex int, stepIndex int, workItemID string, reason string) {
+	if plan == nil {
+		return
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "dependency workflow failed"
+	}
+	if plan.FailureReason == "" {
+		plan.FailureReason = reason
+	}
+	plan.State = model.WorkflowStateFailed
+
+	stage, found := findDependencyStage(plan, stageIndex)
+	if !found {
+		return
+	}
+	stage.State = model.WorkflowStageStateFailed
+	if stage.FailureReason == "" {
+		stage.FailureReason = reason
+	}
+
+	if stepIndex >= 0 {
+		if step, found := findDependencyStep(plan, stageIndex, stepIndex); found {
+			step.State = model.WorkflowStepStateFailed
+			if step.FailureReason == "" {
+				step.FailureReason = reason
+			}
+			markDependencyWorkItemFailed(step, workItemID, reason)
+			return
+		}
+	}
+
+	for index := range stage.Steps {
+		step := &stage.Steps[index]
+		step.State = model.WorkflowStepStateFailed
+		if step.FailureReason == "" {
+			step.FailureReason = reason
+		}
+		markDependencyWorkItemFailed(step, "", reason)
+	}
+}
+
+func markDependencyWorkItemFailed(step *model.WorkflowDependencyStep, workItemID string, reason string) {
+	if step == nil {
+		return
+	}
+	for index := range step.WorkItems {
+		membership := &step.WorkItems[index]
+		if workItemID != "" && membership.WorkItemID != workItemID {
+			continue
+		}
+		if isTerminalMembershipState(membership.State) && membership.State != model.WorkItemMembershipStateFailed {
+			continue
+		}
+		membership.State = model.WorkItemMembershipStateFailed
+		if membership.FailureReason == "" {
+			membership.FailureReason = reason
+		}
+	}
+}
+
+func isTerminalMembershipState(state model.WorkItemMembershipState) bool {
+	switch state {
+	case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped, model.WorkItemMembershipStateFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func findDependencyWorkItem(plan *model.WorkflowDependencyPlan, workItemID string) (*model.WorkflowDependencyStep, *model.WorkflowDependencyStage, int, bool) {
@@ -865,12 +977,78 @@ func sortWorkItemsByIndex(workItems []model.WorkflowDependencyWorkItemMembership
 	})
 }
 
+func (c *Controller) emitDependencyTransitions(ctx context.Context, before *model.WorkflowDependencyPlan, after *model.WorkflowDependencyPlan) {
+	if after == nil {
+		return
+	}
+	for _, stage := range after.Stages {
+		previousState := model.WorkflowStageState("")
+		if beforeStage, found := findDependencyStage(before, stage.StageIndex); found {
+			previousState = beforeStage.State
+		}
+		if previousState == stage.State {
+			continue
+		}
+		switch stage.State {
+		case model.WorkflowStageStateReady:
+			c.emitDependencyObservation(ctx, after.RunID, after.WorkflowID, model.LogLevelInfo, fmt.Sprintf("activated stage %d", stage.StageIndex))
+		case model.WorkflowStageStateCompleted:
+			c.emitDependencyObservation(ctx, after.RunID, after.WorkflowID, model.LogLevelInfo, fmt.Sprintf("completed stage %d", stage.StageIndex))
+		}
+	}
+	if before != nil && before.State == after.State {
+		return
+	}
+	switch after.State {
+	case model.WorkflowStateCompleted:
+		c.emitDependencyObservation(ctx, after.RunID, after.WorkflowID, model.LogLevelInfo, "completed workflow")
+	case model.WorkflowStateFailed:
+		failure := failedDependencyStatus(*after)
+		message := fmt.Sprintf("failed workflow at stage %d", failure.StageIndex)
+		if failure.StepIndex != nil {
+			message += fmt.Sprintf(" step %d", *failure.StepIndex)
+		}
+		if failure.FailureReason != "" {
+			message += ": " + failure.FailureReason
+		}
+		c.emitDependencyObservation(ctx, after.RunID, after.WorkflowID, model.LogLevelError, message)
+	}
+}
+
+func (c *Controller) emitDependencyObservation(ctx context.Context, submissionID string, workflowID string, level model.LogLevel, message string) {
+	_ = c.AcceptLogObservation(ctx, model.LogObservation{
+		SubmissionID: submissionID,
+		WorkflowID:   workflowID,
+		RunID:        submissionID,
+		Component:    "controller",
+		Stream:       model.LogStreamSystem,
+		Level:        level,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+		Message:      message,
+	})
+}
+
+func cloneDependencyPlan(plan model.WorkflowDependencyPlan) model.WorkflowDependencyPlan {
+	clone := model.WorkflowDependencyPlan{
+		RunID:         plan.RunID,
+		WorkflowID:    plan.WorkflowID,
+		State:         plan.State,
+		FailureReason: plan.FailureReason,
+		Stages:        make([]model.WorkflowDependencyStage, 0, len(plan.Stages)),
+	}
+	for _, stage := range plan.Stages {
+		clone.Stages = append(clone.Stages, cloneDependencyStage(stage))
+	}
+	return clone
+}
+
 func cloneDependencyStage(stage model.WorkflowDependencyStage) model.WorkflowDependencyStage {
 	clone := model.WorkflowDependencyStage{
-		StageIndex:   stage.StageIndex,
-		State:        stage.State,
-		ParallelWith: stage.ParallelWith,
-		Steps:        make([]model.WorkflowDependencyStep, 0, len(stage.Steps)),
+		StageIndex:    stage.StageIndex,
+		State:         stage.State,
+		FailureReason: stage.FailureReason,
+		ParallelWith:  stage.ParallelWith,
+		Steps:         make([]model.WorkflowDependencyStep, 0, len(stage.Steps)),
 	}
 	for _, step := range stage.Steps {
 		clone.Steps = append(clone.Steps, cloneDependencyStep(step))
@@ -884,6 +1062,7 @@ func cloneDependencyStep(step model.WorkflowDependencyStep) model.WorkflowDepend
 		StepIndex:        step.StepIndex,
 		StepID:           step.StepID,
 		State:            step.State,
+		FailureReason:    step.FailureReason,
 		OutputJSON:       step.OutputJSON,
 		OutputJSONSHA256: step.OutputJSONSHA256,
 		OutputJSONBytes:  step.OutputJSONBytes,
@@ -895,6 +1074,7 @@ func cloneDependencyStep(step model.WorkflowDependencyStep) model.WorkflowDepend
 			WorkItemID:       item.WorkItemID,
 			WorkItemIndex:    item.WorkItemIndex,
 			State:            item.State,
+			FailureReason:    item.FailureReason,
 			OutputJSON:       item.OutputJSON,
 			OutputJSONSHA256: item.OutputJSONSHA256,
 			OutputJSONBytes:  item.OutputJSONBytes,

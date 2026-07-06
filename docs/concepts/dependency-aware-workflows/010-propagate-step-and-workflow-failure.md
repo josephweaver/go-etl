@@ -1,6 +1,6 @@
 # 010 Propagate Step And Workflow Failure
 
-Status: Ready — start after 009 or alongside failure hardening review
+Status: Implemented
 
 ## Objective
 

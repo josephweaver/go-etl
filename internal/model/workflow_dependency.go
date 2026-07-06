@@ -83,6 +83,7 @@ type WorkflowDependencyWorkItemMembership struct {
 	WorkItemID       string                  `json:"work_item_id"`
 	WorkItemIndex    int                     `json:"work_item_index"`
 	State            WorkItemMembershipState `json:"state"`
+	FailureReason    string                  `json:"failure_reason,omitempty"`
 	OutputJSON       string                  `json:"output_json,omitempty"`
 	OutputJSONSHA256 string                  `json:"output_json_sha256,omitempty"`
 	OutputJSONBytes  int                     `json:"output_json_bytes,omitempty"`
@@ -113,6 +114,7 @@ type WorkflowDependencyStep struct {
 	StepIndex        int                                    `json:"step_index"`
 	StepID           string                                 `json:"step_id"`
 	State            WorkflowStepState                      `json:"state"`
+	FailureReason    string                                 `json:"failure_reason,omitempty"`
 	OutputJSON       string                                 `json:"output_json,omitempty"`
 	OutputJSONSHA256 string                                 `json:"output_json_sha256,omitempty"`
 	OutputJSONBytes  int                                    `json:"output_json_bytes,omitempty"`
@@ -148,10 +150,11 @@ func (step WorkflowDependencyStep) Validate() error {
 }
 
 type WorkflowDependencyStage struct {
-	StageIndex   int                      `json:"stage_index"`
-	State        WorkflowStageState       `json:"state"`
-	ParallelWith string                   `json:"parallel_with"`
-	Steps        []WorkflowDependencyStep `json:"steps"`
+	StageIndex    int                      `json:"stage_index"`
+	State         WorkflowStageState       `json:"state"`
+	FailureReason string                   `json:"failure_reason,omitempty"`
+	ParallelWith  string                   `json:"parallel_with"`
+	Steps         []WorkflowDependencyStep `json:"steps"`
 }
 
 func (stage WorkflowDependencyStage) Validate() error {
@@ -170,10 +173,11 @@ func (stage WorkflowDependencyStage) Validate() error {
 }
 
 type WorkflowDependencyPlan struct {
-	RunID      string                    `json:"run_id"`
-	WorkflowID string                    `json:"workflow_id"`
-	State      WorkflowState             `json:"state"`
-	Stages     []WorkflowDependencyStage `json:"stages"`
+	RunID         string                    `json:"run_id"`
+	WorkflowID    string                    `json:"workflow_id"`
+	State         WorkflowState             `json:"state"`
+	FailureReason string                    `json:"failure_reason,omitempty"`
+	Stages        []WorkflowDependencyStage `json:"stages"`
 }
 
 func (plan WorkflowDependencyPlan) Validate() error {

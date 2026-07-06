@@ -1,6 +1,6 @@
 # 011 Surface Dependency State In Status And Logs
 
-Status: Ready — start after dependency execution path works
+Status: Implemented
 
 ## Objective
 

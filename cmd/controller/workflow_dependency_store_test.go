@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -81,6 +83,69 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 	}
 	if orderedSteps[0].StepIndex != 0 || orderedSteps[1].StepIndex != 2 || orderedSteps[2].StepIndex != 1 {
 		t.Fatalf("unordered steps = %+v", orderedSteps)
+	}
+}
+
+func TestDependencyTransitionsAreReadableThroughSubmissionLogs(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	run := insertTestPersistenceRunWithStage(t, context.Background(), store)
+	logRoot := t.TempDir()
+	logSink, err := newFilesystemLogSink(logRoot, string(model.LogLevelDebug))
+	if err != nil {
+		t.Fatalf("newFilesystemLogSink() error = %v", err)
+	}
+	controller := newController()
+	controller.workflowStore = store
+	controller.logRootPath = logRoot
+	controller.logSink = logSink
+	controller.logReadDefaultTail = 20
+	controller.logReadMaxTail = 20
+
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 0,
+				StepIndex:  0,
+				StepID:     "download",
+			}},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(context.Background(), run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(context.Background(), run.ID, 0, 0, "download-001", 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+	if err := controller.RecordWorkItemTerminalFailure(context.Background(), run.ID, "download-001", "boom"); err != nil {
+		t.Fatalf("RecordWorkItemTerminalFailure() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/submissions/"+run.ID+"/logs", nil)
+	response := httptest.NewRecorder()
+	controller.submissionLogsHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var got submissionLogResponse
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode logs response: %v", err)
+	}
+	messages := make([]string, 0, len(got.Entries))
+	for _, entry := range got.Entries {
+		messages = append(messages, entry.Message)
+	}
+	joined := strings.Join(messages, "\n")
+	if !strings.Contains(joined, "normalized workflow into 1 stages") {
+		t.Fatalf("log messages = %q, want normalization observation", joined)
+	}
+	if !strings.Contains(joined, "failed workflow at stage 0 step 0: boom") {
+		t.Fatalf("log messages = %q, want failure observation", joined)
 	}
 }
 
@@ -430,7 +495,7 @@ func TestRecordWorkItemTerminalStateMarksStepAndStageFailed(t *testing.T) {
 	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "workitem-failed", 0); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
 	}
-	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "workitem-failed", model.WorkItemMembershipStateFailed); err != nil {
+	if err := controller.RecordWorkItemTerminalFailure(ctx, run.ID, "workitem-failed", "worker reported boom"); err != nil {
 		t.Fatalf("RecordWorkItemTerminalState() error = %v", err)
 	}
 
@@ -444,8 +509,14 @@ func TestRecordWorkItemTerminalStateMarksStepAndStageFailed(t *testing.T) {
 	if step.State != model.WorkflowStepStateFailed {
 		t.Fatalf("step state = %q, want %q", step.State, model.WorkflowStepStateFailed)
 	}
+	if step.FailureReason != "worker reported boom" {
+		t.Fatalf("step failure reason = %q, want worker error", step.FailureReason)
+	}
 	if step.WorkItems[0].State != model.WorkItemMembershipStateFailed {
 		t.Fatalf("workitem state = %q, want %q", step.WorkItems[0].State, model.WorkItemMembershipStateFailed)
+	}
+	if step.WorkItems[0].FailureReason != "worker reported boom" {
+		t.Fatalf("workitem failure reason = %q, want worker error", step.WorkItems[0].FailureReason)
 	}
 
 	stage, found, err := controller.ReadStageState(ctx, run.ID, 0)
@@ -457,6 +528,151 @@ func TestRecordWorkItemTerminalStateMarksStepAndStageFailed(t *testing.T) {
 	}
 	if stage.State != model.WorkflowStageStateFailed {
 		t.Fatalf("stage state = %q, want %q", stage.State, model.WorkflowStageStateFailed)
+	}
+	if stage.FailureReason != "worker reported boom" {
+		t.Fatalf("stage failure reason = %q, want worker error", stage.FailureReason)
+	}
+}
+
+func TestRecordWorkItemTerminalStateKeepsFailureTerminalAfterConflictingCompletion(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	run := insertTestPersistenceRunWithStage(t, context.Background(), store)
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+	createSingleStepDependencyPlan(t, ctx, controller, run.ID, run.WorkflowID, "work-0")
+
+	if err := controller.RecordWorkItemTerminalFailure(ctx, run.ID, "work-0", "first failure wins"); err != nil {
+		t.Fatalf("RecordWorkItemTerminalFailure() error = %v", err)
+	}
+	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "work-0", model.WorkItemMembershipStateCompleted); err != nil {
+		t.Fatalf("RecordWorkItemTerminalState(completed) error = %v", err)
+	}
+	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
+		SubmissionID: run.ID,
+		WorkItemID:   "work-0",
+		OutputJSON:   `{"value":"late"}`,
+	}); err != nil {
+		t.Fatalf("RecordCompletedWorkItemOutput(late) error = %v", err)
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("ReadStepState() found=%v error=%v", found, err)
+	}
+	if step.State != model.WorkflowStepStateFailed {
+		t.Fatalf("step state = %q, want failed", step.State)
+	}
+	if step.WorkItems[0].State != model.WorkItemMembershipStateFailed {
+		t.Fatalf("membership state = %q, want failed", step.WorkItems[0].State)
+	}
+	if step.WorkItems[0].OutputJSON != "" {
+		t.Fatalf("failed membership output = %q, want unchanged", step.WorkItems[0].OutputJSON)
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil || !found {
+		t.Fatalf("GetWorkflowRun() found=%v error=%v", found, err)
+	}
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateFailed {
+		t.Fatalf("dependency workflow state = %+v, want failed", context.DependencyState)
+	}
+	if context.DependencyState.FailureReason != "first failure wins" {
+		t.Fatalf("workflow failure reason = %q, want first failure", context.DependencyState.FailureReason)
+	}
+}
+
+func TestLateSiblingCompletionDoesNotChangeFailedWorkflowTerminalState(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	run := insertTestPersistenceRunWithStage(t, context.Background(), store)
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{
+				{StageIndex: 0, StepIndex: 0, StepID: "left"},
+				{StageIndex: 0, StepIndex: 1, StepID: "right"},
+			},
+		},
+		{
+			Index: 1,
+			Steps: []workflow.WorkflowStageStep{
+				{StageIndex: 1, StepIndex: 2, StepID: "downstream"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "work-left", 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership(left) error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 1, "work-right", 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership(right) error = %v", err)
+	}
+
+	if err := controller.RecordWorkItemTerminalFailure(ctx, run.ID, "work-left", "left failed"); err != nil {
+		t.Fatalf("RecordWorkItemTerminalFailure(left) error = %v", err)
+	}
+	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
+		SubmissionID: run.ID,
+		WorkItemID:   "work-right",
+		OutputJSON:   `{"value":"late sibling"}`,
+	}); err != nil {
+		t.Fatalf("RecordCompletedWorkItemOutput(right) error = %v", err)
+	}
+	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "work-right", model.WorkItemMembershipStateCompleted); err != nil {
+		t.Fatalf("RecordWorkItemTerminalState(right) error = %v", err)
+	}
+
+	stage0, found, err := controller.ReadStageState(ctx, run.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("ReadStageState(0) found=%v error=%v", found, err)
+	}
+	if stage0.State != model.WorkflowStageStateFailed {
+		t.Fatalf("stage 0 state = %q, want failed", stage0.State)
+	}
+	stage1, found, err := controller.ReadStageState(ctx, run.ID, 1)
+	if err != nil || !found {
+		t.Fatalf("ReadStageState(1) found=%v error=%v", found, err)
+	}
+	if stage1.State != model.WorkflowStageStateBlocked {
+		t.Fatalf("stage 1 state = %q, want blocked", stage1.State)
+	}
+	right := stage0.Steps[1]
+	if right.State != model.WorkflowStepStateCompleted || right.WorkItems[0].State != model.WorkItemMembershipStateCompleted {
+		t.Fatalf("late sibling state = %+v, want completed membership without workflow revival", right)
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil || !found {
+		t.Fatalf("GetWorkflowRun() found=%v error=%v", found, err)
+	}
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateFailed {
+		t.Fatalf("dependency workflow state = %+v, want failed", context.DependencyState)
+	}
+	if context.DependencyState.FailureReason != "left failed" {
+		t.Fatalf("workflow failure reason = %q, want original failure", context.DependencyState.FailureReason)
 	}
 }
 

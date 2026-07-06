@@ -1407,6 +1407,9 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("record compiled work item membership: %w", err)
 		}
 	}
+	if stageResult != nil && len(queued) != 0 {
+		c.emitDependencyObservation(ctx, runRecord.ID, runRecord.WorkflowID, model.LogLevelInfo, fmt.Sprintf("queued stage %d", stageResult.StageIndex))
+	}
 
 	if stageResult != nil {
 		stageCompleted, err := c.markCompiledStageEmptyStepsCompleted(ctx, runRecord.ID, *stageResult)
@@ -2189,9 +2192,11 @@ func (c *Controller) submissionStatus(ctx context.Context, submissionID string) 
 	}
 
 	status := submissionStatusName(counts.Queued, counts.Running, counts.Completed, counts.Failed)
+	var dependencyStatus *model.SubmissionDependencyStatus
 	if plan, found, err := c.getWorkflowDependencyState(ctx, run.ID); err != nil {
 		return model.SubmissionStatus{}, false, err
 	} else if found {
+		dependencyStatus = submissionDependencyStatusFromPlan(*plan)
 		switch plan.State {
 		case model.WorkflowStateFailed:
 			status = "failed"
@@ -2214,7 +2219,144 @@ func (c *Controller) submissionStatus(ctx context.Context, submissionID string) 
 		Completed:      completed,
 		Failed:         counts.Failed,
 		Skipped:        skipped,
+		Dependency:     dependencyStatus,
 	}, true, nil
+}
+
+func submissionDependencyStatusFromPlan(plan model.WorkflowDependencyPlan) *model.SubmissionDependencyStatus {
+	status := &model.SubmissionDependencyStatus{
+		WorkflowState: string(plan.State),
+		StageCount:    len(plan.Stages),
+		Stages:        make([]model.SubmissionDependencyStageStatus, 0, len(plan.Stages)),
+	}
+	if plan.State == model.WorkflowStateRunning {
+		if current, ok := currentDependencyStageIndex(plan); ok {
+			status.CurrentStageIndex = &current
+		}
+	}
+	if plan.State == model.WorkflowStateFailed {
+		status.Failed = failedDependencyStatus(plan)
+	}
+
+	stages := append([]model.WorkflowDependencyStage(nil), plan.Stages...)
+	sortStagesByIndex(stages)
+	for _, stage := range stages {
+		stageStatus := model.SubmissionDependencyStageStatus{
+			StageIndex:   stage.StageIndex,
+			State:        string(stage.State),
+			ParallelWith: stage.ParallelWith,
+			StepCount:    len(stage.Steps),
+			Steps:        make([]model.SubmissionDependencyStepStatus, 0, len(stage.Steps)),
+		}
+		steps := append([]model.WorkflowDependencyStep(nil), stage.Steps...)
+		sortStepsByIndex(steps)
+		for _, step := range steps {
+			stepStatus := model.SubmissionDependencyStepStatus{
+				StageIndex: step.StageIndex,
+				StepIndex:  step.StepIndex,
+				StepID:     step.StepID,
+				State:      string(step.State),
+				Counts:     dependencyCountsForStep(stage.State, step),
+			}
+			addDependencyCounts(&stageStatus.Counts, stepStatus.Counts)
+			stageStatus.Steps = append(stageStatus.Steps, stepStatus)
+		}
+		addDependencyCounts(&status.Counts, stageStatus.Counts)
+		status.Stages = append(status.Stages, stageStatus)
+	}
+	return status
+}
+
+func currentDependencyStageIndex(plan model.WorkflowDependencyPlan) (int, bool) {
+	stages := append([]model.WorkflowDependencyStage(nil), plan.Stages...)
+	sortStagesByIndex(stages)
+	for _, stage := range stages {
+		if stage.State != model.WorkflowStageStateCompleted {
+			return stage.StageIndex, true
+		}
+	}
+	return 0, false
+}
+
+func dependencyCountsForStep(stageState model.WorkflowStageState, step model.WorkflowDependencyStep) model.SubmissionDependencyCounts {
+	counts := model.SubmissionDependencyCounts{}
+	if len(step.WorkItems) == 0 {
+		if step.State == model.WorkflowStepStateBlocked || stageState == model.WorkflowStageStateBlocked {
+			counts.BlockedFuture++
+		}
+		return counts
+	}
+	for _, item := range step.WorkItems {
+		switch item.State {
+		case model.WorkItemMembershipStateQueued:
+			if stageState == model.WorkflowStageStateBlocked {
+				counts.BlockedFuture++
+			} else {
+				counts.AssignablePending++
+			}
+		case model.WorkItemMembershipStateRunning:
+			counts.Active++
+		case model.WorkItemMembershipStateCompleted:
+			counts.Completed++
+		case model.WorkItemMembershipStateFailed:
+			counts.Failed++
+		case model.WorkItemMembershipStateSkipped:
+			counts.Skipped++
+		}
+	}
+	return counts
+}
+
+func addDependencyCounts(total *model.SubmissionDependencyCounts, next model.SubmissionDependencyCounts) {
+	total.AssignablePending += next.AssignablePending
+	total.BlockedFuture += next.BlockedFuture
+	total.Active += next.Active
+	total.Completed += next.Completed
+	total.Failed += next.Failed
+	total.Skipped += next.Skipped
+}
+
+func failedDependencyStatus(plan model.WorkflowDependencyPlan) *model.SubmissionDependencyFailure {
+	failure := &model.SubmissionDependencyFailure{
+		StageIndex:    -1,
+		FailureReason: plan.FailureReason,
+	}
+	for _, stage := range plan.Stages {
+		if stage.State != model.WorkflowStageStateFailed {
+			continue
+		}
+		failure.StageIndex = stage.StageIndex
+		if failure.FailureReason == "" {
+			failure.FailureReason = stage.FailureReason
+		}
+		for _, step := range stage.Steps {
+			if step.State != model.WorkflowStepStateFailed {
+				continue
+			}
+			stepIndex := step.StepIndex
+			failure.StepIndex = &stepIndex
+			failure.StepID = step.StepID
+			if failure.FailureReason == "" {
+				failure.FailureReason = step.FailureReason
+			}
+			for _, item := range step.WorkItems {
+				if item.State != model.WorkItemMembershipStateFailed {
+					continue
+				}
+				failure.WorkItemID = item.WorkItemID
+				if failure.FailureReason == "" {
+					failure.FailureReason = item.FailureReason
+				}
+				break
+			}
+			break
+		}
+		break
+	}
+	if failure.FailureReason == "" {
+		failure.FailureReason = "dependency workflow failed"
+	}
+	return failure
 }
 
 func submissionStatusName(queued int, running int, completed int, failed int) string {
@@ -2371,7 +2513,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
 	}
-	if err := c.recordWorkItemDependencyTerminal(r.Context(), failed.WorkItemID, model.WorkItemMembershipStateFailed); err != nil {
+	if err := c.recordWorkItemDependencyFailure(r.Context(), failed.WorkItemID, failure.Error); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2424,7 +2566,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			OutputJSON:       completed.OutputJSON,
 			OutputJSONSHA256: completed.OutputJSONSHA256,
 		}); err != nil {
-			if failErr := c.RecordWorkItemTerminalState(r.Context(), workItem.RunID, workItem.ID, model.WorkItemMembershipStateFailed); failErr != nil {
+			if failErr := c.RecordWorkItemTerminalFailure(r.Context(), workItem.RunID, workItem.ID, err.Error()); failErr != nil {
 				http.Error(w, fmt.Sprintf("%s; additionally failed to mark dependency output capture failure: %v", err.Error(), failErr), http.StatusInternalServerError)
 				return
 			}
@@ -2463,6 +2605,20 @@ func (c *Controller) recordWorkItemDependencyTerminal(ctx context.Context, workI
 		return fmt.Errorf("work item %s not found", workItemID)
 	}
 	return c.RecordWorkItemTerminalState(ctx, workItem.RunID, workItem.ID, terminalState)
+}
+
+func (c *Controller) recordWorkItemDependencyFailure(ctx context.Context, workItemID string, reason string) error {
+	if c.workflowStore == nil {
+		return nil
+	}
+	workItem, found, err := c.workflowStore.GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return fmt.Errorf("get work item %s: %w", workItemID, err)
+	}
+	if !found {
+		return fmt.Errorf("work item %s not found", workItemID)
+	}
+	return c.RecordWorkItemTerminalFailure(ctx, workItem.RunID, workItem.ID, reason)
 }
 
 func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallbackCompletedAt time.Time) (persistence.CompleteAttemptRequest, error) {

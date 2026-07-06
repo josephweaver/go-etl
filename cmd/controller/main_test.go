@@ -1611,6 +1611,77 @@ func TestSubmissionStatusHandler(t *testing.T) {
 	}
 }
 
+func TestSubmissionStatusHandlerIncludesDependencyStageSummary(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	controller := newController()
+	controller.workflowStore = store
+
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 0,
+				StepIndex:  0,
+				StepID:     "download",
+			}},
+		},
+		{
+			Index: 1,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 1,
+				StepIndex:  1,
+				StepID:     "summarize",
+			}},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("download-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/submissions/"+run.ID+"/status", nil)
+	response := httptest.NewRecorder()
+	controller.submissionStatusHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var got model.SubmissionStatus
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode submission status: %v", err)
+	}
+	if got.Dependency == nil {
+		t.Fatal("dependency status missing")
+	}
+	if got.Dependency.WorkflowState != "running" || got.Dependency.StageCount != 2 {
+		t.Fatalf("dependency status = %+v, want running two-stage workflow", got.Dependency)
+	}
+	if got.Dependency.CurrentStageIndex == nil || *got.Dependency.CurrentStageIndex != 0 {
+		t.Fatalf("current stage = %v, want 0", got.Dependency.CurrentStageIndex)
+	}
+	if got.Dependency.Counts.AssignablePending != 1 || got.Dependency.Counts.BlockedFuture != 1 {
+		t.Fatalf("dependency counts = %+v, want assignable=1 blocked=1", got.Dependency.Counts)
+	}
+	if len(got.Dependency.Stages) != 2 || got.Dependency.Stages[0].State != "ready" || got.Dependency.Stages[1].State != "blocked" {
+		t.Fatalf("dependency stages = %+v, want ready then blocked", got.Dependency.Stages)
+	}
+	if strings.Contains(response.Body.String(), "output_json") {
+		t.Fatalf("status body exposes dependency output field: %s", response.Body.String())
+	}
+}
+
 func TestSubmissionStatusHandlerReturns404ForUnknownSubmission(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = openTestWorkflowExecutionStore(t)
