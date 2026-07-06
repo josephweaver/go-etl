@@ -30,6 +30,8 @@ func TestOpenStoreCreatesSQLiteDatabase(t *testing.T) {
 		"workflows",
 		"workflow_instances",
 		"workflow_stages",
+		"workflow_dependency_steps",
+		"workflow_dependency_work_items",
 		"work_items",
 		"workers",
 		"work_item_attempts",

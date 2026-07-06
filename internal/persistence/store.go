@@ -5,11 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 2
+	SupportedSchemaVersion = 3
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -70,6 +71,15 @@ type WorkflowStageRecord struct {
 	OutputJSONSHA256     string
 }
 
+type WorkflowDependencyStepRecord struct {
+	RunID        string
+	StageIndex   int
+	StepIndex    int
+	StepID       string
+	ParallelWith string
+	CreatedAt    string
+}
+
 type WorkItemRecord struct {
 	ID                   string
 	RunID                string
@@ -78,6 +88,15 @@ type WorkItemRecord struct {
 	WorkerPayloadJSON    string
 	ResolvedInputsSHA256 string
 	CreatedAt            string
+}
+
+type WorkflowDependencyWorkItemRecord struct {
+	RunID         string
+	StageIndex    int
+	StepIndex     int
+	WorkItemID    string
+	WorkItemIndex int
+	CreatedAt     string
 }
 
 type QueuedWorkRecord struct {
@@ -588,6 +607,196 @@ func (s *Store) GetWorkflowStage(ctx context.Context, runID string, stageIndex i
 		return WorkflowStageRecord{}, false, err
 	}
 	return getWorkflowStage(ctx, s.db, runID, stageIndex)
+}
+
+func (s *Store) InsertWorkflowDependencySteps(ctx context.Context, steps []WorkflowDependencyStepRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := validateWorkflowDependencySteps(steps); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin dependency step insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	steps = append([]WorkflowDependencyStepRecord(nil), steps...)
+	sort.Slice(steps, func(i, j int) bool {
+		if steps[i].StageIndex == steps[j].StageIndex {
+			return steps[i].StepIndex < steps[j].StepIndex
+		}
+		return steps[i].StageIndex < steps[j].StageIndex
+	})
+
+	existing, err := listWorkflowDependencyStepsForRun(ctx, tx, steps[0].RunID)
+	if err != nil {
+		return err
+	}
+	if len(existing) != 0 {
+		if !sameWorkflowDependencyStepPlan(existing, steps) {
+			return fmt.Errorf("dependency steps for run %s already exists with different values", steps[0].RunID)
+		}
+		return tx.Commit()
+	}
+
+	for _, step := range steps {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_dependency_steps (
+			run_id,
+			stage_index,
+			step_index,
+			step_id,
+			parallel_with,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+			step.RunID,
+			step.StageIndex,
+			step.StepIndex,
+			step.StepID,
+			step.ParallelWith,
+			step.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert workflow dependency step %s/%d/%d: %w", step.RunID, step.StageIndex, step.StepIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit dependency step insert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListWorkflowDependencySteps(ctx context.Context, runID string) ([]WorkflowDependencyStepRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		run_id,
+		stage_index,
+		step_index,
+		step_id,
+		parallel_with,
+		created_at
+	FROM workflow_dependency_steps
+	WHERE run_id = ?
+	ORDER BY stage_index, step_index`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	steps := []WorkflowDependencyStepRecord{}
+	for rows.Next() {
+		step, err := scanWorkflowDependencyStep(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+	}
+	return steps, nil
+}
+
+func (s *Store) InsertWorkflowDependencyWorkItemMembership(ctx context.Context, items []WorkflowDependencyWorkItemRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := validateWorkflowDependencyWorkItemRecords(items); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin dependency work item membership insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		existing, found, err := getWorkflowDependencyWorkItem(ctx, tx, item.RunID, item.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existing != item {
+				return fmt.Errorf("dependency work item membership %s already exists with different values", item.WorkItemID)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_dependency_work_items (
+			run_id,
+			stage_index,
+			step_index,
+			work_item_id,
+			work_item_index,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+			item.RunID,
+			item.StageIndex,
+			item.StepIndex,
+			item.WorkItemID,
+			item.WorkItemIndex,
+			item.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert dependency work item membership %s for step %s/%d: %w", item.WorkItemID, item.RunID, item.StepIndex, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit dependency work item membership insert: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListWorkflowDependencyWorkItems(ctx context.Context, runID string, stageIndex int, stepIndex int) ([]WorkflowDependencyWorkItemRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+	if stageIndex < 0 {
+		return nil, fmt.Errorf("stage index must be non-negative")
+	}
+	if stepIndex < 0 {
+		return nil, fmt.Errorf("step index must be non-negative")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		run_id,
+		stage_index,
+		step_index,
+		work_item_id,
+		work_item_index,
+		created_at
+	FROM workflow_dependency_work_items
+	WHERE run_id = ? AND stage_index = ? AND step_index = ?
+	ORDER BY work_item_index, work_item_id`, runID, stageIndex, stepIndex)
+	if err != nil {
+		return nil, fmt.Errorf("list dependency work items for run %s/%d/%d: %w", runID, stageIndex, stepIndex, err)
+	}
+	defer rows.Close()
+
+	items := []WorkflowDependencyWorkItemRecord{}
+	for rows.Next() {
+		item, err := scanWorkflowDependencyWorkItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list dependency work items for run %s/%d/%d: %w", runID, stageIndex, stepIndex, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list dependency work items for run %s/%d/%d: %w", runID, stageIndex, stepIndex, err)
+	}
+	return items, nil
 }
 
 func (s *Store) ListActiveWorkflowRuns(ctx context.Context) ([]WorkflowRunRecord, error) {
@@ -1530,6 +1739,32 @@ func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, b
 	return queuedAt, true, nil
 }
 
+func getWorkflowDependencyWorkItem(ctx context.Context, q queryer, runID, workItemID string) (WorkflowDependencyWorkItemRecord, bool, error) {
+	if runID == "" {
+		return WorkflowDependencyWorkItemRecord{}, false, fmt.Errorf("run id is required")
+	}
+	if workItemID == "" {
+		return WorkflowDependencyWorkItemRecord{}, false, fmt.Errorf("work item id is required")
+	}
+
+	item, err := scanWorkflowDependencyWorkItem(q.QueryRowContext(ctx, `SELECT
+		run_id,
+		stage_index,
+		step_index,
+		work_item_id,
+		work_item_index,
+		created_at
+	FROM workflow_dependency_work_items
+	WHERE run_id = ? AND work_item_id = ?`, runID, workItemID))
+	if err == sql.ErrNoRows {
+		return WorkflowDependencyWorkItemRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkflowDependencyWorkItemRecord{}, false, fmt.Errorf("get dependency work item %s for run %s: %w", workItemID, runID, err)
+	}
+	return item, true, nil
+}
+
 func listStagesForRun(ctx context.Context, tx *sql.Tx, runID string) ([]WorkflowStageRecord, error) {
 	rows, err := tx.QueryContext(ctx, workflowStageSelectSQL()+` WHERE run_id = ? ORDER BY stage_index`, runID)
 	if err != nil {
@@ -1549,6 +1784,36 @@ func listStagesForRun(ctx context.Context, tx *sql.Tx, runID string) ([]Workflow
 		return nil, fmt.Errorf("list workflow stages for run %s: %w", runID, err)
 	}
 	return stages, nil
+}
+
+func listWorkflowDependencyStepsForRun(ctx context.Context, tx *sql.Tx, runID string) ([]WorkflowDependencyStepRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		run_id,
+		stage_index,
+		step_index,
+		step_id,
+		parallel_with,
+		created_at
+	FROM workflow_dependency_steps
+	WHERE run_id = ?
+	ORDER BY stage_index, step_index`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	steps := []WorkflowDependencyStepRecord{}
+	for rows.Next() {
+		step, err := scanWorkflowDependencyStep(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list workflow dependency steps for run %s: %w", runID, err)
+	}
+	return steps, nil
 }
 
 func workflowStageSelectSQL() string {
@@ -1641,6 +1906,32 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 		&item.ResolvedInputsSHA256,
 		&item.CreatedAt,
 		&item.QueuedAt,
+	)
+	return item, err
+}
+
+func scanWorkflowDependencyStep(row scanner) (WorkflowDependencyStepRecord, error) {
+	var step WorkflowDependencyStepRecord
+	err := row.Scan(
+		&step.RunID,
+		&step.StageIndex,
+		&step.StepIndex,
+		&step.StepID,
+		&step.ParallelWith,
+		&step.CreatedAt,
+	)
+	return step, err
+}
+
+func scanWorkflowDependencyWorkItem(row scanner) (WorkflowDependencyWorkItemRecord, error) {
+	var item WorkflowDependencyWorkItemRecord
+	err := row.Scan(
+		&item.RunID,
+		&item.StageIndex,
+		&item.StepIndex,
+		&item.WorkItemID,
+		&item.WorkItemIndex,
+		&item.CreatedAt,
 	)
 	return item, err
 }
@@ -1965,6 +2256,47 @@ func (w WorkItemRecord) validate() error {
 	return nil
 }
 
+func (s WorkflowDependencyStepRecord) validate() error {
+	if s.RunID == "" {
+		return fmt.Errorf("dependency step run id is required")
+	}
+	if s.StageIndex < 0 {
+		return fmt.Errorf("dependency step stage index must be non-negative")
+	}
+	if s.StepIndex < 0 {
+		return fmt.Errorf("dependency step index must be non-negative")
+	}
+	if s.StepID == "" {
+		return fmt.Errorf("dependency step id is required")
+	}
+	if s.CreatedAt == "" {
+		return fmt.Errorf("dependency step created at is required")
+	}
+	return nil
+}
+
+func (r WorkflowDependencyWorkItemRecord) validate() error {
+	if r.RunID == "" {
+		return fmt.Errorf("dependency work item run id is required")
+	}
+	if r.WorkItemID == "" {
+		return fmt.Errorf("dependency work item id is required")
+	}
+	if r.WorkItemIndex < 0 {
+		return fmt.Errorf("dependency work item index must be non-negative")
+	}
+	if r.StageIndex < 0 {
+		return fmt.Errorf("dependency stage index must be non-negative")
+	}
+	if r.StepIndex < 0 {
+		return fmt.Errorf("dependency step index must be non-negative")
+	}
+	if r.CreatedAt == "" {
+		return fmt.Errorf("dependency work item created at is required")
+	}
+	return nil
+}
+
 func validateWorkItems(items []WorkItemRecord) error {
 	if len(items) == 0 {
 		return fmt.Errorf("work items are required")
@@ -1972,6 +2304,30 @@ func validateWorkItems(items []WorkItemRecord) error {
 	for index, item := range items {
 		if err := item.validate(); err != nil {
 			return fmt.Errorf("work item %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowDependencySteps(steps []WorkflowDependencyStepRecord) error {
+	if len(steps) == 0 {
+		return fmt.Errorf("dependency steps are required")
+	}
+	for index, step := range steps {
+		if err := step.validate(); err != nil {
+			return fmt.Errorf("dependency step %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowDependencyWorkItemRecords(items []WorkflowDependencyWorkItemRecord) error {
+	if len(items) == 0 {
+		return fmt.Errorf("dependency work items are required")
+	}
+	for index, item := range items {
+		if err := item.validate(); err != nil {
+			return fmt.Errorf("dependency work item %d: %w", index, err)
 		}
 	}
 	return nil
@@ -2177,6 +2533,18 @@ func sameWorkflowRecord(left WorkflowRecord, right WorkflowRecord) bool {
 }
 
 func sameStagePlan(left []WorkflowStageRecord, right []WorkflowStageRecord) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameWorkflowDependencyStepPlan(left []WorkflowDependencyStepRecord, right []WorkflowDependencyStepRecord) bool {
 	if len(left) != len(right) {
 		return false
 	}

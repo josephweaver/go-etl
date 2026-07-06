@@ -10,6 +10,7 @@ import (
 
 	fp "goetl/internal/fingerprint"
 	"goetl/internal/model"
+	"goetl/internal/persistence"
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
@@ -53,6 +54,8 @@ func (c *Controller) CreateWorkflowDependencyPlan(ctx context.Context, submissio
 		State:      model.WorkflowStateRunning,
 		Stages:     make([]model.WorkflowDependencyStage, 0, len(stages)),
 	}
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	dependencySteps := make([]persistence.WorkflowDependencyStepRecord, 0, len(stages))
 
 	seenStageIndex := map[int]bool{}
 	seenStepIndex := map[int]bool{}
@@ -112,12 +115,23 @@ func (c *Controller) CreateWorkflowDependencyPlan(ctx context.Context, submissio
 				State:      stepState,
 				WorkItems:  []model.WorkflowDependencyWorkItemMembership{},
 			})
+			dependencySteps = append(dependencySteps, persistence.WorkflowDependencyStepRecord{
+				RunID:        submissionID,
+				StageIndex:   stageStep.StageIndex,
+				StepIndex:    stageStep.StepIndex,
+				StepID:       stageStep.StepID,
+				ParallelWith: stage.ParallelWith,
+				CreatedAt:    timestamp,
+			})
 		}
 
 		dependencyState.Stages = append(dependencyState.Stages, dependencyStage)
 	}
 
 	if err := validateDependencyPlan(dependencyState); err != nil {
+		return err
+	}
+	if err := c.workflowStore.InsertWorkflowDependencySteps(ctx, dependencySteps); err != nil {
 		return err
 	}
 	if err := c.setWorkflowDependencyState(ctx, submissionID, dependencyState); err != nil {
@@ -202,6 +216,18 @@ func (c *Controller) RecordCompiledWorkItemMembership(ctx context.Context, submi
 		State:         model.WorkItemMembershipStateQueued,
 	})
 	sortWorkItemsByIndex(step.WorkItems)
+	if err := c.workflowStore.InsertWorkflowDependencyWorkItemMembership(ctx, []persistence.WorkflowDependencyWorkItemRecord{
+		{
+			RunID:         submissionID,
+			StageIndex:    stageIndex,
+			StepIndex:     stepIndex,
+			WorkItemID:    workItemID,
+			WorkItemIndex: workItemIndex,
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}); err != nil {
+		return err
+	}
 
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
 		return err

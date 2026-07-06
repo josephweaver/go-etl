@@ -53,11 +53,12 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 		},
 	}
 
-	if err := controller.CreateWorkflowDependencyPlan(context.Background(), run.ID, run.WorkflowID, stages); err != nil {
+	ctx := context.Background()
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
 		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
 	}
 
-	orderedStages, err := controller.ListWorkflowStages(context.Background(), run.ID)
+	orderedStages, err := controller.ListWorkflowStages(ctx, run.ID)
 	if err != nil {
 		t.Fatalf("ListWorkflowStages() error = %v", err)
 	}
@@ -74,7 +75,7 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 		t.Fatalf("second stage state = %q, want %q", orderedStages[1].State, model.WorkflowStageStateBlocked)
 	}
 
-	orderedSteps, err := controller.ListWorkflowSteps(context.Background(), run.ID)
+	orderedSteps, err := controller.ListWorkflowSteps(ctx, run.ID)
 	if err != nil {
 		t.Fatalf("ListWorkflowSteps() error = %v", err)
 	}
@@ -83,6 +84,23 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 	}
 	if orderedSteps[0].StepIndex != 0 || orderedSteps[1].StepIndex != 2 || orderedSteps[2].StepIndex != 1 {
 		t.Fatalf("unordered steps = %+v", orderedSteps)
+	}
+
+	dependencySteps, err := queryDependencyStepsForRun(ctx, store, run.ID)
+	if err != nil {
+		t.Fatalf("query dependency steps: %v", err)
+	}
+	if len(dependencySteps) != 3 {
+		t.Fatalf("dependency steps len = %d, want 3", len(dependencySteps))
+	}
+	if dependencySteps[0].StageIndex != 0 || dependencySteps[0].StepIndex != 0 || dependencySteps[0].StepID != "write-a2" {
+		t.Fatalf("ordered dependency step[0] = %+v, want stage 0 step 0 write-a2", dependencySteps[0])
+	}
+	if dependencySteps[1].StageIndex != 0 || dependencySteps[1].StepIndex != 2 || dependencySteps[1].StepID != "write-a" {
+		t.Fatalf("ordered dependency step[1] = %+v, want stage 0 step 2 write-a", dependencySteps[1])
+	}
+	if dependencySteps[2].StageIndex != 1 || dependencySteps[2].StepIndex != 1 || dependencySteps[2].StepID != "write-b" {
+		t.Fatalf("ordered dependency step[2] = %+v, want stage 1 step 1 write-b", dependencySteps[2])
 	}
 }
 
@@ -105,6 +123,7 @@ func TestDependencyTransitionsAreReadableThroughSubmissionLogs(t *testing.T) {
 	controller.logSink = logSink
 	controller.logReadDefaultTail = 20
 	controller.logReadMaxTail = 20
+	ctx := context.Background()
 
 	stages := []workflow.WorkflowStage{
 		{
@@ -116,10 +135,10 @@ func TestDependencyTransitionsAreReadableThroughSubmissionLogs(t *testing.T) {
 			}},
 		},
 	}
-	if err := controller.CreateWorkflowDependencyPlan(context.Background(), run.ID, run.WorkflowID, stages); err != nil {
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
 		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
 	}
-	if err := controller.RecordCompiledWorkItemMembership(context.Background(), run.ID, 0, 0, "download-001", 0); err != nil {
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "download-001", 0); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
 	}
 	if err := controller.RecordWorkItemTerminalFailure(context.Background(), run.ID, "download-001", "boom"); err != nil {
@@ -236,6 +255,64 @@ func TestRecordCompiledWorkItemMembershipAndReadState(t *testing.T) {
 	}
 	if stage.State != model.WorkflowStageStateReady {
 		t.Fatalf("stage state = %q, want %q", stage.State, model.WorkflowStageStateReady)
+	}
+
+	dependencyWorkItems, err := queryDependencyWorkItemsForStep(ctx, store, run.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("query dependency work items: %v", err)
+	}
+	if len(dependencyWorkItems) != 1 {
+		t.Fatalf("dependency work item count = %d, want 1", len(dependencyWorkItems))
+	}
+	if dependencyWorkItems[0].WorkItemID != "workitem-001" || dependencyWorkItems[0].WorkItemIndex != 7 {
+		t.Fatalf("dependency work item = %+v, want id=workitem-001 index=7", dependencyWorkItems[0])
+	}
+}
+
+func TestRecordCompiledWorkItemMembershipPersistsOrderedFactRows(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	run := insertTestPersistenceRunWithStage(t, context.Background(), store)
+	controller := newController()
+	controller.workflowStore = store
+
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 0,
+				StepIndex:  1,
+				StepID:     "write-a",
+			}},
+		},
+	}
+	ctx := context.Background()
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 1, "workitem-b", 2); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership(b) error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 1, "workitem-a", 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership(a) error = %v", err)
+	}
+
+	dependencyWorkItems, err := queryDependencyWorkItemsForStep(ctx, store, run.ID, 0, 1)
+	if err != nil {
+		t.Fatalf("query dependency work items: %v", err)
+	}
+	if len(dependencyWorkItems) != 2 {
+		t.Fatalf("dependency work item count = %d, want 2", len(dependencyWorkItems))
+	}
+	if dependencyWorkItems[0].WorkItemID != "workitem-a" || dependencyWorkItems[0].WorkItemIndex != 0 {
+		t.Fatalf("ordered work item[0] = %+v, want workitem-a index 0", dependencyWorkItems[0])
+	}
+	if dependencyWorkItems[1].WorkItemID != "workitem-b" || dependencyWorkItems[1].WorkItemIndex != 2 {
+		t.Fatalf("ordered work item[1] = %+v, want workitem-b index 2", dependencyWorkItems[1])
 	}
 }
 
@@ -1160,6 +1237,14 @@ func createTwoStageFanoutDependencyPlan(t *testing.T, ctx context.Context, contr
 			t.Fatalf("RecordCompiledWorkItemMembership(%s) error = %v", id, err)
 		}
 	}
+}
+
+func queryDependencyStepsForRun(ctx context.Context, store *persistence.Store, runID string) ([]persistence.WorkflowDependencyStepRecord, error) {
+	return store.ListWorkflowDependencySteps(ctx, runID)
+}
+
+func queryDependencyWorkItemsForStep(ctx context.Context, store *persistence.Store, runID string, stageIndex int, stepIndex int) ([]persistence.WorkflowDependencyWorkItemRecord, error) {
+	return store.ListWorkflowDependencyWorkItems(ctx, runID, stageIndex, stepIndex)
 }
 
 func insertTestPersistenceRunWithID(t *testing.T, ctx context.Context, store *persistence.Store, runID string) persistence.WorkflowRunRecord {
