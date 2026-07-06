@@ -2103,8 +2103,8 @@ func TestCompletePersistedWorkHandlerRecordsDependencyTerminalState(t *testing.T
 	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
 		t.Fatalf("decode submission context: %v", err)
 	}
-	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateCompleted {
-		t.Fatalf("dependency workflow state = %+v, want completed", context.DependencyState)
+	if context.DependencyState != nil {
+		t.Fatalf("dependency workflow state = %+v, want omitted from submission context", context.DependencyState)
 	}
 
 	duplicate := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{

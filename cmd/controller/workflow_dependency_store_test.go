@@ -10,10 +10,11 @@ import (
 
 	"goetl/internal/model"
 	"goetl/internal/persistence"
+	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
-func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
+func TestCreateWorkflowDependencyPlanPersistsDependencyFactsWithoutMutatingSubmissionContext(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
@@ -21,6 +22,7 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 		}
 	})
 	run := insertTestPersistenceRunWithStage(t, context.Background(), store)
+	originalSubmissionContextJSON := run.SubmissionContextJSON
 	controller := newController()
 	controller.workflowStore = store
 
@@ -101,6 +103,14 @@ func TestCreateWorkflowDependencyPlanPersistsDependencyState(t *testing.T) {
 	}
 	if dependencySteps[2].StageIndex != 1 || dependencySteps[2].StepIndex != 1 || dependencySteps[2].StepID != "write-b" {
 		t.Fatalf("ordered dependency step[2] = %+v, want stage 1 step 1 write-b", dependencySteps[2])
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil || !found {
+		t.Fatalf("GetWorkflowRun() found=%v error=%v", found, err)
+	}
+	if runRecord.SubmissionContextJSON != originalSubmissionContextJSON {
+		t.Fatalf("submission context changed to %s, want unchanged %s", runRecord.SubmissionContextJSON, originalSubmissionContextJSON)
 	}
 }
 
@@ -394,22 +404,13 @@ func TestRecordWorkItemTerminalStateAdvancesStepAndStageCompletion(t *testing.T)
 	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
 		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
 	}
-	workItems := []persistence.WorkItemRecord{
-		testPersistenceWorkItem("workitem-a", run.ID, 0, 0),
-		testPersistenceWorkItem("workitem-b", run.ID, 0, 1),
-	}
-	if err := store.InsertWorkItems(ctx, workItems); err != nil {
-		t.Fatalf("InsertWorkItems() error = %v", err)
-	}
 	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "workitem-a", 0); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership(a) error = %v", err)
 	}
 	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 1, "workitem-b", 1); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership(b) error = %v", err)
 	}
-	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "workitem-a", model.WorkItemMembershipStateCompleted); err != nil {
-		t.Fatalf("RecordWorkItemTerminalState(a) error = %v", err)
-	}
+	completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, "workitem-a", 0, 0, `{"value":"a"}`)
 
 	step0, found, err := controller.ReadStepState(ctx, run.ID, 0)
 	if err != nil {
@@ -436,9 +437,7 @@ func TestRecordWorkItemTerminalStateAdvancesStepAndStageCompletion(t *testing.T)
 		t.Fatalf("stage 0 state = %q, want %q", stage0.State, model.WorkflowStageStateActive)
 	}
 
-	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "workitem-b", model.WorkItemMembershipStateCompleted); err != nil {
-		t.Fatalf("RecordWorkItemTerminalState(b) error = %v", err)
-	}
+	completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, "workitem-b", 0, 1, `{"value":"b"}`)
 	stage0, found, err = controller.ReadStageState(ctx, run.ID, 0)
 	if err != nil {
 		t.Fatalf("ReadStageState(0) error = %v", err)
@@ -461,11 +460,8 @@ func TestRecordWorkItemTerminalStateAdvancesStepAndStageCompletion(t *testing.T)
 	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
 		t.Fatalf("decode submission context: %v", err)
 	}
-	if context.DependencyState == nil {
-		t.Fatal("dependency state missing from submission context")
-	}
-	if context.DependencyState.State != model.WorkflowStateCompleted {
-		t.Fatalf("dependency workflow state = %q, want %q", context.DependencyState.State, model.WorkflowStateCompleted)
+	if context.DependencyState != nil {
+		t.Fatalf("dependency state = %+v, want omitted from submission context", context.DependencyState)
 	}
 }
 
@@ -496,21 +492,13 @@ func TestRecordWorkItemTerminalStateIsIdempotent(t *testing.T) {
 	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
 		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
 	}
-	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{
-		testPersistenceWorkItem("workitem-a", run.ID, 0, 0),
-		testPersistenceWorkItem("workitem-b", run.ID, 0, 1),
-	}); err != nil {
-		t.Fatalf("InsertWorkItems() error = %v", err)
-	}
 	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "workitem-a", 0); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership(a) error = %v", err)
 	}
 	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, "workitem-b", 1); err != nil {
 		t.Fatalf("RecordCompiledWorkItemMembership(b) error = %v", err)
 	}
-	if err := controller.RecordWorkItemTerminalState(ctx, run.ID, "workitem-a", model.WorkItemMembershipStateCompleted); err != nil {
-		t.Fatalf("RecordWorkItemTerminalState(first) error = %v", err)
-	}
+	completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, "workitem-a", 0, 0, `{"value":"a"}`)
 	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
 	if err != nil {
 		t.Fatalf("ReadStepState() error = %v", err)
@@ -753,7 +741,7 @@ func TestLateSiblingCompletionDoesNotChangeFailedWorkflowTerminalState(t *testin
 	}
 }
 
-func TestReadWorkflowRunSubmissionContextKeepsDependencyStateJSONShape(t *testing.T) {
+func TestCreateWorkflowDependencyPlanDoesNotWriteDependencyStateJSON(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
@@ -786,20 +774,13 @@ func TestReadWorkflowRunSubmissionContextKeepsDependencyStateJSONShape(t *testin
 	}
 
 	var contextJSON struct {
-		Schema     string `json:"schema"`
-		Dependency *struct {
-			RunID      string `json:"run_id"`
-			WorkflowID string `json:"workflow_id"`
-		} `json:"dependency_state"`
+		Dependency json.RawMessage `json:"dependency_state"`
 	}
 	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &contextJSON); err != nil {
 		t.Fatalf("unmarshal run submission context: %v", err)
 	}
-	if contextJSON.Dependency == nil {
-		t.Fatal("dependency state not found in submission context")
-	}
-	if contextJSON.Dependency.RunID != run.ID {
-		t.Fatalf("dependency run id = %q, want %q", contextJSON.Dependency.RunID, run.ID)
+	if len(contextJSON.Dependency) != 0 {
+		t.Fatalf("dependency_state JSON = %s, want omitted", string(contextJSON.Dependency))
 	}
 }
 
@@ -816,13 +797,7 @@ func TestRecordCompletedWorkItemOutputPrunesMembershipOutputAfterStepAggregation
 	run := insertTestPersistenceRunWithStage(t, ctx, store)
 	createSingleStepDependencyPlan(t, ctx, controller, run.ID, run.WorkflowID, "work-0")
 
-	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
-		SubmissionID: run.ID,
-		WorkItemID:   "work-0",
-		OutputJSON:   `{"label":"done","answer":42}`,
-	}); err != nil {
-		t.Fatalf("RecordCompletedWorkItemOutput() error = %v", err)
-	}
+	completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, "work-0", 0, 0, `{"label":"done","answer":42}`)
 
 	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
 	if err != nil {
@@ -890,6 +865,98 @@ func TestRecordCompletedWorkItemOutputPersistsAggregatedStepOutput(t *testing.T)
 	}
 }
 
+func TestFreshControllerReconstructsDependencyStateWithoutDependencyStateJSON(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	createTwoStageDependencyPlan(t, ctx, controller, run.ID, run.WorkflowID, "work-0")
+
+	work := testPersistenceWorkItem("work-0", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-0",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+	resolvedOutput, err := resolvedOutputFromJSON(`{"value":"a"}`)
+	if err != nil {
+		t.Fatalf("resolvedOutputFromJSON() error = %v", err)
+	}
+	outputJSON, outputJSONSHA256, err := canonicalOutputJSONFromResolved(resolvedOutput)
+	if err != nil {
+		t.Fatalf("canonicalOutputJSONFromResolved() error = %v", err)
+	}
+	completed, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+		AttemptID:        "attempt-0",
+		OutputJSON:       outputJSON,
+		OutputJSONSHA256: outputJSONSHA256,
+		PreStateSHA256:   strings.Repeat("e", 64),
+		PostStateSHA256:  strings.Repeat("f", 64),
+		CompletedAt:      "2026-07-03T00:00:02Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("CompleteAttempt() found=%v error=%v, want success", found, err)
+	}
+	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
+		SubmissionID:     run.ID,
+		WorkItemID:       "work-0",
+		OutputJSON:       completed.OutputJSON,
+		OutputJSONSHA256: completed.OutputJSONSHA256,
+	}); err != nil {
+		t.Fatalf("RecordCompletedWorkItemOutput() error = %v", err)
+	}
+	if err := store.UpdateWorkflowRunSubmissionContext(ctx, run.ID, `{"variables":[]}`); err != nil {
+		t.Fatalf("UpdateWorkflowRunSubmissionContext() error = %v", err)
+	}
+
+	recovered := newController()
+	recovered.workflowStore = store
+	stages, err := recovered.ListWorkflowStages(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListWorkflowStages() error = %v", err)
+	}
+	if len(stages) != 2 || stages[0].StageIndex != 0 || stages[1].StageIndex != 1 {
+		t.Fatalf("stages = %+v, want deterministic stage 0 then 1", stages)
+	}
+	if stages[0].State != model.WorkflowStageStateCompleted || stages[1].State != model.WorkflowStageStateBlocked {
+		t.Fatalf("stage states = %+v, want completed then blocked", stages)
+	}
+	plan, found, err := recovered.getWorkflowDependencyState(ctx, run.ID)
+	if err != nil || !found {
+		t.Fatalf("getWorkflowDependencyState() found=%v error=%v", found, err)
+	}
+	scope, err := workflowStepScope(*plan, 1)
+	if err != nil {
+		t.Fatalf("workflowStepScope() error = %v", err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	stepValue, err := resolver.Resolve(variable.Reference{Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "step"}, Qualified: true})
+	if err != nil {
+		t.Fatalf("Resolve(workflow.step) error = %v", err)
+	}
+	value, err := variable.ApplyAccessor(stepValue, "[0].value")
+	if err != nil {
+		t.Fatalf("ApplyAccessor([0].value) error = %v", err)
+	}
+	if value.Type != variable.TypeString || value.Value != "a" {
+		t.Fatalf("workflow.step[0].value = %#v, want string a", value)
+	}
+}
+
 func TestRecordCompletedWorkItemOutputLeavesWorkflowStageOutputUnused(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	t.Cleanup(func() {
@@ -938,19 +1005,14 @@ func TestRecordCompletedWorkItemOutputKeepsFanoutOrderStable(t *testing.T) {
 
 	for _, item := range []struct {
 		id     string
+		index  int
 		output string
 	}{
-		{id: "work-2", output: `{"value":"c"}`},
-		{id: "work-0", output: `{"value":"a"}`},
-		{id: "work-1", output: `{"value":"b"}`},
+		{id: "work-2", index: 2, output: `{"value":"c"}`},
+		{id: "work-0", index: 0, output: `{"value":"a"}`},
+		{id: "work-1", index: 1, output: `{"value":"b"}`},
 	} {
-		if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
-			SubmissionID: run.ID,
-			WorkItemID:   item.id,
-			OutputJSON:   item.output,
-		}); err != nil {
-			t.Fatalf("RecordCompletedWorkItemOutput(%s) error = %v", item.id, err)
-		}
+		completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, item.id, 0, item.index, item.output)
 	}
 
 	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
@@ -1086,13 +1148,7 @@ func TestTerminalWorkflowPruningClearsAllDependencyOutputJSON(t *testing.T) {
 	run := insertTestPersistenceRunWithStage(t, ctx, store)
 	createSingleStepDependencyPlan(t, ctx, controller, run.ID, run.WorkflowID, "work-0")
 
-	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
-		SubmissionID: run.ID,
-		WorkItemID:   "work-0",
-		OutputJSON:   `{"value":"terminal"}`,
-	}); err != nil {
-		t.Fatalf("RecordCompletedWorkItemOutput() error = %v", err)
-	}
+	completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, "work-0", 0, 0, `{"value":"terminal"}`)
 
 	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
 	if err != nil {
@@ -1328,6 +1384,53 @@ func queryDependencyStepsForRun(ctx context.Context, store *persistence.Store, r
 
 func queryDependencyWorkItemsForStep(ctx context.Context, store *persistence.Store, runID string, stageIndex int, stepIndex int) ([]persistence.WorkflowDependencyWorkItemRecord, error) {
 	return store.ListWorkflowDependencyWorkItems(ctx, runID, stageIndex, stepIndex)
+}
+
+func completeDependencyWorkItemForTest(t *testing.T, ctx context.Context, store *persistence.Store, controller *Controller, runID string, workItemID string, stageIndex int, workItemIndex int, outputJSON string) {
+	t.Helper()
+
+	work := testPersistenceWorkItem(workItemID, runID, stageIndex, workItemIndex)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems(%s) error = %v", workItemID, err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems(%s) error = %v", workItemID, err)
+	}
+	attemptID := "attempt-" + strings.ReplaceAll(workItemID, ":", "-")
+	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    attemptID,
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork(%s) found=%v error=%v, want success", workItemID, found, err)
+	}
+	resolvedOutput, err := resolvedOutputFromJSON(outputJSON)
+	if err != nil {
+		t.Fatalf("resolvedOutputFromJSON(%s) error = %v", workItemID, err)
+	}
+	canonicalOutputJSON, canonicalOutputJSONSHA256, err := canonicalOutputJSONFromResolved(resolvedOutput)
+	if err != nil {
+		t.Fatalf("canonicalOutputJSONFromResolved(%s) error = %v", workItemID, err)
+	}
+	completed, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+		AttemptID:        attemptID,
+		OutputJSON:       canonicalOutputJSON,
+		OutputJSONSHA256: canonicalOutputJSONSHA256,
+		PreStateSHA256:   strings.Repeat("e", 64),
+		PostStateSHA256:  strings.Repeat("f", 64),
+		CompletedAt:      "2026-07-03T00:00:02Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("CompleteAttempt(%s) found=%v error=%v, want success", workItemID, found, err)
+	}
+	if err := controller.RecordCompletedWorkItemOutput(ctx, RecordCompletedWorkItemOutputRequest{
+		SubmissionID:     runID,
+		WorkItemID:       workItemID,
+		OutputJSON:       completed.OutputJSON,
+		OutputJSONSHA256: completed.OutputJSONSHA256,
+	}); err != nil {
+		t.Fatalf("RecordCompletedWorkItemOutput(%s) error = %v", workItemID, err)
+	}
 }
 
 func insertTestPersistenceRunWithID(t *testing.T, ctx context.Context, store *persistence.Store, runID string) persistence.WorkflowRunRecord {

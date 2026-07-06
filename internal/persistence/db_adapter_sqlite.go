@@ -178,6 +178,23 @@ var sqliteSchemaStatements = []string{
 	);`,
 }
 
+var sqliteIndexStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_work_items_run_stage_work_item
+	ON work_items(run_id, stage_index, work_item_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_workflow_dependency_steps_run_stage_step
+	ON workflow_dependency_steps(run_id, stage_index, step_index);`,
+	`CREATE INDEX IF NOT EXISTS idx_workflow_dependency_work_items_run_stage_step_order
+	ON workflow_dependency_work_items(run_id, stage_index, step_index, work_item_index, work_item_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_queued_work_queued_at_work_item
+	ON queued_work(queued_at, work_item_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_running_work_started_at_attempt
+	ON running_work(started_at, attempt_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_completed_work_item_completed_at
+	ON completed_work(work_item_id, completed_at, attempt_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_failed_work_item_failed_at
+	ON failed_work(work_item_id, failed_at, attempt_id);`,
+}
+
 func openSQLiteStore(ctx context.Context, connectionString string) (*Store, error) {
 	if connectionString != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(connectionString), 0755); err != nil {
@@ -241,6 +258,10 @@ func initSQLiteStoreSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
+	if err := ensureSQLiteStoreIndexes(ctx, tx); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite schema initialization: %w", err)
 	}
@@ -255,6 +276,15 @@ func createSQLiteStoreSchema(ctx context.Context, tx *sql.Tx) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (?)`, SupportedSchemaVersion); err != nil {
 		return fmt.Errorf("record sqlite schema version: %w", err)
+	}
+	return nil
+}
+
+func ensureSQLiteStoreIndexes(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range sqliteIndexStatements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("initialize sqlite indexes: %w", err)
+		}
 	}
 	return nil
 }

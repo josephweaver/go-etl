@@ -346,7 +346,7 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 	if isTerminalMembershipState(membership.State) && membership.State != model.WorkItemMembershipStateCompleted && membership.State != model.WorkItemMembershipStateSkipped {
 		return nil
 	}
-	if plan.State != model.WorkflowStateRunning && isTerminalMembershipState(membership.State) {
+	if plan.State != model.WorkflowStateRunning && isTerminalMembershipState(membership.State) && step.OutputJSONSHA256 != "" {
 		return nil
 	}
 	membership.State = model.WorkItemMembershipStateCompleted
@@ -571,7 +571,9 @@ func updateDependencyPlanForWorkItemTerminal(plan *model.WorkflowDependencyPlan,
 		return false, nil
 	}
 	if isTerminalMembershipState(membership.State) {
-		return false, nil
+		if terminalState != model.WorkItemMembershipStateFailed || step.OutputJSONSHA256 != "" {
+			return false, nil
+		}
 	}
 
 	if terminalState == model.WorkItemMembershipStateFailed {
@@ -641,7 +643,7 @@ func markDependencyWorkItemFailed(step *model.WorkflowDependencyStep, workItemID
 		if workItemID != "" && membership.WorkItemID != workItemID {
 			continue
 		}
-		if isTerminalMembershipState(membership.State) && membership.State != model.WorkItemMembershipStateFailed {
+		if isTerminalMembershipState(membership.State) && membership.State != model.WorkItemMembershipStateFailed && workItemID == "" {
 			continue
 		}
 		membership.State = model.WorkItemMembershipStateFailed
@@ -868,22 +870,358 @@ func (c *Controller) getWorkflowDependencyState(ctx context.Context, submissionI
 		return nil, false, nil
 	}
 
-	var context workflowRunSubmissionContext
-	if err := json.Unmarshal([]byte(run.SubmissionContextJSON), &context); err != nil {
-		return nil, false, fmt.Errorf("decode workflow submission context: %w", err)
+	steps, err := c.workflowStore.ListWorkflowDependencySteps(ctx, submissionID)
+	if err != nil {
+		return nil, false, err
 	}
-	if context.DependencyState == nil {
+	if len(steps) == 0 {
 		return nil, false, nil
 	}
-	if err := validateDependencyPlan(*context.DependencyState); err != nil {
-		return nil, false, fmt.Errorf("invalid dependency state for submission %s: %w", submissionID, err)
+
+	legacy := legacyWorkflowDependencyPlan(run.SubmissionContextJSON)
+	legacySteps := map[int]model.WorkflowDependencyStep{}
+	legacyMemberships := map[string]model.WorkflowDependencyWorkItemMembership{}
+	if legacy != nil {
+		for _, stage := range legacy.Stages {
+			for _, step := range stage.Steps {
+				legacySteps[step.StepIndex] = step
+				for _, membership := range step.WorkItems {
+					legacyMemberships[membership.WorkItemID] = membership
+				}
+			}
+		}
 	}
-	return context.DependencyState, true, nil
+
+	queued, err := c.workflowStore.ListQueuedWorkItems(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	queuedByWorkItemID := map[string]persistence.QueuedWorkRecord{}
+	for _, item := range queued {
+		if item.RunID == submissionID {
+			queuedByWorkItemID[item.ID] = item
+		}
+	}
+
+	running, err := c.workflowStore.ListRunningWork(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	runningByWorkItemID := map[string]persistence.RunningWorkRecord{}
+	for _, item := range running {
+		if item.WorkItem.RunID == submissionID {
+			runningByWorkItemID[item.WorkItem.ID] = item
+		}
+	}
+
+	terminal, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, submissionID)
+	if err != nil {
+		return nil, false, err
+	}
+	terminalByWorkItemID := map[string]persistence.TerminalAttemptRecord{}
+	for _, attempt := range terminal {
+		terminalByWorkItemID[attempt.WorkItem.ID] = attempt
+	}
+
+	plan := model.WorkflowDependencyPlan{
+		RunID:      submissionID,
+		WorkflowID: run.WorkflowID,
+		State:      model.WorkflowStateRunning,
+		Stages:     []model.WorkflowDependencyStage{},
+	}
+	if legacy != nil {
+		plan.FailureReason = legacy.FailureReason
+	}
+
+	stageIndexes := []int{}
+	stagePositionByIndex := map[int]int{}
+	for _, stepRecord := range steps {
+		stagePosition, ok := stagePositionByIndex[stepRecord.StageIndex]
+		if !ok {
+			plan.Stages = append(plan.Stages, model.WorkflowDependencyStage{
+				StageIndex:   stepRecord.StageIndex,
+				State:        model.WorkflowStageStateBlocked,
+				ParallelWith: stepRecord.ParallelWith,
+				Steps:        []model.WorkflowDependencyStep{},
+			})
+			stagePosition = len(plan.Stages) - 1
+			stagePositionByIndex[stepRecord.StageIndex] = stagePosition
+			stageIndexes = append(stageIndexes, stepRecord.StageIndex)
+		}
+
+		step := model.WorkflowDependencyStep{
+			StageIndex: stepRecord.StageIndex,
+			StepIndex:  stepRecord.StepIndex,
+			StepID:     stepRecord.StepID,
+			State:      model.WorkflowStepStateBlocked,
+			WorkItems:  []model.WorkflowDependencyWorkItemMembership{},
+		}
+		applyLegacyStepOutput(&step, legacySteps[stepRecord.StepIndex])
+
+		fact, factFound, err := c.workflowStore.GetWorkflowStepOutputFact(ctx, submissionID, stepRecord.StepIndex)
+		if err != nil {
+			return nil, false, err
+		}
+		if factFound {
+			step.OutputJSON = fact.OutputJSON
+			step.OutputJSONSHA256 = fact.OutputJSONSHA256
+			step.OutputJSONBytes = fact.OutputJSONBytes
+			step.OutputJSONPruned = fact.OutputJSONPruned
+		}
+
+		memberships, err := c.workflowStore.ListWorkflowDependencyWorkItems(ctx, submissionID, stepRecord.StageIndex, stepRecord.StepIndex)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, membershipRecord := range memberships {
+			membership := deriveDependencyMembership(
+				membershipRecord,
+				queuedByWorkItemID,
+				runningByWorkItemID,
+				terminalByWorkItemID,
+				legacyMemberships,
+			)
+			if factFound {
+				pruneCompletedMembershipOutput(&membership)
+			}
+			step.WorkItems = append(step.WorkItems, membership)
+		}
+
+		step.State = deriveDependencyStepState(step, factFound)
+		if legacyStep, ok := legacySteps[step.StepIndex]; ok {
+			if stepHasNoDerivedTerminalEvidence(step, factFound) || (legacyStep.State == model.WorkflowStepStateFailed && !factFound) {
+				step.State = legacyStep.State
+				step.FailureReason = legacyStep.FailureReason
+			}
+		}
+		if step.State == model.WorkflowStepStateFailed && step.FailureReason != "" && plan.FailureReason == "" {
+			plan.FailureReason = step.FailureReason
+		}
+		plan.Stages[stagePosition].Steps = append(plan.Stages[stagePosition].Steps, step)
+	}
+
+	sort.Ints(stageIndexes)
+	sortStagesByIndex(plan.Stages)
+	earliestStageIndex := stageIndexes[0]
+	for stageIndex := range plan.Stages {
+		stage := &plan.Stages[stageIndex]
+		sortStepsByIndex(stage.Steps)
+		stage.State = deriveDependencyStageState(*stage, stage.StageIndex == earliestStageIndex)
+		if stage.State == model.WorkflowStageStateFailed && stage.FailureReason == "" && plan.FailureReason != "" {
+			stage.FailureReason = plan.FailureReason
+		}
+	}
+	deriveDependencyWorkflowState(&plan)
+	if legacy != nil && legacy.State == model.WorkflowStateFailed && plan.State != model.WorkflowStateFailed {
+		plan.State = model.WorkflowStateFailed
+		plan.FailureReason = legacy.FailureReason
+	}
+	if err := validateDependencyPlan(plan); err != nil {
+		return nil, false, fmt.Errorf("invalid reconstructed dependency state for submission %s: %w", submissionID, err)
+	}
+	return &plan, true, nil
+}
+
+func legacyWorkflowDependencyPlan(submissionContextJSON string) *model.WorkflowDependencyPlan {
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(submissionContextJSON), &context); err != nil {
+		return nil
+	}
+	if context.DependencyState == nil {
+		return nil
+	}
+	if err := validateDependencyPlan(*context.DependencyState); err != nil {
+		return nil
+	}
+	return context.DependencyState
+}
+
+func deriveDependencyMembership(
+	record persistence.WorkflowDependencyWorkItemRecord,
+	queuedByWorkItemID map[string]persistence.QueuedWorkRecord,
+	runningByWorkItemID map[string]persistence.RunningWorkRecord,
+	terminalByWorkItemID map[string]persistence.TerminalAttemptRecord,
+	legacyMemberships map[string]model.WorkflowDependencyWorkItemMembership,
+) model.WorkflowDependencyWorkItemMembership {
+	membership := model.WorkflowDependencyWorkItemMembership{
+		WorkItemID:    record.WorkItemID,
+		WorkItemIndex: record.WorkItemIndex,
+		State:         model.WorkItemMembershipStateQueued,
+	}
+
+	if terminal, ok := terminalByWorkItemID[record.WorkItemID]; ok {
+		legacy, hasLegacy := legacyMemberships[record.WorkItemID]
+		if hasLegacy && legacy.State == model.WorkItemMembershipStateFailed && terminal.TerminalState != "failed" {
+			legacy.WorkItemID = record.WorkItemID
+			legacy.WorkItemIndex = record.WorkItemIndex
+			return legacy
+		}
+		switch terminal.TerminalState {
+		case "failed":
+			membership.State = model.WorkItemMembershipStateFailed
+			membership.FailureReason = terminal.Error
+		default:
+			if terminal.SkippedParentID != "" {
+				membership.State = model.WorkItemMembershipStateSkipped
+			} else {
+				membership.State = model.WorkItemMembershipStateCompleted
+			}
+			membership.OutputJSON = terminal.OutputJSON
+			membership.OutputJSONSHA256 = terminal.OutputJSONSHA256
+			membership.OutputJSONBytes = len([]byte(terminal.OutputJSON))
+		}
+		return membership
+	}
+	if _, ok := runningByWorkItemID[record.WorkItemID]; ok {
+		membership.State = model.WorkItemMembershipStateRunning
+		return membership
+	}
+	if _, ok := queuedByWorkItemID[record.WorkItemID]; ok {
+		membership.State = model.WorkItemMembershipStateQueued
+		return membership
+	}
+	if legacy, ok := legacyMemberships[record.WorkItemID]; ok {
+		legacy.WorkItemID = record.WorkItemID
+		legacy.WorkItemIndex = record.WorkItemIndex
+		return legacy
+	}
+	return membership
+}
+
+func applyLegacyStepOutput(step *model.WorkflowDependencyStep, legacy model.WorkflowDependencyStep) {
+	if step == nil {
+		return
+	}
+	step.OutputJSON = legacy.OutputJSON
+	step.OutputJSONSHA256 = legacy.OutputJSONSHA256
+	step.OutputJSONBytes = legacy.OutputJSONBytes
+	step.OutputJSONPruned = legacy.OutputJSONPruned
+	step.FailureReason = legacy.FailureReason
+}
+
+func pruneCompletedMembershipOutput(membership *model.WorkflowDependencyWorkItemMembership) {
+	if membership == nil || membership.OutputJSON == "" {
+		return
+	}
+	switch membership.State {
+	case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped:
+		membership.OutputJSONBytes = len([]byte(membership.OutputJSON))
+		membership.OutputJSON = ""
+		membership.OutputJSONPruned = true
+	}
+}
+
+func deriveDependencyStepState(step model.WorkflowDependencyStep, hasOutputFact bool) model.WorkflowStepState {
+	hasQueued := false
+	hasRunning := false
+	hasCompleted := false
+	allTerminalSuccess := len(step.WorkItems) != 0
+	for _, membership := range step.WorkItems {
+		switch membership.State {
+		case model.WorkItemMembershipStateFailed:
+			return model.WorkflowStepStateFailed
+		case model.WorkItemMembershipStateRunning:
+			hasRunning = true
+			allTerminalSuccess = false
+		case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped:
+			hasCompleted = true
+		case model.WorkItemMembershipStateQueued:
+			hasQueued = true
+			allTerminalSuccess = false
+		default:
+			allTerminalSuccess = false
+		}
+	}
+	if hasOutputFact || allTerminalSuccess {
+		return model.WorkflowStepStateCompleted
+	}
+	if hasRunning || hasCompleted {
+		return model.WorkflowStepStateActive
+	}
+	if hasQueued {
+		return model.WorkflowStepStateReady
+	}
+	return model.WorkflowStepStateBlocked
+}
+
+func stepHasNoDerivedTerminalEvidence(step model.WorkflowDependencyStep, hasOutputFact bool) bool {
+	if hasOutputFact {
+		return false
+	}
+	for _, membership := range step.WorkItems {
+		switch membership.State {
+		case model.WorkItemMembershipStateCompleted, model.WorkItemMembershipStateSkipped, model.WorkItemMembershipStateFailed:
+			return false
+		}
+	}
+	return true
+}
+
+func deriveDependencyStageState(stage model.WorkflowDependencyStage, isEarliestStage bool) model.WorkflowStageState {
+	if len(stage.Steps) == 0 {
+		if isEarliestStage {
+			return model.WorkflowStageStateReady
+		}
+		return model.WorkflowStageStateBlocked
+	}
+	allCompleted := true
+	hasReady := false
+	hasActiveOrCompleted := false
+	for _, step := range stage.Steps {
+		switch step.State {
+		case model.WorkflowStepStateFailed:
+			return model.WorkflowStageStateFailed
+		case model.WorkflowStepStateCompleted:
+			hasActiveOrCompleted = true
+		case model.WorkflowStepStateActive:
+			allCompleted = false
+			hasActiveOrCompleted = true
+		case model.WorkflowStepStateReady:
+			allCompleted = false
+			hasReady = true
+		default:
+			allCompleted = false
+		}
+	}
+	if allCompleted {
+		return model.WorkflowStageStateCompleted
+	}
+	if hasActiveOrCompleted {
+		return model.WorkflowStageStateActive
+	}
+	if hasReady || isEarliestStage {
+		return model.WorkflowStageStateReady
+	}
+	return model.WorkflowStageStateBlocked
+}
+
+func deriveDependencyWorkflowState(plan *model.WorkflowDependencyPlan) {
+	if plan == nil {
+		return
+	}
+	allCompleted := len(plan.Stages) != 0
+	for _, stage := range plan.Stages {
+		if stage.State == model.WorkflowStageStateFailed {
+			plan.State = model.WorkflowStateFailed
+			return
+		}
+		if stage.State != model.WorkflowStageStateCompleted {
+			allCompleted = false
+		}
+	}
+	if allCompleted {
+		plan.State = model.WorkflowStateCompleted
+		return
+	}
+	plan.State = model.WorkflowStateRunning
 }
 
 func (c *Controller) setWorkflowDependencyState(ctx context.Context, submissionID string, plan model.WorkflowDependencyPlan) error {
 	if err := validateDependencyPlan(plan); err != nil {
 		return err
+	}
+	if plan.State != model.WorkflowStateFailed {
+		return nil
 	}
 
 	run, found, err := c.workflowStore.GetWorkflowRun(ctx, submissionID)
