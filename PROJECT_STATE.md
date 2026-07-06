@@ -1,8 +1,30 @@
 # Project State
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 ## Current Focus
+
+Dependency-aware workflow slice `012-update-dependency-workflow-docs-and-smoke` is now implemented: the concept README, architecture overview, controller README, demo-client README, and project state describe sequential-by-default dependency stages, contiguous `parallel_with` groups, just-in-time downstream compilation, `workflow.step[index]` output access, bounded output JSON, dependency-aware `goet status`, dependency transition `goet logs`, and the repeatable smoke path. `scripts/dependency-aware-workflow-smoke.ps1` creates temporary sibling demo-project workflow fixtures, starts the local controller, proves downstream sequential work is not assignable before upstream completion, proves a valid contiguous `parallel_with` stage exposes sibling work together, proves invalid non-contiguous `parallel_with` reuse is rejected without queue mutation, and checks dependency transition observations through `goet logs`.
+
+Dependency-aware workflow slice `011-surface-dependency-state-in-status-and-logs` is now implemented: `GET /submissions/{submission_id}/status` returns an optional dependency summary with workflow state, current stage index, stage count, per-stage/per-step state summaries, assignable-vs-blocked dependency counts, and failed stage/step/work-item reason without exposing retained dependency output JSON. `goet status --json` now prints the structured status response, human-readable `goet status` adds compact dependency stage lines, and controller-owned dependency transitions are emitted through the existing log-observation path so `goet logs <submission_id>` can show normalization, queued-stage, activation, completion, and failure messages.
+
+Dependency-aware workflow slice `010-propagate-step-and-workflow-failure` is now implemented: dependency failure transitions are centralized in `cmd/controller/workflow_dependency_store.go`, failed workflow state is terminal across conflicting duplicate reports, late sibling completions can update their own membership without reactivating downstream stages, output-capture failures and downstream activation failures mark the dependency workflow failed with `failure_reason` metadata, and activation now enqueues downstream work only after membership and stage readiness are safely recorded. Submission status already reads dependency-plan terminal state, so failed dependency workflows report `failed`.
+
+Dependency-aware workflow slice `008-compile-next-ready-stage` is now implemented: after a successful stage completion, the controller reconstructs the admitted workflow from the retained source cache, builds a resolver from workflow/submission scopes plus generated `workflow.step` outputs, compiles only the next blocked stage through `internal/workflow.CompileWorkflowStage`, stamps and queues the activated work items, records dependency memberships, marks the activated stage ready, and invokes the existing worker-scaling path. Downstream compile failures now mark the dependency workflow failed, and submission status consults dependency-plan terminal state so such failures report `failed`.
+
+Dependency-aware workflow slice `009-handle-empty-fanout-and-auto-advance` is now implemented: empty fan-out steps compile to no persisted work items but still record `workflow.step` output as `[]`; these steps are auto-completed in dependency state, enabling automatic stage advancement across fully empty stages at submission and activation, and preserving parallel-stage gating when a stage has mixed empty and non-empty fan-out steps.
+
+Dependency-aware workflow slice `003-persist-workflow-stage-state` is now implemented: controller dependency-plan state now persists in workflow run submission context with deterministic read/list/readback paths for stages, steps, and work-item memberships via `workflow_dependency_store.go`; typed state enums and duplicate checks are added in `internal/model`.
+
+Dependency-aware workflow slice `002-compile-single-workflow-stage` is now implemented: `internal/workflow` now has a stage-scoped compiler (`CompileWorkflowStage`) that compiles only one normalized stage, returns step-order and item-order metadata, and detects duplicate work-item IDs within that stage.
+
+Dependency-aware workflow slice `004-stamp-work-items-with-step-instance-metadata` is now implemented: controller submission now stamps deterministic workflow/step runtime metadata and step-instance IDs, preserves per-step work-item indexes when persisting work items, and records membership state (`submission_id`, `stage_index`, `step_index`, `work_item_id`, `work_item_index`) as part of workflow run admission.
+
+Dependency-aware workflow slice `005-submit-only-initial-ready-stage` is now implemented: live `/workflow` admission now normalizes stages, compiles and persists only stage 0 work items, records stage 0 dependency membership, and leaves later stages uncompiled and unqueued until they become ready.
+
+Dependency-aware workflow slice `006-record-terminal-work-item-state` is now implemented: completion/failure terminal handlers now update dependency-work-item membership state, recalculate owning step/stage terminal states, and persist dependency state transitions in workflow submission context without compiling downstream stages.
+
+Dependency-aware workflow slice `007-capture-typed-step-outputs` is now implemented in the controller dependency-state layer: successful terminal output JSON is converted into typed logical values, persisted on dependency work-item memberships, aggregated into logical step outputs in deterministic `work_item_index` order, and exposed through a generated `workflow.step` resolver scope helper for future downstream stage compilation. Invalid typed output capture now marks the dependency work item, step, stage, and workflow failed. OS 007 output retention is bounded: completed work output JSON and logical step aggregate JSON have hard byte limits, membership-level full output JSON is pruned after step aggregation, and remaining dependency output JSON is pruned when the dependency workflow reaches a terminal completed or failed state while retaining output hashes, byte counts, and pruned flags.
 
 Operational observability slice 010 (`010-cli-logs-command`) is now implemented: the demo CLI now supports `goet logs <submission_id> [--controller-url <url>] [--tail <n>] [--level <level>] [--stream <stream>] [--attempt-id <id>] [--json]`, with bounded, submission-scoped log retrieval via `internal/client` and compact/default rendering.
 Operational observability slice 009 (`009-submission-log-read-api`) is now implemented: controller now exposes `GET /submissions/{submission_id}/logs` with bounded reads, optional level/stream/attempt filtering, known-submission validation, and bounded, deterministic tail metadata.
@@ -1160,6 +1182,14 @@ Run the local workflow demo from the repository root:
 cd "c:\Joe Local Only\College\Research\go-etl"
 go run ./cmd/demo-client
 ```
+
+Run the dependency-aware workflow smoke path from the repository root:
+
+```powershell
+powershell -NoProfile -File scripts/dependency-aware-workflow-smoke.ps1
+```
+
+This starts a local controller, writes temporary sibling demo-project workflow fixtures, and verifies sequential stage readiness, contiguous `parallel_with` readiness, invalid non-contiguous `parallel_with` rejection, `goet status --json`, and `goet logs --json`.
 
 Run the parameterized summary workflow demo from the repository root:
 

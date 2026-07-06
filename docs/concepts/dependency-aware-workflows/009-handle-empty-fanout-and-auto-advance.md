@@ -1,10 +1,15 @@
 # 009 Handle Empty Fan-Out And Auto-Advance
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
 Make zero-work-item stages complete successfully without synthetic attempts, then continue dependency activation until queued work, workflow completion, or failure is reached.
+
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
 
 ## Current State
 
@@ -23,6 +28,8 @@ no work-item membership records are inserted for that step
 no attempt is created
 no synthetic work item is queued
 ```
+
+The empty output is a dependency **step** output. Store it where OS 007 stores logical step outputs so later compilation can resolve `workflow.step[index]` as an empty list. Do not store an empty-fanout output in `workflow_stages.output_json`, and do not create a stage-level wrapper for mixed parallel stages.
 
 When every step in a stage has completed this way, the stage completes and activation continues to the next stage.
 
@@ -96,3 +103,4 @@ Do not read unrelated files unless test failures directly require them.
 
 - Test empty fan-out using a resolver expression that returns an empty list.
 - Keep auto-advance in the controller. Do not make workers aware of empty-stage transitions.
+- When auto-advance reaches a later stage, generated `workflow.step` scope must include prior empty-step outputs as `[]` if those steps are before the stage being compiled.

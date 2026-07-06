@@ -1,12 +1,12 @@
-# Dependency-Aware Workflows Concept Bundle Manifest
+# Dependency-Aware Workflows Strategic Concept Bundle Manifest
 
-This bundle replaces and expands:
+This bundle replaces and expands the current Strategic Concept document:
 
 ```text
 docs/concepts/dependency-aware-workflows/README.md
 ```
 
-It adds these Operational Slice files:
+It keeps these Operational Slice files under the same directory:
 
 ```text
 docs/concepts/dependency-aware-workflows/001-normalize-workflow-stages.md
@@ -26,14 +26,29 @@ docs/concepts/dependency-aware-workflows/012-update-dependency-workflow-docs-and
 It also includes:
 
 ```text
+docs/concepts/dependency-aware-workflows/BRANCH_REVIEW_NOTES.md
 docs/concepts/dependency-aware-workflows/MODEL_RECOMMENDATIONS.md
 docs/concepts/dependency-aware-workflows/MANIFEST.md
 ```
 
-Suggested Codex prompt pattern:
+Current handoff tracker:
 
 ```text
-please read docs/concepts/dependency-aware-workflows/001-normalize-workflow-stages.md and implement only that slice
+001 implemented on visible branch
+002 implemented on visible branch
+003 implemented on visible branch
+004 in progress
+005-012 pending
 ```
 
-Then continue one file at a time after review and commit.
+Suggested Codex prompt pattern while 004 is active:
+
+```text
+please read docs/concepts/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md and finish or review only that slice
+```
+
+After 004 lands and helper names are stable, continue one file at a time:
+
+```text
+please read docs/concepts/dependency-aware-workflows/005-submit-only-initial-ready-stage.md and implement only that slice
+```

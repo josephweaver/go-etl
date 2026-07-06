@@ -548,6 +548,52 @@ func TestExecuteStatusCommandPrintsSubmissionStatus(t *testing.T) {
 	}
 }
 
+func TestExecuteStatusCommandPrintsSubmissionStatusJSON(t *testing.T) {
+	currentStage := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/submissions/sub_1234/status":
+			if err := json.NewEncoder(w).Encode(model.SubmissionStatus{
+				SubmissionID:   "sub_1234",
+				WorkflowID:     "annual-report",
+				Status:         "running",
+				KnownWorkItems: 1,
+				Queued:         1,
+				Dependency: &model.SubmissionDependencyStatus{
+					WorkflowState:     "running",
+					CurrentStageIndex: &currentStage,
+					StageCount:        1,
+				},
+			}); err != nil {
+				t.Fatalf("encode submission status: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	output := captureMainTestOutput(t, func() {
+		err := executeCommand(cliCommand{
+			Kind:          commandStatus,
+			ControllerURL: server.URL,
+			SubmissionID:  "sub_1234",
+			JSON:          true,
+		}, server.Client())
+		if err != nil {
+			t.Fatalf("executeCommand() error = %v", err)
+		}
+	})
+
+	var got model.SubmissionStatus
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &got); err != nil {
+		t.Fatalf("unmarshal status JSON = %v; output=%q", err, output)
+	}
+	if got.Dependency == nil || got.Dependency.WorkflowState != "running" {
+		t.Fatalf("dependency status = %+v, want running dependency", got.Dependency)
+	}
+}
+
 func TestExecuteStatusCommandReturnsUsefulErrorForUnknownSubmission(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -840,6 +886,49 @@ func TestFormatSubmissionStatus(t *testing.T) {
 	}, "\n")
 	if got != want {
 		t.Fatalf("formatSubmissionStatus() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSubmissionStatusIncludesCompactDependencySummary(t *testing.T) {
+	currentStage := 0
+	got := formatSubmissionStatus(model.SubmissionStatus{
+		SubmissionID:   "sub_1234",
+		WorkflowID:     "annual-report",
+		Status:         "running",
+		KnownWorkItems: 1,
+		Queued:         1,
+		Dependency: &model.SubmissionDependencyStatus{
+			WorkflowState:     "running",
+			CurrentStageIndex: &currentStage,
+			StageCount:        2,
+			Stages: []model.SubmissionDependencyStageStatus{
+				{
+					StageIndex: 0,
+					State:      "ready",
+					StepCount:  1,
+					Counts: model.SubmissionDependencyCounts{
+						AssignablePending: 1,
+					},
+				},
+				{
+					StageIndex: 1,
+					State:      "blocked",
+					StepCount:  1,
+					Counts: model.SubmissionDependencyCounts{
+						BlockedFuture: 1,
+					},
+				},
+			},
+		},
+	})
+	if !strings.Contains(got, "Dependency workflow: running") {
+		t.Fatalf("formatSubmissionStatus() = %q, want dependency workflow line", got)
+	}
+	if !strings.Contains(got, "Stage 0: ready steps=1 assignable_pending=1 blocked_future=0") {
+		t.Fatalf("formatSubmissionStatus() = %q, want compact stage 0 summary", got)
+	}
+	if !strings.Contains(got, "Stage 1: blocked steps=1 assignable_pending=0 blocked_future=1") {
+		t.Fatalf("formatSubmissionStatus() = %q, want compact stage 1 summary", got)
 	}
 }
 

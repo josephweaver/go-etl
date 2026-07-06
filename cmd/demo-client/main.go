@@ -112,6 +112,15 @@ func statusCommand(command cliCommand, httpClient *http.Client) error {
 		return fmt.Errorf("goet status: %w", err)
 	}
 
+	if command.JSON {
+		payload, err := jsonMarshalSubmissionStatus(status)
+		if err != nil {
+			return fmt.Errorf("goet status: encode status: %w", err)
+		}
+		fmt.Println(payload)
+		return nil
+	}
+
 	fmt.Println(formatSubmissionStatus(status))
 	return nil
 }
@@ -370,7 +379,7 @@ func formatSubmissionAcknowledgement(acknowledgement model.SubmissionAcknowledge
 }
 
 func formatSubmissionStatus(status model.SubmissionStatus) string {
-	return fmt.Sprintf(
+	lines := []string{fmt.Sprintf(
 		"Submission: %s\nWorkflow: %s\nStatus: %s\nKnown work items: %d\nQueued: %d\nRunning: %d\nCompleted: %d\nFailed: %d\nSkipped: %d",
 		status.SubmissionID,
 		status.WorkflowID,
@@ -381,7 +390,48 @@ func formatSubmissionStatus(status model.SubmissionStatus) string {
 		status.Completed,
 		status.Failed,
 		status.Skipped,
-	)
+	)}
+	if status.Dependency != nil {
+		lines = append(lines, formatDependencyStatus(*status.Dependency))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatDependencyStatus(status model.SubmissionDependencyStatus) string {
+	lines := []string{
+		fmt.Sprintf("Dependency workflow: %s", status.WorkflowState),
+		fmt.Sprintf("Dependency stages: %d", status.StageCount),
+	}
+	if status.CurrentStageIndex != nil {
+		lines = append(lines, fmt.Sprintf("Current stage: %d", *status.CurrentStageIndex))
+	}
+	if status.Failed != nil {
+		step := "unknown"
+		if status.Failed.StepIndex != nil {
+			step = strconv.Itoa(*status.Failed.StepIndex)
+		}
+		lines = append(lines, fmt.Sprintf("Dependency failure: stage=%d step=%s work_item=%s reason=%s",
+			status.Failed.StageIndex,
+			step,
+			status.Failed.WorkItemID,
+			status.Failed.FailureReason,
+		))
+	}
+	for _, stage := range status.Stages {
+		lines = append(lines, fmt.Sprintf(
+			"Stage %d: %s steps=%d assignable_pending=%d blocked_future=%d active=%d completed=%d failed=%d skipped=%d",
+			stage.StageIndex,
+			stage.State,
+			stage.StepCount,
+			stage.Counts.AssignablePending,
+			stage.Counts.BlockedFuture,
+			stage.Counts.Active,
+			stage.Counts.Completed,
+			stage.Counts.Failed,
+			stage.Counts.Skipped,
+		))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatSubmissionLog(observation model.LogObservation) string {
@@ -404,6 +454,14 @@ func formatSubmissionLog(observation model.LogObservation) string {
 
 func jsonMarshalLogs(logs client.SubmissionLogsResponse) (string, error) {
 	payload, err := json.Marshal(logs)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func jsonMarshalSubmissionStatus(status model.SubmissionStatus) (string, error) {
+	payload, err := json.Marshal(status)
 	if err != nil {
 		return "", err
 	}

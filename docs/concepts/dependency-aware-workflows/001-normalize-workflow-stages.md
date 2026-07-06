@@ -1,60 +1,35 @@
 # 001 Normalize Workflow Stages
 
-Status: Implemented
+Status: Implemented on visible branch — preserve as regression checklist
 
 ## Objective
 
-Add stage normalization to `internal/workflow` so a workflow definition can be converted into ordered dependency stages before any work items are queued.
+Preserve and verify the completed stage-normalization work in `internal/workflow` so later slices can consume one normalized workflow plan without reimplementing grouping rules.
 
 ## Current State
 
-`internal/workflow.Workflow` contains a flat `Steps []Step` list. `CompileWorkflowResult` currently iterates over every step and compiles all generated work items in workflow-definition order.
+This slice is visible as implemented on `concept/dependency-aware-workflows`.
 
-`workflow.Step` has an `ID` and a `FanOut` compiler. It does not yet have a `parallel_with` declaration or any concept of a dependency stage.
+Expected completed artifacts include:
 
-The existing workflow compiler validates duplicate step IDs and duplicate generated work-item IDs only while compiling the full workflow.
+- `workflow.Step` supports optional `parallel_with` / `ParallelWith` metadata.
+- `internal/workflow` exposes a normalized plan concept such as `WorkflowPlan`, `WorkflowStage`, and `WorkflowStageStep`.
+- `NormalizeStages` or equivalent validates duplicate step IDs, empty workflows, contiguous `parallel_with` groups, and rejected reopened labels.
+- Tests cover sequential workflows, valid parallel groups, and invalid non-contiguous label reuse.
+
+If the working copy does not contain these artifacts, finish 001 before continuing 004 or later slices.
 
 ## Target State
 
-`internal/workflow` exposes a small stage-normalization concept, such as `NormalizeStages(workflow Workflow) (WorkflowPlan, error)`.
+No new target behavior is expected beyond preserving the completed 001 contract.
 
-The normalized plan should contain enough information for later slices to compile and track one stage at a time:
-
-```text
-WorkflowPlan
-  WorkflowID
-  StepCount
-  Stages []WorkflowStage
-
-WorkflowStage
-  Index
-  ParallelWith label, if any
-  Steps []WorkflowStageStep
-
-WorkflowStageStep
-  StageIndex
-  StepIndex in workflow-definition order
-  StepID
-  Step definition or reference to it
-```
-
-`workflow.Step` accepts an optional `ParallelWith string` field serialized as `parallel_with`.
-
-Normalization rules:
-
-- An untagged step forms its own stage.
-- A contiguous run of adjacent steps with the same non-empty `parallel_with` label forms one stage.
-- A `parallel_with` label is workflow-local and controls concurrency only.
-- A closed label cannot be reopened later in the workflow.
-- Empty or whitespace-only `parallel_with` values are treated as untagged or rejected consistently; prefer trimming and treating empty as untagged.
-- Duplicate step IDs remain invalid.
-- A workflow with no steps is invalid unless the existing compiler already explicitly permits it; prefer rejecting it for this concept.
+Later slices should treat the normalized plan as the only source of dependency-stage structure. They should not infer stage membership from queue order, work-item IDs, or `parallel_with` labels at controller time.
 
 ## Concept Decision
 
-This slice adds a new workflow-planning concept. A new file such as `internal/workflow/stage.go` is justified because stage normalization has its own types, validation rules, and tests independent of fan-out compilation.
+Keep stage normalization in `internal/workflow`.
 
-Keep normalization in `internal/workflow`. Do not put dependency-stage parsing in `cmd/controller`.
+Do not move stage parsing into `cmd/controller`, and do not create a second normalizer for later slices. If helper names differ from this document, update references in the implementation report rather than duplicating behavior.
 
 ## Required Context
 
@@ -70,11 +45,19 @@ Do not read unrelated files unless test failures directly require them.
 
 ## Allowed Production Files
 
+No production changes are expected when verifying this completed slice.
+
+Only modify these files if review finds a narrow 001 regression:
+
 - `internal/workflow/stage.go`
 - `internal/workflow/workflow.go`
 - `internal/workflow/step.go`
 
 ## Allowed Test Files
+
+No test changes are expected unless verification reveals a missing regression case.
+
+Allowed verification-test files:
 
 - `internal/workflow/stage_test.go`
 - `internal/workflow/workflow_test.go`
@@ -93,7 +76,7 @@ Do not read unrelated files unless test failures directly require them.
 - Resource constraints.
 - Arbitrary `depends_on` edges.
 
-## Acceptance Criteria
+## Verification Criteria
 
 - `workflow.Step` has an optional `parallel_with` JSON field.
 - A workflow with only untagged steps normalizes into one stage per step.

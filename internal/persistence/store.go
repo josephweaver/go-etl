@@ -473,6 +473,35 @@ func (s *Store) CreateWorkflowRun(ctx context.Context, run WorkflowRunRecord) er
 	return nil
 }
 
+func (s *Store) UpdateWorkflowRunSubmissionContext(ctx context.Context, runID string, submissionContextJSON string) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if runID == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if !json.Valid([]byte(submissionContextJSON)) {
+		return fmt.Errorf("run %s submission context json must be valid", runID)
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_instances SET submission_context_json = ? WHERE run_id = ?`,
+		submissionContextJSON,
+		runID,
+	)
+	if err != nil {
+		return fmt.Errorf("update workflow run %s submission context: %w", runID, err)
+	}
+	updated, err := rowsAffected(result)
+	if err != nil {
+		return fmt.Errorf("update workflow run %s submission context: %w", runID, err)
+	}
+	if !updated {
+		return fmt.Errorf("workflow run %s not found", runID)
+	}
+	return nil
+}
+
 func (s *Store) GetWorkflowRun(ctx context.Context, runID string) (WorkflowRunRecord, bool, error) {
 	if err := s.requireOpen(); err != nil {
 		return WorkflowRunRecord{}, false, err

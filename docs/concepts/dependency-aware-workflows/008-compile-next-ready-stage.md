@@ -1,16 +1,23 @@
 # 008 Compile Next Ready Stage
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
 After a stage completes successfully, compile the next stage just in time using retained workflow context and completed predecessor outputs, then queue the newly ready work items.
+
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
 
 ## Current State
 
 Submission queues only stage 0. Terminal work-result handling can now mark steps and stages completed. Step outputs can be captured and exposed as a generated `workflow.step` scope.
 
 No controller path yet activates stage 1 after stage 0 completes. A multi-stage workflow therefore stops after the first stage.
+
+Use the actual stage compiler from 002, dependency-state owner from 003, queue/membership helper from 004, completion helpers from 006, and output helpers from 007.
 
 ## Target State
 
@@ -35,6 +42,13 @@ notify or reuse the existing worker-scaling/reconciliation path if one exists
 If `N` is the final stage, the workflow/submission should become completed after stage `N` completes.
 
 Activation must be idempotent. If the completion handler runs twice, stage `N+1` must not be queued twice.
+
+OS 008 depends on the OS 007 output contract:
+
+- build generated `workflow.step[index]` scope from dependency step `OutputJSON`, not `workflow_stages.output_json`;
+- do not write or read logical step output through `workflow_stages.output_json`;
+- step output JSON must still be retained while the workflow is running, because any later stage may reference any prior `workflow.step[index]`;
+- if a required prior step output is missing or marked pruned during activation, fail the workflow with a clear dependency-output error rather than substituting `{}` or `null`.
 
 ## Concept Decision
 
@@ -101,3 +115,4 @@ Do not read unrelated files unless test failures directly require them.
 
 - If the current controller completion endpoint cannot safely do all activation in one database transaction, make each transition idempotent and test duplicate handling.
 - Do not compile every future stage to discover later errors early; dependency-aware compilation is intentionally just in time.
+- Stage completion should update stage state/readiness only. Do not compute a synthetic stage-level output payload for dependency-aware workflows.

@@ -1,10 +1,15 @@
 # 011 Surface Dependency State In Status And Logs
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
 Expose dependency-aware stage and step state through the existing submission status API/CLI and emit useful dependency transition observations through the existing observability pipeline.
+
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
 
 ## Current State
 
@@ -27,6 +32,8 @@ per-stage state summary
 failed stage/step and reason, when failed
 pending/active/completed/failed counts that do not confuse blocked future work with assignable pending work
 ```
+
+If status exposes output-related dependency metadata, keep it to hashes, byte counts, and pruned flags. Do not include full dependency step `OutputJSON`, membership `OutputJSON`, `completed_work.output_json`, or `workflow_stages.output_json` in status responses or transition observations.
 
 Human-readable `goet status` should remain compact. It can show a one-line summary plus a small stage summary rather than a full tree.
 
@@ -66,10 +73,10 @@ Do not read unrelated files unless test failures directly require them.
 ## Allowed Production Files
 
 - `cmd/controller/main.go`
-- `cmd/controller/workflow_dependency_store.go`
-- `cmd/controller/workflow_completion.go`
+- the actual dependency-state owner created by 003
+- the actual completion/activation helpers created by 006-010
 - `cmd/demo-client/main.go`
-- `internal/model/submission_status.go`
+- `internal/model/submission.go`
 - `internal/model/log_observation.go`
 
 If status or logs are owned by files with different names after the previous concepts, modify those owners and report the substitution.
@@ -77,10 +84,10 @@ If status or logs are owned by files with different names after the previous con
 ## Allowed Test Files
 
 - `cmd/controller/main_test.go`
-- `cmd/controller/workflow_dependency_store_test.go`
-- `cmd/controller/workflow_completion_test.go`
+- tests for the actual dependency-state owner created by 003
+- tests for the actual completion/activation helpers created by 006-010
 - `cmd/demo-client/main_test.go`
-- `internal/model/submission_status_test.go`
+- `internal/model/submission_test.go`
 - `internal/model/log_observation_test.go`
 
 ## Out Of Scope
@@ -108,3 +115,4 @@ If status or logs are owned by files with different names after the previous con
 
 - Preserve backward-compatible JSON names where the previous status concept already established them.
 - Do not log full workflow documents or user data in transition messages.
+- Treat `workflow_stages.output_json` as unused for dependency-aware output semantics; status/log output should not imply a stage-level logical output exists.

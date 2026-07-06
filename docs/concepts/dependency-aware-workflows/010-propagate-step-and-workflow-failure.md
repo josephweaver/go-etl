@@ -1,10 +1,15 @@
 # 010 Propagate Step And Workflow Failure
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
 Make dependency failure transitions terminal and ensure downstream stages never activate after a work-item, step, stage, or output-capture failure.
+
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
 
 ## Current State
 
@@ -20,6 +25,7 @@ Failure sources include:
 
 - worker-reported work-item failure;
 - output JSON missing or invalid for a step that must expose output;
+- generated `workflow.step[index]` scope construction finds a required prior step output missing or pruned before downstream work was materialized;
 - downstream stage compilation failure;
 - source-admission validation failure during downstream stage compilation;
 - queue/membership conflict that prevents safe downstream activation.
@@ -89,6 +95,7 @@ Do not read unrelated files unless test failures directly require them.
 - Failure reasons are recorded in the existing status model or dependency state so users can diagnose the failed step.
 - `goet submit ... --wait` observes the failed terminal state through the existing submission status API.
 - Existing success-path tests from earlier slices still pass.
+- Failure handling must not read `workflow_stages.output_json` as a fallback for missing dependency step output. A missing or pruned required step output is a real dependency failure.
 
 ## Notes
 

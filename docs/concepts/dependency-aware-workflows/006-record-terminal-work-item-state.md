@@ -1,12 +1,19 @@
 # 006 Record Terminal Work Item State
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
 Update dependency state when a worker reports work completion or failure, without yet compiling downstream stages.
 
+
+## Implementation Handoff Note
+
+Use the actual file names and helper/store owners introduced by slices 001-004. Where this document names example files such as `workflow_dependency_store.go`, `workflow_completion.go`, or `workflow_stage_queue.go`, treat those as placeholders if the branch implementation chose different owners.
+
 ## Current State
+
+After slice 005, submission queues only stage 0 and records dependency membership for those queued work items.
 
 The controller already has completion and failure endpoints such as `POST /work/complete` and `POST /work/fail`. These endpoints record attempt/evidence state, remove assigned work, and update existing submission status.
 
@@ -48,10 +55,12 @@ Read these files first:
 - `docs/concepts/dependency-aware-workflows/README.md`
 - `docs/concepts/dependency-aware-workflows/003-persist-workflow-stage-state.md`
 - `docs/concepts/dependency-aware-workflows/004-stamp-work-items-with-step-instance-metadata.md`
+- `docs/concepts/dependency-aware-workflows/005-submit-only-initial-ready-stage.md`
 - `docs/concepts/submission-cli-status/README.md`
 - `cmd/controller/main.go`
 - `cmd/controller/main_test.go`
-- `cmd/controller/workflow_dependency_store.go`
+- the actual dependency-state owner created by 003
+- the actual queue/membership helper created by 004
 - `internal/model/work_item.go`
 
 Do not read unrelated files unless test failures directly require them.

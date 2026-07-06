@@ -147,3 +147,32 @@ func TestVariableJSONRejectsLegacyStructuredExpression(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestTypedExpressionFromResolvedConvertsStructuredValue(t *testing.T) {
+	value := ResolvedObject(map[string]ResolvedValue{
+		"answer": {Type: TypeInt, Value: 42},
+		"label":  {Type: TypeString, Value: "done"},
+		"items": ResolvedList([]ResolvedValue{
+			ResolvedObject(map[string]ResolvedValue{"ok": {Type: TypeBool, Value: true}}),
+		}),
+	})
+
+	expression, err := TypedExpressionFromResolved(value)
+	if err != nil {
+		t.Fatalf("TypedExpressionFromResolved() error = %v", err)
+	}
+	if err := expression.ValidateDefinition(); err != nil {
+		t.Fatalf("ValidateDefinition() error = %v", err)
+	}
+	fields, ok := expression.Expression.(map[string]TypedExpression)
+	if !ok {
+		t.Fatalf("expression = %#v, want typed field map", expression.Expression)
+	}
+	if fields["answer"].Type != TypeInt || fields["answer"].Expression != 42 {
+		t.Fatalf("answer expression = %#v, want int 42", fields["answer"])
+	}
+	items, ok := fields["items"].Expression.([]TypedExpression)
+	if !ok || len(items) != 1 || items[0].Type != TypeObject {
+		t.Fatalf("items expression = %#v, want object list", fields["items"].Expression)
+	}
+}

@@ -100,6 +100,51 @@ func ResolvedList(values []ResolvedValue) ResolvedValue {
 	}
 }
 
+func TypedExpressionFromResolved(value ResolvedValue) (TypedExpression, error) {
+	switch value.Type {
+	case TypeString, TypePath, TypeDatetime:
+		text, ok := value.Value.(string)
+		if !ok {
+			return TypedExpression{}, fmt.Errorf("invalid %s value", value.Type)
+		}
+		return TypedExpression{Type: value.Type, Expression: text}, nil
+	case TypeBool:
+		boolean, ok := value.Value.(bool)
+		if !ok {
+			return TypedExpression{}, fmt.Errorf("invalid bool value")
+		}
+		return TypedExpression{Type: value.Type, Expression: boolean}, nil
+	case TypeInt:
+		integer, ok := value.Value.(int)
+		if !ok {
+			return TypedExpression{}, fmt.Errorf("invalid int value")
+		}
+		return TypedExpression{Type: value.Type, Expression: integer}, nil
+	case TypeObject:
+		fields := make(map[string]TypedExpression, len(value.Object))
+		for name, field := range value.Object {
+			expression, err := TypedExpressionFromResolved(field)
+			if err != nil {
+				return TypedExpression{}, fmt.Errorf("convert object field %s: %w", name, err)
+			}
+			fields[name] = expression
+		}
+		return TypedExpression{Type: TypeObject, Expression: fields}, nil
+	case TypeList:
+		items := make([]TypedExpression, 0, len(value.List))
+		for index, item := range value.List {
+			expression, err := TypedExpressionFromResolved(item)
+			if err != nil {
+				return TypedExpression{}, fmt.Errorf("convert list item %d: %w", index, err)
+			}
+			items = append(items, expression)
+		}
+		return TypedExpression{Type: TypeList, Expression: items}, nil
+	default:
+		return TypedExpression{}, fmt.Errorf("unsupported resolved value type: %s", value.Type)
+	}
+}
+
 func OptionalObjectFieldObject(fields map[string]ResolvedValue, name string) (map[string]ResolvedValue, bool, error) {
 	value, ok, err := optionalObjectFieldType(fields, name, TypeObject)
 	if err != nil || !ok {

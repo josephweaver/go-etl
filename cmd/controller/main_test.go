@@ -1611,6 +1611,77 @@ func TestSubmissionStatusHandler(t *testing.T) {
 	}
 }
 
+func TestSubmissionStatusHandlerIncludesDependencyStageSummary(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	controller := newController()
+	controller.workflowStore = store
+
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 0,
+				StepIndex:  0,
+				StepID:     "download",
+			}},
+		},
+		{
+			Index: 1,
+			Steps: []workflow.WorkflowStageStep{{
+				StageIndex: 1,
+				StepIndex:  1,
+				StepID:     "summarize",
+			}},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("download-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, 0); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/submissions/"+run.ID+"/status", nil)
+	response := httptest.NewRecorder()
+	controller.submissionStatusHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var got model.SubmissionStatus
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode submission status: %v", err)
+	}
+	if got.Dependency == nil {
+		t.Fatal("dependency status missing")
+	}
+	if got.Dependency.WorkflowState != "running" || got.Dependency.StageCount != 2 {
+		t.Fatalf("dependency status = %+v, want running two-stage workflow", got.Dependency)
+	}
+	if got.Dependency.CurrentStageIndex == nil || *got.Dependency.CurrentStageIndex != 0 {
+		t.Fatalf("current stage = %v, want 0", got.Dependency.CurrentStageIndex)
+	}
+	if got.Dependency.Counts.AssignablePending != 1 || got.Dependency.Counts.BlockedFuture != 1 {
+		t.Fatalf("dependency counts = %+v, want assignable=1 blocked=1", got.Dependency.Counts)
+	}
+	if len(got.Dependency.Stages) != 2 || got.Dependency.Stages[0].State != "ready" || got.Dependency.Stages[1].State != "blocked" {
+		t.Fatalf("dependency stages = %+v, want ready then blocked", got.Dependency.Stages)
+	}
+	if strings.Contains(response.Body.String(), "output_json") {
+		t.Fatalf("status body exposes dependency output field: %s", response.Body.String())
+	}
+}
+
 func TestSubmissionStatusHandlerReturns404ForUnknownSubmission(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = openTestWorkflowExecutionStore(t)
@@ -1941,6 +2012,211 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 	}
 }
 
+func TestCompletePersistedWorkHandlerRecordsDependencyTerminalState(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{
+				{
+					StageIndex: 0,
+					StepIndex:  0,
+					StepID:     "write-a",
+				},
+			},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("dep-complete-a", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, work.WorkItemIndex); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-001",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"`+claimed.WorkItem.ID+`",
+		"attempt_id":"`+claimed.AttemptID+`",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+	controller.completeWorkHandler(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStepState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step not found after completion")
+	}
+	if step.State != model.WorkflowStepStateCompleted {
+		t.Fatalf("step state = %q, want %q", step.State, model.WorkflowStepStateCompleted)
+	}
+	if step.WorkItems[0].State != model.WorkItemMembershipStateCompleted {
+		t.Fatalf("work item state = %q, want %q", step.WorkItems[0].State, model.WorkItemMembershipStateCompleted)
+	}
+
+	stage, found, err := controller.ReadStageState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage not found after completion")
+	}
+	if stage.State != model.WorkflowStageStateCompleted {
+		t.Fatalf("stage state = %q, want %q", stage.State, model.WorkflowStageStateCompleted)
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow run missing after completion")
+	}
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateCompleted {
+		t.Fatalf("dependency workflow state = %+v, want completed", context.DependencyState)
+	}
+
+	duplicate := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"`+claimed.WorkItem.ID+`",
+		"attempt_id":"`+claimed.AttemptID+`",
+		"output_json":"{}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	duplicateResp := httptest.NewRecorder()
+	controller.completeWorkHandler(duplicateResp, duplicate)
+	if duplicateResp.Code != http.StatusNoContent {
+		t.Fatalf("duplicate complete status code = %d, want 204: %s", duplicateResp.Code, duplicateResp.Body.String())
+	}
+}
+
+func TestCompletePersistedWorkHandlerMarksDependencyFailedWhenOutputCaptureFails(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{
+				{
+					StageIndex: 0,
+					StepIndex:  0,
+					StepID:     "write-a",
+				},
+			},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("dep-invalid-output", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, work.WorkItemIndex); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-invalid-output",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"`+claimed.WorkItem.ID+`",
+		"attempt_id":"`+claimed.AttemptID+`",
+		"output_json":"null",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+	controller.completeWorkHandler(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("complete status code = %d, want 500: %s", response.Code, response.Body.String())
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStepState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step not found after output-capture failure")
+	}
+	if step.State != model.WorkflowStepStateFailed {
+		t.Fatalf("step state = %q, want failed", step.State)
+	}
+	if step.WorkItems[0].State != model.WorkItemMembershipStateFailed {
+		t.Fatalf("membership state = %q, want failed", step.WorkItems[0].State)
+	}
+
+	stage, found, err := controller.ReadStageState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage not found after output-capture failure")
+	}
+	if stage.State != model.WorkflowStageStateFailed {
+		t.Fatalf("stage state = %q, want failed", stage.State)
+	}
+
+	runRecord, found, err := store.GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun() error = %v", err)
+	}
+	if !found {
+		t.Fatal("workflow run missing after output-capture failure")
+	}
+	var context workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runRecord.SubmissionContextJSON), &context); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if context.DependencyState == nil || context.DependencyState.State != model.WorkflowStateFailed {
+		t.Fatalf("dependency workflow state = %+v, want failed", context.DependencyState)
+	}
+}
+
 func TestCompleteAttemptRequestFromCompletionMapsWorkerObservedSkipEvidence(t *testing.T) {
 	preStateSHA256 := strings.Repeat("a", 64)
 	postStateSHA256 := strings.Repeat("b", 64)
@@ -2058,6 +2334,86 @@ func TestFailWorkHandlerFailsPersistedAttemptWhenWorkflowStoreConfigured(t *test
 	controller.failWorkHandler(duplicate, httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(body)))
 	if duplicate.Code != http.StatusNoContent {
 		t.Fatalf("duplicate fail status code = %d, want 204: %s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+func TestFailPersistedWorkHandlerRecordsDependencyFailure(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	stages := []workflow.WorkflowStage{
+		{
+			Index: 0,
+			Steps: []workflow.WorkflowStageStep{
+				{
+					StageIndex: 0,
+					StepIndex:  0,
+					StepID:     "write-a",
+				},
+			},
+		},
+	}
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, stages); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+	work := testPersistenceWorkItem("dep-fail-a", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := controller.RecordCompiledWorkItemMembership(ctx, run.ID, 0, 0, work.ID, work.WorkItemIndex); err != nil {
+		t.Fatalf("RecordCompiledWorkItemMembership() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:    "attempt-fail-001",
+		ExecutorType: persistence.ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:01Z",
+	})
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
+	}
+
+	fail := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{
+		"id":"`+claimed.WorkItem.ID+`",
+		"attempt_id":"`+claimed.AttemptID+`",
+		"failed_at":"2026-07-03T12:00:00Z",
+		"error":"boom"
+	}`))
+	response := httptest.NewRecorder()
+	controller.failWorkHandler(response, fail)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("fail status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStepState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step not found after failure")
+	}
+	if step.State != model.WorkflowStepStateFailed {
+		t.Fatalf("step state = %q, want %q", step.State, model.WorkflowStepStateFailed)
+	}
+	if step.WorkItems[0].State != model.WorkItemMembershipStateFailed {
+		t.Fatalf("work item state = %q, want %q", step.WorkItems[0].State, model.WorkItemMembershipStateFailed)
+	}
+
+	stage, found, err := controller.ReadStageState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage not found after failure")
+	}
+	if stage.State != model.WorkflowStageStateFailed {
+		t.Fatalf("stage state = %q, want %q", stage.State, model.WorkflowStageStateFailed)
 	}
 }
 
@@ -3131,6 +3487,430 @@ func TestSubmitWorkflowHandlerRejectsDuplicateGeneratedID(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024, 2025}, testSlurmWorkerVariables,
+		`
+		{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 2 {
+		t.Fatalf("initial work item count = %d, want 2", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 0 {
+			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+	}
+}
+
+func TestSubmitWorkflowHandlerQueuesOnlyInitialParallelStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024, 2025}, testSlurmWorkerVariables,
+		`
+		{
+			"ID": "download-a",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-a",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-b",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-b",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "summarize",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "summarize",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 4 {
+		t.Fatalf("initial work item count = %d, want 4", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 4 {
+		t.Fatalf("queued work count = %d, want 4", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 0 {
+			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+	}
+}
+
+func TestSubmitWorkflowHandlerAutoAdvancesEmptyInitialStage(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "empty_years"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "years"},
+				"type": "list",
+				"expression": [
+					{"type": "int", "expression": 2024},
+					{"type": "int", "expression": 2025}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "download",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "summarize",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "summarize",
+						"OutputExtension": ".txt"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 0 {
+		t.Fatalf("initial work item count = %d, want 0", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("queued work count = %d, want 2", len(queued))
+	}
+	for _, item := range queued {
+		if item.StageIndex != 1 {
+			t.Fatalf("queued work has stage index %d, want 1", item.StageIndex)
+		}
+	}
+
+	stage0, found, err := controller.ReadStageState(context.Background(), acknowledgement.SubmissionID, 0)
+	if err != nil {
+		t.Fatalf("ReadStageState(0) error = %v", err)
+	}
+	if !found {
+		t.Fatal("stage 0 not found")
+	}
+	if stage0.State != model.WorkflowStageStateCompleted {
+		t.Fatalf("stage 0 state = %q, want completed", stage0.State)
+	}
+	if len(stage0.Steps) != 1 || stage0.Steps[0].OutputJSON != "[]" {
+		t.Fatalf("stage 0 empty step output = %q, want []", stage0.Steps[0].OutputJSON)
+	}
+}
+
+func TestSubmitWorkflowHandlerAutoAdvancesThroughEmptyStages(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "empty_one"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "empty_two"},
+				"type": "list",
+				"expression": []
+			},
+			{
+				"name": {"namespace": "workflow", "key": "years"},
+				"type": "list",
+				"expression": [
+					{"type": "int", "expression": 2024}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "download-empty-one",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_one[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty-one",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "download-empty-two",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${empty_two[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "download-empty-two",
+						"OutputExtension": ".txt"
+					}
+				}
+			},
+			{
+				"ID": "summarize",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${years[*]}",
+						"Type": "write_demo_output",
+						"OutputPrefix": "summarize",
+						"OutputExtension": ".txt"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d, body: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.InitialWorkItemCount != 0 {
+		t.Fatalf("initial work item count = %d, want 0", acknowledgement.InitialWorkItemCount)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued work count = %d, want 1", len(queued))
+	}
+	if queued[0].StageIndex != 2 {
+		t.Fatalf("queued work stage index = %d, want 2", queued[0].StageIndex)
+	}
+
+	for _, stageIndex := range []int{0, 1} {
+		stage, found, err := controller.ReadStageState(context.Background(), acknowledgement.SubmissionID, stageIndex)
+		if err != nil {
+			t.Fatalf("ReadStageState(%d) error = %v", stageIndex, err)
+		}
+		if !found {
+			t.Fatalf("stage %d not found", stageIndex)
+		}
+		if stage.State != model.WorkflowStageStateCompleted {
+			t.Fatalf("stage %d state = %q, want completed", stageIndex, stage.State)
+		}
+		if len(stage.Steps) != 1 || stage.Steps[0].OutputJSON != "[]" {
+			t.Fatalf("stage %d empty step output = %q, want []", stageIndex, stage.Steps[0].OutputJSON)
+		}
+	}
+}
+
+func TestSubmitWorkflowHandlerRejectsInvalidParallelWithBeforeQueueMutation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithSteps(t, root, []int{2024}, "",
+		`
+		{
+			"ID": "download-a",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-a",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-b",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-b",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "transform",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "transform",
+					"OutputExtension": ".txt"
+				}
+			}
+		},
+		{
+			"ID": "download-c",
+			"parallel_with": "group-a",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					"OutputPrefix": "download-c",
+					"OutputExtension": ".txt"
+				}
+			}
+		}
+	`)
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("active run count = %d, want 0", len(runs))
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued work count = %d, want 0", len(queued))
+	}
+}
+
+func writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+	t *testing.T,
+	root string,
+	workflowVariables string,
+	variables string,
+	steps string,
+) {
+	t.Helper()
+
+	workflowJSON := `{
+		"workflow": {
+			"ID": "cdl",
+			"Variables": [` + workflowVariables + `],
+			"Steps": [` + steps + `]
+		},
+		"variables": [` + variables + `]
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func setupLocalWorkflowSource(t *testing.T, controller *Controller) string {
 	t.Helper()
 
@@ -3180,6 +3960,63 @@ func writeLocalWorkflowSource(t *testing.T, root string, years []int, variables 
 
 func writeLocalWorkflowSourceWithExpressions(t *testing.T, root string, yearExpressions []string, variables string, extraWorkItemFields string) {
 	t.Helper()
+	writeLocalWorkflowSourceWithSteps(
+		t,
+		root,
+		yearExpressionsToYears(t, yearExpressions),
+		variables,
+		`{
+			"ID": "download",
+			"FanOut": {
+				"WorkItem": {
+					"FanOutExpression": "${years[*]}",
+					"Type": "write_demo_output",
+					`+extraWorkItemFields+`
+					"OutputPrefix": "cdl",
+					"OutputExtension": ".txt"
+				}
+			}
+		}`,
+	)
+}
+
+func yearExpressionsToYears(t *testing.T, yearExpressions []string) []int {
+	t.Helper()
+
+	years := make([]int, 0, len(yearExpressions))
+	for _, expression := range yearExpressions {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(expression), &parsed); err != nil {
+			t.Fatalf("unmarshal year expression %q: %v", expression, err)
+		}
+		value, ok := parsed["expression"]
+		if !ok {
+			t.Fatalf("year expression %q is missing field \"expression\"", expression)
+		}
+
+		switch v := value.(type) {
+		case float64:
+			years = append(years, int(v))
+		case string:
+			year, err := strconv.Atoi(strings.TrimSpace(strings.Trim(v, `"`)))
+			if err != nil {
+				t.Fatalf("year expression %q: %v", expression, err)
+			}
+			years = append(years, year)
+		default:
+			t.Fatalf("year expression %q has unsupported expression type %T", expression, value)
+		}
+	}
+	return years
+}
+
+func writeLocalWorkflowSourceWithSteps(t *testing.T, root string, years []int, variables string, steps string) {
+	t.Helper()
+
+	yearExpressions := make([]string, 0, len(years))
+	for _, year := range years {
+		yearExpressions = append(yearExpressions, `{"type": "int", "expression": `+strconv.Itoa(year)+`}`)
+	}
 
 	workflowJSON := `{
 		"workflow": {
@@ -3192,18 +4029,7 @@ func writeLocalWorkflowSourceWithExpressions(t *testing.T, root string, yearExpr
 				}
 			],
 			"Steps": [
-				{
-					"ID": "download",
-					"FanOut": {
-						"WorkItem": {
-							"FanOutExpression": "${years[*]}",
-							"Type": "write_demo_output",
-							` + extraWorkItemFields + `
-							"OutputPrefix": "cdl",
-							"OutputExtension": ".txt"
-						}
-					}
-				}
+				` + steps + `
 			]
 		},
 		"variables": [
