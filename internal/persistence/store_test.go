@@ -709,6 +709,87 @@ func TestStoreInsertDependencyWorkItemsRejectsIndexConflict(t *testing.T) {
 	}
 }
 
+func TestStoreUpsertAndGetWorkflowStepOutputFact(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	if err := store.InsertWorkflowDependencySteps(ctx, []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "step-0",
+		ParallelWith: "",
+		CreatedAt:    "2026-07-03T00:00:01Z",
+	}}); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	fact := WorkflowStepOutputFactRecord{
+		RunID:            run.ID,
+		StepIndex:        0,
+		OutputJSON:       `{"value":"a"}`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		OutputJSONBytes:  len([]byte(`{"value":"a"}`)),
+		OutputKind:       "aggregate",
+		CreatedAt:        "2026-07-03T00:00:02Z",
+		UpdatedAt:        "2026-07-03T00:00:02Z",
+	}
+	if err := store.UpsertWorkflowStepOutputFact(ctx, fact); err != nil {
+		t.Fatalf("UpsertWorkflowStepOutputFact() error = %v", err)
+	}
+	if err := store.UpsertWorkflowStepOutputFact(ctx, fact); err != nil {
+		t.Fatalf("second UpsertWorkflowStepOutputFact() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkflowStepOutputFact() found = false, want true")
+	}
+	if got != fact {
+		t.Fatalf("fact = %+v, want %+v", got, fact)
+	}
+
+	pruned := fact
+	pruned.OutputJSON = ""
+	pruned.OutputJSONPruned = true
+	pruned.UpdatedAt = "2026-07-03T00:00:03Z"
+	if err := store.UpsertWorkflowStepOutputFact(ctx, pruned); err != nil {
+		t.Fatalf("UpsertWorkflowStepOutputFact(pruned) error = %v", err)
+	}
+	got, found, err = store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("GetWorkflowStepOutputFact(pruned) found=%v error=%v", found, err)
+	}
+	if got != pruned {
+		t.Fatalf("pruned fact = %+v, want %+v", got, pruned)
+	}
+}
+
+func TestStoreWorkflowStepOutputFactRejectsMissingDependencyStep(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+
+	err := store.UpsertWorkflowStepOutputFact(ctx, WorkflowStepOutputFactRecord{
+		RunID:            run.ID,
+		StepIndex:        0,
+		OutputJSON:       `[]`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		OutputJSONBytes:  2,
+		OutputKind:       "empty_fanout",
+		CreatedAt:        "2026-07-03T00:00:02Z",
+		UpdatedAt:        "2026-07-03T00:00:02Z",
+	})
+	if err == nil || !strings.Contains(err.Error(), "upsert workflow step output fact") {
+		t.Fatalf("UpsertWorkflowStepOutputFact() error = %v, want foreign-key insert failure", err)
+	}
+}
+
 func TestStoreGetWorkflowStageReturnsMissing(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))

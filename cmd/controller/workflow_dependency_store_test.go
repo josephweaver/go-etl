@@ -878,6 +878,16 @@ func TestRecordCompletedWorkItemOutputPersistsAggregatedStepOutput(t *testing.T)
 	if step.OutputJSON != `{"value":"a"}` || step.OutputJSONSHA256 == "" || step.OutputJSONBytes != len([]byte(`{"value":"a"}`)) || step.OutputJSONPruned {
 		t.Fatalf("step output = %+v, want retained aggregate with metadata", step)
 	}
+	fact, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("aggregate output fact missing")
+	}
+	if fact.OutputJSON != `{"value":"a"}` || fact.OutputJSONSHA256 != step.OutputJSONSHA256 || fact.OutputJSONBytes != len([]byte(`{"value":"a"}`)) || fact.OutputJSONPruned || fact.OutputKind != "aggregate" {
+		t.Fatalf("aggregate output fact = %+v, want retained aggregate metadata", fact)
+	}
 }
 
 func TestRecordCompletedWorkItemOutputLeavesWorkflowStageOutputUnused(t *testing.T) {
@@ -1098,6 +1108,16 @@ func TestTerminalWorkflowPruningClearsAllDependencyOutputJSON(t *testing.T) {
 	if item.OutputJSON != "" || !item.OutputJSONPruned || item.OutputJSONSHA256 == "" || item.OutputJSONBytes != len([]byte(`{"value":"terminal"}`)) {
 		t.Fatalf("terminal membership pruning = %+v, want pruned output with metadata", item)
 	}
+	fact, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("terminal output fact missing")
+	}
+	if fact.OutputJSON != "" || !fact.OutputJSONPruned || fact.OutputJSONSHA256 != step.OutputJSONSHA256 || fact.OutputJSONBytes != len([]byte(`{"value":"terminal"}`)) || fact.OutputKind != "aggregate" {
+		t.Fatalf("terminal output fact = %+v, want pruned aggregate metadata", fact)
+	}
 }
 
 func TestTerminalWorkflowPruningRunsOnFailure(t *testing.T) {
@@ -1140,6 +1160,69 @@ func TestTerminalWorkflowPruningRunsOnFailure(t *testing.T) {
 	}
 	if step0.OutputJSON != "" || !step0.OutputJSONPruned || step0.OutputJSONSHA256 == "" {
 		t.Fatalf("step 0 output after failure = %+v, want pruned with hash", step0)
+	}
+	fact, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step 0 output fact missing after failure")
+	}
+	if fact.OutputJSON != "" || !fact.OutputJSONPruned || fact.OutputJSONSHA256 != step0.OutputJSONSHA256 || fact.OutputKind != "aggregate" {
+		t.Fatalf("step 0 output fact after failure = %+v, want pruned aggregate fact", fact)
+	}
+}
+
+func TestMarkCompiledStageEmptyStepsCompletedPersistsEmptyOutputFact(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	if err := controller.CreateWorkflowDependencyPlan(ctx, run.ID, run.WorkflowID, []workflow.WorkflowStage{{
+		Index: 0,
+		Steps: []workflow.WorkflowStageStep{{
+			StageIndex: 0,
+			StepIndex:  0,
+			StepID:     "empty-step",
+		}},
+	}}); err != nil {
+		t.Fatalf("CreateWorkflowDependencyPlan() error = %v", err)
+	}
+
+	allCompleted, err := controller.markCompiledStageEmptyStepsCompleted(ctx, run.ID, workflow.CompileStageResult{
+		WorkflowID: run.WorkflowID,
+		StageIndex: 0,
+	})
+	if err != nil {
+		t.Fatalf("markCompiledStageEmptyStepsCompleted() error = %v", err)
+	}
+	if !allCompleted {
+		t.Fatal("markCompiledStageEmptyStepsCompleted() allCompleted = false, want true")
+	}
+
+	step, found, err := controller.ReadStepState(ctx, run.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("ReadStepState() found=%v error=%v", found, err)
+	}
+	if step.OutputJSON != "[]" || step.OutputJSONSHA256 == "" || step.OutputJSONBytes != 2 || step.OutputJSONPruned || len(step.WorkItems) != 0 {
+		t.Fatalf("empty step = %+v, want unpruned [] with no memberships", step)
+	}
+	fact, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("empty fan-out output fact missing")
+	}
+	if fact.OutputJSON != "[]" || fact.OutputJSONSHA256 != step.OutputJSONSHA256 || fact.OutputJSONBytes != 2 || fact.OutputJSONPruned || fact.OutputKind != "empty_fanout" {
+		t.Fatalf("empty output fact = %+v, want empty_fanout [] metadata", fact)
 	}
 }
 

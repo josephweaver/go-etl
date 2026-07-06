@@ -10,7 +10,7 @@ import (
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 3
+	SupportedSchemaVersion = 4
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -97,6 +97,18 @@ type WorkflowDependencyWorkItemRecord struct {
 	WorkItemID    string
 	WorkItemIndex int
 	CreatedAt     string
+}
+
+type WorkflowStepOutputFactRecord struct {
+	RunID            string
+	StepIndex        int
+	OutputJSON       string
+	OutputJSONSHA256 string
+	OutputJSONBytes  int
+	OutputJSONPruned bool
+	OutputKind       string
+	CreatedAt        string
+	UpdatedAt        string
 }
 
 type QueuedWorkRecord struct {
@@ -797,6 +809,54 @@ func (s *Store) ListWorkflowDependencyWorkItems(ctx context.Context, runID strin
 		return nil, fmt.Errorf("list dependency work items for run %s/%d/%d: %w", runID, stageIndex, stepIndex, err)
 	}
 	return items, nil
+}
+
+func (s *Store) UpsertWorkflowStepOutputFact(ctx context.Context, fact WorkflowStepOutputFactRecord) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := fact.validate(); err != nil {
+		return err
+	}
+
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO workflow_step_output_facts (
+		run_id,
+		step_index,
+		output_json,
+		output_json_sha256,
+		output_json_bytes,
+		output_json_pruned,
+		output_kind,
+		created_at,
+		updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT (run_id, step_index) DO UPDATE SET
+		output_json = excluded.output_json,
+		output_json_sha256 = excluded.output_json_sha256,
+		output_json_bytes = excluded.output_json_bytes,
+		output_json_pruned = excluded.output_json_pruned,
+		output_kind = excluded.output_kind,
+		updated_at = excluded.updated_at`,
+		fact.RunID,
+		fact.StepIndex,
+		nullString(fact.OutputJSON),
+		fact.OutputJSONSHA256,
+		fact.OutputJSONBytes,
+		fact.OutputJSONPruned,
+		fact.OutputKind,
+		fact.CreatedAt,
+		fact.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("upsert workflow step output fact %s/%d: %w", fact.RunID, fact.StepIndex, err)
+	}
+	return nil
+}
+
+func (s *Store) GetWorkflowStepOutputFact(ctx context.Context, runID string, stepIndex int) (WorkflowStepOutputFactRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkflowStepOutputFactRecord{}, false, err
+	}
+	return getWorkflowStepOutputFact(ctx, s.db, runID, stepIndex)
 }
 
 func (s *Store) ListActiveWorkflowRuns(ctx context.Context) ([]WorkflowRunRecord, error) {
@@ -1765,6 +1825,35 @@ func getWorkflowDependencyWorkItem(ctx context.Context, q queryer, runID, workIt
 	return item, true, nil
 }
 
+func getWorkflowStepOutputFact(ctx context.Context, q queryer, runID string, stepIndex int) (WorkflowStepOutputFactRecord, bool, error) {
+	if runID == "" {
+		return WorkflowStepOutputFactRecord{}, false, fmt.Errorf("run id is required")
+	}
+	if stepIndex < 0 {
+		return WorkflowStepOutputFactRecord{}, false, fmt.Errorf("step index must be non-negative")
+	}
+
+	fact, err := scanWorkflowStepOutputFact(q.QueryRowContext(ctx, `SELECT
+		run_id,
+		step_index,
+		output_json,
+		output_json_sha256,
+		output_json_bytes,
+		output_json_pruned,
+		output_kind,
+		created_at,
+		updated_at
+	FROM workflow_step_output_facts
+	WHERE run_id = ? AND step_index = ?`, runID, stepIndex))
+	if err == sql.ErrNoRows {
+		return WorkflowStepOutputFactRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkflowStepOutputFactRecord{}, false, fmt.Errorf("get workflow step output fact %s/%d: %w", runID, stepIndex, err)
+	}
+	return fact, true, nil
+}
+
 func listStagesForRun(ctx context.Context, tx *sql.Tx, runID string) ([]WorkflowStageRecord, error) {
 	rows, err := tx.QueryContext(ctx, workflowStageSelectSQL()+` WHERE run_id = ? ORDER BY stage_index`, runID)
 	if err != nil {
@@ -1934,6 +2023,29 @@ func scanWorkflowDependencyWorkItem(row scanner) (WorkflowDependencyWorkItemReco
 		&item.CreatedAt,
 	)
 	return item, err
+}
+
+func scanWorkflowStepOutputFact(row scanner) (WorkflowStepOutputFactRecord, error) {
+	var fact WorkflowStepOutputFactRecord
+	var outputJSON sql.NullString
+	var outputJSONPruned int
+	err := row.Scan(
+		&fact.RunID,
+		&fact.StepIndex,
+		&outputJSON,
+		&fact.OutputJSONSHA256,
+		&fact.OutputJSONBytes,
+		&outputJSONPruned,
+		&fact.OutputKind,
+		&fact.CreatedAt,
+		&fact.UpdatedAt,
+	)
+	if err != nil {
+		return WorkflowStepOutputFactRecord{}, err
+	}
+	fact.OutputJSON = outputJSON.String
+	fact.OutputJSONPruned = outputJSONPruned != 0
+	return fact, nil
 }
 
 func runningWorkSelectSQL() string {
@@ -2297,6 +2409,34 @@ func (r WorkflowDependencyWorkItemRecord) validate() error {
 	return nil
 }
 
+func (r WorkflowStepOutputFactRecord) validate() error {
+	if r.RunID == "" {
+		return fmt.Errorf("workflow step output fact run id is required")
+	}
+	if r.StepIndex < 0 {
+		return fmt.Errorf("workflow step output fact step index must be non-negative")
+	}
+	if r.OutputJSON != "" && !json.Valid([]byte(r.OutputJSON)) {
+		return fmt.Errorf("workflow step output fact output json must be valid JSON")
+	}
+	if r.OutputJSONSHA256 == "" {
+		return fmt.Errorf("workflow step output fact output json sha256 is required")
+	}
+	if r.OutputJSONBytes < 0 {
+		return fmt.Errorf("workflow step output fact output json bytes must be non-negative")
+	}
+	if !validWorkflowStepOutputKind(r.OutputKind) {
+		return fmt.Errorf("unsupported workflow step output kind: %s", r.OutputKind)
+	}
+	if r.CreatedAt == "" {
+		return fmt.Errorf("workflow step output fact created at is required")
+	}
+	if r.UpdatedAt == "" {
+		return fmt.Errorf("workflow step output fact updated at is required")
+	}
+	return nil
+}
+
 func validateWorkItems(items []WorkItemRecord) error {
 	if len(items) == 0 {
 		return fmt.Errorf("work items are required")
@@ -2426,6 +2566,15 @@ func stageMatchesCompletionRequest(stage WorkflowStageRecord, request CompleteSt
 func validExecutorType(executorType string) bool {
 	switch executorType {
 	case ExecutorTypeWorker, ExecutorTypeController:
+		return true
+	default:
+		return false
+	}
+}
+
+func validWorkflowStepOutputKind(outputKind string) bool {
+	switch outputKind {
+	case "aggregate", "empty_fanout", "skipped":
 		return true
 	default:
 		return false

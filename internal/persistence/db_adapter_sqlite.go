@@ -88,6 +88,20 @@ var sqliteSchemaStatements = []string{
 		UNIQUE (run_id, step_index, work_item_index),
 		FOREIGN KEY (run_id, step_index) REFERENCES workflow_dependency_steps(run_id, step_index)
 	);`,
+	`CREATE TABLE workflow_step_output_facts (
+		run_id TEXT NOT NULL,
+		step_index INTEGER NOT NULL,
+		output_json TEXT CHECK (output_json IS NULL OR json_valid(output_json)),
+		output_json_sha256 TEXT NOT NULL,
+		output_json_bytes INTEGER NOT NULL,
+		output_json_pruned INTEGER NOT NULL CHECK (output_json_pruned IN (0, 1)),
+		output_kind TEXT NOT NULL CHECK (output_kind IN ('aggregate', 'empty_fanout', 'skipped')),
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+
+		PRIMARY KEY (run_id, step_index),
+		FOREIGN KEY (run_id, step_index) REFERENCES workflow_dependency_steps(run_id, step_index)
+	);`,
 	`CREATE TABLE work_items (
 		work_item_id TEXT PRIMARY KEY,
 		run_id TEXT NOT NULL,
@@ -284,6 +298,7 @@ func sqliteCoreSchemaExists(ctx context.Context, tx *sql.Tx) (bool, error) {
 			'workflow_stages',
 			'workflow_dependency_steps',
 			'workflow_dependency_work_items',
+			'workflow_step_output_facts',
 			'work_items',
 			'workers',
 			'work_item_attempts',

@@ -22,6 +22,11 @@ type RecordCompletedWorkItemOutputRequest struct {
 	OutputJSONSHA256 string
 }
 
+const (
+	workflowStepOutputKindAggregate   = "aggregate"
+	workflowStepOutputKindEmptyFanout = "empty_fanout"
+)
+
 func (c *Controller) CreateWorkflowDependencyPlan(ctx context.Context, submissionID string, workflowID string, stages []workflow.WorkflowStage) error {
 	if c.workflowStore == nil {
 		return fmt.Errorf("workflow store required")
@@ -277,6 +282,9 @@ func (c *Controller) recordWorkItemTerminalState(ctx context.Context, submission
 		return nil
 	}
 
+	if err := c.upsertTerminalPrunedWorkflowStepOutputFacts(ctx, plan); err != nil {
+		return err
+	}
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
 		return err
 	}
@@ -347,6 +355,7 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 	membership.OutputJSONBytes = len([]byte(outputJSON))
 	membership.OutputJSONPruned = false
 
+	stepOutputFactKind := ""
 	step.State = updateStepStateFromWorkItems(step.WorkItems, step.State)
 	if dependencyStepOutputsReady(*step) {
 		stepOutputJSON, stepOutputJSONSHA256, err := aggregateStepOutputJSON(*step)
@@ -361,6 +370,7 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 		step.OutputJSONBytes = len([]byte(stepOutputJSON))
 		step.OutputJSONPruned = false
 		step.State = model.WorkflowStepStateCompleted
+		stepOutputFactKind = workflowStepOutputKindAggregate
 		pruneWorkItemOutputJSON(step)
 	}
 	stage.State = updateStageStateFromSteps(stage.Steps, stage.State)
@@ -368,6 +378,11 @@ func (c *Controller) RecordCompletedWorkItemOutput(ctx context.Context, req Reco
 		updateWorkflowStateFromStages(plan)
 	}
 	pruneDependencyOutputsIfTerminal(plan)
+	if stepOutputFactKind != "" {
+		if err := c.upsertWorkflowStepOutputFact(ctx, req.SubmissionID, *step, stepOutputFactKind); err != nil {
+			return err
+		}
+	}
 
 	if err := c.setWorkflowDependencyState(ctx, req.SubmissionID, *plan); err != nil {
 		return err
@@ -405,6 +420,7 @@ func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, s
 
 	before := cloneDependencyPlan(*plan)
 	updated := false
+	outputFactSteps := []model.WorkflowDependencyStep{}
 	for index := range stage.Steps {
 		step := &stage.Steps[index]
 		if stepsByIndex[step.StepIndex] {
@@ -421,6 +437,7 @@ func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, s
 		step.OutputJSONSHA256 = emptyStepOutputJSONSHA256
 		step.OutputJSONBytes = len([]byte(emptyStepOutputJSON))
 		step.OutputJSONPruned = false
+		outputFactSteps = append(outputFactSteps, cloneDependencyStep(*step))
 		updated = true
 	}
 	if !updated {
@@ -437,6 +454,12 @@ func (c *Controller) markCompiledStageEmptyStepsCompleted(ctx context.Context, s
 	if allCompleted {
 		stage.State = model.WorkflowStageStateCompleted
 		updateWorkflowStateFromStages(plan)
+	}
+
+	for _, step := range outputFactSteps {
+		if err := c.upsertWorkflowStepOutputFact(ctx, submissionID, step, workflowStepOutputKindEmptyFanout); err != nil {
+			return false, err
+		}
 	}
 
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
@@ -520,6 +543,9 @@ func (c *Controller) markWorkflowStageActivationFailed(ctx context.Context, subm
 	before := cloneDependencyPlan(*plan)
 	markDependencyPlanFailed(plan, stageIndex, -1, "", reason)
 	pruneDependencyOutputsIfTerminal(plan)
+	if err := c.upsertTerminalPrunedWorkflowStepOutputFacts(ctx, plan); err != nil {
+		return err
+	}
 	if err := c.setWorkflowDependencyState(ctx, submissionID, *plan); err != nil {
 		return err
 	}
@@ -893,6 +919,52 @@ func canonicalOutputFromEmptyList() (string, string, error) {
 		return "", "", err
 	}
 	return json, sha256, nil
+}
+
+func (c *Controller) upsertWorkflowStepOutputFact(ctx context.Context, runID string, step model.WorkflowDependencyStep, outputKind string) error {
+	if c.workflowStore == nil {
+		return fmt.Errorf("workflow store required")
+	}
+	if step.OutputJSONSHA256 == "" {
+		return fmt.Errorf("workflow step %d output hash is required", step.StepIndex)
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	return c.workflowStore.UpsertWorkflowStepOutputFact(ctx, persistence.WorkflowStepOutputFactRecord{
+		RunID:            runID,
+		StepIndex:        step.StepIndex,
+		OutputJSON:       step.OutputJSON,
+		OutputJSONSHA256: step.OutputJSONSHA256,
+		OutputJSONBytes:  step.OutputJSONBytes,
+		OutputJSONPruned: step.OutputJSONPruned,
+		OutputKind:       outputKind,
+		CreatedAt:        timestamp,
+		UpdatedAt:        timestamp,
+	})
+}
+
+func (c *Controller) upsertTerminalPrunedWorkflowStepOutputFacts(ctx context.Context, plan *model.WorkflowDependencyPlan) error {
+	if plan == nil || (plan.State != model.WorkflowStateCompleted && plan.State != model.WorkflowStateFailed) {
+		return nil
+	}
+	for _, stage := range plan.Stages {
+		for _, step := range stage.Steps {
+			if !step.OutputJSONPruned || step.OutputJSONSHA256 == "" {
+				continue
+			}
+			outputKind := workflowStepOutputKindAggregate
+			existing, found, err := c.workflowStore.GetWorkflowStepOutputFact(ctx, plan.RunID, step.StepIndex)
+			if err != nil {
+				return err
+			}
+			if found {
+				outputKind = existing.OutputKind
+			}
+			if err := c.upsertWorkflowStepOutputFact(ctx, plan.RunID, step, outputKind); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Controller) requireDependencyRunExists(ctx context.Context, submissionID string) error {
