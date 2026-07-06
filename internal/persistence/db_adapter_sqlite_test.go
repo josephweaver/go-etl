@@ -30,6 +30,9 @@ func TestOpenStoreCreatesSQLiteDatabase(t *testing.T) {
 		"workflows",
 		"workflow_instances",
 		"workflow_stages",
+		"workflow_dependency_steps",
+		"workflow_dependency_work_items",
+		"workflow_step_output_facts",
 		"work_items",
 		"workers",
 		"work_item_attempts",
@@ -42,6 +45,48 @@ func TestOpenStoreCreatesSQLiteDatabase(t *testing.T) {
 	}
 }
 
+func TestOpenStoreCreatesSQLiteDerivedRecoveryIndexes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	for _, index := range []struct {
+		name    string
+		columns []string
+	}{
+		{
+			name:    "idx_work_items_run_stage_work_item",
+			columns: []string{"run_id", "stage_index", "work_item_id"},
+		},
+		{
+			name:    "idx_workflow_dependency_steps_run_stage_step",
+			columns: []string{"run_id", "stage_index", "step_index"},
+		},
+		{
+			name:    "idx_workflow_dependency_work_items_run_stage_step_order",
+			columns: []string{"run_id", "stage_index", "step_index", "work_item_index", "work_item_id"},
+		},
+		{
+			name:    "idx_queued_work_queued_at_work_item",
+			columns: []string{"queued_at", "work_item_id"},
+		},
+		{
+			name:    "idx_running_work_started_at_attempt",
+			columns: []string{"started_at", "attempt_id"},
+		},
+		{
+			name:    "idx_completed_work_item_completed_at",
+			columns: []string{"work_item_id", "completed_at", "attempt_id"},
+		},
+		{
+			name:    "idx_failed_work_item_failed_at",
+			columns: []string{"work_item_id", "failed_at", "attempt_id"},
+		},
+	} {
+		assertSQLiteIndexColumns(t, ctx, store.db, index.name, index.columns)
+	}
+}
+
 func TestOpenStoreAcceptsExistingSupportedSQLiteDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "store.sqlite")
@@ -51,8 +96,15 @@ func TestOpenStoreAcceptsExistingSupportedSQLiteDatabase(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
+	db := openRawSQLite(t, path)
+	if _, err := db.ExecContext(ctx, `DROP INDEX idx_queued_work_queued_at_work_item`); err != nil {
+		t.Fatalf("drop derived recovery index: %v", err)
+	}
+	db.Close()
+
 	store = openTestStore(t, ctx, path)
 	defer store.Close()
+	assertSQLiteIndexColumns(t, ctx, store.db, "idx_queued_work_queued_at_work_item", []string{"queued_at", "work_item_id"})
 }
 
 func TestOpenStoreReplacesMetadataOnlySQLiteDevelopmentSchema(t *testing.T) {
@@ -357,6 +409,41 @@ func assertSQLiteTableExists(t *testing.T, ctx context.Context, db *sql.DB, tabl
 	}
 	if name != table {
 		t.Fatalf("table name = %q, want %q", name, table)
+	}
+}
+
+func assertSQLiteIndexColumns(t *testing.T, ctx context.Context, db *sql.DB, indexName string, want []string) {
+	t.Helper()
+
+	var name string
+	if err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, indexName).Scan(&name); err != nil {
+		t.Fatalf("query index %s: %v", indexName, err)
+	}
+	if name != indexName {
+		t.Fatalf("index name = %q, want %q", name, indexName)
+	}
+
+	rows, err := db.QueryContext(ctx, `PRAGMA index_info(`+indexName+`)`)
+	if err != nil {
+		t.Fatalf("query index columns %s: %v", indexName, err)
+	}
+	defer rows.Close()
+
+	got := []string{}
+	for rows.Next() {
+		var seqno int
+		var cid int
+		var column string
+		if err := rows.Scan(&seqno, &cid, &column); err != nil {
+			t.Fatalf("scan index columns %s: %v", indexName, err)
+		}
+		got = append(got, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("query index columns %s: %v", indexName, err)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("index %s columns = %v, want %v", indexName, got, want)
 	}
 }
 

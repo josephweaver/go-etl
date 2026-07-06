@@ -484,6 +484,312 @@ func TestStoreInsertStagePlanRejectsMissingRun(t *testing.T) {
 	}
 }
 
+func TestStoreInsertDependencyStepsAndListDependencySteps(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	timestamp := "2026-07-03T00:00:01Z"
+
+	steps := []WorkflowDependencyStepRecord{
+		{
+			RunID:        run.ID,
+			StageIndex:   2,
+			StepIndex:    5,
+			StepID:       "step-005",
+			ParallelWith: "batch-b",
+			CreatedAt:    timestamp,
+		},
+		{
+			RunID:        run.ID,
+			StageIndex:   0,
+			StepIndex:    3,
+			StepID:       "step-003",
+			ParallelWith: "batch-a",
+			CreatedAt:    timestamp,
+		},
+		{
+			RunID:        run.ID,
+			StageIndex:   1,
+			StepIndex:    4,
+			StepID:       "step-004",
+			ParallelWith: "batch-a",
+			CreatedAt:    timestamp,
+		},
+	}
+
+	if err := store.InsertWorkflowDependencySteps(ctx, steps); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+	if err := store.InsertWorkflowDependencySteps(ctx, steps); err != nil {
+		t.Fatalf("second InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	got, err := store.ListWorkflowDependencySteps(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListWorkflowDependencySteps() error = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(steps) = %d, want 3", len(got))
+	}
+	if got[0].StageIndex != 0 || got[0].StepIndex != 3 || got[0].StepID != "step-003" {
+		t.Fatalf("ordered steps[0] = %+v, want stage=0 step=3 id=step-003", got[0])
+	}
+	if got[1].StageIndex != 1 || got[1].StepIndex != 4 || got[1].StepID != "step-004" {
+		t.Fatalf("ordered steps[1] = %+v, want stage=1 step=4 id=step-004", got[1])
+	}
+	if got[2].StageIndex != 2 || got[2].StepIndex != 5 || got[2].StepID != "step-005" {
+		t.Fatalf("ordered steps[2] = %+v, want stage=2 step=5 id=step-005", got[2])
+	}
+}
+
+func TestStoreInsertDependencyStepsRejectsConflict(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	timestamp := "2026-07-03T00:00:01Z"
+
+	steps := []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "step-0",
+		ParallelWith: "batch-a",
+		CreatedAt:    timestamp,
+	}}
+	if err := store.InsertWorkflowDependencySteps(ctx, steps); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	conflict := []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "different-id",
+		ParallelWith: "batch-a",
+		CreatedAt:    timestamp,
+	}}
+	if err := store.InsertWorkflowDependencySteps(ctx, conflict); err == nil {
+		t.Fatal("InsertWorkflowDependencySteps(conflict) expected error, got nil")
+	}
+}
+
+func TestStoreInsertDependencyWorkItemsAndListForStep(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	timestamp := "2026-07-03T00:00:01Z"
+	workItemA := testWorkItemRecord("work-item-a", run.ID, 0, 0)
+	workItemB := testWorkItemRecord("work-item-b", run.ID, 0, 1)
+	workItemC := testWorkItemRecord("work-item-c", run.ID, 0, 2)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{workItemA, workItemB, workItemC}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.InsertWorkflowDependencySteps(ctx, []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "step-0",
+		ParallelWith: "",
+		CreatedAt:    timestamp,
+	}}); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	memberships := []WorkflowDependencyWorkItemRecord{
+		{
+			RunID:         run.ID,
+			StageIndex:    0,
+			StepIndex:     0,
+			WorkItemID:    workItemB.ID,
+			WorkItemIndex: 2,
+			CreatedAt:     timestamp,
+		},
+		{
+			RunID:         run.ID,
+			StageIndex:    0,
+			StepIndex:     0,
+			WorkItemID:    workItemA.ID,
+			WorkItemIndex: 0,
+			CreatedAt:     timestamp,
+		},
+		{
+			RunID:         run.ID,
+			StageIndex:    0,
+			StepIndex:     0,
+			WorkItemID:    workItemC.ID,
+			WorkItemIndex: 1,
+			CreatedAt:     timestamp,
+		},
+	}
+
+	if err := store.InsertWorkflowDependencyWorkItemMembership(ctx, memberships); err != nil {
+		t.Fatalf("InsertWorkflowDependencyWorkItemMembership() error = %v", err)
+	}
+	if err := store.InsertWorkflowDependencyWorkItemMembership(ctx, memberships); err != nil {
+		t.Fatalf("second InsertWorkflowDependencyWorkItemMembership() error = %v", err)
+	}
+
+	got, err := store.ListWorkflowDependencyWorkItems(ctx, run.ID, 0, 0)
+	if err != nil {
+		t.Fatalf("ListWorkflowDependencyWorkItems() error = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(work items) = %d, want 3", len(got))
+	}
+	if got[0].WorkItemID != workItemA.ID || got[0].WorkItemIndex != 0 {
+		t.Fatalf("ordered items[0] = %+v, want a with index 0", got[0])
+	}
+	if got[1].WorkItemID != workItemC.ID || got[1].WorkItemIndex != 1 {
+		t.Fatalf("ordered items[1] = %+v, want c with index 1", got[1])
+	}
+	if got[2].WorkItemID != workItemB.ID || got[2].WorkItemIndex != 2 {
+		t.Fatalf("ordered items[2] = %+v, want b with index 2", got[2])
+	}
+}
+
+func TestStoreInsertDependencyWorkItemsRejectsIndexConflict(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	timestamp := "2026-07-03T00:00:01Z"
+	workItemA := testWorkItemRecord("work-item-a", run.ID, 0, 0)
+	workItemB := testWorkItemRecord("work-item-b", run.ID, 0, 1)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{workItemA, workItemB}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.InsertWorkflowDependencySteps(ctx, []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "step-0",
+		ParallelWith: "",
+		CreatedAt:    timestamp,
+	}}); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	existing := WorkflowDependencyWorkItemRecord{
+		RunID:         run.ID,
+		StageIndex:    0,
+		StepIndex:     0,
+		WorkItemID:    workItemA.ID,
+		WorkItemIndex: 0,
+		CreatedAt:     timestamp,
+	}
+	if err := store.InsertWorkflowDependencyWorkItemMembership(ctx, []WorkflowDependencyWorkItemRecord{existing}); err != nil {
+		t.Fatalf("InsertWorkflowDependencyWorkItemMembership() error = %v", err)
+	}
+
+	workItemIndexConflict := WorkflowDependencyWorkItemRecord{
+		RunID:         run.ID,
+		StageIndex:    0,
+		StepIndex:     0,
+		WorkItemID:    workItemB.ID,
+		WorkItemIndex: 0,
+		CreatedAt:     timestamp,
+	}
+	if err := store.InsertWorkflowDependencyWorkItemMembership(ctx, []WorkflowDependencyWorkItemRecord{workItemIndexConflict}); err == nil {
+		t.Fatal("InsertDependencyWorkItemMembership(index conflict) expected error, got nil")
+	}
+
+	workItemIDConflict := WorkflowDependencyWorkItemRecord{
+		RunID:         run.ID,
+		StageIndex:    0,
+		StepIndex:     0,
+		WorkItemID:    workItemA.ID,
+		WorkItemIndex: 1,
+		CreatedAt:     timestamp,
+	}
+	if err := store.InsertWorkflowDependencyWorkItemMembership(ctx, []WorkflowDependencyWorkItemRecord{workItemIDConflict}); err == nil {
+		t.Fatal("InsertDependencyWorkItemMembership(id conflict) expected error, got nil")
+	}
+}
+
+func TestStoreUpsertAndGetWorkflowStepOutputFact(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	if err := store.InsertWorkflowDependencySteps(ctx, []WorkflowDependencyStepRecord{{
+		RunID:        run.ID,
+		StageIndex:   0,
+		StepIndex:    0,
+		StepID:       "step-0",
+		ParallelWith: "",
+		CreatedAt:    "2026-07-03T00:00:01Z",
+	}}); err != nil {
+		t.Fatalf("InsertWorkflowDependencySteps() error = %v", err)
+	}
+
+	fact := WorkflowStepOutputFactRecord{
+		RunID:            run.ID,
+		StepIndex:        0,
+		OutputJSON:       `{"value":"a"}`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		OutputJSONBytes:  len([]byte(`{"value":"a"}`)),
+		OutputKind:       "aggregate",
+		CreatedAt:        "2026-07-03T00:00:02Z",
+		UpdatedAt:        "2026-07-03T00:00:02Z",
+	}
+	if err := store.UpsertWorkflowStepOutputFact(ctx, fact); err != nil {
+		t.Fatalf("UpsertWorkflowStepOutputFact() error = %v", err)
+	}
+	if err := store.UpsertWorkflowStepOutputFact(ctx, fact); err != nil {
+		t.Fatalf("second UpsertWorkflowStepOutputFact() error = %v", err)
+	}
+
+	got, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("GetWorkflowStepOutputFact() found = false, want true")
+	}
+	if got != fact {
+		t.Fatalf("fact = %+v, want %+v", got, fact)
+	}
+
+	pruned := fact
+	pruned.OutputJSON = ""
+	pruned.OutputJSONPruned = true
+	pruned.UpdatedAt = "2026-07-03T00:00:03Z"
+	if err := store.UpsertWorkflowStepOutputFact(ctx, pruned); err != nil {
+		t.Fatalf("UpsertWorkflowStepOutputFact(pruned) error = %v", err)
+	}
+	got, found, err = store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("GetWorkflowStepOutputFact(pruned) found=%v error=%v", found, err)
+	}
+	if got != pruned {
+		t.Fatalf("pruned fact = %+v, want %+v", got, pruned)
+	}
+}
+
+func TestStoreWorkflowStepOutputFactRejectsMissingDependencyStep(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+
+	err := store.UpsertWorkflowStepOutputFact(ctx, WorkflowStepOutputFactRecord{
+		RunID:            run.ID,
+		StepIndex:        0,
+		OutputJSON:       `[]`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		OutputJSONBytes:  2,
+		OutputKind:       "empty_fanout",
+		CreatedAt:        "2026-07-03T00:00:02Z",
+		UpdatedAt:        "2026-07-03T00:00:02Z",
+	})
+	if err == nil || !strings.Contains(err.Error(), "upsert workflow step output fact") {
+		t.Fatalf("UpsertWorkflowStepOutputFact() error = %v, want foreign-key insert failure", err)
+	}
+}
+
 func TestStoreGetWorkflowStageReturnsMissing(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
@@ -1327,6 +1633,78 @@ func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
 
 	assertRunningWork(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
 	assertAttempt(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
+}
+
+func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameWorker(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	runA := insertTestWorkflowRun(t, ctx, store, "run-a", project.ID, workflow.ID)
+	runB := insertTestWorkflowRun(t, ctx, store, "run-b", project.ID, workflow.ID)
+	for _, run := range []WorkflowRunRecord{runA, runB} {
+		if err := store.InsertStagePlan(ctx, run.ID, []WorkflowStageRecord{testWorkflowStageRecord(run.ID, 0, "ready")}); err != nil {
+			t.Fatalf("insert stage plan for %s: %v", run.ID, err)
+		}
+	}
+
+	itemA := testWorkItemRecord("work-run-a", runA.ID, 0, 0)
+	itemB := testWorkItemRecord("work-run-b", runB.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{itemA, itemB}); err != nil {
+		t.Fatalf("insert work items: %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{
+		{WorkItemRecord: itemA, QueuedAt: "2026-07-03T00:00:00Z"},
+		{WorkItemRecord: itemB, QueuedAt: "2026-07-03T00:00:01Z"},
+	}); err != nil {
+		t.Fatalf("enqueue work items: %v", err)
+	}
+
+	insertTestWorker(t, ctx, store, "worker-001", runA.ID)
+
+	claimA := testClaimWorkRequest()
+	claimA.AttemptID = "attempt-a"
+	claimA.WorkerID = "worker-001"
+	claimB := testClaimWorkRequest()
+	claimB.AttemptID = "attempt-b"
+	claimB.WorkerID = "worker-001"
+
+	claimedA, found, err := store.ClaimNextWork(ctx, claimA)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+
+	claimedB, found, err := store.ClaimNextWork(ctx, claimB)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("second ClaimNextWork() found = false, want true")
+	}
+
+	claimRuns := map[string]bool{
+		claimedA.WorkItem.RunID: true,
+		claimedB.WorkItem.RunID: true,
+	}
+	if len(claimRuns) != 2 {
+		t.Fatalf("claimed runs = %v, want two distinct runs", claimRuns)
+	}
+	if !claimRuns[runA.ID] || !claimRuns[runB.ID] {
+		t.Fatalf("claimed runs = %v, want %s and %s", claimRuns, runA.ID, runB.ID)
+	}
+
+	if claimedA.WorkerID != "worker-001" || claimedB.WorkerID != "worker-001" {
+		t.Fatalf("claimed worker ids = %q and %q, want worker-001 for both", claimedA.WorkerID, claimedB.WorkerID)
+	}
+
+	assertRunningWork(t, ctx, store, claimA.AttemptID, claimedA.WorkItem.ID, "worker-001", claimedA.QueuedAt, claimA.StartedAt)
+	assertAttempt(t, ctx, store, claimA.AttemptID, claimedA.WorkItem.ID, "worker-001", claimA.ExecutorType, claimA.StartedAt)
+	assertRunningWork(t, ctx, store, claimB.AttemptID, claimedB.WorkItem.ID, "worker-001", claimedB.QueuedAt, claimB.StartedAt)
+	assertAttempt(t, ctx, store, claimB.AttemptID, claimedB.WorkItem.ID, "worker-001", claimB.ExecutorType, claimB.StartedAt)
 }
 
 func TestStoreCompleteAttemptCompletesRunningWork(t *testing.T) {
