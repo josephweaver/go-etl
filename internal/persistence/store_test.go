@@ -1329,6 +1329,78 @@ func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
 	assertAttempt(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
 }
 
+func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameWorker(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	project, workflow := insertTestProjectAndWorkflow(t, ctx, store)
+	runA := insertTestWorkflowRun(t, ctx, store, "run-a", project.ID, workflow.ID)
+	runB := insertTestWorkflowRun(t, ctx, store, "run-b", project.ID, workflow.ID)
+	for _, run := range []WorkflowRunRecord{runA, runB} {
+		if err := store.InsertStagePlan(ctx, run.ID, []WorkflowStageRecord{testWorkflowStageRecord(run.ID, 0, "ready")}); err != nil {
+			t.Fatalf("insert stage plan for %s: %v", run.ID, err)
+		}
+	}
+
+	itemA := testWorkItemRecord("work-run-a", runA.ID, 0, 0)
+	itemB := testWorkItemRecord("work-run-b", runB.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{itemA, itemB}); err != nil {
+		t.Fatalf("insert work items: %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{
+		{WorkItemRecord: itemA, QueuedAt: "2026-07-03T00:00:00Z"},
+		{WorkItemRecord: itemB, QueuedAt: "2026-07-03T00:00:01Z"},
+	}); err != nil {
+		t.Fatalf("enqueue work items: %v", err)
+	}
+
+	insertTestWorker(t, ctx, store, "worker-001", runA.ID)
+
+	claimA := testClaimWorkRequest()
+	claimA.AttemptID = "attempt-a"
+	claimA.WorkerID = "worker-001"
+	claimB := testClaimWorkRequest()
+	claimB.AttemptID = "attempt-b"
+	claimB.WorkerID = "worker-001"
+
+	claimedA, found, err := store.ClaimNextWork(ctx, claimA)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("ClaimNextWork() found = false, want true")
+	}
+
+	claimedB, found, err := store.ClaimNextWork(ctx, claimB)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found {
+		t.Fatal("second ClaimNextWork() found = false, want true")
+	}
+
+	claimRuns := map[string]bool{
+		claimedA.WorkItem.RunID: true,
+		claimedB.WorkItem.RunID: true,
+	}
+	if len(claimRuns) != 2 {
+		t.Fatalf("claimed runs = %v, want two distinct runs", claimRuns)
+	}
+	if !claimRuns[runA.ID] || !claimRuns[runB.ID] {
+		t.Fatalf("claimed runs = %v, want %s and %s", claimRuns, runA.ID, runB.ID)
+	}
+
+	if claimedA.WorkerID != "worker-001" || claimedB.WorkerID != "worker-001" {
+		t.Fatalf("claimed worker ids = %q and %q, want worker-001 for both", claimedA.WorkerID, claimedB.WorkerID)
+	}
+
+	assertRunningWork(t, ctx, store, claimA.AttemptID, claimedA.WorkItem.ID, "worker-001", claimedA.QueuedAt, claimA.StartedAt)
+	assertAttempt(t, ctx, store, claimA.AttemptID, claimedA.WorkItem.ID, "worker-001", claimA.ExecutorType, claimA.StartedAt)
+	assertRunningWork(t, ctx, store, claimB.AttemptID, claimedB.WorkItem.ID, "worker-001", claimedB.QueuedAt, claimB.StartedAt)
+	assertAttempt(t, ctx, store, claimB.AttemptID, claimedB.WorkItem.ID, "worker-001", claimB.ExecutorType, claimB.StartedAt)
+}
+
 func TestStoreCompleteAttemptCompletesRunningWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
