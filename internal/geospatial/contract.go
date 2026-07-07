@@ -11,6 +11,7 @@ const (
 	OperationRasterInfo   = "raster_info"
 	OperationReprojectCRS = "reproject_crs"
 	OperationAlignToGrid  = "align_to_grid"
+	OperationStackAligned = "stack_aligned_rasters"
 )
 
 type OperationRequest struct {
@@ -23,9 +24,10 @@ type OperationRequest struct {
 }
 
 type InputSpec struct {
-	Path   string `json:"path"`
-	Band   *int   `json:"band,omitempty"`
-	Nodata *int   `json:"nodata,omitempty"`
+	Path       string `json:"path"`
+	Band       *int   `json:"band,omitempty"`
+	Nodata     *int   `json:"nodata,omitempty"`
+	OutputBand *int   `json:"output_band,omitempty"`
 }
 
 type OperationResult struct {

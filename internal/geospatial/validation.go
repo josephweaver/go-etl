@@ -31,6 +31,11 @@ func (request OperationRequest) Validate() error {
 			return err
 		}
 	}
+	if request.Operation == OperationStackAligned {
+		if _, err := ParseStackAlignedRequest(request); err != nil {
+			return err
+		}
+	}
 
 	for name, input := range request.Inputs {
 		if strings.TrimSpace(name) == "" {
@@ -56,7 +61,7 @@ func (request OperationRequest) Validate() error {
 
 func isSupportedOperation(operation string) bool {
 	switch operation {
-	case OperationValidate, OperationVersion, OperationRasterInfo, OperationReprojectCRS, OperationAlignToGrid:
+	case OperationValidate, OperationVersion, OperationRasterInfo, OperationReprojectCRS, OperationAlignToGrid, OperationStackAligned:
 		return true
 	default:
 		return false

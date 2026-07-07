@@ -88,6 +88,12 @@ func run(args []string) error {
 			return err
 		}
 		result = alignmentResult
+	case geospatial.OperationStackAligned:
+		stackResult, err := geospatial.ExecuteStackAlignedRasters(context.Background(), request, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = stackResult
 	default:
 		result = geospatial.NewValidationResult(request.Operation)
 	}

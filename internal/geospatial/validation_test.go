@@ -24,6 +24,27 @@ func validRequest() OperationRequest {
 	}
 }
 
+func validStackRequest() OperationRequest {
+	return OperationRequest{
+		APIVersion: APIVersionV1Alpha1,
+		Kind:       RequestKind,
+		Operation:  OperationStackAligned,
+		Inputs: map[string]InputSpec{
+			"field_id": {Path: "/worker/data/yanroy_aligned.tif", Band: intPtr(1), OutputBand: intPtr(1)},
+			"crop_id":  {Path: "/worker/data/cdl_2023_aligned.tif", Band: intPtr(1), OutputBand: intPtr(2)},
+		},
+		Outputs: map[string]string{
+			"stacked_raster": "stack.tif",
+			"metadata_json":  "stack.metadata.json",
+		},
+		Options: map[string]any{
+			"dtype":                "uint16",
+			"nodata":               0,
+			"require_aligned_grid": true,
+		},
+	}
+}
+
 func TestOperationRequestValidateAcceptsWorkerLocalInputPaths(t *testing.T) {
 	request := validRequest()
 	if err := request.Validate(); err != nil {
@@ -162,6 +183,44 @@ func TestOperationRequestValidateRejectsUnsafeOutputPaths(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want output path context", err)
 			}
 		})
+	}
+}
+
+func TestOperationRequestValidateAcceptsStackAlignedRastersRequest(t *testing.T) {
+	request := validStackRequest()
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestOperationRequestValidateRejectsStackMissingOutputBand(t *testing.T) {
+	request := validStackRequest()
+	request.Inputs["field_id"] = InputSpec{
+		Path: request.Inputs["field_id"].Path,
+		Band: intPtr(1),
+	}
+	if err := request.Validate(); err == nil {
+		t.Fatal("expected error for missing output_band")
+	}
+}
+
+func TestOperationRequestValidateRejectsStackDuplicateOutputBand(t *testing.T) {
+	request := validStackRequest()
+	request.Inputs["crop_id"] = InputSpec{
+		Path:       request.Inputs["crop_id"].Path,
+		Band:       intPtr(1),
+		OutputBand: intPtr(1),
+	}
+	if err := request.Validate(); err == nil {
+		t.Fatal("expected error for duplicate output_band")
+	}
+}
+
+func TestOperationRequestValidateRejectsStackUnsupportedDType(t *testing.T) {
+	request := validStackRequest()
+	request.Options["dtype"] = "float32"
+	if err := request.Validate(); err == nil {
+		t.Fatal("expected error for unsupported dtype")
 	}
 }
 

@@ -159,6 +159,73 @@ func TestRunAlignToGridWritesRasterAndMetadataArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunStackAlignedRastersWritesStackAndMetadataArtifacts(t *testing.T) {
+	skipIfGDALMissing(t)
+	dir := t.TempDir()
+	responsePath := filepath.Join(dir, "result.json")
+	fieldPath := createTestRasterForCli(t, dir)
+	cropPath := createTestRasterForCli(t, dir)
+
+	requestJSON := `{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "stack_aligned_rasters",
+  "inputs": {
+    "field_id": {"path": "` + fieldPath + `", "band": 1, "output_band": 1},
+    "crop_id": {"path": "` + cropPath + `", "band": 1, "output_band": 2}
+  },
+  "outputs": {
+    "stacked_raster": "stack/stacked.tif",
+    "metadata_json": "stack/stacked.metadata.json"
+  },
+  "options": {
+    "dtype": "uint16",
+    "nodata": 0,
+    "require_aligned_grid": true
+  }
+}
+`
+	requestPath := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(requestPath, []byte(requestJSON), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	if err := run([]string{"--request", requestPath, "--response", responsePath}); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	resultData, err := os.ReadFile(responsePath)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var result struct {
+		Operation string `json:"operation"`
+		Artifacts []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Operation != "stack_aligned_rasters" {
+		t.Fatalf("operation = %q, want %q", result.Operation, "stack_aligned_rasters")
+	}
+	if len(result.Artifacts) != 2 {
+		t.Fatalf("artifacts = %#v, want 2 artifacts", result.Artifacts)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stack", "stacked.tif")); err != nil {
+		t.Fatalf("stat raster artifact: %v", err)
+	}
+	metadataData, err := os.ReadFile(filepath.Join(dir, "stack", "stacked.metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata artifact: %v", err)
+	}
+	if !strings.Contains(string(metadataData), `"dtype": "UInt16"`) {
+		t.Fatalf("metadata artifact missing dtype: %s", metadataData)
+	}
+}
+
 func createTestRasterForCli(t *testing.T, dir string) string {
 	return createTestRaster(t, dir, "cli", "1 2\n3 4")
 }
