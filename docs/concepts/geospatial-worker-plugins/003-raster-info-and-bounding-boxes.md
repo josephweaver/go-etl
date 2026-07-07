@@ -1,6 +1,6 @@
 # 003 Raster Info And Bounding Boxes
 
-Status: Proposed  
+Status: Implemented  
 Recommended model: GPT-5.3-Codex-Spark  
 Reference: EC-3 / operational slice / files(4)+test+doc
 
@@ -18,34 +18,33 @@ The CDL/Yan/Roy workflow needs a way to inspect each input raster before alignme
 
 ## Target State
 
-The `goet-geospatial` CLI supports an operation named either:
+The `goet-geospatial` CLI supports this operation:
 
 ```text
 raster_info
 ```
 
-or:
-
-```text
-get_bounding_boxes
-```
-
-The request can contain multiple rasters:
+The request preserves the OS-002 geospatial request contract. `inputs` remains
+`map[string]InputSpec`, and `raster_info` consumes every named entry in
+`request.Inputs`:
 
 ```json
 {
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
   "operation": "raster_info",
   "inputs": {
-    "rasters": [
-      {"name": "field", "path": "/worker/data/yanroy.tif"},
-      {"name": "cdl", "path": "/worker/data/cdl_2023.tif"}
-    ]
+    "field": {"path": "/worker/data/yanroy.tif"},
+    "cdl": {"path": "/worker/data/cdl_2023.tif"}
   },
   "outputs": {
     "metadata_json": "raster_info.json"
   }
 }
 ```
+
+Multiple raster metadata records are emitted in deterministic lexicographic
+input-name order, not JSON request order.
 
 For each raster, the operation reports compact metadata:
 
@@ -92,7 +91,10 @@ Read these files first:
 
 - `internal/geospatial/raster_info_gdal.go`
 - `internal/geospatial/raster_info.go` if a non-GDAL interface wrapper is helpful
+- `internal/geospatial/contract.go`
+- `internal/geospatial/validation.go`
 - `cmd/goet-geospatial/main.go`
+- `containers/goetl-worker-gdal/Dockerfile` if needed to build or expose `goet-geospatial` in the GDAL worker container
 - `containers/goetl-worker-gdal/test` if needed to run the operation smoke
 - `docs/concepts/geospatial-worker-plugins/README.md` only for tracker/status updates
 
@@ -118,7 +120,8 @@ GDAL-dependent files must use the `gdal` build tag if native GDAL is not require
 
 - A fixture raster produces deterministic metadata JSON.
 - Width, height, band count, data type, nodata, geotransform, and native bounds are reported correctly.
-- Multiple input rasters are reported in stable request order.
+- Multiple input rasters are reported in deterministic lexicographic input-name order.
+- The existing map-based `inputs` contract is preserved; this slice must not replace it with an ordered raster array.
 - Missing input files fail with a clear error.
 - Non-raster input files fail with a clear error.
 - The operation writes its metadata artifact under the declared relative output path.

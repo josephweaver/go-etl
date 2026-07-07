@@ -19,7 +19,8 @@ COPY cmd ./cmd
 COPY internal ./internal
 
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -tags gdal -trimpath -o /out/goetl-worker ./cmd/worker
+    go build -tags gdal -trimpath -o /out/goetl-worker ./cmd/worker && \
+    go build -tags gdal -trimpath -o /out/goet-geospatial ./cmd/goet-geospatial
 
 FROM debian:bookworm-slim
 
@@ -33,5 +34,6 @@ RUN apt-get update \
 WORKDIR /goetl
 
 COPY --from=build /out/goetl-worker /goetl/goetl-worker
+COPY --from=build /out/goet-geospatial /goetl/goet-geospatial
 
 ENTRYPOINT ["/goetl/goetl-worker"]

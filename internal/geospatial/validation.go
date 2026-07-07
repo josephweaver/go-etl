@@ -17,6 +17,16 @@ func (request OperationRequest) Validate() error {
 	if !isSupportedOperation(request.Operation) {
 		return fmt.Errorf("unsupported operation %q", request.Operation)
 	}
+
+	if request.Operation == OperationRasterInfo && len(request.Inputs) == 0 {
+		return fmt.Errorf("raster_info operation requires at least one input")
+	}
+	if request.Operation == OperationRasterInfo {
+		if _, ok := request.Outputs["metadata_json"]; !ok {
+			return fmt.Errorf("raster_info operation requires output \"metadata_json\"")
+		}
+	}
+
 	for name, input := range request.Inputs {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("input name is required")
@@ -41,7 +51,7 @@ func (request OperationRequest) Validate() error {
 
 func isSupportedOperation(operation string) bool {
 	switch operation {
-	case OperationValidate, OperationVersion:
+	case OperationValidate, OperationVersion, OperationRasterInfo:
 		return true
 	default:
 		return false

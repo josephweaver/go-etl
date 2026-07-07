@@ -6,8 +6,9 @@ const (
 	RequestKind = "GeospatialOperationRequest"
 	ResultKind  = "GeospatialOperationResult"
 
-	OperationValidate = "validate"
-	OperationVersion  = "version"
+	OperationValidate   = "validate"
+	OperationVersion    = "version"
+	OperationRasterInfo = "raster_info"
 )
 
 type OperationRequest struct {
@@ -39,6 +40,33 @@ type ArtifactResult struct {
 	Path   string `json:"path"`
 	Kind   string `json:"kind,omitempty"`
 	Format string `json:"format,omitempty"`
+}
+
+type RasterMetadata struct {
+	Name          string               `json:"name"`
+	PathRole      string               `json:"path_role"`
+	Driver        string               `json:"driver"`
+	Width         int                  `json:"width"`
+	Height        int                  `json:"height"`
+	BandCount     int                  `json:"band_count"`
+	CRSWKTPresent bool                 `json:"crs_wkt_present"`
+	EPSG          int                  `json:"epsg"`
+	GeoTransform  []float64            `json:"geo_transform"`
+	Bounds        RasterBounds         `json:"bounds"`
+	Bands         []RasterBandMetadata `json:"bands"`
+}
+
+type RasterBounds struct {
+	MinX float64 `json:"min_x"`
+	MinY float64 `json:"min_y"`
+	MaxX float64 `json:"max_x"`
+	MaxY float64 `json:"max_y"`
+}
+
+type RasterBandMetadata struct {
+	Index  int    `json:"index"`
+	DType  string `json:"dtype"`
+	Nodata *int   `json:"nodata,omitempty"`
 }
 
 func NewValidationResult(operation string) OperationResult {

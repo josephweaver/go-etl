@@ -58,6 +58,24 @@ func TestOperationRequestValidateRejectsInvalidEnvelopeAndOperation(t *testing.T
 	}
 }
 
+func TestOperationRequestValidateRequiresMetadataOutputForRasterInfo(t *testing.T) {
+	request := validRequest()
+	request.Operation = OperationRasterInfo
+	request.Outputs = map[string]string{}
+	if err := request.Validate(); err == nil {
+		t.Fatal("expected error for missing metadata_json output")
+	}
+}
+
+func TestOperationRequestValidateRequiresInputsForRasterInfo(t *testing.T) {
+	request := validRequest()
+	request.Operation = OperationRasterInfo
+	request.Inputs = map[string]InputSpec{}
+	if err := request.Validate(); err == nil {
+		t.Fatal("expected error for raster_info with no inputs")
+	}
+}
+
 func TestOperationRequestValidateRejectsUnsafeOutputPaths(t *testing.T) {
 	cases := []struct {
 		name string

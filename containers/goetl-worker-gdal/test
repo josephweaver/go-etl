@@ -46,3 +46,77 @@ case "${ogr_version}" in
     exit 1
     ;;
 esac
+
+smoke_dir="${tmp_root}/raster_info"
+mkdir -p "${smoke_dir}"
+cat > "${smoke_dir}/field.asc" <<'EOF_ASC'
+ncols 2
+nrows 2
+xllcorner 0 0
+cellsize 30
+NODATA_value 0
+1 2
+3 4
+EOF_ASC
+
+docker run --rm \
+  -v "${smoke_dir}:/work" \
+  "${image}" \
+  /bin/sh -lc \
+  "gdal_translate -of GTiff -ot UInt16 -a_nodata 0 -a_srs EPSG:5070 -a_ullr 0 60 60 0 /work/field.asc /work/field.tif"
+
+cat > "${smoke_dir}/request.json" <<'EOF_JSON'
+{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "raster_info",
+  "inputs": {
+    "cdl": { "path": "/work/field.tif" },
+    "field": { "path": "/work/field.tif" }
+  },
+  "outputs": {
+    "metadata_json": "metadata/raster_info.json"
+  },
+  "options": {}
+}
+EOF_JSON
+
+docker run --rm \
+  -v "${smoke_dir}:/work" \
+  --entrypoint /goetl/goet-geospatial \
+  "${image}" \
+  --request /work/request.json \
+  --response /work/result.json
+
+result="$(cat "${smoke_dir}/result.json")"
+for expected in '"operation": "raster_info"' '"name": "field"' '"name": "cdl"' ; do
+  case "${result}" in
+    *"${expected}"*) ;;
+    *)
+      printf 'expected raster_info result to include %s, got: %s\n' "${expected}" "${result}" >&2
+      exit 1
+      ;;
+  esac
+done
+
+metadata="$(cat "${smoke_dir}/metadata/raster_info.json")"
+for expected in '"name": "field"' '"name": "cdl"' '"driver": "GTiff"' '"epsg": 5070' ; do
+  case "${metadata}" in
+    *"${expected}"*) ;;
+    *)
+      printf 'expected metadata artifact to include %s, got: %s\n' "${expected}" "${metadata}" >&2
+      exit 1
+      ;;
+  esac
+done
+
+cdl_line="$(grep -n '"name": "cdl"' "${smoke_dir}/metadata/raster_info.json" | cut -d: -f1 | head -n 1)"
+field_line="$(grep -n '"name": "field"' "${smoke_dir}/metadata/raster_info.json" | cut -d: -f1 | head -n 1)"
+if [ -z "${cdl_line}" ] || [ -z "${field_line}" ]; then
+  printf 'could not inspect raster metadata ordering in %s\n' "${smoke_dir}/metadata/raster_info.json" >&2
+  exit 1
+fi
+if [ "${cdl_line}" -lt "${field_line}" ]; then
+  printf 'expected "field" metadata before "cdl" in %s\n' "${smoke_dir}/metadata/raster_info.json" >&2
+  exit 1
+fi
