@@ -1,6 +1,6 @@
 # 003 Persist Constraints With Work Items
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -58,7 +58,7 @@ Read these files first:
 - files that define `persistenceRecordsFromCompiledStageResults`
 - files that define `activateNextReadyWorkflowStage`
 - `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 

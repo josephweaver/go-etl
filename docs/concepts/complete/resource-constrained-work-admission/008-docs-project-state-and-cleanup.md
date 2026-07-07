@@ -1,6 +1,6 @@
 # 008 Docs Project State And Cleanup
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -32,7 +32,7 @@ Documentation should present this as a controller scheduling feature, not a work
 
 Read these files first:
 
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`
@@ -51,7 +51,7 @@ Read these files first:
 
 ## Allowed Documentation And Script Files
 
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 - `PROJECT_STATE.md`
 - `TARGET_STATE.md`
 - `docs/ARCHITECTURE_OVERVIEW.md`

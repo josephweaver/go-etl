@@ -1,6 +1,6 @@
 # 004 Operator Evaluator And Check Reader
 
-Status: implemented
+Status: Complete
 
 ## Objective
 
@@ -77,7 +77,7 @@ Read these files first:
 - `internal/persistence/store.go`
 - `internal/persistence/db_adapter_sqlite.go`
 - `internal/persistence/*_test.go`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 

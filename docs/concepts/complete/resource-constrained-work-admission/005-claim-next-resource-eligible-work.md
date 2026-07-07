@@ -1,6 +1,6 @@
 # 005 Claim Next Resource Eligible Work
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -57,7 +57,7 @@ Read these files first:
 - controller handler file containing `nextWorkHandler` if split from `main.go`
 - `cmd/worker` files that call `/work/next`
 - `internal/model/resource_constraint.go`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 

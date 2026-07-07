@@ -1,6 +1,6 @@
 # 006 Resource Status And Observability
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -57,7 +57,7 @@ Read these files first:
 - `cmd/demo-client` status rendering files
 - `docs/concepts/dependency-aware-workflows/011-surface-dependency-state-in-status-and-logs.md`
 - `docs/concepts/execution-observability/README.md`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 
