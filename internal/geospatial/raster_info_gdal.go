@@ -171,34 +171,34 @@ func resolveGDALDriverNameFromJSON(rawDoc map[string]any, rawDriver any) string 
 		}
 	}
 
-	if s := strings.TrimSpace(toString(rawDoc["driverShortName"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driverShortName")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["driver_short_name"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driver_short_name")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["driverName"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driverName")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["driver_name"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driver_name")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["driverLongName"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driverLongName")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["driver_long_name"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "driver_long_name")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["shortName"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "shortName")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["short_name"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "short_name")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["name"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "name")); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(toString(rawDoc["description"])); s != "" {
+	if s := strings.TrimSpace(lookupStringCaseInsensitive(rawDoc, "description")); s != "" {
 		return s
 	}
 
@@ -209,6 +209,24 @@ func resolveGDALDriverNameFromJSON(rawDoc map[string]any, rawDriver any) string 
 	}
 
 	return resolveGDALDriverName(gdalDriver{})
+}
+
+func lookupStringCaseInsensitive(value map[string]any, key string) string {
+	if value == nil {
+		return ""
+	}
+
+	if raw, ok := value[key]; ok {
+		return toString(raw)
+	}
+
+	lower := strings.ToLower(key)
+	for k, raw := range value {
+		if strings.EqualFold(k, key) || strings.ToLower(k) == lower {
+			return toString(raw)
+		}
+	}
+	return ""
 }
 
 func resolveGDALDriverNameFromMap(typed map[string]any) string {

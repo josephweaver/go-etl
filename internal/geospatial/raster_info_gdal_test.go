@@ -87,6 +87,19 @@ func TestCollectRasterMetadataErrorsForNonRaster(t *testing.T) {
 	}
 }
 
+func TestResolveGDALDriverNameFromJSONSupportsDriverShortName(t *testing.T) {
+	raw := map[string]any{
+		"description":     "/tmp/in.tif",
+		"driverShortName": "GTiff",
+		"driverLongName":  "GeoTIFF",
+	}
+
+	got := resolveGDALDriverNameFromJSON(raw, nil)
+	if got != "GTiff" {
+		t.Fatalf("driver = %q, want %q", got, "GTiff")
+	}
+}
+
 func createTestRaster(t *testing.T, dir, name string, rows string) string {
 	ascPath := filepath.Join(dir, fmt.Sprintf("%s.asc", name))
 	tifPath := filepath.Join(dir, fmt.Sprintf("%s.tif", name))
