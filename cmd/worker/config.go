@@ -8,11 +8,14 @@ import (
 )
 
 type Config struct {
-	LogDir           string `json:"log_dir"`
-	TmpDir           string `json:"tmp_dir"`
-	DataDir          string `json:"data_dir"`
-	ControllerURL    string `json:"controller_url"`
-	PythonExecutable string `json:"python_executable,omitempty"`
+	LogDir            string            `json:"log_dir"`
+	TmpDir            string            `json:"tmp_dir"`
+	DataDir           string            `json:"data_dir"`
+	ControllerURL     string            `json:"controller_url"`
+	PythonExecutable  string            `json:"python_executable,omitempty"`
+	AssetCacheDir     string            `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes     int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -38,6 +41,12 @@ func (c *Config) resolveRelativePaths(root string) {
 	c.LogDir = resolveRelativePath(root, c.LogDir)
 	c.TmpDir = resolveRelativePath(root, c.TmpDir)
 	c.DataDir = resolveRelativePath(root, c.DataDir)
+	if c.AssetCacheDir != "" {
+		c.AssetCacheDir = resolveRelativePath(root, c.AssetCacheDir)
+	}
+	for name, dataRoot := range c.DataLocationRoots {
+		c.DataLocationRoots[name] = resolveRelativePath(root, dataRoot)
+	}
 }
 
 func resolveRelativePath(root string, path string) string {
@@ -65,5 +74,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("controller url is required")
 	}
 
+	if c.MaxAssetBytes < 0 {
+		return fmt.Errorf("max asset bytes must be non-negative")
+	}
+
 	return nil
+}
+
+func (c Config) effectiveAssetCacheDir() string {
+	if c.AssetCacheDir != "" {
+		return c.AssetCacheDir
+	}
+	return filepath.Join(c.DataDir, "cache", "assets")
+}
+
+func (c Config) effectiveMaxAssetBytes() int64 {
+	if c.MaxAssetBytes > 0 {
+		return c.MaxAssetBytes
+	}
+	return 5 * 1024 * 1024
 }

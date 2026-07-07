@@ -43,6 +43,11 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 
+	dataAssetsPath, hasDataAssets, err := w.materializeDataAssets(item, staging.WorkDir)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
 	inputDocument := pythonInputDocument{WorkItem: item}
 	inputJSON, err := json.MarshalIndent(inputDocument, "", "  ")
 	if err != nil {
@@ -87,6 +92,9 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	)
 	if hasEnvironment {
 		command.Env = append(command.Env, "GOET_PYTHON_ENVIRONMENT_JSON="+environmentPath)
+	}
+	if hasDataAssets {
+		command.Env = append(command.Env, "GOET_DATA_ASSETS_JSON="+dataAssetsPath)
 	}
 
 	if err := command.Start(); err != nil {

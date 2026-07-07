@@ -425,6 +425,108 @@ func TestWorkerRunWorkItemRejectsInvalidPythonArgs(t *testing.T) {
 	}
 }
 
+func TestWorkerRunWorkItemPassesMaterializedDataAssetsToPython(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	dataRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"fixture": dataRoot}
+	writeFixture(t, dataRoot, "input.txt", "python asset")
+
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.environ["GOET_DATA_ASSETS_JSON"], "r", encoding="utf-8") as handle:
+    assets = json.load(handle)
+
+output = {
+    "asset_schema": assets["schema"],
+    "binding_name": assets["assets"][0]["binding_name"],
+    "local_path": assets["assets"][0]["local_path"],
+    "source_sha256": assets["assets"][0]["source_sha256"]
+}
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump(output, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	asset := localFileAsset("fixture", "input.txt", model.DataAssetCacheStrategyReference, "", nil)
+	item := pythonTestItem("python-assets-001", "attempt-assets-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"data_assets":       {Type: "data_assets", Value: []model.BoundDataAsset{asset}},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var output map[string]any
+	data, err := os.ReadFile(filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if err != nil {
+		t.Fatalf("read python output: %v", err)
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		t.Fatalf("decode python output: %v", err)
+	}
+	if output["asset_schema"] != model.MaterializedDataAssetManifestSchemaV1 {
+		t.Fatalf("unexpected asset schema: %#v", output)
+	}
+	if output["binding_name"] != "input_data" {
+		t.Fatalf("unexpected binding name: %#v", output)
+	}
+	if output["local_path"] != filepath.Join(dataRoot, "input.txt") {
+		t.Fatalf("unexpected local path: %#v", output)
+	}
+	if output["source_sha256"] != sha256Text("python asset") {
+		t.Fatalf("unexpected source hash: %#v", output)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "work", "data-assets.json")); err != nil {
+		t.Fatalf("expected materialized assets manifest: %v", err)
+	}
+}
+
+func TestWorkerRunWorkItemRejectsDataAssetBeforePythonStarts(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	dataRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"fixture": dataRoot}
+	writeFixture(t, dataRoot, "input.txt", "actual asset")
+
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.path.join(os.environ["GOET_DATA_DIR"], "python-ran.txt"), "w", encoding="utf-8") as handle:
+    handle.write("ran")
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({"ok": True}, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	wrongHash := sha256Text("wrong asset")
+	asset := localFileAsset("fixture", "input.txt", model.DataAssetCacheStrategyReference, "", &wrongHash)
+	item := pythonTestItem("python-assets-bad-001", "attempt-assets-bad-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"data_assets":       {Type: "data_assets", Value: []model.BoundDataAsset{asset}},
+	})
+
+	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "expected sha256") {
+		t.Fatalf("expected hash mismatch before python starts, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, "python-ran.txt")); !os.IsNotExist(err) {
+		t.Fatalf("python should not have created marker, stat err=%v", err)
+	}
+}
+
 func TestWorkerRunWorkItemRejectsNonZeroPythonExit(t *testing.T) {
 	requirePython3(t)
 
