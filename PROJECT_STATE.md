@@ -17,7 +17,7 @@ This is the concise current-state index for GOET. The pre-split root state file 
 ## Concept State
 
 - Data assets and materialized outputs: [`docs/concepts/data-assets-and-materialized-outputs/STATE.md`](docs/concepts/data-assets-and-materialized-outputs/STATE.md)
-- Geospatial worker plugins: [`docs/concepts/geospatial-worker-plugins/README.md`](docs/concepts/geospatial-worker-plugins/README.md)
+- Geospatial worker plugins: [`docs/concepts/geospatial-worker-plugins/README.md`](docs/concepts/geospatial-worker-plugins/README.md). Operational slice `002-geospatial-operation-contract` is implemented: `goet-geospatial --request <path> --response <path>` validates the `goet.geospatial/v1alpha1` request envelope, accepts worker-local input paths as opaque strings, rejects unsafe output artifact paths, supports `validate`/`version` no-op operations, and writes a deterministic compact result without GDAL dependencies.
 - Dependency-aware workflows: [`docs/concepts/dependency-aware-workflows/STATE.md`](docs/concepts/dependency-aware-workflows/STATE.md)
 - Resource-constrained work admission: [`docs/concepts/resource-constrained-work-admission/STATE.md`](docs/concepts/resource-constrained-work-admission/STATE.md)
 - Workflow execution persistence: [`docs/concepts/workflow-execution-persistence/STATE.md`](docs/concepts/workflow-execution-persistence/STATE.md)
