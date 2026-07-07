@@ -8,14 +8,15 @@ import (
 )
 
 type Config struct {
-	LogDir            string            `json:"log_dir"`
-	TmpDir            string            `json:"tmp_dir"`
-	DataDir           string            `json:"data_dir"`
-	ControllerURL     string            `json:"controller_url"`
-	PythonExecutable  string            `json:"python_executable,omitempty"`
-	AssetCacheDir     string            `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes     int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots map[string]string `json:"data_location_roots,omitempty"`
+	LogDir             string            `json:"log_dir"`
+	TmpDir             string            `json:"tmp_dir"`
+	DataDir            string            `json:"data_dir"`
+	ControllerURL      string            `json:"controller_url"`
+	PythonExecutable   string            `json:"python_executable,omitempty"`
+	SevenZipExecutable string            `json:"seven_zip_executable,omitempty"`
+	AssetCacheDir      string            `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes      int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots  map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -44,6 +45,9 @@ func (c *Config) resolveRelativePaths(root string) {
 	if c.AssetCacheDir != "" {
 		c.AssetCacheDir = resolveRelativePath(root, c.AssetCacheDir)
 	}
+	if c.SevenZipExecutable != "" && pathLooksRelative(c.SevenZipExecutable) {
+		c.SevenZipExecutable = resolveRelativePath(root, c.SevenZipExecutable)
+	}
 	for name, dataRoot := range c.DataLocationRoots {
 		c.DataLocationRoots[name] = resolveRelativePath(root, dataRoot)
 	}
@@ -55,6 +59,10 @@ func resolveRelativePath(root string, path string) string {
 	}
 
 	return filepath.Join(root, path)
+}
+
+func pathLooksRelative(path string) bool {
+	return !filepath.IsAbs(path) && (filepath.Dir(path) != "." || filepath.Base(path) != path)
 }
 
 func (c Config) Validate() error {

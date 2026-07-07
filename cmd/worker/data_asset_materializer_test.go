@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +15,13 @@ import (
 
 	"goetl/internal/model"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("GOET_FAKE_7Z") == "1" {
+		os.Exit(runFakeSevenZip())
+	}
+	os.Exit(m.Run())
+}
 
 func TestMaterializeDataAssetsReferencesLocalFileUnderNamedRoot(t *testing.T) {
 	worker, root := newDataAssetTestWorker(t)
@@ -225,6 +234,264 @@ func TestMaterializeDataAssetsRejectsExpectedHashDifferentFromImmutableCache(t *
 	}
 }
 
+func TestMaterializeDataAssetsExtractsZipSelectedPathFromLocalFile(t *testing.T) {
+	worker, root := newDataAssetTestWorker(t)
+	writeZipFixture(t, root, "fixture/archive.zip", map[string]string{
+		"2023_30m_cdls.tif": "tiny raster",
+		"ignored.txt":       "not selected",
+	})
+
+	asset := localFileAsset("fixture", "archive.zip", model.DataAssetCacheStrategyReference, "", nil)
+	asset.Kind = "raster_archive"
+	asset.Format = "geotiff_zip"
+	asset.Archive = &model.DataAssetArchive{
+		Type:   model.DataAssetArchiveTypeZip,
+		Select: []model.DataAssetArchiveSelect{{Member: "2023_30m_cdls.tif", As: "cdl.tif"}},
+		Expose: model.DataAssetArchiveExposeSelectedPath,
+	}
+
+	manifestPath, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work"))
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	manifest := readMaterializedManifest(t, manifestPath)
+	materialized := manifest.Assets[0]
+	wantLocalPath := filepath.Join(worker.Config.TmpDir, "work", "data-assets", "input_data", "extracted", "cdl.tif")
+	if materialized.LocalPath != wantLocalPath {
+		t.Fatalf("local path = %q, want %q", materialized.LocalPath, wantLocalPath)
+	}
+	if got := readString(t, materialized.LocalPath); got != "tiny raster" {
+		t.Fatalf("extracted contents = %q", got)
+	}
+	if materialized.ArchiveType != model.DataAssetArchiveTypeZip {
+		t.Fatalf("archive type = %q", materialized.ArchiveType)
+	}
+	if len(materialized.ArchiveMembers) != 1 {
+		t.Fatalf("archive members = %+v", materialized.ArchiveMembers)
+	}
+	if materialized.ArchiveMembers[0].Member != "2023_30m_cdls.tif" {
+		t.Fatalf("archive member = %+v", materialized.ArchiveMembers[0])
+	}
+	if materialized.ArchiveMembers[0].SHA256 != sha256Text("tiny raster") {
+		t.Fatalf("archive member sha256 = %q", materialized.ArchiveMembers[0].SHA256)
+	}
+	if materialized.SelectedSHA256 != sha256Text("tiny raster") {
+		t.Fatalf("selected sha256 = %q", materialized.SelectedSHA256)
+	}
+	if materialized.SelectedSizeBytes == nil || *materialized.SelectedSizeBytes != int64(len("tiny raster")) {
+		t.Fatalf("selected size = %v", materialized.SelectedSizeBytes)
+	}
+}
+
+func TestMaterializeDataAssetsExtractsZipSelectedDirectoryFromHTTP(t *testing.T) {
+	body := zipBytes(t, map[string]string{
+		"tile.hdr":    "header",
+		"tile.dat":    "data",
+		"ignored.txt": "ignored",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+
+	worker, _ := newDataAssetTestWorker(t)
+	asset := httpAsset(server.URL, "zip/cache-key", nil, nil)
+	asset.Kind = "raster_archive"
+	asset.Format = "fixture_zip"
+	asset.Archive = &model.DataAssetArchive{
+		Type: model.DataAssetArchiveTypeZip,
+		Select: []model.DataAssetArchiveSelect{
+			{Member: "tile.hdr", As: "tile.hdr"},
+			{Member: "tile.dat", As: "tile.dat"},
+		},
+		Expose: model.DataAssetArchiveExposeSelectedDirectory,
+	}
+
+	manifestPath, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work"))
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	manifest := readMaterializedManifest(t, manifestPath)
+	materialized := manifest.Assets[0]
+	wantDir := filepath.Join(worker.Config.effectiveAssetCacheDir(), "zip", "cache-key", "extracted")
+	if materialized.LocalPath != wantDir {
+		t.Fatalf("local path = %q, want %q", materialized.LocalPath, wantDir)
+	}
+	if readString(t, filepath.Join(wantDir, "tile.hdr")) != "header" {
+		t.Fatal("missing tile.hdr")
+	}
+	if readString(t, filepath.Join(wantDir, "tile.dat")) != "data" {
+		t.Fatal("missing tile.dat")
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, "ignored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ignored member should not be extracted, stat err=%v", err)
+	}
+	if len(materialized.ArchiveMembers) != 2 {
+		t.Fatalf("archive members = %+v", materialized.ArchiveMembers)
+	}
+	evidence, err := directoryManifestEvidence(wantDir)
+	if err != nil {
+		t.Fatalf("directory evidence: %v", err)
+	}
+	if materialized.SelectedSHA256 != evidence.sha256 {
+		t.Fatalf("directory selected sha256 = %q, want %q", materialized.SelectedSHA256, evidence.sha256)
+	}
+	if materialized.SelectedSizeBytes == nil || *materialized.SelectedSizeBytes != int64(len("header")+len("data")) {
+		t.Fatalf("directory selected size = %v", materialized.SelectedSizeBytes)
+	}
+}
+
+func TestMaterializeDataAssetsArchiveRequiredAndOptionalMembers(t *testing.T) {
+	worker, root := newDataAssetTestWorker(t)
+	writeZipFixture(t, root, "fixture/archive.zip", map[string]string{"present.txt": "present"})
+
+	requiredMissing := localFileAsset("fixture", "archive.zip", model.DataAssetCacheStrategyReference, "", nil)
+	requiredMissing.Archive = &model.DataAssetArchive{
+		Type:   model.DataAssetArchiveTypeZip,
+		Select: []model.DataAssetArchiveSelect{{Member: "missing.txt"}},
+		Expose: model.DataAssetArchiveExposeSelectedPath,
+	}
+	if _, _, err := worker.materializeDataAssets(dataAssetItem(requiredMissing), filepath.Join(worker.Config.TmpDir, "work-required")); err == nil || !strings.Contains(err.Error(), "required archive member") {
+		t.Fatalf("expected missing required error, got %v", err)
+	}
+
+	optional := false
+	optionalMissing := localFileAsset("fixture", "archive.zip", model.DataAssetCacheStrategyReference, "", nil)
+	optionalMissing.Archive = &model.DataAssetArchive{
+		Type: model.DataAssetArchiveTypeZip,
+		Select: []model.DataAssetArchiveSelect{
+			{Member: "present.txt"},
+			{Member: "optional.txt", Required: &optional},
+		},
+		Expose: model.DataAssetArchiveExposeSelectedDirectory,
+	}
+	manifestPath, _, err := worker.materializeDataAssets(dataAssetItem(optionalMissing), filepath.Join(worker.Config.TmpDir, "work-optional"))
+	if err != nil {
+		t.Fatalf("optional materialize: %v", err)
+	}
+	manifest := readMaterializedManifest(t, manifestPath)
+	if len(manifest.Assets[0].ArchiveMembers) != 1 || manifest.Assets[0].ArchiveMembers[0].Member != "present.txt" {
+		t.Fatalf("optional missing member should not be reported: %+v", manifest.Assets[0].ArchiveMembers)
+	}
+}
+
+func TestMaterializeDataAssetsRejectsUnsafeArchiveSelectorsAndZipEntries(t *testing.T) {
+	worker, root := newDataAssetTestWorker(t)
+	writeZipFixture(t, root, "fixture/archive.zip", map[string]string{"safe.txt": "safe"})
+	writeZipFixture(t, root, "fixture/malicious.zip", map[string]string{
+		"safe.txt":        "safe",
+		"../escape.txt":   "escape",
+		"nested\\bad.txt": "bad",
+	})
+
+	tests := []struct {
+		name    string
+		archive *model.DataAssetArchive
+		source  string
+		want    string
+	}{
+		{
+			name:   "unsafe member",
+			source: "archive.zip",
+			archive: &model.DataAssetArchive{
+				Type:   model.DataAssetArchiveTypeZip,
+				Select: []model.DataAssetArchiveSelect{{Member: "../escape.txt"}},
+				Expose: model.DataAssetArchiveExposeSelectedPath,
+			},
+			want: "data_assets[0]",
+		},
+		{
+			name:   "unsafe as",
+			source: "archive.zip",
+			archive: &model.DataAssetArchive{
+				Type:   model.DataAssetArchiveTypeZip,
+				Select: []model.DataAssetArchiveSelect{{Member: "safe.txt", As: "/absolute.txt"}},
+				Expose: model.DataAssetArchiveExposeSelectedPath,
+			},
+			want: "data_assets[0]",
+		},
+		{
+			name:   "malicious zip entry",
+			source: "malicious.zip",
+			archive: &model.DataAssetArchive{
+				Type:   model.DataAssetArchiveTypeZip,
+				Select: []model.DataAssetArchiveSelect{{Member: "safe.txt", As: "safe.txt"}},
+				Expose: model.DataAssetArchiveExposeSelectedPath,
+			},
+			want: "zip entry",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			asset := localFileAsset("fixture", tt.source, model.DataAssetCacheStrategyReference, "", nil)
+			asset.Archive = tt.archive
+			_, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work-"+tt.name))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestMaterializeDataAssetsSevenZipRequiresConfiguredExtractor(t *testing.T) {
+	worker, root := newDataAssetTestWorker(t)
+	writeFixture(t, root, "fixture/release.7z", "not a real archive")
+
+	asset := localFileAsset("fixture", "release.7z", model.DataAssetCacheStrategyReference, "", nil)
+	asset.Archive = &model.DataAssetArchive{
+		Type:   model.DataAssetArchiveTypeSevenZip,
+		Select: []model.DataAssetArchiveSelect{{Member: "tile.hdr", As: "tile.hdr"}},
+		Expose: model.DataAssetArchiveExposeSelectedDirectory,
+	}
+	if _, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work")); err == nil || !strings.Contains(err.Error(), "seven_zip_executable") {
+		t.Fatalf("expected missing seven_zip_executable error, got %v", err)
+	}
+}
+
+func TestMaterializeDataAssetsSevenZipUsesConfiguredExecutableWithStructuredArgs(t *testing.T) {
+	worker, root := newDataAssetTestWorker(t)
+	argsPath := filepath.Join(worker.Config.TmpDir, "fake-7z-args.json")
+	t.Setenv("GOET_FAKE_7Z", "1")
+	t.Setenv("GOET_FAKE_7Z_ARGS_PATH", argsPath)
+	worker.Config.SevenZipExecutable = os.Args[0]
+	writeFixture(t, root, "fixture/release.7z", "fake archive input")
+
+	asset := localFileAsset("fixture", "release.7z", model.DataAssetCacheStrategyReference, "", nil)
+	asset.Archive = &model.DataAssetArchive{
+		Type:   model.DataAssetArchiveTypeSevenZip,
+		Select: []model.DataAssetArchiveSelect{{Member: "tiles/tile.hdr", As: "tile.hdr"}},
+		Expose: model.DataAssetArchiveExposeSelectedDirectory,
+	}
+
+	manifestPath, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work"))
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	var args []string
+	data, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake 7z args: %v", err)
+	}
+	if err := json.Unmarshal(data, &args); err != nil {
+		t.Fatalf("decode fake 7z args: %v", err)
+	}
+	if len(args) != 5 || args[0] != "x" || args[1] != "-y" || !strings.HasPrefix(args[2], "-o") || args[4] != "tiles/tile.hdr" {
+		t.Fatalf("unexpected fake 7z args: %#v", args)
+	}
+
+	manifest := readMaterializedManifest(t, manifestPath)
+	selectedPath := filepath.Join(worker.Config.TmpDir, "work", "data-assets", "input_data", "extracted", "tile.hdr")
+	if manifest.Assets[0].LocalPath != filepath.Dir(selectedPath) {
+		t.Fatalf("local path = %q, want selected directory", manifest.Assets[0].LocalPath)
+	}
+	if got := readString(t, selectedPath); got != "fake:tiles/tile.hdr" {
+		t.Fatalf("selected output = %q", got)
+	}
+}
+
 func newDataAssetTestWorker(t *testing.T) (Worker, string) {
 	t.Helper()
 	worker := newTestWorker(t)
@@ -324,6 +591,36 @@ func writeFixture(t *testing.T, root string, rel string, content string) {
 	}
 }
 
+func writeZipFixture(t *testing.T, root string, rel string, files map[string]string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create zip fixture parent: %v", err)
+	}
+	if err := os.WriteFile(path, zipBytes(t, files), 0644); err != nil {
+		t.Fatalf("write zip fixture %s: %v", path, err)
+	}
+}
+
+func zipBytes(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for name, contents := range files {
+		file, err := writer.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := file.Write([]byte(contents)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+	return buffer.Bytes()
+}
+
 func readString(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -358,4 +655,40 @@ func readMaterializedManifest(t *testing.T, path string) model.MaterializedDataA
 func sha256Text(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func runFakeSevenZip() int {
+	args := os.Args[1:]
+	data, err := json.Marshal(args)
+	if err != nil {
+		return 2
+	}
+	if path := os.Getenv("GOET_FAKE_7Z_ARGS_PATH"); path != "" {
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			return 2
+		}
+	}
+
+	var root string
+	sourceIndex := -1
+	for i, arg := range args {
+		if strings.HasPrefix(arg, "-o") {
+			root = strings.TrimPrefix(arg, "-o")
+			sourceIndex = i + 1
+			break
+		}
+	}
+	if root == "" || sourceIndex < 0 || sourceIndex >= len(args) {
+		return 2
+	}
+	for _, member := range args[sourceIndex+1:] {
+		path := filepath.Join(root, filepath.FromSlash(member))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return 2
+		}
+		if err := os.WriteFile(path, []byte("fake:"+member), 0644); err != nil {
+			return 2
+		}
+	}
+	return 0
 }

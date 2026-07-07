@@ -16,6 +16,7 @@ func TestLoadConfig(t *testing.T) {
 		"data_dir": "data",
 		"controller_url": "https://controller.local",
 		"python_executable": "python3",
+		"seven_zip_executable": "tools/7z",
 		"asset_cache_dir": "asset-cache",
 		"max_asset_bytes": 1024,
 		"data_location_roots": {
@@ -50,6 +51,10 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.PythonExecutable != "python3" {
 		t.Fatalf("unexpected python executable: %q", config.PythonExecutable)
+	}
+
+	if config.SevenZipExecutable != filepath.Join(root, "tools", "7z") {
+		t.Fatalf("unexpected seven zip executable: %q", config.SevenZipExecutable)
 	}
 
 	if config.AssetCacheDir != filepath.Join(root, "asset-cache") {

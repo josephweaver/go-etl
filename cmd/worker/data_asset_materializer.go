@@ -20,7 +20,8 @@ import (
 const workerCacheManifestSchemaV1 = "goet/worker-asset-cache/v1"
 
 type assetMaterializer struct {
-	config Config
+	config  Config
+	workDir string
 }
 
 type assetEvidence struct {
@@ -49,7 +50,7 @@ func (w Worker) materializeDataAssets(item model.WorkItem, workDir string) (stri
 		return "", false, nil
 	}
 
-	materializer := assetMaterializer{config: w.Config}
+	materializer := assetMaterializer{config: w.Config, workDir: workDir}
 	manifest := model.MaterializedDataAssetManifest{
 		Schema: model.MaterializedDataAssetManifestSchemaV1,
 		Assets: make([]model.MaterializedDataAsset, 0, len(assets)),
@@ -107,14 +108,22 @@ func (m assetMaterializer) materialize(asset model.BoundDataAsset) (model.Materi
 		return model.MaterializedDataAsset{}, err
 	}
 
+	var materialized model.MaterializedDataAsset
 	switch strategy {
 	case model.DataAssetCacheStrategyReference:
-		return m.materializeReference(asset)
+		materialized, err = m.materializeReference(asset)
 	case model.DataAssetCacheStrategyWorkerCache:
-		return m.materializeWorkerCache(asset)
+		materialized, err = m.materializeWorkerCache(asset)
 	default:
 		return model.MaterializedDataAsset{}, fmt.Errorf("unsupported materialization strategy %q", strategy)
 	}
+	if err != nil {
+		return model.MaterializedDataAsset{}, err
+	}
+	if asset.Archive == nil {
+		return materialized, nil
+	}
+	return m.extractArchive(asset, materialized)
 }
 
 func materializationStrategy(asset model.BoundDataAsset) (string, error) {
@@ -204,6 +213,49 @@ func (m assetMaterializer) materializeWorkerCache(asset model.BoundDataAsset) (m
 	}
 
 	return materializedAsset(asset, sourcePath, model.DataAssetCacheStrategyWorkerCache, cacheKey, &immutable, evidence), nil
+}
+
+func (m assetMaterializer) extractArchive(asset model.BoundDataAsset, source model.MaterializedDataAsset) (model.MaterializedDataAsset, error) {
+	extractionRoot, err := m.archiveExtractionRoot(asset, source)
+	if err != nil {
+		return model.MaterializedDataAsset{}, err
+	}
+
+	result, err := extractArchiveSelection(archiveExtractionRequest{
+		sourcePath:          source.LocalPath,
+		extractionRoot:      extractionRoot,
+		archive:             *asset.Archive,
+		sevenZipExecutable:  m.config.SevenZipExecutable,
+		maxSelectedFileSize: m.config.effectiveMaxAssetBytes(),
+	})
+	if err != nil {
+		return model.MaterializedDataAsset{}, err
+	}
+
+	source.LocalPath = result.localPath
+	source.ArchiveType = asset.Archive.Type
+	source.ArchiveMembers = result.members
+	source.SelectedSizeBytes = &result.selected.size
+	source.SelectedSHA256 = result.selected.sha256
+	return source, nil
+}
+
+func (m assetMaterializer) archiveExtractionRoot(asset model.BoundDataAsset, source model.MaterializedDataAsset) (string, error) {
+	if source.CacheKey != "" {
+		cacheKey, err := cleanDataRelativePath(source.CacheKey)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(m.config.effectiveAssetCacheDir(), filepath.FromSlash(cacheKey), "extracted"), nil
+	}
+	if strings.TrimSpace(m.workDir) == "" {
+		return "", fmt.Errorf("archive extraction work directory is not configured")
+	}
+	binding, err := cleanDataRelativePath(asset.BindingName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(m.workDir, "data-assets", filepath.FromSlash(binding), "extracted"), nil
 }
 
 func (m assetMaterializer) acquireSource(asset model.BoundDataAsset, destination string) (assetEvidence, error) {
