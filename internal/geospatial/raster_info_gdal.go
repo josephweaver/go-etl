@@ -21,7 +21,7 @@ const rasterInfoPathRole = "input"
 var epsgRegex = regexp.MustCompile(`(?i)EPSG[" ]*,?[" ]*([0-9]+)|(?i)ID\["EPSG",\s*([0-9]+)\]`)
 
 type gdalInfo struct {
-	Driver       gdalDriver `json:"driver"`
+	Driver       any        `json:"driver"`
 	Size         []int      `json:"size"`
 	Bands        []gdalBand `json:"bands"`
 	GeoTransform []float64  `json:"geoTransform"`
@@ -139,7 +139,7 @@ func parseGDALInfo(info gdalInfo, rawDoc map[string]any) (rasterInfo, error) {
 		return rasterInfo{}, fmt.Errorf("unexpected geoTransform %v", info.GeoTransform)
 	}
 
-	driverName := resolveGDALDriverNameFromJSON(rawDoc["driver"], info.Driver)
+	driverName := resolveGDALDriverNameFromJSON(rawDoc, info.Driver)
 	return rasterInfo{
 		Driver:       driverName,
 		Width:        width,
@@ -159,38 +159,11 @@ func resolveGDALDriverName(driver gdalDriver) string {
 	return strings.TrimSpace(driver.Description)
 }
 
-func resolveGDALDriverNameFromJSON(rawDriver any, fallback gdalDriver) string {
+func resolveGDALDriverNameFromJSON(rawDoc map[string]any, rawDriver any) string {
 	switch typed := rawDriver.(type) {
 	case map[string]any:
-		if name, ok := typed["name"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
-		}
-		if name, ok := typed["shortName"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
-		}
-		if name, ok := typed["short_name"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
-		}
-		if name, ok := typed["description"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
-		}
-		if name, ok := typed["longName"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
-		}
-		if name, ok := typed["long_name"]; ok {
-			if s := strings.TrimSpace(toString(name)); s != "" {
-				return s
-			}
+		if name := resolveGDALDriverNameFromMap(typed); name != "" {
+			return name
 		}
 	case string:
 		if s := strings.TrimSpace(typed); s != "" {
@@ -198,7 +171,55 @@ func resolveGDALDriverNameFromJSON(rawDriver any, fallback gdalDriver) string {
 		}
 	}
 
-	return resolveGDALDriverName(fallback)
+	if s := strings.TrimSpace(toString(rawDoc["driverShortName"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["driver_short_name"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["driverName"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["driver_name"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["driverLongName"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["driver_long_name"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["shortName"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["short_name"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["name"])); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(toString(rawDoc["description"])); s != "" {
+		return s
+	}
+
+	if typed, ok := rawDoc["driver"].(map[string]any); ok {
+		if nested := resolveGDALDriverNameFromMap(typed); nested != "" {
+			return nested
+		}
+	}
+
+	return resolveGDALDriverName(gdalDriver{})
+}
+
+func resolveGDALDriverNameFromMap(typed map[string]any) string {
+	for _, key := range []string{"name", "shortName", "short_name", "description", "longName", "long_name", "value"} {
+		if raw, ok := typed[key]; ok {
+			if s := strings.TrimSpace(toString(raw)); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 func toString(value any) string {
