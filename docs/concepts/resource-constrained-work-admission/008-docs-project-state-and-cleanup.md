@@ -1,6 +1,6 @@
 # 008 Docs Project State And Cleanup
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 
@@ -38,8 +38,8 @@ Read these files first:
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/controller/README.md`
 - `cmd/demo-client/README.md`
-- `docs/concepts/dependency-aware-workflows/README.md`
-- `docs/concepts/execution-observability/README.md`
+- `docs/concepts/complete/dependency-aware-workflows/README.md`
+- `docs/concepts/complete/execution-observability/README.md`
 
 ## Allowed Production Files
 
@@ -57,7 +57,8 @@ Read these files first:
 - `docs/ARCHITECTURE_OVERVIEW.md`
 - `cmd/controller/README.md`
 - `cmd/demo-client/README.md`
-- `scripts/resource-constrained-work-admission-smoke.ps1`
+- `scripts/dependency-aware-workflow-smoke.ps1`
+- `scripts/python-workitem-smoke.ps1`
 
 ## Out Of Scope
 
@@ -75,6 +76,13 @@ Read these files first:
 - The concept README tracker marks slices 001-008 implemented after completion.
 - Any remaining deferred topics are listed clearly, such as priorities, reservations, real runtime enforcement, or multi-controller resource leases.
 - Final tests and smoke commands are listed in the implementation report.
+
+### Implementation Report
+
+- Tests executed for slice 008: none added; no production behavior changed.
+- Smoke/verification commands used for this concept’s final verification:
+  - `powershell -NoProfile -File scripts/dependency-aware-workflow-smoke.ps1`
+  - `powershell -NoProfile -File scripts/python-workitem-smoke.ps1`
 
 ## Notes
 
