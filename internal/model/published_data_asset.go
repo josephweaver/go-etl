@@ -17,10 +17,22 @@ type PublishedDataAssetTarget struct {
 	Metadata        map[string]any           `json:"metadata,omitempty"`
 }
 
+type PublishedDataAsset struct {
+	Name            string `json:"name"`
+	FromArtifact    string `json:"from_artifact"`
+	StorageScope    string `json:"storage_scope"`
+	LocationName    string `json:"location_name"`
+	Path            string `json:"path"`
+	SizeBytes       *int64 `json:"size_bytes,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	OverwritePolicy string `json:"overwrite_policy,omitempty"`
+}
+
 type BoundPublishTarget struct {
 	Name            string            `json:"name"`
 	FromArtifact    string            `json:"from_artifact"`
-	TargetName      string            `json:"target_name"`
+	TargetName      string            `json:"target_name,omitempty"`
+	Target          string            `json:"target,omitempty"`
 	Location        DataAssetLocation `json:"location"`
 	OverwritePolicy string            `json:"overwrite_policy,omitempty"`
 	Parameters      map[string]any    `json:"parameters,omitempty"`
@@ -91,13 +103,45 @@ func (target BoundPublishTarget) Validate() error {
 	if err := validateDataName(target.FromArtifact, "publish binding from_artifact"); err != nil {
 		return err
 	}
-	if err := validateDataName(target.TargetName, "publish binding target_name"); err != nil {
+	effectiveTargetName := target.TargetName
+	if effectiveTargetName == "" {
+		effectiveTargetName = target.Target
+	}
+	if target.TargetName != "" && target.Target != "" && target.TargetName != target.Target {
+		return fmt.Errorf("publish binding target_name does not match target")
+	}
+	if err := validateDataName(effectiveTargetName, "publish binding target_name"); err != nil {
 		return err
 	}
 	if err := target.Location.Validate(); err != nil {
 		return err
 	}
 	return validateOverwritePolicy(target.OverwritePolicy)
+}
+
+func (asset PublishedDataAsset) Validate() error {
+	if err := validateDataName(asset.Name, "published data asset name"); err != nil {
+		return err
+	}
+	if err := validateDataName(asset.FromArtifact, "published data asset from_artifact"); err != nil {
+		return err
+	}
+	if asset.StorageScope != DataLocationTypeRegistered {
+		return fmt.Errorf("unsupported published data asset storage scope %q", asset.StorageScope)
+	}
+	if err := validateDataName(asset.LocationName, "published data asset location_name"); err != nil {
+		return err
+	}
+	if _, err := ValidateArtifactRelativePath(asset.Path); err != nil {
+		return err
+	}
+	if err := validateOptionalSize("published data asset size_bytes", asset.SizeBytes); err != nil {
+		return err
+	}
+	if err := validateOptionalSHA256("published data asset sha256", asset.SHA256); err != nil {
+		return err
+	}
+	return validateOverwritePolicy(asset.OverwritePolicy)
 }
 
 func validateOverwritePolicy(policy string) error {

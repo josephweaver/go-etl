@@ -1,6 +1,6 @@
 # 010 Published Data Asset Copy To Named Location
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

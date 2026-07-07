@@ -472,6 +472,20 @@ func TestDataAssetJSONRoundTripsPreserveContracts(t *testing.T) {
 	if err := decodedPublish.Validate(); err != nil {
 		t.Fatalf("publish binding Validate() error = %v", err)
 	}
+
+	published := PublishedDataAsset{
+		Name:            "composition_publish",
+		FromArtifact:    "composition",
+		StorageScope:    DataLocationTypeRegistered,
+		LocationName:    "published",
+		Path:            "composition/year=2024/composition.csv",
+		OverwritePolicy: PublishedDataAssetOverwriteFailIfExists,
+	}
+	var decodedPublished PublishedDataAsset
+	mustRoundTrip(t, published, &decodedPublished)
+	if err := decodedPublished.Validate(); err != nil {
+		t.Fatalf("published data asset Validate() error = %v", err)
+	}
 }
 
 func mustRoundTrip(t *testing.T, input any, output any) {

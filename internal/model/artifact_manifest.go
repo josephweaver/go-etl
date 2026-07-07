@@ -13,15 +13,16 @@ const (
 )
 
 type ArtifactManifest struct {
-	Schema       string               `json:"schema"`
-	RunID        string               `json:"run_id,omitempty"`
-	StageIndex   *int                 `json:"stage_index,omitempty"`
-	StepIndex    *int                 `json:"step_index,omitempty"`
-	WorkItemID   string               `json:"work_item_id,omitempty"`
-	AttemptID    string               `json:"attempt_id,omitempty"`
-	StorageScope string               `json:"storage_scope"`
-	Artifacts    []ArtifactDescriptor `json:"artifacts"`
-	ScriptOutput any                  `json:"script_output,omitempty"`
+	Schema          string               `json:"schema"`
+	RunID           string               `json:"run_id,omitempty"`
+	StageIndex      *int                 `json:"stage_index,omitempty"`
+	StepIndex       *int                 `json:"step_index,omitempty"`
+	WorkItemID      string               `json:"work_item_id,omitempty"`
+	AttemptID       string               `json:"attempt_id,omitempty"`
+	StorageScope    string               `json:"storage_scope"`
+	Artifacts       []ArtifactDescriptor `json:"artifacts"`
+	PublishedAssets []PublishedDataAsset `json:"published_assets,omitempty"`
+	ScriptOutput    any                  `json:"script_output,omitempty"`
 }
 
 type ArtifactDescriptor struct {
@@ -65,6 +66,11 @@ func (manifest ArtifactManifest) Validate() error {
 	for i, artifact := range manifest.Artifacts {
 		if err := artifact.Validate(); err != nil {
 			return fmt.Errorf("artifact %d: %w", i, err)
+		}
+	}
+	for i, asset := range manifest.PublishedAssets {
+		if err := asset.Validate(); err != nil {
+			return fmt.Errorf("published asset %d: %w", i, err)
 		}
 	}
 	return nil

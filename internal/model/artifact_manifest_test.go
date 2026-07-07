@@ -44,6 +44,37 @@ func TestArtifactManifestValidateAcceptsValidDirectoryArtifact(t *testing.T) {
 	}
 }
 
+func TestArtifactManifestValidateAcceptsPublishedAssets(t *testing.T) {
+	sizeBytes := int64(18)
+	manifest := ArtifactManifest{
+		Schema:       ArtifactManifestSchemaV1,
+		StorageScope: "worker_data",
+		Artifacts: []ArtifactDescriptor{
+			{
+				Name: "summary",
+				Kind: ArtifactKindFile,
+				Path: "reports/summary.json",
+			},
+		},
+		PublishedAssets: []PublishedDataAsset{
+			{
+				Name:            "summary_publish",
+				FromArtifact:    "summary",
+				StorageScope:    DataLocationTypeRegistered,
+				LocationName:    "published_data",
+				Path:            "reports/summary.json",
+				SizeBytes:       &sizeBytes,
+				SHA256:          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				OverwritePolicy: PublishedDataAssetOverwriteFailIfExists,
+			},
+		},
+	}
+
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestArtifactManifestValidateRejectsInvalidManifestOrDescriptor(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -105,6 +136,24 @@ func TestArtifactManifestValidateRejectsInvalidManifestOrDescriptor(t *testing.T
 				StorageScope: "attempt",
 				Artifacts: []ArtifactDescriptor{
 					{Name: "summary", Kind: "symlink", Path: "summary.json"},
+				},
+			},
+		},
+		{
+			name: "invalid published asset",
+			manifest: ArtifactManifest{
+				StorageScope: "attempt",
+				Artifacts: []ArtifactDescriptor{
+					{Name: "summary", Kind: ArtifactKindFile, Path: "summary.json"},
+				},
+				PublishedAssets: []PublishedDataAsset{
+					{
+						Name:         "bad publish",
+						FromArtifact: "summary",
+						StorageScope: DataLocationTypeRegistered,
+						LocationName: "published_data",
+						Path:         "summary.json",
+					},
 				},
 			},
 		},
