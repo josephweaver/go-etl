@@ -1,6 +1,6 @@
 # 005 Data Location, Provider, and Binding Model
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

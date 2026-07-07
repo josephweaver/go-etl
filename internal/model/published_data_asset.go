@@ -1,0 +1,110 @@
+package model
+
+import (
+	"fmt"
+	"strings"
+)
+
+const PublishedDataAssetOverwriteFailIfExists = "fail_if_exists"
+
+type PublishedDataAssetTarget struct {
+	Name            string                   `json:"name"`
+	Kind            string                   `json:"kind"`
+	Format          string                   `json:"format,omitempty"`
+	Location        DataLocationPathTemplate `json:"location"`
+	Parameters      []string                 `json:"parameters,omitempty"`
+	OverwritePolicy string                   `json:"overwrite_policy,omitempty"`
+	Metadata        map[string]any           `json:"metadata,omitempty"`
+}
+
+type BoundPublishTarget struct {
+	Name            string            `json:"name"`
+	FromArtifact    string            `json:"from_artifact"`
+	TargetName      string            `json:"target_name"`
+	Location        DataAssetLocation `json:"location"`
+	OverwritePolicy string            `json:"overwrite_policy,omitempty"`
+	Parameters      map[string]any    `json:"parameters,omitempty"`
+	Metadata        map[string]any    `json:"metadata,omitempty"`
+}
+
+func (target PublishedDataAssetTarget) Validate() error {
+	if err := validateDataName(target.Name, "published data asset target name"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(target.Kind) == "" {
+		return fmt.Errorf("published data asset target kind is required")
+	}
+	if err := target.Location.Validate(); err != nil {
+		return err
+	}
+	declared, err := validateParameterNames(target.Parameters)
+	if err != nil {
+		return err
+	}
+	for _, name := range templateParameterNames(target.Location.PathTemplate) {
+		if _, ok := declared[name]; !ok {
+			return fmt.Errorf("published data asset location path_template references undeclared parameter %q", name)
+		}
+	}
+	return validateOverwritePolicy(target.OverwritePolicy)
+}
+
+func (target PublishedDataAssetTarget) Bind(name, fromArtifact string, parameters map[string]any) (BoundPublishTarget, error) {
+	if err := target.Validate(); err != nil {
+		return BoundPublishTarget{}, err
+	}
+	if err := validateDataName(name, "publish binding name"); err != nil {
+		return BoundPublishTarget{}, err
+	}
+	if err := validateDataName(fromArtifact, "publish binding from_artifact"); err != nil {
+		return BoundPublishTarget{}, err
+	}
+	for _, parameterName := range target.Parameters {
+		value, ok := parameters[parameterName]
+		if !ok || value == nil {
+			return BoundPublishTarget{}, fmt.Errorf("required parameter %q is missing", parameterName)
+		}
+	}
+	bound := BoundPublishTarget{
+		Name:            name,
+		FromArtifact:    fromArtifact,
+		TargetName:      target.Name,
+		OverwritePolicy: target.OverwritePolicy,
+		Parameters:      parameters,
+		Metadata:        target.Metadata,
+		Location: DataAssetLocation{
+			Type:         DataProviderRegisteredLocation,
+			LocationName: target.Location.Name,
+			Path:         renderTemplate(target.Location.PathTemplate, parameters),
+		},
+	}
+	if err := bound.Validate(); err != nil {
+		return BoundPublishTarget{}, err
+	}
+	return bound, nil
+}
+
+func (target BoundPublishTarget) Validate() error {
+	if err := validateDataName(target.Name, "publish binding name"); err != nil {
+		return err
+	}
+	if err := validateDataName(target.FromArtifact, "publish binding from_artifact"); err != nil {
+		return err
+	}
+	if err := validateDataName(target.TargetName, "publish binding target_name"); err != nil {
+		return err
+	}
+	if err := target.Location.Validate(); err != nil {
+		return err
+	}
+	return validateOverwritePolicy(target.OverwritePolicy)
+}
+
+func validateOverwritePolicy(policy string) error {
+	switch policy {
+	case "", PublishedDataAssetOverwriteFailIfExists:
+		return nil
+	default:
+		return fmt.Errorf("unsupported published data asset overwrite policy %q", policy)
+	}
+}
