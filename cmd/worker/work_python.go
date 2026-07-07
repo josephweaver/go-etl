@@ -47,6 +47,10 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	if err != nil {
 		return WorkEvidence{}, err
 	}
+	args, err = resolvePythonArgvBindings(args, dataAssetsPath, staging.WorkDir)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
 
 	inputDocument := pythonInputDocument{WorkItem: item}
 	inputJSON, err := json.MarshalIndent(inputDocument, "", "  ")
@@ -85,6 +89,7 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		"GOET_OUTPUT_JSON="+outputPath,
 		"GOET_SOURCE_DIR="+staging.SourceDir,
 		"GOET_WORK_DIR="+staging.WorkDir,
+		"GOET_ARTIFACT_DIR="+staging.WorkDir,
 		"GOET_DATA_DIR="+w.Config.DataDir,
 		"GOET_TMP_DIR="+w.Config.TmpDir,
 		"GOET_LOG_DIR="+staging.LogDir,

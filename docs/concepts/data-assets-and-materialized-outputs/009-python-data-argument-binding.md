@@ -1,6 +1,6 @@
 # 009 Python Data Argument Binding
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
