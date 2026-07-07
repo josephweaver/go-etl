@@ -210,7 +210,7 @@ The plugin result should be compact:
 | `001-gdal-worker-image-baseline.md` | Proposed | GPT-5.3-Codex-Spark | Container/package/test/doc work with narrow behavior. |
 | `002-geospatial-operation-contract.md` | implemented | GPT-5.5 high reasoning | Defines the long-lived plugin boundary. |
 | `003-raster-info-and-bounding-boxes.md` | implemented | GPT-5.3-Codex-Spark | Read-only metadata operation with small fixtures. |
-| `004-reproject-and-align-raster.md` | Proposed | GPT-5.5 high reasoning | CRS/grid/resampling semantics are correctness-sensitive. |
+| `004-reproject-and-align-raster.md` | implemented | GPT-5.5 high reasoning | CRS/grid/resampling semantics are correctness-sensitive. |
 | `005-stack-aligned-rasters.md` | Proposed | GPT-5.3-Codex-Spark | Mechanical after alignment validator exists. |
 | `006-raster-pair-value-counts.md` | Proposed | GPT-5.5 high reasoning | Core product algorithm; chunking and numeric invariants matter. |
 | `007-crop-by-polygons.md` | Proposed | GPT-5.5 high reasoning | Vector/raster CRS, cutline, and output explosion risks. |

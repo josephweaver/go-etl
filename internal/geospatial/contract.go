@@ -6,9 +6,11 @@ const (
 	RequestKind = "GeospatialOperationRequest"
 	ResultKind  = "GeospatialOperationResult"
 
-	OperationValidate   = "validate"
-	OperationVersion    = "version"
-	OperationRasterInfo = "raster_info"
+	OperationValidate     = "validate"
+	OperationVersion      = "version"
+	OperationRasterInfo   = "raster_info"
+	OperationReprojectCRS = "reproject_crs"
+	OperationAlignToGrid  = "align_to_grid"
 )
 
 type OperationRequest struct {

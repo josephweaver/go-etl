@@ -261,19 +261,20 @@ type rasterInfo struct {
 
 func parseEPSGFromWKT(wkt string) int {
 	matches := epsgRegex.FindAllStringSubmatch(wkt, -1)
+	epsg := 0
 	for _, match := range matches {
 		for _, candidate := range match[1:] {
 			if candidate == "" {
 				continue
 			}
-			epsg, err := strconv.Atoi(candidate)
+			value, err := strconv.Atoi(candidate)
 			if err != nil {
 				continue
 			}
-			return epsg
+			epsg = value
 		}
 	}
-	return 0
+	return epsg
 }
 
 func computeBounds(gt []float64, width int, height int) (RasterBounds, error) {

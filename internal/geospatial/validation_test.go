@@ -76,6 +76,67 @@ func TestOperationRequestValidateRequiresInputsForRasterInfo(t *testing.T) {
 	}
 }
 
+func TestOperationRequestValidateAcceptsAlignToGridRequest(t *testing.T) {
+	request := validAlignmentRequest()
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestOperationRequestValidateAcceptsReprojectCRSRequest(t *testing.T) {
+	request := validAlignmentRequest()
+	request.Operation = OperationReprojectCRS
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestOperationRequestValidateAcceptsAlignmentLikeRasterRequest(t *testing.T) {
+	request := validAlignmentRequest()
+	request.Options = map[string]any{
+		"like_raster": "/worker/data/yanroy_field_grid.tif",
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestOperationRequestValidateRejectsIncompleteAlignmentGrid(t *testing.T) {
+	request := validAlignmentRequest()
+	request.Options = map[string]any{
+		"target_crs":   "EPSG:5070",
+		"target_width": 100,
+	}
+	err := request.Validate()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "explicit target grid requires") {
+		t.Fatalf("Validate() error = %v, want incomplete target grid context", err)
+	}
+}
+
+func TestOperationRequestValidateRejectsUnsafeCategoricalResamplingByDefault(t *testing.T) {
+	request := validAlignmentRequest()
+	request.Options["resampling"] = "bilinear"
+	err := request.Validate()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "unsafe for categorical rasters") {
+		t.Fatalf("Validate() error = %v, want categorical resampling context", err)
+	}
+}
+
+func TestOperationRequestValidateAllowsExplicitUnsafeResamplingOptIn(t *testing.T) {
+	request := validAlignmentRequest()
+	request.Options["resampling"] = "bilinear"
+	request.Options["allow_unsafe_resampling"] = true
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestOperationRequestValidateRejectsUnsafeOutputPaths(t *testing.T) {
 	cases := []struct {
 		name string
@@ -101,6 +162,27 @@ func TestOperationRequestValidateRejectsUnsafeOutputPaths(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want output path context", err)
 			}
 		})
+	}
+}
+
+func validAlignmentRequest() OperationRequest {
+	return OperationRequest{
+		APIVersion: APIVersionV1Alpha1,
+		Kind:       RequestKind,
+		Operation:  OperationAlignToGrid,
+		Inputs: map[string]InputSpec{
+			"source_raster": {Path: "/worker/data/cdl.tif", Band: intPtr(1), Nodata: intPtr(0)},
+		},
+		Outputs: map[string]string{
+			"raster_tif":    "aligned/cdl.tif",
+			"metadata_json": "aligned/cdl.metadata.json",
+		},
+		Options: map[string]any{
+			"target_crs":       "EPSG:5070",
+			"target_transform": []float64{0, 30, 0, 0, 0, -30},
+			"target_width":     100,
+			"target_height":    100,
+		},
 	}
 }
 

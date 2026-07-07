@@ -93,6 +93,72 @@ func TestRunWritesRasterInfoMetadataArtifact(t *testing.T) {
 	}
 }
 
+func TestRunAlignToGridWritesRasterAndMetadataArtifacts(t *testing.T) {
+	skipIfGDALMissing(t)
+	dir := t.TempDir()
+	responsePath := filepath.Join(dir, "result.json")
+	inputPath := createTestRasterForCli(t, dir)
+
+	requestJSON := `{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "align_to_grid",
+  "inputs": {
+    "source_raster": {"path": "` + inputPath + `", "band": 1, "nodata": 0}
+  },
+  "outputs": {
+    "raster_tif": "aligned/cdl.tif",
+    "metadata_json": "aligned/cdl.metadata.json"
+  },
+  "options": {
+    "target_crs": "EPSG:5070",
+    "target_transform": [0, 30, 0, 60, 0, -30],
+    "target_width": 2,
+    "target_height": 2
+  }
+}
+`
+	requestPath := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(requestPath, []byte(requestJSON), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	if err := run([]string{"--request", requestPath, "--response", responsePath}); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	resultData, err := os.ReadFile(responsePath)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var result struct {
+		Operation string `json:"operation"`
+		Artifacts []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Operation != "align_to_grid" {
+		t.Fatalf("operation = %q, want align_to_grid", result.Operation)
+	}
+	if len(result.Artifacts) != 2 {
+		t.Fatalf("artifacts = %#v, want 2 artifacts", result.Artifacts)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "aligned", "cdl.tif")); err != nil {
+		t.Fatalf("stat raster artifact: %v", err)
+	}
+	metadataData, err := os.ReadFile(filepath.Join(dir, "aligned", "cdl.metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata artifact: %v", err)
+	}
+	if !strings.Contains(string(metadataData), `"resampling": "nearest"`) || !strings.Contains(string(metadataData), `"gdal_version":`) {
+		t.Fatalf("metadata artifact missing resampling or GDAL version: %s", metadataData)
+	}
+}
+
 func createTestRasterForCli(t *testing.T, dir string) string {
 	return createTestRaster(t, dir, "cli", "1 2\n3 4")
 }

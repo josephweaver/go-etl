@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -81,6 +82,12 @@ func run(args []string) error {
 		result.Summary = map[string]any{
 			"rasters": metadata,
 		}
+	case geospatial.OperationAlignToGrid, geospatial.OperationReprojectCRS:
+		alignmentResult, err := geospatial.ExecuteRasterAlignment(context.Background(), request, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = alignmentResult
 	default:
 		result = geospatial.NewValidationResult(request.Operation)
 	}

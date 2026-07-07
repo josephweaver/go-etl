@@ -17,7 +17,7 @@ This is the concise current-state index for GOET. The pre-split root state file 
 ## Concept State
 
 - Data assets and materialized outputs: [`docs/concepts/data-assets-and-materialized-outputs/STATE.md`](docs/concepts/data-assets-and-materialized-outputs/STATE.md)
-- Geospatial worker plugins: [`docs/concepts/geospatial-worker-plugins/README.md`](docs/concepts/geospatial-worker-plugins/README.md). Operational slices `002-geospatial-operation-contract` and `003-raster-info-and-bounding-boxes` are implemented. The latest update adds `goet-geospatial` support for read-only raster metadata extraction with deterministic map-key ordering, metadata artifact output, and GDAL container smoke coverage.
+- Geospatial worker plugins: [`docs/concepts/geospatial-worker-plugins/README.md`](docs/concepts/geospatial-worker-plugins/README.md). Operational slices `002-geospatial-operation-contract`, `003-raster-info-and-bounding-boxes`, and `004-reproject-and-align-raster` are implemented. The latest update adds `goet-geospatial` support for GDAL-backed `align_to_grid` and `reproject_crs` operations using explicit target grids or `like_raster`, default nearest-neighbor categorical resampling, unsafe-resampling opt-in validation, GeoTIFF and metadata artifact output, and WSL GDAL-tagged test coverage.
 - Dependency-aware workflows: [`docs/concepts/dependency-aware-workflows/STATE.md`](docs/concepts/dependency-aware-workflows/STATE.md)
 - Resource-constrained work admission: [`docs/concepts/resource-constrained-work-admission/STATE.md`](docs/concepts/resource-constrained-work-admission/STATE.md)
 - Workflow execution persistence: [`docs/concepts/workflow-execution-persistence/STATE.md`](docs/concepts/workflow-execution-persistence/STATE.md)

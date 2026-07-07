@@ -26,6 +26,11 @@ func (request OperationRequest) Validate() error {
 			return fmt.Errorf("raster_info operation requires output \"metadata_json\"")
 		}
 	}
+	if request.Operation == OperationAlignToGrid || request.Operation == OperationReprojectCRS {
+		if _, err := ParseAlignmentRequest(request); err != nil {
+			return err
+		}
+	}
 
 	for name, input := range request.Inputs {
 		if strings.TrimSpace(name) == "" {
@@ -51,7 +56,7 @@ func (request OperationRequest) Validate() error {
 
 func isSupportedOperation(operation string) bool {
 	switch operation {
-	case OperationValidate, OperationVersion, OperationRasterInfo:
+	case OperationValidate, OperationVersion, OperationRasterInfo, OperationReprojectCRS, OperationAlignToGrid:
 		return true
 	default:
 		return false
