@@ -144,9 +144,9 @@ Read these files first:
 
 ```text
 docs/concepts/data-assets-and-materialized-outputs/README.md
-docs/concepts/complete/resource-constrained-work-admission/README.md
-docs/concepts/complete/dependency-aware-workflow-execution/README.md
-docs/concepts/complete/python-workitem/README.md
+docs/concepts/resource-constrained-work-admission/README.md
+docs/concepts/dependency-aware-workflows/README.md
+docs/concepts/python-workitem/README.md
 PROJECT_STATE.md
 ```
 

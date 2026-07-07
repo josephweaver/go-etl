@@ -183,7 +183,7 @@ Read these files first:
 
 ```text
 docs/concepts/data-assets-and-materialized-outputs/README.md
-docs/concepts/complete/resource-constrained-work-admission/README.md
+docs/concepts/resource-constrained-work-admission/README.md
 internal/model/resource_constraint.go
 internal/model/work_item.go
 internal/workflow/*compile*.go

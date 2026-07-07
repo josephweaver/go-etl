@@ -1,8 +1,8 @@
 # Data Assets and Materialized Outputs Strategic Concept
 
-Status: Proposed
+Status: Phase 1 implemented; explicit data-operator fixture smoke implemented
 Cadence: CSxIx
-Revision: 2026-07-06 provider/archive/cache revision
+Revision: 2026-07-07 data-operator model revision
 
 ## Purpose
 
@@ -34,6 +34,27 @@ worker copies selected artifacts to predeclared named publish locations
 controller records compact evidence only
 ```
 
+## Implemented Phase 1 State
+
+Phase 1 is implemented for the core orchestration boundary around large data:
+
+- versioned artifact manifests with safe slash-relative artifact paths;
+- worker artifact staging, file/directory promotion, byte counts, file SHA-256, and deterministic directory manifest hashes;
+- Python `GOET_ARTIFACT_DIR` output with compact artifact declarations through `GOET_OUTPUT_JSON`;
+- controller recording of compact artifact manifests as logical output evidence, without serving artifact bytes;
+- named data locations, provider templates, bound data assets, archive selectors, cache policies, integrity declarations, materialized input manifests, publish targets, and publish bindings in `internal/model`;
+- worker-side `local_file`, `http`, and `registered_location` materialization using tiny fixtures, configured named roots, streaming reads, immutable cache manifests, and expected SHA-256/size verification;
+- ZIP selected-member extraction for one selected file or a selected directory, with safe member and output path validation;
+- reserved `seven_zip` behavior through an optional configured external executable, with clear missing-extractor failure when it is not configured;
+- `gdrive_rclone` acquisition through a configured external `rclone` executable and fake-rclone tests, not native Google Drive API support;
+- Python argv binding for `${data.<alias>.local_path}` and `${artifact_dir}` after materialization;
+- copy-to-named-location publication of selected promoted artifacts with compact `published_assets` evidence;
+- explicit `cache_data -> compute -> commit_data` fixture smoke coverage with source-transfer and publish-write resource mutexes;
+- fake-HPCC data-assets smoke coverage using local fake Slurm fixtures;
+- CDL/Yan/Roy fixture pipeline coverage using tiny CSV/ZIP inputs in the sibling `../go-etl-demo-project`.
+
+The implemented capability is not a general artifact storage service, data catalog, object-store layer, native Google Drive client, full 7z/Yan/Roy extractor, real HPCC integration, or real CDL/Yan/Roy product run.
+
 ## Strategic Decision
 
 Large input assets and large produced datasets are execution-environment storage concerns, not controller-source-cache concerns.
@@ -42,7 +63,7 @@ The controller admits source-controlled code and workflow declarations. Workers 
 
 GOET should store compact manifests, identities, relative paths, byte counts, hashes, schemas, parameter bindings, and provenance. It should not store multi-GB rasters, Parquet datasets, ZIP files, 7z archives, or tiled outputs in SQLite.
 
-### Revised decision: provider/archive/cache model
+### Phase 1 decision: provider/archive/cache model
 
 Do not model ordinary data access as primary workflow work item types named `get_data` and `put_data` in phase 1.
 
@@ -58,11 +79,44 @@ promote declared artifacts
 publish selected artifacts    ~= put_data infrastructure
 ```
 
-Explicit `materialize_data_asset` or `publish_data_asset` work item types can be added later if workflows need standalone, stage-visible data movement steps. The first implementation should keep workflow business logic focused on the plugin operation while the worker handles data plumbing.
+Explicit `cache_data` and `commit_data` work item operators are now implemented
+through the follow-on addendum and slices `014` through `018` for shared large-run
+data movement. Phase 1 keeps workflow business logic focused on the plugin
+operation while the worker handles fixture-sized compatibility data plumbing
+around that operation.
+
+### Revised decision: explicit data movement operators
+
+For shared or fan-out workflows, ordinary compute work items must not implicitly
+download common inputs or publish durable outputs.
+
+The compiler/planner should produce `cache_data` work items for resolved input
+data assets and `commit_data` work items for publish bindings. These work items
+are scheduled by the same dependency-aware workflow and resource-admission
+machinery as ordinary compute work.
+
+The preferred large-run shape is explicit:
+
+```text
+cache_data -> compute -> commit_data
+```
+
+Worker-internal materialization may remain as a compatibility path for small
+single-step fixtures. The target state for CDL/Yan/Roy-scale runs is the
+explicit DAG structure above.
+
+`cache_data` is inbound. `commit_data` is outbound. Internal cache promotion is
+a `cache_data` phase, not `commit_data`. Resource constraints bound concurrent
+transfers and writes. Provider transfer limits bound one admitted transfer when
+supported.
+
+`cache_data` and `commit_data` are GOET-owned data movement operators. They are
+not generic user-authored shell steps, and they should not become an escape hatch
+for arbitrary file commands.
 
 ### Provider decision
 
-Phase 1 should explicitly support these provider families:
+Phase 1 supports these provider families in the model and fixture-backed worker paths:
 
 ```text
 http             public HTTP/HTTPS download using a URL template
@@ -80,7 +134,11 @@ Archives are materialization transforms, not separate workflow work item types.
 
 A provider may acquire a source file such as a CDL ZIP or Yan/Roy release archive. The materializer may then extract a specific file or a small declared set of files into the worker cache and expose the extracted file/directory as the data asset's `local_path`.
 
-Phase 1 should implement `zip` extraction with safe member selection. The model should also reserve `seven_zip`/`7z` for Yan/Roy-style archives, implemented through a configured `7z` executable when available. Default unit tests must not require a real `7z` binary or the real Yan/Roy archive.
+Phase 1 implements `zip` extraction with safe member selection. The model also
+reserves `seven_zip`/`7z` for Yan/Roy-style archives through a configured
+external executable. Default unit tests do not require a real `7z` binary or the
+real Yan/Roy archive; without a configured extractor, the worker fails before
+plugin execution with a clear missing-extractor error.
 
 ## Why This Concept Now
 
@@ -170,6 +228,75 @@ ${data.<alias>.local_path} -> worker-resolved argv interpolation for materialize
 The worker remains the enforcement point for local filesystem paths. Python scripts receive ordinary local paths, but the controller never trusts script-declared absolute paths and never assumes a worker path is openable from the user's machine.
 
 ## Vocabulary and Ownership Boundary
+
+### Operator families
+
+The data-operator revision distinguishes three operator families.
+
+```text
+cache_data:
+  inbound data movement
+  external source or configured named location -> target-local materialized input
+
+compute:
+  local transformation
+  materialized inputs -> attempt-local artifacts -> promoted artifacts
+
+commit_data:
+  outbound data movement
+  promoted artifacts -> declared durable store / named publish location
+```
+
+Data assets are immutable logical inputs. Materialized asset instances are
+target-scoped cached realizations of those inputs. Published data assets are
+durable outbound realizations of workflow-produced artifacts.
+
+`cache_data` and `commit_data` are first-class work-item operators when data
+movement crosses a shared target or storage boundary.
+
+### `cache_data`
+
+A `cache_data` work item materializes one resolved bound data asset for one
+target environment. It is an inbound operation. It may:
+
+- reference an already-mounted `registered_location`;
+- copy from `local_file` into the target cache;
+- download HTTP/HTTPS into the target cache;
+- run rclone to copy from a configured Google Drive remote;
+- extract selected archive members;
+- verify expected and observed evidence;
+- emit a `goet/materialized-data-assets/v1` manifest.
+
+Internal cache finalization belongs to `cache_data`, not `commit_data`:
+
+```text
+acquire -> stage -> verify -> promote_cache -> emit manifest
+```
+
+### `compute`
+
+A `compute` work item performs the local transformation. For Python work, it
+uses admitted source files, consumes materialized input manifests or their
+worker-local path projection, writes under `GOET_ARTIFACT_DIR`, and emits a
+compact artifact manifest.
+
+Compute work items should not perform shared remote acquisition or durable
+publication in the large-run target shape.
+
+### `commit_data`
+
+A `commit_data` work item publishes a selected promoted artifact or artifact
+directory to a declared durable store location. It is an outbound operation. It
+may:
+
+- copy to a registered named location;
+- invoke rclone for an outbound Google Drive location if supported later;
+- verify the published copy;
+- enforce overwrite policy;
+- emit compact published-asset evidence.
+
+`commit_data` is not internal input-cache finalization. It starts from a
+completed compute artifact manifest and produces publication evidence.
 
 ### Source files
 
@@ -408,28 +535,62 @@ Example target:
 }
 ```
 
-## Target State
+## Phase 1 Implemented Target
 
-A Python workflow step can consume large data inputs and produce large output files without pretending those files are JSON.
+A Python workflow step can consume declared data inputs and produce file or directory outputs without pretending those files are JSON.
 
 The workflow declaration binds parameterized data providers to aliases. The worker resolves those bindings into safe worker-local paths. The worker may download, reference, copy, cache, verify, and extract selected archive members before plugin execution. The Python script receives local paths through arguments and/or `GOET_DATA_ASSETS_JSON`, writes candidate artifacts under `GOET_ARTIFACT_DIR`, and reports a compact artifact declaration in `GOET_OUTPUT_JSON`.
 
 The worker validates the declaration, rejects unsafe paths, computes file and directory evidence, promotes files from attempt-local temporary storage into the configured worker artifact root, rewrites the artifact manifest to final relative paths, optionally copies selected artifacts to predeclared named publish locations, and reports compact evidence to the controller as the step's logical output.
 
-For CDL/Yan/Roy, the natural workflow shape becomes:
+For the implemented CDL/Yan/Roy fixture, the proven shape is:
 
 ```text
-project: define cdl_zip(year), yanroy_release(tile/year), crop_lookup providers
-project: define field_cdl_composition_tile(year,tile) publish target
-stage 1: fan out year x tile field-CDL composition work items
-stage 2: merge per-tile field/year/crop composition artifacts
-stage 3: derive dominant-crop sequence table using a declared crop assignment policy
-stage 4: derive RCI table from dominant-crop sequence table
-stage 5: publish datasets to named locations
-stage 6: emit validation manifest
+project: define fixture CDL ZIP, Yan/Roy field grid, crop lookup, policy providers
+project: define fixture field composition and dominant-crop publish targets
+single fixture step: bind year/tile data assets
+worker: materialize/read tiny fixture inputs and extract one ZIP-selected CDL CSV
+script: compute field/year/crop composition and dominant crop assignment
+worker: promote two CSV artifacts and publish them to named fixture locations
+controller: record compact artifact and published-asset evidence
 ```
 
-The local Windows laptop submits and observes the workflow. Heavy raster work runs in Linux worker containers through fake HPCC first, then real HPCC only after the fake boundary passes.
+For real CDL/Yan/Roy data, the intended data-product direction now uses
+explicit data movement operators:
+
+```text
+project:
+  define cdl_zip(year), yanroy_release(tile/year), crop_lookup providers
+  define field_cdl_composition_tile(year,tile) publish target
+
+stage 0:
+  cache_data(cdl_zip, year)
+  cache_data(yanroy_release, year, tile)
+  cache_data(crop_lookup)
+
+stage 1:
+  compute(field_cdl_composition, year, tile)
+    depends on completed cache_data inputs
+
+stage 2:
+  compute(merge per-tile field/year/crop composition artifacts)
+
+stage 3:
+  compute(dominant-crop assignment)
+
+stage 4:
+  compute(RCI transform)
+
+stage 5:
+  commit_data(selected published datasets)
+
+stage 6:
+  compute or commit_data validation/reporting as needed
+```
+
+The fixture proves field/CDL composition first. Dominant-crop assignment is produced as fixture evidence for downstream RCI, but full RCI computation and real-data validation belong to later data-product runbooks.
+
+The local Windows laptop submits and observes the workflow. Heavy raster work should run in Linux worker containers through fake HPCC first, then real HPCC only after the fake boundary passes. Real institutional HPCC configuration remains outside this repository.
 
 ## Example Shape
 
@@ -898,7 +1059,9 @@ Required policy:
 
 ## Fake HPCC and Real HPCC Utilization
 
-This is the right time to utilize the existing fake-HPCC execution environment, but only after the local artifact, data-binding, provider materialization, archive extraction, and publication contracts exist.
+Phase 1 has a validated fake-HPCC data-assets smoke path using local fake Slurm fixtures. It proves the controller-to-worker execution boundary for data binding, materialization, archive extraction, artifact promotion, and publication with tiny files.
+
+The implemented smoke does not prove real SSH transport to an institutional login node, Dockerized Slurm containers, SingularityCE image execution, real HPCC partitions/accounts/modules, large transfer behavior, or production HPCC support.
 
 Recommended progression:
 
@@ -908,7 +1071,7 @@ Recommended progression:
 3. local worker smoke with tiny ZIP extraction and selected-file exposure
 4. local worker smoke with fake-rclone executable if gdrive_rclone is enabled
 5. local worker smoke that publishes one artifact to a named fixture location
-6. fake HPCC Slurm/Singularity smoke with tiny bound data assets and artifact publication
+6. fake HPCC Slurm/Singularity smoke with tiny bound data assets and artifact publication when that backend is available
 7. fake HPCC dependency-aware fan-out smoke by year x tile fixtures
 8. real HPCC dry run with no private site details committed
 9. real CDL/Yan/Roy bounded tile/year run
@@ -918,7 +1081,7 @@ The fake HPCC path should prove GOET core mechanics:
 
 - worker launch through configured execution environment;
 - Slurm script generation;
-- Singularity worker runtime;
+- worker runtime preparation;
 - worker pull from controller;
 - read-only fixture data root mounted inside the worker runtime;
 - asset cache root mounted inside the worker runtime;
@@ -941,9 +1104,9 @@ Algorithmic shape:
 ```text
 for each target year:
   for each Yan/Roy field-id tile:
-    materialize CDL year asset from HTTP cache or fixture
-    materialize Yan/Roy tile/release asset from local_file, registered_location, or gdrive_rclone
-    extract selected files when the source is an archive
+    cache_data materializes CDL year asset from HTTP cache or fixture
+    cache_data materializes Yan/Roy tile/release asset from local_file, registered_location, or gdrive_rclone
+    cache_data extracts selected files when the source is an archive
     read the matching CDL window or fixture window
     read field_id values from the field raster
     ignore background/nodata field IDs
@@ -952,7 +1115,7 @@ for each target year:
     mark dominant crop_code under a declared policy
     emit field/year/crop composition rows
     optionally emit one dominant-crop row per field/year
-    publish the tile output to field_cdl_composition/year=<year>/tile=<tile>/...
+    commit_data publishes selected tile outputs to field_cdl_composition/year=<year>/tile=<tile>/...
 ```
 
 The first engineering artifact should keep the distribution, not only the majority class:
@@ -997,12 +1160,38 @@ The crop-type lookup table and crop-assignment policy should be declared source 
 - `python-workitem` provides the initial script execution boundary used to produce artifact manifests and consume worker-local data paths.
 - `source-control-resolution-and-cache` remains the boundary for source files only. Data assets must not expand the source cache into a multi-GB data lake.
 - `workflow-execution-persistence` stores compact logical outputs and lifecycle evidence; this concept supplies the compact artifact and published-asset evidence shape for large outputs.
-- `resource-constraint` can later gate shared filesystem, network download, archive extraction, cache pressure, and publish-location write pressure.
+- `resource-constraint` gates queued work at claim time. The explicit data-operator follow-on uses that machinery to schedule shared filesystem reads, network downloads, archive extraction, cache pressure, and publish-location write pressure.
 - `sensitive-variable-propagation` is required before GOET transports private credentials. `gdrive_rclone` in this concept assumes credentials are preconfigured in the worker/container runtime.
 - `controller-retention-cleanup` should eventually define artifact/cache-retention policy after this concept defines manifest evidence.
 - A future data catalog concept may turn published-asset evidence into a searchable registry, but that is not required for phase 1 publication.
 
-## Proposed Slices
+## Slice Status
+
+Phase 1 implementation slices:
+
+1. `001-artifact-manifest-model-and-path-safety.md` - implemented.
+2. `002-worker-artifact-staging-and-promotion.md` - implemented.
+3. `003-python-artifact-output-contract.md` - implemented.
+4. `004-controller-artifact-output-recording.md` - implemented.
+5. `005-data-location-provider-and-binding-model.md` - implemented.
+6. `006-worker-data-asset-materialization.md` - implemented.
+7. `007-worker-archive-extraction-and-selection.md` - implemented.
+8. `008-gdrive-rclone-data-provider.md` - implemented.
+9. `009-python-data-argument-binding.md` - implemented.
+10. `010-published-data-asset-copy-to-named-location.md` - implemented.
+11. `011-fake-hpcc-artifact-and-data-asset-smoke-path.md` - implemented.
+12. `012-cdl-yanroy-fixture-pipeline.md` - implemented.
+13. `013-concept-closure-and-documentation-sync.md` - implemented.
+
+Explicit data-operator follow-on slices:
+
+14. `014-data-operator-model-and-sc-decision-update.md` - implemented.
+15. `015-cache-data-deduplicated-materialization-work-items.md` - implemented.
+16. `016-cache-data-provider-resource-admission-and-transfer-limits.md` - implemented.
+17. `017-commit-data-published-output-work-items.md` - implemented.
+18. `018-data-operator-integration-smoke-and-documentation-sync.md` - implemented.
+
+## Original Phase 1 Planning Slices
 
 1. `001-artifact-manifest-model-and-path-safety.md` — add the shared artifact manifest model and safe relative path validation.
 2. `002-worker-artifact-staging-and-promotion.md` — add worker attempt-local artifact staging and validated promotion into the worker data root.
@@ -1035,7 +1224,7 @@ The crop-type lookup table and crop-assignment policy should be declared source 
 | 013 Closure/Docs Sync                 | 5.3-codex-spark |  Low/Medium | Documentation/project-state cleanup                     |
 
 
-## Completion Criteria
+## Phase 1 Completion Evidence
 
 - Artifact manifests have a shared versioned JSON shape with validation tests.
 - File and directory artifact paths are validated before filesystem operations.
@@ -1050,17 +1239,28 @@ The crop-type lookup table and crop-assignment policy should be declared source 
 - Python command arguments can receive resolved worker-local data paths without shell expansion.
 - Selected artifacts can be copied to predeclared named publish locations with conservative overwrite policy and post-copy evidence.
 - Downstream dependency-aware stages can receive upstream artifact/published-asset manifests as ordinary typed logical outputs.
-- Fake HPCC proves the same data-binding, materialization, archive, artifact-promotion, and publication path through Slurm/Singularity worker launch.
+- Explicit data-operator smoke coverage proves `cache_data -> compute -> commit_data` with tiny fixture assets, completed terminal evidence for all three operator families, materialized input manifest hydration into compute, compact artifact evidence, compact published-asset evidence, source download capacity serialization, and published-location write serialization.
+- Fake HPCC fixture smoke proves data binding, materialization, archive extraction, artifact promotion, and publication through a local fake Slurm boundary.
 - No default test or smoke path downloads CDL, contacts Google Drive, or requires multi-GB public data.
 - Documentation explains how the later CDL/Yan/Roy full-data run should move to real HPCC without committing site-specific configuration.
 
-## Open Questions
+## Deferred Work Ownership
+
+- Real CDL/Yan/Roy ingestion, real tile/window processing, full geospatial dependencies, and real RCI production belong in data-product workflow runbooks or a later data-product concept, not GOET core Phase 1.
+- Real Google Drive or Shared Drive operation requires external rclone setup and credentials outside workflow files. Credential propagation belongs to `sensitive-variable-propagation`.
+- Geospatial Python environment or image management belongs to a later Python environment/container concept or data-product runbook.
+- Artifact, asset-cache, and published-data retention cleanup belongs to `controller-retention-cleanup`.
+- Further shared data, network download, archive extraction, cache-pressure, and publish-location write admission belongs to future resource-constraint refinements and target-specific runbooks.
+- Object-store, S3, Globus, FTP, native Google Drive, or non-filesystem artifact/publish backends require future provider/storage concepts.
+- Data catalog or asset registry indexing belongs to a future catalog concept. Phase 1 publication copies bytes to a predefined named location and reports compact evidence only.
+- The explicit large-run data movement model is accepted in `README-data-operator-addendum.md` and implemented for fixture-sized control-plane coverage through slices `014` through `018`.
+
+## Remaining Design Questions
 
 - Whether `DataDir` should remain the default artifact root while named publish locations and asset cache roots are configured separately, or whether distinct optional `ArtifactDir` and `AssetCacheDir` fields should be introduced immediately.
 - Whether provider templates belong only in project documents or can also be declared/overridden in workflow documents.
 - Whether compiled work items should carry only concrete bound data assets or also retain provider-template names for status/debugging.
 - Whether `${data.<alias>}` should be a shorthand for `${data.<alias>.local_path}` or whether all data references should require explicit `.local_path`.
-- Whether publication evidence should be nested inside the artifact manifest or returned as a sibling `goet/published-data-assets/v1` manifest.
-- Whether later standalone `materialize_data_asset` and `publish_data_asset` work item types are worth adding after the worker-phase implementation proves useful.
+- Whether small local-only workflows may keep implicit worker materialization as a compatibility path, or whether all data bindings should compile through `cache_data` immediately.
 - Whether the first real Yan/Roy workflow should consume a manually downloaded `local_file` `ReleaseData.7z`, a `gdrive_rclone` download, or an already-extracted `registered_location` tile set.
 - Whether 7z extraction should be implemented immediately in the worker container image or deferred until the first real Yan/Roy runbook.

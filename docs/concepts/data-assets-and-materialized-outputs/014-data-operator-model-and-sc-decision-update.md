@@ -1,6 +1,6 @@
 # 014 Data Operator Model And SC Decision Update
 
-Status: Proposed
+Status: implemented
 
 ## Objective
 
@@ -176,10 +176,10 @@ Read these files first:
 
 ```text
 docs/concepts/data-assets-and-materialized-outputs/README.md
-docs/concepts/complete/resource-constrained-work-admission/README.md
-docs/concepts/complete/dependency-aware-workflow-execution/README.md
-docs/concepts/complete/workflow-execution-persistence/README.md
-docs/concepts/complete/python-workitem/README.md
+docs/concepts/resource-constrained-work-admission/README.md
+docs/concepts/dependency-aware-workflows/README.md
+docs/concepts/workflow-execution-persistence/README.md
+docs/concepts/python-workitem/README.md
 ```
 
 If a path has moved, use the matching completed concept directory.
@@ -226,3 +226,25 @@ fake HPCC smoke changes
 ## Notes
 
 This slice intentionally reopens a decision from the current SC. The driver is CDL/Yan/Roy-scale execution, where shared assets and publish targets must be coordinated by the controller rather than hidden inside each compute worker.
+
+## Implementation Evidence
+
+Implemented on 2026-07-07 as a documentation/modeling slice.
+
+The parent Strategic Concept now accepts explicit `cache_data`, `compute`, and
+`commit_data` operator families for large shared workflows. The updated decision
+states that ordinary compute work should not implicitly download common inputs
+or publish durable outputs at CDL/Yan/Roy scale, and that `cache_data` and
+`commit_data` are GOET-owned scheduled operators, not generic user-authored
+shell steps.
+
+The parent README now also states that internal input-cache finalization belongs
+to `cache_data`, not `commit_data`, and its real CDL/Yan/Roy target shape is:
+
+```text
+cache_data -> compute -> commit_data
+```
+
+No Go production code, Go tests, database tables, provider execution, transfer
+throttling, rclone behavior, publication behavior, or fake-HPCC smoke behavior
+changed in this slice.

@@ -26,16 +26,17 @@ above.
 
 ## Completed Strategic Concepts
 
-- [Execution Observability](complete/execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
-- [Controller Startup Resolution](complete/controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
-- [SSH Transport](complete/ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
-- [Repository Source Resolution and Cache](complete/source-control-resolution-and-cache/README.md) - Provides repository-source resolution, controller cache population, verified cached reads, and explicit materialization for admitted workflow sources.
-- [Structured Variable Resolution](complete/structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
-- [Python WorkItem](complete/python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
-- [Submission CLI Status](complete/submission-cli-status/README.md) - Establishes a production-oriented CLI and queryable submission status model for workflow execution.
-- [Resource Constraints](complete/resource-constrained-work-admission/README.md) - Add controller-owned admission limits for work items that share named resources.
-- [Dependency-Aware Workflow Execution](complete/dependency-aware-workflows/README.md) - Compiles and queues workflow steps only when their predecessor steps have completed successfully.
-- [Miscellaneous Architecture Refinements](complete/architectural-refinement-1/README.md) - Tracks small architectural refinements and technical-debt cleanup slices.
+- [Data Assets and Materialized Outputs](data-assets-and-materialized-outputs/README.md) - Phase 1 implements filesystem-backed artifact manifests, provider-backed data bindings, ZIP-selected input assets, fixture rclone acquisition, named-location publication, fake-HPCC smoke evidence, and the CDL/Yan/Roy fixture pipeline.
+- [Execution Observability](execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
+- [Controller Startup Resolution](controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
+- [SSH Transport](ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
+- [Repository Source Resolution and Cache](source-control-resolution-and-cache/README.md) - Provides repository-source resolution, controller cache population, verified cached reads, and explicit materialization for admitted workflow sources.
+- [Structured Variable Resolution](structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
+- [Python WorkItem](python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.
+- [Submission CLI Status](submission-cli-status/README.md) - Establishes a production-oriented CLI and queryable submission status model for workflow execution.
+- [Resource Constraints](resource-constrained-work-admission/README.md) - Add controller-owned admission limits for work items that share named resources.
+- [Dependency-Aware Workflow Execution](dependency-aware-workflows/README.md) - Compiles and queues workflow steps only when their predecessor steps have completed successfully.
+- [Miscellaneous Architecture Refinements](architectural-refinement-1/README.md) - Tracks small architectural refinements and technical-debt cleanup slices.
 
 ## Planning Guides
 

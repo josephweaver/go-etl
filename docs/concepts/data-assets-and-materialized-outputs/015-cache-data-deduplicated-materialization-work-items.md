@@ -187,9 +187,9 @@ Read these files first:
 
 ```text
 docs/concepts/data-assets-and-materialized-outputs/README.md
-docs/concepts/complete/dependency-aware-workflow-execution/README.md
-docs/concepts/complete/workflow-execution-persistence/README.md
-docs/concepts/complete/resource-constrained-work-admission/README.md
+docs/concepts/dependency-aware-workflows/README.md
+docs/concepts/workflow-execution-persistence/README.md
+docs/concepts/resource-constrained-work-admission/README.md
 internal/model/work_item.go
 internal/persistence/store.go
 internal/persistence/db_adapter_sqlite.go

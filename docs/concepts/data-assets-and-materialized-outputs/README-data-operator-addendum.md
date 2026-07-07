@@ -1,6 +1,6 @@
 # Data Asset Operator Addendum
 
-Status: Proposed addendum  
+Status: Accepted by `014-data-operator-model-and-sc-decision-update.md`
 Cadence: CSxIx  
 Parent Strategic Concept: `docs/concepts/data-assets-and-materialized-outputs/README.md`
 
@@ -122,3 +122,10 @@ cache garbage collection beyond safe replacement/protection
 ```
 
 The existing integer resource-constraint model can bound concurrent transfers and declared transfer units. True time-window rate limiting remains a later resource-admission extension.
+
+## Acceptance note
+
+Slice `014-data-operator-model-and-sc-decision-update.md` accepts this addendum
+as the parent Strategic Concept decision. It does not implement new runtime
+operators, database tables, provider execution, transfer throttling, or publish
+copying. Those remain assigned to slices `015` through `018`.
