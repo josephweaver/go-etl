@@ -2095,6 +2095,167 @@ func TestStoreClaimNextWorkSecondClaimSeesFirstRunningResourceUsage(t *testing.T
 	}
 }
 
+func TestStoreClaimNextWorkCacheDataSourceMutexAdmitsOnlyOne(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "provider:http:example.invalid/download"
+	first := testWorkItemRecord("cache-data-first", run.ID, 0, 0)
+	second := testWorkItemRecord("cache-data-second", run.ID, 0, 1)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{first, second},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(first.ID, 0, resourceKey, 1, "<=", 1),
+			testResourceConstraintRecord(second.ID, 0, resourceKey, 1, "<=", 1),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: first, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: second, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	firstClaim := testClaimWorkRequest()
+	firstClaim.AttemptID = "attempt-first"
+	claimed, found, err := store.ClaimNextWork(ctx, firstClaim)
+	if err != nil {
+		t.Fatalf("first ClaimNextWork() error = %v", err)
+	}
+	if !found || claimed.WorkItem.ID != first.ID {
+		t.Fatalf("first ClaimNextWork() = %+v found %v, want %s", claimed, found, first.ID)
+	}
+
+	secondClaim := testClaimWorkRequest()
+	secondClaim.AttemptID = "attempt-second"
+	claimed, found, err = store.ClaimNextWork(ctx, secondClaim)
+	if err != nil {
+		t.Fatalf("second ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("second ClaimNextWork() found = true with claim %+v, want false", claimed)
+	}
+	assertQueuedWork(t, ctx, store, second.ID, "2026-07-03T00:00:02Z")
+}
+
+func TestStoreClaimNextWorkCacheDataSourceCapacityAdmitsTwoButNotThree(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "provider:http:example.invalid/download"
+	first := testWorkItemRecord("cache-data-first", run.ID, 0, 0)
+	second := testWorkItemRecord("cache-data-second", run.ID, 0, 1)
+	third := testWorkItemRecord("cache-data-third", run.ID, 0, 2)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{first, second, third},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(first.ID, 0, resourceKey, 1, "<=", 2),
+			testResourceConstraintRecord(second.ID, 0, resourceKey, 1, "<=", 2),
+			testResourceConstraintRecord(third.ID, 0, resourceKey, 1, "<=", 2),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: first, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: second, QueuedAt: "2026-07-03T00:00:02Z"},
+			{WorkItemRecord: third, QueuedAt: "2026-07-03T00:00:03Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	for i, wantID := range []string{first.ID, second.ID} {
+		request := testClaimWorkRequest()
+		request.AttemptID = "attempt-capacity-" + wantID
+		claimed, found, err := store.ClaimNextWork(ctx, request)
+		if err != nil {
+			t.Fatalf("ClaimNextWork(%d) error = %v", i, err)
+		}
+		if !found || claimed.WorkItem.ID != wantID {
+			t.Fatalf("ClaimNextWork(%d) = %+v found %v, want %s", i, claimed, found, wantID)
+		}
+	}
+
+	request := testClaimWorkRequest()
+	request.AttemptID = "attempt-capacity-third"
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("third ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("third ClaimNextWork() found = true with claim %+v, want false", claimed)
+	}
+	assertQueuedWork(t, ctx, store, third.ID, "2026-07-03T00:00:03Z")
+}
+
+func TestStoreClaimNextWorkCacheDataIndependentSourcesDoNotBlockEachOther(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	first := testWorkItemRecord("cache-data-http", run.ID, 0, 0)
+	second := testWorkItemRecord("cache-data-drive", run.ID, 0, 1)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{first, second},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(first.ID, 0, "provider:http:example.invalid/download", 1, "<=", 1),
+			testResourceConstraintRecord(second.ID, 0, "provider:gdrive-rclone:landcore/download", 1, "<=", 1),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: first, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: second, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	for i, wantID := range []string{first.ID, second.ID} {
+		request := testClaimWorkRequest()
+		request.AttemptID = "attempt-independent-" + wantID
+		claimed, found, err := store.ClaimNextWork(ctx, request)
+		if err != nil {
+			t.Fatalf("ClaimNextWork(%d) error = %v", i, err)
+		}
+		if !found || claimed.WorkItem.ID != wantID {
+			t.Fatalf("ClaimNextWork(%d) = %+v found %v, want %s", i, claimed, found, wantID)
+		}
+	}
+}
+
+func TestStoreClaimNextWorkComputeWithoutDataTransferConstraintRemainsSchedulable(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "provider:http:example.invalid/download"
+	running := testWorkItemRecord("cache-data-running", run.ID, 0, 0)
+	blockedCacheData := testWorkItemRecord("cache-data-blocked", run.ID, 0, 1)
+	compute := testWorkItemRecord("compute-work", run.ID, 0, 2)
+	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running-cache-data", resourceKey, 1)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{blockedCacheData, compute},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(blockedCacheData.ID, 0, resourceKey, 1, "<=", 1),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: blockedCacheData, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: compute, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	request := testClaimWorkRequest()
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil {
+		t.Fatalf("ClaimNextWork() error = %v", err)
+	}
+	if !found || claimed.WorkItem.ID != compute.ID {
+		t.Fatalf("ClaimNextWork() = %+v found %v, want unconstrained compute %s", claimed, found, compute.ID)
+	}
+	assertQueuedWork(t, ctx, store, blockedCacheData.ID, "2026-07-03T00:00:01Z")
+}
+
 func TestStoreClaimNextWorkAppliesAllResourceOperators(t *testing.T) {
 	tests := []struct {
 		name      string

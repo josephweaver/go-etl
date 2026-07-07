@@ -172,7 +172,7 @@ func publishArtifactToTemp(plan publishPlan) (assetEvidence, error) {
 
 	switch plan.source.Kind {
 	case model.ArtifactKindFile:
-		evidence, err := copyFileWithLimit(plan.sourcePath, plan.tempPath, 0)
+		evidence, err := copyFileWithLimit(plan.sourcePath, plan.tempPath, 0, 0)
 		if err != nil {
 			return assetEvidence{}, fmt.Errorf("copy published file %s to %s: %w", plan.sourcePath, plan.tempPath, err)
 		}

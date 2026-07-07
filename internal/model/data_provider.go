@@ -30,6 +30,7 @@ type DataProviderTemplate struct {
 	Cache           DataAssetCacheTemplate           `json:"cache,omitempty"`
 	Archive         *DataAssetArchiveTemplate        `json:"archive,omitempty"`
 	Materialization DataAssetMaterializationTemplate `json:"materialization,omitempty"`
+	TransferPolicy  DataAssetTransferPolicy          `json:"transfer_policy,omitempty"`
 	Metadata        map[string]any                   `json:"metadata,omitempty"`
 }
 
@@ -70,7 +71,10 @@ func (provider DataProviderTemplate) Validate() error {
 			return err
 		}
 	}
-	return provider.Materialization.Validate()
+	if err := provider.Materialization.Validate(); err != nil {
+		return err
+	}
+	return provider.TransferPolicy.Validate()
 }
 
 func (provider DataProviderTemplate) Bind(bindingName string, parameters map[string]any) (BoundDataAsset, error) {
@@ -116,8 +120,9 @@ func (provider DataProviderTemplate) Bind(bindingName string, parameters map[str
 		Materialization: DataAssetMaterialization{
 			Strategy: provider.Materialization.Strategy,
 		},
-		Parameters: parameters,
-		Metadata:   provider.Metadata,
+		TransferPolicy: provider.TransferPolicy,
+		Parameters:     parameters,
+		Metadata:       provider.Metadata,
 	}
 	if err := asset.Validate(); err != nil {
 		return BoundDataAsset{}, err

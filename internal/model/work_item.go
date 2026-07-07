@@ -125,21 +125,28 @@ type WorkSkip struct {
 }
 
 type CacheDataWorkItemPayload struct {
-	Operator            string             `json:"operator"`
-	TargetEnvironmentID string             `json:"target_environment_id"`
-	AssetKey            string             `json:"asset_key"`
-	DedupeKey           string             `json:"dedupe_key"`
-	BindingName         string             `json:"binding_name"`
-	ProviderName        string             `json:"provider_name"`
-	ProviderType        string             `json:"provider_type"`
-	Kind                string             `json:"kind"`
-	Format              string             `json:"format,omitempty"`
-	ResolvedLocation    DataAssetLocation  `json:"resolved_location"`
-	Cache               DataAssetCache     `json:"cache,omitempty"`
-	Integrity           DataAssetIntegrity `json:"integrity,omitempty"`
-	Archive             *DataAssetArchive  `json:"archive,omitempty"`
-	Parameters          map[string]any     `json:"parameters,omitempty"`
-	Metadata            map[string]any     `json:"metadata,omitempty"`
+	Operator            string                       `json:"operator"`
+	TargetEnvironmentID string                       `json:"target_environment_id"`
+	AssetKey            string                       `json:"asset_key"`
+	DedupeKey           string                       `json:"dedupe_key"`
+	BindingName         string                       `json:"binding_name"`
+	ProviderName        string                       `json:"provider_name"`
+	ProviderType        string                       `json:"provider_type"`
+	Kind                string                       `json:"kind"`
+	Format              string                       `json:"format,omitempty"`
+	ResolvedLocation    DataAssetLocation            `json:"resolved_location"`
+	Cache               DataAssetCache               `json:"cache,omitempty"`
+	Integrity           DataAssetIntegrity           `json:"integrity,omitempty"`
+	Archive             *DataAssetArchive            `json:"archive,omitempty"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+	TransferPolicy      DataAssetTransferPolicy      `json:"transfer_policy,omitempty"`
+	TransferLimits      DataAssetTransferLimits      `json:"transfer_limits,omitempty"`
+	Parameters          map[string]any               `json:"parameters,omitempty"`
+	Metadata            map[string]any               `json:"metadata,omitempty"`
+}
+
+type DataAssetTransferLimits struct {
+	MaxBytesPerSecond int64 `json:"max_bytes_per_second,omitempty"`
 }
 
 type ControllerStatus struct {
@@ -272,6 +279,26 @@ func (payload CacheDataWorkItemPayload) Validate() error {
 		if err := payload.Archive.Validate(); err != nil {
 			return err
 		}
+	}
+	for i, constraint := range payload.ResourceConstraints {
+		if strings.TrimSpace(constraint.ResourceKey) == "" {
+			return fmt.Errorf("cache_data resource_constraints[%d] resource_key is required", i)
+		}
+		if constraint.RequestedUnits <= 0 {
+			return fmt.Errorf("cache_data resource_constraints[%d] requested_units must be greater than 0", i)
+		}
+		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
+			return fmt.Errorf("cache_data resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
+		}
+		if constraint.TargetUnits < 0 {
+			return fmt.Errorf("cache_data resource_constraints[%d] target_units must be non-negative", i)
+		}
+	}
+	if err := payload.TransferPolicy.Validate(); err != nil {
+		return fmt.Errorf("cache_data transfer_policy: %w", err)
+	}
+	if payload.TransferLimits.MaxBytesPerSecond < 0 {
+		return fmt.Errorf("cache_data transfer_limits max_bytes_per_second must be non-negative")
 	}
 	return nil
 }

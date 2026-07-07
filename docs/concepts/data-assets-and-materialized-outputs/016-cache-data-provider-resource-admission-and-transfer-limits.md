@@ -1,6 +1,6 @@
 # 016 Cache Data Provider Resource Admission And Transfer Limits
 
-Status: Proposed
+Status: implemented
 
 ## Objective
 

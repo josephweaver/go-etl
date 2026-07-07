@@ -30,6 +30,7 @@ type BoundDataAsset struct {
 	Cache           DataAssetCache           `json:"cache,omitempty"`
 	Archive         *DataAssetArchive        `json:"archive,omitempty"`
 	Materialization DataAssetMaterialization `json:"materialization,omitempty"`
+	TransferPolicy  DataAssetTransferPolicy  `json:"transfer_policy,omitempty"`
 	Parameters      map[string]any           `json:"parameters,omitempty"`
 	Metadata        map[string]any           `json:"metadata,omitempty"`
 }
@@ -74,6 +75,13 @@ type DataAssetMaterializationTemplate struct {
 
 type DataAssetMaterialization struct {
 	Strategy string `json:"strategy,omitempty"`
+}
+
+type DataAssetTransferPolicy struct {
+	MaxConcurrentSourceTransfers   int               `json:"max_concurrent_source_transfers,omitempty"`
+	RequestedBandwidthMiBPerSecond int64             `json:"requested_bandwidth_mib_per_second,omitempty"`
+	MaxBytesPerSecond              int64             `json:"max_bytes_per_second,omitempty"`
+	ProviderArgs                   map[string]string `json:"provider_args,omitempty"`
 }
 
 type MaterializedDataAssetManifest struct {
@@ -146,7 +154,10 @@ func (asset BoundDataAsset) Validate() error {
 			return err
 		}
 	}
-	return asset.Materialization.Validate()
+	if err := asset.Materialization.Validate(); err != nil {
+		return err
+	}
+	return asset.TransferPolicy.Validate()
 }
 
 func (location DataAssetLocation) Validate() error {
@@ -243,6 +254,33 @@ func (materialization DataAssetMaterializationTemplate) Validate() error {
 
 func (materialization DataAssetMaterialization) Validate() error {
 	return validateMaterializationStrategy(materialization.Strategy)
+}
+
+func (policy DataAssetTransferPolicy) Validate() error {
+	if policy.MaxConcurrentSourceTransfers < 0 {
+		return fmt.Errorf("max_concurrent_source_transfers must be non-negative")
+	}
+	if policy.RequestedBandwidthMiBPerSecond < 0 {
+		return fmt.Errorf("requested_bandwidth_mib_per_second must be non-negative")
+	}
+	if policy.MaxBytesPerSecond < 0 {
+		return fmt.Errorf("max_bytes_per_second must be non-negative")
+	}
+	for key, value := range policy.ProviderArgs {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("transfer policy provider arg key is required")
+		}
+		if key != "rclone_bwlimit" {
+			return fmt.Errorf("unsupported transfer policy provider arg %q", key)
+		}
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("transfer policy provider arg %s value is required", key)
+		}
+		if strings.TrimSpace(value) != value {
+			return fmt.Errorf("transfer policy provider arg %s must not contain leading or trailing whitespace", key)
+		}
+	}
+	return nil
 }
 
 func (manifest MaterializedDataAssetManifest) EffectiveSchema() string {

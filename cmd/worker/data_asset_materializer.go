@@ -266,7 +266,7 @@ func (m assetMaterializer) archiveExtractionRoot(asset model.BoundDataAsset, sou
 func (m assetMaterializer) acquireSource(asset model.BoundDataAsset, destination string) (assetEvidence, error) {
 	switch asset.Provider {
 	case model.DataProviderHTTP:
-		return m.downloadHTTP(asset.Location.URI, destination)
+		return m.downloadHTTP(asset.Location.URI, destination, asset.TransferPolicy.MaxBytesPerSecond)
 	case model.DataProviderGDriveRclone:
 		return m.acquireGDriveRclone(asset, destination)
 	case model.DataProviderLocalFile, model.DataProviderRegisteredLocation:
@@ -274,13 +274,13 @@ func (m assetMaterializer) acquireSource(asset model.BoundDataAsset, destination
 		if err != nil {
 			return assetEvidence{}, err
 		}
-		return copyFileWithLimit(source, destination, m.config.effectiveMaxAssetBytes())
+		return copyFileWithLimit(source, destination, m.config.effectiveMaxAssetBytes(), asset.TransferPolicy.MaxBytesPerSecond)
 	default:
 		return assetEvidence{}, fmt.Errorf("unsupported data provider %q", asset.Provider)
 	}
 }
 
-func (m assetMaterializer) downloadHTTP(uri string, destination string) (assetEvidence, error) {
+func (m assetMaterializer) downloadHTTP(uri string, destination string, maxBytesPerSecond int64) (assetEvidence, error) {
 	response, err := http.Get(uri)
 	if err != nil {
 		return assetEvidence{}, fmt.Errorf("download %s: %w", uri, err)
@@ -289,7 +289,7 @@ func (m assetMaterializer) downloadHTTP(uri string, destination string) (assetEv
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return assetEvidence{}, fmt.Errorf("download %s: unexpected status %s", uri, response.Status)
 	}
-	return writeStreamAtomically(destination, response.Body, m.config.effectiveMaxAssetBytes())
+	return writeStreamAtomically(destination, response.Body, m.config.effectiveMaxAssetBytes(), maxBytesPerSecond)
 }
 
 func (m assetMaterializer) resolveNamedLocationPath(name string, relativePath string) (string, error) {
@@ -392,13 +392,13 @@ func writeCacheManifest(path string, manifest workerCacheManifest) error {
 	return atomicWriteFile(path, data, 0644)
 }
 
-func copyFileWithLimit(source string, destination string, limit int64) (assetEvidence, error) {
+func copyFileWithLimit(source string, destination string, limit int64, maxBytesPerSecond int64) (assetEvidence, error) {
 	file, err := os.Open(source)
 	if err != nil {
 		return assetEvidence{}, fmt.Errorf("open data asset source %s: %w", source, err)
 	}
 	defer file.Close()
-	return writeStreamAtomically(destination, file, limit)
+	return writeStreamAtomically(destination, file, limit, maxBytesPerSecond)
 }
 
 func hashFileWithLimit(path string, limit int64) (assetEvidence, error) {
@@ -415,7 +415,7 @@ func hashFileWithLimit(path string, limit int64) (assetEvidence, error) {
 	return assetEvidence{size: size, sha256: hex.EncodeToString(hash.Sum(nil))}, nil
 }
 
-func writeStreamAtomically(destination string, source io.Reader, limit int64) (assetEvidence, error) {
+func writeStreamAtomically(destination string, source io.Reader, limit int64, maxBytesPerSecond int64) (assetEvidence, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 		return assetEvidence{}, fmt.Errorf("create parent directory for %s: %w", destination, err)
 	}
@@ -426,7 +426,7 @@ func writeStreamAtomically(destination string, source io.Reader, limit int64) (a
 	}
 
 	hash := sha256.New()
-	size, copyErr := copyHashWithLimit(file, source, hash, limit)
+	size, copyErr := copyHashWithLimitAndThrottle(file, source, hash, limit, maxBytesPerSecond)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmp)
@@ -444,6 +444,10 @@ func writeStreamAtomically(destination string, source io.Reader, limit int64) (a
 }
 
 func copyHashWithLimit(dst io.Writer, src io.Reader, h hash.Hash, limit int64) (int64, error) {
+	return copyHashWithLimitAndThrottle(dst, src, h, limit, 0)
+}
+
+func copyHashWithLimitAndThrottle(dst io.Writer, src io.Reader, h hash.Hash, limit int64, maxBytesPerSecond int64) (int64, error) {
 	buffer := make([]byte, 32*1024)
 	var written int64
 	for {
@@ -460,6 +464,9 @@ func copyHashWithLimit(dst io.Writer, src io.Reader, h hash.Hash, limit int64) (
 			if _, err := dst.Write(chunk); err != nil {
 				return written, err
 			}
+			if maxBytesPerSecond > 0 {
+				dataAssetThrottleSleep(throttleDuration(n, maxBytesPerSecond))
+			}
 		}
 		if readErr == io.EOF {
 			return written, nil
@@ -468,6 +475,15 @@ func copyHashWithLimit(dst io.Writer, src io.Reader, h hash.Hash, limit int64) (
 			return written, readErr
 		}
 	}
+}
+
+var dataAssetThrottleSleep = time.Sleep
+
+func throttleDuration(bytesRead int, maxBytesPerSecond int64) time.Duration {
+	if bytesRead <= 0 || maxBytesPerSecond <= 0 {
+		return 0
+	}
+	return time.Duration(bytesRead) * time.Second / time.Duration(maxBytesPerSecond)
 }
 
 func sourceExists(path string) bool {

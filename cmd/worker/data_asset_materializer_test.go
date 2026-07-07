@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -106,6 +107,49 @@ func TestMaterializeDataAssetsStreamsHTTPToWorkerCache(t *testing.T) {
 	}
 	manifest := readMaterializedManifest(t, manifestPath)
 	if manifest.Assets[0].SourceSHA256 != sha256Text("http fixture") {
+		t.Fatalf("unexpected source hash: %+v", manifest.Assets[0])
+	}
+}
+
+func TestMaterializeDataAssetsHTTPHonorsTransferByteRateWithInjectedSleeper(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("1234567890"))
+	}))
+	t.Cleanup(server.Close)
+
+	worker, _ := newDataAssetTestWorker(t)
+	asset := httpAsset(server.URL, "http/throttled", nil, nil)
+	asset.TransferPolicy = model.DataAssetTransferPolicy{MaxBytesPerSecond: 5}
+
+	var sleeps []time.Duration
+	originalSleep := dataAssetThrottleSleep
+	dataAssetThrottleSleep = func(duration time.Duration) {
+		sleeps = append(sleeps, duration)
+	}
+	t.Cleanup(func() {
+		dataAssetThrottleSleep = originalSleep
+	})
+
+	manifestPath, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work"))
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	if len(sleeps) == 0 {
+		t.Fatal("expected throttle sleeper to be called")
+	}
+	var total time.Duration
+	for _, sleep := range sleeps {
+		if sleep <= 0 {
+			t.Fatalf("sleep duration = %s, want positive", sleep)
+		}
+		total += sleep
+	}
+	if total < 2*time.Second {
+		t.Fatalf("total sleep = %s, want at least 2s for 10 bytes at 5 B/s", total)
+	}
+	manifest := readMaterializedManifest(t, manifestPath)
+	if manifest.Assets[0].SourceSHA256 != sha256Text("1234567890") {
 		t.Fatalf("unexpected source hash: %+v", manifest.Assets[0])
 	}
 }

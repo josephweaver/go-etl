@@ -263,6 +263,10 @@ func TestDataAssetValidationRejectsUnsafeAndInvalidFields(t *testing.T) {
 		{name: "unsafe archive member template", err: DataAssetArchiveTemplate{Type: DataAssetArchiveTypeZip, Select: []DataAssetArchiveSelectTemplate{{MemberTemplate: "../source.tif"}}}.Validate()},
 		{name: "unsafe archive as path", err: DataAssetArchiveTemplate{Type: DataAssetArchiveTypeZip, Select: []DataAssetArchiveSelectTemplate{{MemberTemplate: "source.tif", As: "../source.tif"}}}.Validate()},
 		{name: "unsafe publish path template", err: PublishedDataAssetTarget{Name: "tile", Kind: "table", Location: DataLocationPathTemplate{Name: "published", PathTemplate: "../tile.csv"}}.Validate()},
+		{name: "negative max concurrent source transfers", err: DataAssetTransferPolicy{MaxConcurrentSourceTransfers: -1}.Validate()},
+		{name: "negative requested bandwidth", err: DataAssetTransferPolicy{RequestedBandwidthMiBPerSecond: -1}.Validate()},
+		{name: "negative max bytes per second", err: DataAssetTransferPolicy{MaxBytesPerSecond: -1}.Validate()},
+		{name: "unsupported provider arg", err: DataAssetTransferPolicy{ProviderArgs: map[string]string{"--transfers": "99"}}.Validate()},
 	}
 
 	for _, test := range tests {
@@ -306,6 +310,16 @@ func TestDataAssetIntegrityCacheAndArchiveValidate(t *testing.T) {
 	}
 	if err := sevenZipArchive.Validate(); err != nil {
 		t.Fatalf("seven_zip archive Validate() error = %v", err)
+	}
+
+	transfer := DataAssetTransferPolicy{
+		MaxConcurrentSourceTransfers:   2,
+		RequestedBandwidthMiBPerSecond: 25,
+		MaxBytesPerSecond:              26214400,
+		ProviderArgs:                   map[string]string{"rclone_bwlimit": "25M"},
+	}
+	if err := transfer.Validate(); err != nil {
+		t.Fatalf("transfer policy Validate() error = %v", err)
 	}
 }
 

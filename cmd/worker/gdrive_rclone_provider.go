@@ -35,12 +35,15 @@ func (m assetMaterializer) acquireGDriveRclone(asset model.BoundDataAsset, desti
 		executable: m.config.RcloneExecutable,
 		configPath: m.config.RcloneConfigPath,
 	}
-	return provider.copyTo(context.Background(), asset.Location.Remote, asset.Location.DrivePath, destination, m.config.effectiveMaxAssetBytes())
+	return provider.copyTo(context.Background(), asset.Location.Remote, asset.Location.DrivePath, destination, m.config.effectiveMaxAssetBytes(), asset.TransferPolicy)
 }
 
-func (p gdriveRcloneProvider) copyTo(ctx context.Context, remote string, drivePath string, destination string, maxBytes int64) (assetEvidence, error) {
+func (p gdriveRcloneProvider) copyTo(ctx context.Context, remote string, drivePath string, destination string, maxBytes int64, transferPolicy model.DataAssetTransferPolicy) (assetEvidence, error) {
 	if strings.TrimSpace(destination) == "" {
 		return assetEvidence{}, fmt.Errorf("rclone destination is required")
+	}
+	if err := transferPolicy.Validate(); err != nil {
+		return assetEvidence{}, err
 	}
 	safePath, err := cleanDataRelativePath(drivePath)
 	if err != nil {
@@ -52,7 +55,7 @@ func (p gdriveRcloneProvider) copyTo(ctx context.Context, remote string, drivePa
 		return assetEvidence{}, fmt.Errorf("create parent directory for %s: %w", destination, err)
 	}
 	tmp := destination + ".tmp-" + randomHex(8)
-	args := p.copyToArgs(remotePath, tmp)
+	args := p.copyToArgs(remotePath, tmp, transferPolicy)
 	command := exec.CommandContext(ctx, p.executable, args...)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -72,12 +75,34 @@ func (p gdriveRcloneProvider) copyTo(ctx context.Context, remote string, drivePa
 	return evidence, nil
 }
 
-func (p gdriveRcloneProvider) copyToArgs(remotePath string, destination string) []string {
+func (p gdriveRcloneProvider) copyToArgs(remotePath string, destination string, transferPolicy model.DataAssetTransferPolicy) []string {
 	args := []string{}
 	if strings.TrimSpace(p.configPath) != "" {
 		args = append(args, "--config", p.configPath)
 	}
-	return append(args, "copyto", remotePath, destination)
+	args = append(args, "copyto", remotePath, destination)
+	if bwlimit := rcloneBwlimit(transferPolicy); bwlimit != "" {
+		args = append(args, "--bwlimit", bwlimit)
+	}
+	return args
+}
+
+func rcloneBwlimit(transferPolicy model.DataAssetTransferPolicy) string {
+	if transferPolicy.ProviderArgs != nil {
+		if value := strings.TrimSpace(transferPolicy.ProviderArgs["rclone_bwlimit"]); value != "" {
+			return value
+		}
+	}
+	if transferPolicy.RequestedBandwidthMiBPerSecond > 0 {
+		return fmt.Sprintf("%dM", transferPolicy.RequestedBandwidthMiBPerSecond)
+	}
+	if transferPolicy.MaxBytesPerSecond > 0 {
+		mib := transferPolicy.MaxBytesPerSecond / (1024 * 1024)
+		if mib > 0 {
+			return fmt.Sprintf("%dM", mib)
+		}
+	}
+	return ""
 }
 
 func (p gdriveRcloneProvider) redactOutput(output []byte) string {

@@ -114,5 +114,19 @@ func cacheDataPayloadFromWorkItem(item model.WorkItem) (model.CacheDataWorkItemP
 	if len(assets) != 1 {
 		return model.CacheDataWorkItemPayload{}, model.BoundDataAsset{}, fmt.Errorf("cache_data requires exactly one bound data asset, got %d", len(assets))
 	}
-	return payload, assets[0], nil
+	asset := assets[0]
+	if dataAssetTransferPolicyEmpty(asset.TransferPolicy) {
+		asset.TransferPolicy = payload.TransferPolicy
+	}
+	if asset.TransferPolicy.MaxBytesPerSecond == 0 && payload.TransferLimits.MaxBytesPerSecond > 0 {
+		asset.TransferPolicy.MaxBytesPerSecond = payload.TransferLimits.MaxBytesPerSecond
+	}
+	return payload, asset, nil
+}
+
+func dataAssetTransferPolicyEmpty(policy model.DataAssetTransferPolicy) bool {
+	return policy.MaxConcurrentSourceTransfers == 0 &&
+		policy.RequestedBandwidthMiBPerSecond == 0 &&
+		policy.MaxBytesPerSecond == 0 &&
+		len(policy.ProviderArgs) == 0
 }

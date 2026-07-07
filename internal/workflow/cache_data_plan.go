@@ -3,6 +3,9 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -48,7 +51,10 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 			}
 			cacheItem, ok := cacheByAssetKey[assetKey]
 			if !ok {
-				payload := CacheDataPayload(asset, targetEnvironmentID, assetKey)
+				payload, constraints, err := CacheDataPayload(asset, targetEnvironmentID, assetKey)
+				if err != nil {
+					return CompileStageResult{}, fmt.Errorf("plan cache_data for work item %s binding %s: %w", item.WorkItem.ID, asset.BindingName, err)
+				}
 				cacheItem = CompileStageWorkItem{
 					WorkflowID:    item.WorkflowID,
 					StageIndex:    item.StageIndex,
@@ -74,6 +80,7 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 							},
 						},
 					},
+					ResourceConstraints: constraints,
 				}
 				cacheByAssetKey[assetKey] = cacheItem
 				cacheOrder = append(cacheOrder, assetKey)
@@ -123,7 +130,15 @@ func CacheDataAssetKey(asset model.BoundDataAsset, targetEnvironmentID string) (
 	return "sha256:" + hash, nil
 }
 
-func CacheDataPayload(asset model.BoundDataAsset, targetEnvironmentID string, assetKey string) model.CacheDataWorkItemPayload {
+func CacheDataPayload(asset model.BoundDataAsset, targetEnvironmentID string, assetKey string) (model.CacheDataWorkItemPayload, []model.WorkItemResourceConstraint, error) {
+	constraints, err := CacheDataResourceConstraints(asset, targetEnvironmentID)
+	if err != nil {
+		return model.CacheDataWorkItemPayload{}, nil, err
+	}
+	limits := model.DataAssetTransferLimits{}
+	if asset.TransferPolicy.MaxBytesPerSecond > 0 {
+		limits.MaxBytesPerSecond = asset.TransferPolicy.MaxBytesPerSecond
+	}
 	return model.CacheDataWorkItemPayload{
 		Operator:            string(model.WorkItemTypeCacheData),
 		TargetEnvironmentID: targetEnvironmentID,
@@ -138,10 +153,80 @@ func CacheDataPayload(asset model.BoundDataAsset, targetEnvironmentID string, as
 		Cache:               asset.Cache,
 		Integrity:           asset.Integrity,
 		Archive:             asset.Archive,
+		ResourceConstraints: constraints,
+		TransferPolicy:      asset.TransferPolicy,
+		TransferLimits:      limits,
 		Parameters:          asset.Parameters,
 		Metadata:            asset.Metadata,
+	}, constraints, nil
+}
+
+func CacheDataResourceConstraints(asset model.BoundDataAsset, targetEnvironmentID string) ([]model.WorkItemResourceConstraint, error) {
+	if err := asset.Validate(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(targetEnvironmentID) == "" {
+		return nil, fmt.Errorf("target_environment_id is required")
+	}
+	sourceKey, err := cacheDataProviderResourceKey(asset)
+	if err != nil {
+		return nil, err
+	}
+	targetUnits := asset.TransferPolicy.MaxConcurrentSourceTransfers
+	if targetUnits == 0 {
+		targetUnits = 1
+	}
+	return []model.WorkItemResourceConstraint{
+		{
+			ConstraintIndex: 0,
+			ResourceKey:     sourceKey,
+			RequestedUnits:  1,
+			Operator:        model.WorkItemResourceConstraintOperatorLessEq,
+			TargetUnits:     targetUnits,
+		},
+	}, nil
+}
+
+func cacheDataProviderResourceKey(asset model.BoundDataAsset) (string, error) {
+	switch asset.Provider {
+	case model.DataProviderHTTP:
+		parsed, err := url.Parse(asset.Location.URI)
+		if err != nil {
+			return "", fmt.Errorf("parse http data asset uri: %w", err)
+		}
+		host := parsed.Hostname()
+		if host == "" {
+			host = parsed.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+		}
+		return "provider:http:" + sanitizeResourceKeySegment(host) + "/download", nil
+	case model.DataProviderGDriveRclone:
+		return "provider:gdrive-rclone:" + sanitizeResourceKeySegment(asset.Location.Remote) + "/download", nil
+	case model.DataProviderLocalFile:
+		return "provider:local-file:" + sanitizeResourceKeySegment(asset.Location.LocationName) + "/read", nil
+	case model.DataProviderRegisteredLocation:
+		return "provider:registered-location:" + sanitizeResourceKeySegment(asset.Location.LocationName) + "/read", nil
+	default:
+		return "", fmt.Errorf("unsupported data provider %q", asset.Provider)
 	}
 }
+
+func sanitizeResourceKeySegment(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return "unknown"
+	}
+	sanitized := resourceKeyUnsafeSegmentPattern.ReplaceAllString(trimmed, "-")
+	sanitized = strings.Trim(sanitized, "-")
+	if sanitized == "" {
+		return "unknown"
+	}
+	return sanitized
+}
+
+var resourceKeyUnsafeSegmentPattern = regexp.MustCompile(`[^a-z0-9._-]+`)
 
 func boundDataAssetsFromParameters(parameters model.Parameters) ([]model.BoundDataAsset, error) {
 	parameter, ok := parameters["data_assets"]

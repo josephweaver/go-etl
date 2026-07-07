@@ -173,7 +173,7 @@ func extractZipFile(file *zip.File, outputPath string, limit int64) (assetEviden
 		return assetEvidence{}, err
 	}
 	defer source.Close()
-	return writeStreamAtomically(outputPath, source, limit)
+	return writeStreamAtomically(outputPath, source, limit, 0)
 }
 
 func extractSevenZipSelection(req archiveExtractionRequest, selections []archiveSelection) (archiveExtractionResult, error) {

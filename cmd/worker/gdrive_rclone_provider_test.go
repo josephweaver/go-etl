@@ -75,6 +75,36 @@ func TestMaterializeDataAssetsGDriveRcloneCopiesFixtureWithStructuredArgs(t *tes
 	}
 }
 
+func TestMaterializeDataAssetsGDriveRclonePassesConfiguredBandwidthLimit(t *testing.T) {
+	worker, _ := newDataAssetTestWorker(t)
+	source := filepath.Join(worker.Config.TmpDir, "fixture.txt")
+	if err := os.WriteFile(source, []byte("drive fixture"), 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	argsPath := filepath.Join(worker.Config.TmpDir, "rclone-args.jsonl")
+	configureFakeRclone(t, &worker, source, argsPath, "")
+
+	asset := gdriveRcloneAsset("Risk Model/data.txt", "gdrive/bwlimit/source.txt", nil, nil)
+	asset.TransferPolicy = model.DataAssetTransferPolicy{
+		RequestedBandwidthMiBPerSecond: 25,
+		ProviderArgs: map[string]string{
+			"rclone_bwlimit": "25M",
+		},
+	}
+	if _, _, err := worker.materializeDataAssets(dataAssetItem(asset), filepath.Join(worker.Config.TmpDir, "work")); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	calls := readFakeRcloneCalls(t, argsPath)
+	if len(calls) != 1 {
+		t.Fatalf("rclone call count = %d", len(calls))
+	}
+	args := calls[0]
+	if len(args) != 5 || args[0] != "copyto" || args[3] != "--bwlimit" || args[4] != "25M" {
+		t.Fatalf("unexpected rclone bwlimit args: %#v", args)
+	}
+}
+
 func TestMaterializeDataAssetsGDriveRcloneValidatesBeforeInvocation(t *testing.T) {
 	worker, _ := newDataAssetTestWorker(t)
 	argsPath := filepath.Join(worker.Config.TmpDir, "rclone-args.jsonl")
