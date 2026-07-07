@@ -104,6 +104,93 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 	return planned, nil
 }
 
+func PlanCommitDataWorkItems(result CompileStageResult) (CompileStageResult, error) {
+	if len(result.WorkItems) == 0 {
+		return result, nil
+	}
+
+	planned := CompileStageResult{
+		WorkflowID: result.WorkflowID,
+		StageIndex: result.StageIndex,
+		Steps:      result.Steps,
+		WorkItems:  make([]CompileStageWorkItem, 0, len(result.WorkItems)),
+	}
+	seenWorkItems := map[string]bool{}
+	for _, item := range result.WorkItems {
+		targets, err := boundPublishTargetsFromParameters(item.WorkItem.Parameters)
+		if err != nil {
+			return CompileStageResult{}, fmt.Errorf("plan commit_data for work item %s: %w", item.WorkItem.ID, err)
+		}
+		if len(targets) == 0 || item.WorkItem.Type == model.WorkItemTypeCommitData {
+			planned.WorkItems = append(planned.WorkItems, item)
+			seenWorkItems[item.WorkItem.ID] = true
+			continue
+		}
+
+		targetEnvironmentID, err := targetEnvironmentIDFromParameters(item.WorkItem.Parameters)
+		if err != nil {
+			return CompileStageResult{}, fmt.Errorf("plan commit_data for work item %s: %w", item.WorkItem.ID, err)
+		}
+		computeItem := item
+		computeItem.WorkItem.Parameters = parametersWithoutPublishBindings(item.WorkItem.Parameters)
+		planned.WorkItems = append(planned.WorkItems, computeItem)
+		seenWorkItems[computeItem.WorkItem.ID] = true
+
+		for i, target := range targets {
+			constraints, err := CommitDataResourceConstraints(target, targetEnvironmentID)
+			if err != nil {
+				return CompileStageResult{}, fmt.Errorf("plan commit_data for work item %s publish target %s: %w", item.WorkItem.ID, target.Name, err)
+			}
+			payload := model.CommitDataWorkItemPayload{
+				Operator:            string(model.WorkItemTypeCommitData),
+				TargetEnvironmentID: targetEnvironmentID,
+				Source: model.CommitDataSource{
+					FromWorkItemID: item.WorkItem.ID,
+					FromArtifact:   target.FromArtifact,
+				},
+				PublishTarget:       target,
+				ResourceConstraints: constraints,
+			}
+			if err := payload.Validate(); err != nil {
+				return CompileStageResult{}, fmt.Errorf("plan commit_data for work item %s publish target %s: %w", item.WorkItem.ID, target.Name, err)
+			}
+			commitID, err := commitDataWorkItemID(item.WorkItem.ID, target)
+			if err != nil {
+				return CompileStageResult{}, fmt.Errorf("plan commit_data for work item %s publish target %s: %w", item.WorkItem.ID, target.Name, err)
+			}
+			if seenWorkItems[commitID] {
+				return CompileStageResult{}, fmt.Errorf("duplicate generated work-item id in stage %d: %s", result.StageIndex, commitID)
+			}
+			seenWorkItems[commitID] = true
+			planned.WorkItems = append(planned.WorkItems, CompileStageWorkItem{
+				WorkflowID:    item.WorkflowID,
+				StageIndex:    item.StageIndex,
+				StepIndex:     item.StepIndex,
+				StepID:        item.StepID,
+				WorkItemIndex: item.WorkItemIndex + i + 1,
+				WorkItem: model.WorkItem{
+					ID:             commitID,
+					Type:           model.WorkItemTypeCommitData,
+					OutputFilename: commitID + ".json",
+					DependsOn:      []string{item.WorkItem.ID},
+					Parameters: model.Parameters{
+						"commit_data": {
+							Type:  "commit_data",
+							Value: payload,
+						},
+						"target_environment_id": {
+							Type:  "string",
+							Value: targetEnvironmentID,
+						},
+					},
+				},
+				ResourceConstraints: constraints,
+			})
+		}
+	}
+	return planned, nil
+}
+
 func CacheDataAssetKey(asset model.BoundDataAsset, targetEnvironmentID string) (string, error) {
 	if err := asset.Validate(); err != nil {
 		return "", err
@@ -187,6 +274,24 @@ func CacheDataResourceConstraints(asset model.BoundDataAsset, targetEnvironmentI
 	}, nil
 }
 
+func CommitDataResourceConstraints(target model.BoundPublishTarget, targetEnvironmentID string) ([]model.WorkItemResourceConstraint, error) {
+	if err := target.Validate(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(targetEnvironmentID) == "" {
+		return nil, fmt.Errorf("target_environment_id is required")
+	}
+	return []model.WorkItemResourceConstraint{
+		{
+			ConstraintIndex: 0,
+			ResourceKey:     "target:" + sanitizeResourceKeySegment(targetEnvironmentID) + "/published-data-write:" + sanitizeResourceKeySegment(target.Location.LocationName),
+			RequestedUnits:  1,
+			Operator:        model.WorkItemResourceConstraintOperatorLessEq,
+			TargetUnits:     1,
+		},
+	}, nil
+}
+
 func cacheDataProviderResourceKey(asset model.BoundDataAsset) (string, error) {
 	switch asset.Provider {
 	case model.DataProviderHTTP:
@@ -253,6 +358,101 @@ func boundDataAssetsFromParameters(parameters model.Parameters) ([]model.BoundDa
 	return assets, nil
 }
 
+func boundPublishTargetsFromParameters(parameters model.Parameters) ([]model.BoundPublishTarget, error) {
+	parameter, ok := parameters["publish"]
+	if !ok {
+		parameter, ok = parameters["publish_targets"]
+		if !ok {
+			return nil, nil
+		}
+	}
+	if parameter.Value == nil {
+		return nil, nil
+	}
+	if parameter.Type != "" && parameter.Type != "publish" && parameter.Type != "publish_targets" && parameter.Type != "list" && parameter.Type != "object" {
+		return nil, fmt.Errorf("parameter publish has type %s, want publish, publish_targets, list, or object", parameter.Type)
+	}
+
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return nil, fmt.Errorf("encode publish parameter: %w", err)
+	}
+	var list []model.BoundPublishTarget
+	if err := json.Unmarshal(data, &list); err == nil {
+		return normalizeWorkflowPublishTargets(list)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		keys := make([]string, 0, len(raw))
+		for key := range raw {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		targets := make([]model.BoundPublishTarget, 0, len(raw))
+		for _, key := range keys {
+			var target model.BoundPublishTarget
+			if err := json.Unmarshal(raw[key], &target); err != nil {
+				return nil, fmt.Errorf("decode publish target %q: %w", key, err)
+			}
+			if target.Name != "" && target.Name != key {
+				return nil, fmt.Errorf("publish target %q name %q does not match object key", key, target.Name)
+			}
+			if target.Name == "" {
+				target.Name = key
+			}
+			if target.TargetName == "" && target.Target != "" {
+				target.TargetName = target.Target
+			}
+			if target.TargetName == "" {
+				target.TargetName = target.Name
+			}
+			targets = append(targets, target)
+		}
+		return normalizeWorkflowPublishTargets(targets)
+	}
+
+	return nil, fmt.Errorf("parameter publish must be a publish target list or object")
+}
+
+func normalizeWorkflowPublishTargets(targets []model.BoundPublishTarget) ([]model.BoundPublishTarget, error) {
+	normalized := make([]model.BoundPublishTarget, 0, len(targets))
+	for i, target := range targets {
+		if target.TargetName == "" && target.Target != "" {
+			target.TargetName = target.Target
+		}
+		if target.Name == "" {
+			target.Name = target.TargetName
+		}
+		if target.TargetName == "" {
+			target.TargetName = target.Name
+		}
+		if target.Target != "" && target.TargetName != target.Target {
+			return nil, fmt.Errorf("publish target %q target_name %q does not match target %q", target.Name, target.TargetName, target.Target)
+		}
+		if target.Name != target.TargetName {
+			return nil, fmt.Errorf("publish target name %q does not match target_name %q", target.Name, target.TargetName)
+		}
+		if err := target.Validate(); err != nil {
+			return nil, fmt.Errorf("publish target %d: %w", i, err)
+		}
+		normalized = append(normalized, target)
+	}
+	return normalized, nil
+}
+
+func parametersWithoutPublishBindings(parameters model.Parameters) model.Parameters {
+	next := make(model.Parameters, len(parameters))
+	for name, parameter := range parameters {
+		if name == "publish" || name == "publish_targets" {
+			continue
+		}
+		next[name] = parameter
+	}
+	return next
+}
+
 func targetEnvironmentIDFromParameters(parameters model.Parameters) (string, error) {
 	parameter, ok := parameters["target_environment_id"]
 	if !ok {
@@ -277,6 +477,20 @@ func cacheDataWorkItemID(assetKey string) string {
 
 func cacheDataOutputFilename(assetKey string) string {
 	return cacheDataWorkItemID(assetKey) + ".json"
+}
+
+func commitDataWorkItemID(sourceWorkItemID string, target model.BoundPublishTarget) (string, error) {
+	identity := map[string]any{
+		"source_work_item_id": sourceWorkItemID,
+		"target_name":         target.Name,
+		"from_artifact":       target.FromArtifact,
+		"location":            target.Location,
+	}
+	_, hash, err := fp.CanonicalJSONSHA256(normalizedCanonicalValue(identity))
+	if err != nil {
+		return "", err
+	}
+	return "commit-data-" + hash, nil
 }
 
 func effectiveDataAssetCacheStrategy(asset model.BoundDataAsset) string {

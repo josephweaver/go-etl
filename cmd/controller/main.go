@@ -2860,6 +2860,10 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if terminalState == model.WorkItemMembershipStateCompleted || terminalState == model.WorkItemMembershipStateSkipped {
 		if err := c.activateNextReadyWorkflowStage(r.Context(), workItem.RunID, workItem.StageIndex, activationTimeFromCompletedWork(completed)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3133,6 +3137,13 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "load reuse candidates", http.StatusInternalServerError)
 		return
 	}
+	if item.Type == model.WorkItemTypeCommitData {
+		item, err = c.hydrateCommitDataWorkItem(r.Context(), claim, item)
+		if err != nil {
+			http.Error(w, "hydrate commit_data work item", http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
 		return
@@ -3142,6 +3153,63 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) hydrateCommitDataWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {
+	if _, ok := item.Parameters["artifact_manifest"]; ok {
+		return item, nil
+	}
+	parameter, ok := item.Parameters["commit_data"]
+	if !ok {
+		return model.WorkItem{}, fmt.Errorf("commit_data parameter is required")
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return model.WorkItem{}, fmt.Errorf("encode commit_data parameter: %w", err)
+	}
+	var payload model.CommitDataWorkItemPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return model.WorkItem{}, fmt.Errorf("decode commit_data parameter: %w", err)
+	}
+	if err := payload.Validate(); err != nil {
+		return model.WorkItem{}, err
+	}
+
+	sourceID := persistedDependencyID(item.DependsOn, payload.Source.FromWorkItemID)
+	if sourceID == "" {
+		return model.WorkItem{}, fmt.Errorf("commit_data source %q is not listed in depends_on", payload.Source.FromWorkItemID)
+	}
+	terminals, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, claim.WorkItem.RunID)
+	if err != nil {
+		return model.WorkItem{}, err
+	}
+	for _, terminal := range terminals {
+		if terminal.TerminalState != "completed" || terminal.WorkItem.ID != sourceID {
+			continue
+		}
+		manifest, found, err := artifactManifestFromOutputJSON(terminal.OutputJSON)
+		if err != nil {
+			return model.WorkItem{}, err
+		}
+		if !found {
+			return model.WorkItem{}, fmt.Errorf("completed source %s output is not an artifact manifest", sourceID)
+		}
+		item.Parameters["artifact_manifest"] = model.Parameter{
+			Type:  "artifact_manifest",
+			Value: manifest,
+		}
+		return item, nil
+	}
+	return model.WorkItem{}, fmt.Errorf("completed source %s not found for commit_data", sourceID)
+}
+
+func persistedDependencyID(dependsOn []string, sourceWorkItemID string) string {
+	for _, dependencyID := range dependsOn {
+		if dependencyID == sourceWorkItemID || strings.HasSuffix(dependencyID, ":"+sourceWorkItemID) {
+			return dependencyID
+		}
+	}
+	return ""
 }
 
 func (c *Controller) persistedReuseCandidates(ctx context.Context, claim persistence.ClaimedWorkRecord) ([]model.WorkReuseCandidate, error) {

@@ -2139,6 +2139,50 @@ func TestStoreClaimNextWorkCacheDataSourceMutexAdmitsOnlyOne(t *testing.T) {
 	assertQueuedWork(t, ctx, store, second.ID, "2026-07-03T00:00:02Z")
 }
 
+func TestStoreClaimNextWorkCommitDataPublishedLocationMutexAdmitsOnlyOne(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	resourceKey := "target:target-local/published-data-write:published_data"
+	first := testWorkItemRecord("commit-data-first", run.ID, 0, 0)
+	second := testWorkItemRecord("commit-data-second", run.ID, 0, 1)
+	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
+		WorkItems: []WorkItemRecord{first, second},
+		ResourceConstraints: []WorkItemResourceConstraintRecord{
+			testResourceConstraintRecord(first.ID, 0, resourceKey, 1, "<=", 1),
+			testResourceConstraintRecord(second.ID, 0, resourceKey, 1, "<=", 1),
+		},
+		QueuedWork: []QueuedWorkRecord{
+			{WorkItemRecord: first, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: second, QueuedAt: "2026-07-03T00:00:02Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+
+	firstClaim := testClaimWorkRequest()
+	firstClaim.AttemptID = "attempt-first"
+	claimed, found, err := store.ClaimNextWork(ctx, firstClaim)
+	if err != nil {
+		t.Fatalf("first ClaimNextWork() error = %v", err)
+	}
+	if !found || claimed.WorkItem.ID != first.ID {
+		t.Fatalf("first ClaimNextWork() = %+v found %v, want %s", claimed, found, first.ID)
+	}
+
+	secondClaim := testClaimWorkRequest()
+	secondClaim.AttemptID = "attempt-second"
+	claimed, found, err = store.ClaimNextWork(ctx, secondClaim)
+	if err != nil {
+		t.Fatalf("second ClaimNextWork() error = %v", err)
+	}
+	if found {
+		t.Fatalf("second ClaimNextWork() found = true with claim %+v, want false", claimed)
+	}
+	assertQueuedWork(t, ctx, store, second.ID, "2026-07-03T00:00:02Z")
+}
+
 func TestStoreClaimNextWorkCacheDataSourceCapacityAdmitsTwoButNotThree(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))

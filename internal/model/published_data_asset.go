@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const PublishedDataAssetOverwriteFailIfExists = "fail_if_exists"
+const (
+	PublishedDataAssetManifestSchemaV1      = "goet/published-data-assets/v1"
+	PublishedDataAssetOverwriteFailIfExists = "fail_if_exists"
+)
 
 type PublishedDataAssetTarget struct {
 	Name            string                   `json:"name"`
@@ -19,13 +22,21 @@ type PublishedDataAssetTarget struct {
 
 type PublishedDataAsset struct {
 	Name            string `json:"name"`
+	FromWorkItemID  string `json:"from_work_item_id,omitempty"`
 	FromArtifact    string `json:"from_artifact"`
+	ContentType     string `json:"content_type,omitempty"`
 	StorageScope    string `json:"storage_scope"`
 	LocationName    string `json:"location_name"`
 	Path            string `json:"path"`
 	SizeBytes       *int64 `json:"size_bytes,omitempty"`
 	SHA256          string `json:"sha256,omitempty"`
 	OverwritePolicy string `json:"overwrite_policy,omitempty"`
+}
+
+type PublishedDataAssetManifest struct {
+	Schema              string               `json:"schema"`
+	TargetEnvironmentID string               `json:"target_environment_id"`
+	PublishedAssets     []PublishedDataAsset `json:"published_assets"`
 }
 
 type BoundPublishTarget struct {
@@ -123,6 +134,9 @@ func (asset PublishedDataAsset) Validate() error {
 	if err := validateDataName(asset.Name, "published data asset name"); err != nil {
 		return err
 	}
+	if strings.TrimSpace(asset.FromWorkItemID) == "" && asset.FromWorkItemID != "" {
+		return fmt.Errorf("published data asset from_work_item_id must not be empty when set")
+	}
 	if err := validateDataName(asset.FromArtifact, "published data asset from_artifact"); err != nil {
 		return err
 	}
@@ -142,6 +156,31 @@ func (asset PublishedDataAsset) Validate() error {
 		return err
 	}
 	return validateOverwritePolicy(asset.OverwritePolicy)
+}
+
+func (manifest PublishedDataAssetManifest) EffectiveSchema() string {
+	if strings.TrimSpace(manifest.Schema) == "" {
+		return PublishedDataAssetManifestSchemaV1
+	}
+	return manifest.Schema
+}
+
+func (manifest PublishedDataAssetManifest) Validate() error {
+	if manifest.EffectiveSchema() != PublishedDataAssetManifestSchemaV1 {
+		return fmt.Errorf("unsupported published data asset manifest schema: %s", manifest.Schema)
+	}
+	if strings.TrimSpace(manifest.TargetEnvironmentID) == "" {
+		return fmt.Errorf("published data asset manifest target_environment_id is required")
+	}
+	if len(manifest.PublishedAssets) == 0 {
+		return fmt.Errorf("at least one published asset is required")
+	}
+	for i, asset := range manifest.PublishedAssets {
+		if err := asset.Validate(); err != nil {
+			return fmt.Errorf("published asset %d: %w", i, err)
+		}
+	}
+	return nil
 }
 
 func validateOverwritePolicy(policy string) error {

@@ -1,6 +1,6 @@
 # 017 Commit Data Published Output Work Items
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 

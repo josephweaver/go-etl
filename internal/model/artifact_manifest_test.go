@@ -167,3 +167,35 @@ func TestArtifactManifestValidateRejectsInvalidManifestOrDescriptor(t *testing.T
 		})
 	}
 }
+
+func TestPublishedDataAssetManifestValidate(t *testing.T) {
+	sizeBytes := int64(13)
+	manifest := PublishedDataAssetManifest{
+		TargetEnvironmentID: "target-local",
+		PublishedAssets: []PublishedDataAsset{
+			{
+				Name:            "publish_summary",
+				FromWorkItemID:  "compute-001",
+				FromArtifact:    "summary",
+				ContentType:     "text/csv",
+				StorageScope:    DataLocationTypeRegistered,
+				LocationName:    "published_data",
+				Path:            "reports/summary.csv",
+				SizeBytes:       &sizeBytes,
+				SHA256:          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				OverwritePolicy: PublishedDataAssetOverwriteFailIfExists,
+			},
+		},
+	}
+
+	if manifest.EffectiveSchema() != PublishedDataAssetManifestSchemaV1 {
+		t.Fatalf("EffectiveSchema() = %q, want %q", manifest.EffectiveSchema(), PublishedDataAssetManifestSchemaV1)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	manifest.TargetEnvironmentID = ""
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("expected missing target_environment_id error")
+	}
+}

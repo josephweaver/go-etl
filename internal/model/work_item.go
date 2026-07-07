@@ -13,6 +13,7 @@ const (
 	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 	WorkItemTypePythonScript       WorkItemType = "python_script"
 	WorkItemTypeCacheData          WorkItemType = "cache_data"
+	WorkItemTypeCommitData         WorkItemType = "commit_data"
 )
 
 type WorkItem struct {
@@ -143,6 +144,19 @@ type CacheDataWorkItemPayload struct {
 	TransferLimits      DataAssetTransferLimits      `json:"transfer_limits,omitempty"`
 	Parameters          map[string]any               `json:"parameters,omitempty"`
 	Metadata            map[string]any               `json:"metadata,omitempty"`
+}
+
+type CommitDataWorkItemPayload struct {
+	Operator            string                       `json:"operator"`
+	TargetEnvironmentID string                       `json:"target_environment_id"`
+	Source              CommitDataSource             `json:"source"`
+	PublishTarget       BoundPublishTarget           `json:"publish_target"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+}
+
+type CommitDataSource struct {
+	FromWorkItemID string `json:"from_work_item_id"`
+	FromArtifact   string `json:"from_artifact"`
 }
 
 type DataAssetTransferLimits struct {
@@ -299,6 +313,42 @@ func (payload CacheDataWorkItemPayload) Validate() error {
 	}
 	if payload.TransferLimits.MaxBytesPerSecond < 0 {
 		return fmt.Errorf("cache_data transfer_limits max_bytes_per_second must be non-negative")
+	}
+	return nil
+}
+
+func (payload CommitDataWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeCommitData) {
+		return fmt.Errorf("commit_data operator must be %q", WorkItemTypeCommitData)
+	}
+	if strings.TrimSpace(payload.TargetEnvironmentID) == "" {
+		return fmt.Errorf("commit_data target_environment_id is required")
+	}
+	if strings.TrimSpace(payload.Source.FromWorkItemID) == "" {
+		return fmt.Errorf("commit_data source from_work_item_id is required")
+	}
+	if err := validateDataName(payload.Source.FromArtifact, "commit_data source from_artifact"); err != nil {
+		return err
+	}
+	if err := payload.PublishTarget.Validate(); err != nil {
+		return fmt.Errorf("commit_data publish_target: %w", err)
+	}
+	if payload.PublishTarget.FromArtifact != payload.Source.FromArtifact {
+		return fmt.Errorf("commit_data publish_target from_artifact must match source from_artifact")
+	}
+	for i, constraint := range payload.ResourceConstraints {
+		if strings.TrimSpace(constraint.ResourceKey) == "" {
+			return fmt.Errorf("commit_data resource_constraints[%d] resource_key is required", i)
+		}
+		if constraint.RequestedUnits <= 0 {
+			return fmt.Errorf("commit_data resource_constraints[%d] requested_units must be greater than 0", i)
+		}
+		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
+			return fmt.Errorf("commit_data resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
+		}
+		if constraint.TargetUnits < 0 {
+			return fmt.Errorf("commit_data resource_constraints[%d] target_units must be non-negative", i)
+		}
 	}
 	return nil
 }

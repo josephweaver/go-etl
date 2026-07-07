@@ -209,7 +209,7 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 		t.Fatalf("decode result: %v", err)
 	}
 
-	expectedArtifact := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "work", "field_cdl_composition.csv")
+	expectedArtifact := filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "artifacts", "field_cdl_composition.csv")
 	wantArgv := []string{
 		"--cdl", filepath.Join(dataRoot, "input-cdl.tif"),
 		"--tile", filepath.Join(dataRoot, "input-tile.tif"),

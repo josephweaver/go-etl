@@ -16,6 +16,10 @@ func (w Worker) publishPromotedArtifacts(item model.WorkItem, promoted model.Art
 	if err != nil {
 		return nil, err
 	}
+	return w.publishPromotedArtifactsForTargets(targets, promoted, "")
+}
+
+func (w Worker) publishPromotedArtifactsForTargets(targets []model.BoundPublishTarget, promoted model.ArtifactManifest, sourceWorkItemID string) ([]model.PublishedDataAsset, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
@@ -37,6 +41,7 @@ func (w Worker) publishPromotedArtifacts(item model.WorkItem, promoted model.Art
 		if err != nil {
 			return nil, err
 		}
+		plan.sourceWorkItemID = sourceWorkItemID
 		if _, ok := seenNames[plan.target.Name]; ok {
 			return nil, fmt.Errorf("duplicate publish target name %q", plan.target.Name)
 		}
@@ -60,6 +65,10 @@ func (w Worker) publishPromotedArtifacts(item model.WorkItem, promoted model.Art
 	for i, plan := range plans {
 		evidence, err := publishArtifactToTemp(plan)
 		if err != nil {
+			cleanupPublishTemps(plans)
+			return nil, err
+		}
+		if err := verifyPublishedArtifactEvidence(plan, evidence); err != nil {
 			cleanupPublishTemps(plans)
 			return nil, err
 		}
@@ -87,19 +96,22 @@ func (w Worker) publishPromotedArtifacts(item model.WorkItem, promoted model.Art
 }
 
 type publishPlan struct {
-	target     model.BoundPublishTarget
-	source     model.ArtifactDescriptor
-	sourcePath string
-	finalPath  string
-	tempPath   string
-	sizeBytes  *int64
-	sha256     string
+	target           model.BoundPublishTarget
+	source           model.ArtifactDescriptor
+	sourceWorkItemID string
+	sourcePath       string
+	finalPath        string
+	tempPath         string
+	sizeBytes        *int64
+	sha256           string
 }
 
 func (plan publishPlan) evidence() model.PublishedDataAsset {
 	return model.PublishedDataAsset{
 		Name:            plan.target.Name,
+		FromWorkItemID:  plan.sourceWorkItemID,
 		FromArtifact:    plan.target.FromArtifact,
+		ContentType:     plan.source.ContentType,
 		StorageScope:    model.DataLocationTypeRegistered,
 		LocationName:    plan.target.Location.LocationName,
 		Path:            plan.target.Location.Path,
@@ -107,6 +119,121 @@ func (plan publishPlan) evidence() model.PublishedDataAsset {
 		SHA256:          plan.sha256,
 		OverwritePolicy: plan.target.OverwritePolicy,
 	}
+}
+
+func (w Worker) commitData(item model.WorkItem) (WorkEvidence, error) {
+	payload, manifest, err := commitDataPayloadFromWorkItem(item)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
+	preState := map[string]any{
+		"operator":              string(model.WorkItemTypeCommitData),
+		"source_work_item_id":   payload.Source.FromWorkItemID,
+		"from_artifact":         payload.Source.FromArtifact,
+		"target_environment_id": payload.TargetEnvironmentID,
+		"publish_target":        payload.PublishTarget.Name,
+	}
+	preStateSHA256, err := canonicalObservationSHA256(preState)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
+	published, err := w.publishPromotedArtifactsForTargets([]model.BoundPublishTarget{payload.PublishTarget}, manifest, payload.Source.FromWorkItemID)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	output := model.PublishedDataAssetManifest{
+		Schema:              model.PublishedDataAssetManifestSchemaV1,
+		TargetEnvironmentID: payload.TargetEnvironmentID,
+		PublishedAssets:     published,
+	}
+	if err := output.Validate(); err != nil {
+		return WorkEvidence{}, fmt.Errorf("validate commit_data manifest: %w", err)
+	}
+	manifestJSON, err := json.Marshal(output)
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("encode commit_data manifest: %w", err)
+	}
+	outputJSON, outputSHA256, _, err := canonicalJSONDocument(manifestJSON, "commit_data manifest")
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
+	postState := map[string]any{
+		"operator":              string(model.WorkItemTypeCommitData),
+		"source_work_item_id":   payload.Source.FromWorkItemID,
+		"from_artifact":         payload.Source.FromArtifact,
+		"target_environment_id": payload.TargetEnvironmentID,
+		"publish_target":        payload.PublishTarget.Name,
+		"output_sha256":         outputSHA256,
+	}
+	postStateSHA256, err := canonicalObservationSHA256(postState)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	preStateJSON, err := json.Marshal(preState)
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("encode commit_data pre-state: %w", err)
+	}
+	postStateJSON, err := json.Marshal(postState)
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("encode commit_data post-state: %w", err)
+	}
+
+	return WorkEvidence{
+		InputSHA256:     preStateSHA256,
+		OutputSHA256:    outputSHA256,
+		PreStateSHA256:  preStateSHA256,
+		PostStateSHA256: postStateSHA256,
+		OutputJSON:      string(outputJSON),
+		PreStateJSON:    string(preStateJSON),
+		PostStateJSON:   string(postStateJSON),
+	}, nil
+}
+
+func commitDataPayloadFromWorkItem(item model.WorkItem) (model.CommitDataWorkItemPayload, model.ArtifactManifest, error) {
+	parameter, ok := item.Parameters["commit_data"]
+	if !ok {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("commit_data parameter is required")
+	}
+	if parameter.Type != "commit_data" {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("parameter commit_data has type %s, want commit_data", parameter.Type)
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("encode commit_data parameter: %w", err)
+	}
+	var payload model.CommitDataWorkItemPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("decode commit_data parameter: %w", err)
+	}
+	if err := payload.Validate(); err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, err
+	}
+
+	manifestParameter, ok := item.Parameters["artifact_manifest"]
+	if !ok {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("artifact_manifest parameter is required")
+	}
+	if manifestParameter.Type != "artifact_manifest" {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("parameter artifact_manifest has type %s, want artifact_manifest", manifestParameter.Type)
+	}
+	manifestData, err := json.Marshal(manifestParameter.Value)
+	if err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("encode artifact_manifest parameter: %w", err)
+	}
+	var manifest model.ArtifactManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("decode artifact_manifest parameter: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("validate artifact_manifest parameter: %w", err)
+	}
+	if manifest.WorkItemID != "" && manifest.WorkItemID != payload.Source.FromWorkItemID {
+		return model.CommitDataWorkItemPayload{}, model.ArtifactManifest{}, fmt.Errorf("artifact_manifest work_item_id %q does not match commit_data source %q", manifest.WorkItemID, payload.Source.FromWorkItemID)
+	}
+	return payload, manifest, nil
 }
 
 func (w Worker) publishPlanForTarget(target model.BoundPublishTarget, artifact model.ArtifactDescriptor) (publishPlan, error) {
@@ -163,6 +290,20 @@ func (w Worker) publishPlanForTarget(target model.BoundPublishTarget, artifact m
 		finalPath:  finalPath,
 		tempPath:   tempPath,
 	}, nil
+}
+
+func verifyPublishedArtifactEvidence(plan publishPlan, evidence assetEvidence) error {
+	if plan.source.SizeBytes != nil && *plan.source.SizeBytes != evidence.size {
+		return fmt.Errorf("published artifact %q size mismatch: got %d, want %d", plan.source.Name, evidence.size, *plan.source.SizeBytes)
+	}
+	expectedSHA256 := plan.source.SHA256
+	if expectedSHA256 == "" {
+		expectedSHA256 = plan.source.ManifestSHA256
+	}
+	if expectedSHA256 != "" && expectedSHA256 != evidence.sha256 {
+		return fmt.Errorf("published artifact %q sha256 mismatch: got %s, want %s", plan.source.Name, evidence.sha256, expectedSHA256)
+	}
+	return nil
 }
 
 func publishArtifactToTemp(plan publishPlan) (assetEvidence, error) {
