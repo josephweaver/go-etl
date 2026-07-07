@@ -1,6 +1,6 @@
 # 002 Resolve Resource Constraints At Work Creation
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -84,7 +84,7 @@ Read these files first:
 - `internal/variable/variable.go`
 - `internal/model/work_item.go`
 - `cmd/controller/main.go`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 

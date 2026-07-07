@@ -1,6 +1,6 @@
 # 007 Demo Fixtures And Smoke Tests
 
-Status: Ready
+Status: Complete
 
 ## Objective
 
@@ -49,7 +49,7 @@ Read these files first:
 - `cmd/controller/*_test.go`
 - `internal/persistence/*_test.go`
 - sibling `../go-etl-demo-project` fixtures if available
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 ## Allowed Production Files
 
@@ -65,7 +65,7 @@ Read these files first:
 
 - `scripts/resource-constrained-work-admission-smoke.ps1`
 - sibling demo-project workflow/submission fixtures under `../go-etl-demo-project/` if available
-- `docs/concepts/resource-constrained-work-admission/README.md` only for small clarifications discovered during implementation
+- `docs/concepts/complete/resource-constrained-work-admission/README.md` only for small clarifications discovered during implementation
 
 ## Out Of Scope
 

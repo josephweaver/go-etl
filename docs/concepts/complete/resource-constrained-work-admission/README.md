@@ -398,7 +398,7 @@ The view is intentionally not an eligibility view. Eligibility is Go code.
 
 ## Implementation Notes
 
-- Keep this concept under `docs/concepts/resource-constrained-work-admission/`.
+- Keep this concept under `docs/concepts/complete/resource-constrained-work-admission/`.
 - Reuse the existing persistence store owner. Do not create a second controller-local resource scheduler state layer.
 - Keep claim-time code small and heavily tested.
 - Prefer table/view facts over storing mutable resource counters.

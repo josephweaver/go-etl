@@ -1,6 +1,6 @@
 # 001 Resource Constraint Model And Schema
 
-Status: Implemented
+Status: Complete
 
 ## Objective
 
@@ -104,7 +104,7 @@ Read these files first:
 - `internal/persistence/validation.go` if present
 - `internal/persistence/*_test.go`
 - `internal/model/work_item.go`
-- `docs/concepts/resource-constrained-work-admission/README.md`
+- `docs/concepts/complete/resource-constrained-work-admission/README.md`
 
 Do not read unrelated worker execution files unless tests require them.
 
