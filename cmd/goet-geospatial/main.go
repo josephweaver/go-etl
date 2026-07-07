@@ -61,6 +61,12 @@ func run(args []string) error {
 			return err
 		}
 		result = cropResult
+	case geospatial.OperationPolygonizeRaster:
+		polygonizeResult, err := geospatial.ExecutePolygonizeRaster(context.Background(), requestData, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = polygonizeResult
 	case geospatial.OperationRasterInfo:
 		var request geospatial.OperationRequest
 		if err := json.Unmarshal(requestData, &request); err != nil {

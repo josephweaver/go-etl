@@ -277,6 +277,53 @@ func TestRunRasterPairValueCountsWritesCountsAndMetadataArtifacts(t *testing.T) 
 	}
 }
 
+func TestRunPolygonizeRasterWritesVectorAndMetadataArtifacts(t *testing.T) {
+	skipIfGDALMissing(t)
+	if _, err := exec.LookPath("gdal_polygonize.py"); err != nil {
+		t.Skip("gdal_polygonize.py not available in PATH")
+	}
+	dir := t.TempDir()
+	responsePath := filepath.Join(dir, "result.json")
+	inputPath := createTestRaster(t, dir, "classes", "1 1\n0 2")
+
+	requestJSON := `{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "polygonize_raster",
+  "inputs": {
+    "raster": {"path": "` + inputPath + `", "band": 1, "nodata": 0}
+  },
+  "outputs": {
+    "vector": "polygonized/classes.gpkg",
+    "metadata_json": "polygonized/classes.metadata.json"
+  },
+  "options": {
+    "value_field": "value",
+    "connectivity": 4,
+    "max_features": 10
+  }
+}
+`
+	requestPath := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(requestPath, []byte(requestJSON), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	if err := run([]string{"--request", requestPath, "--response", responsePath}); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "polygonized", "classes.gpkg")); err != nil {
+		t.Fatalf("stat vector artifact: %v", err)
+	}
+	metadataData, err := os.ReadFile(filepath.Join(dir, "polygonized", "classes.metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata artifact: %v", err)
+	}
+	if !strings.Contains(string(metadataData), `"feature_count": 2`) || !strings.Contains(string(metadataData), `"connectivity": 4`) {
+		t.Fatalf("metadata artifact missing polygonize summary: %s", metadataData)
+	}
+}
+
 func createTestRasterForCli(t *testing.T, dir string) string {
 	return createTestRaster(t, dir, "cli", "1 2\n3 4")
 }
