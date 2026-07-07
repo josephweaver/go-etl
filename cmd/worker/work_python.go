@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,6 +44,15 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 
+	dataAssetsPath, hasDataAssets, err := w.materializeDataAssets(item, staging.WorkDir)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	args, err = resolvePythonArgvBindings(args, dataAssetsPath, staging.ArtifactDir)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+
 	inputDocument := pythonInputDocument{WorkItem: item}
 	inputJSON, err := json.MarshalIndent(inputDocument, "", "  ")
 	if err != nil {
@@ -80,6 +90,7 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		"GOET_OUTPUT_JSON="+outputPath,
 		"GOET_SOURCE_DIR="+staging.SourceDir,
 		"GOET_WORK_DIR="+staging.WorkDir,
+		"GOET_ARTIFACT_DIR="+staging.ArtifactDir,
 		"GOET_DATA_DIR="+w.Config.DataDir,
 		"GOET_TMP_DIR="+w.Config.TmpDir,
 		"GOET_LOG_DIR="+staging.LogDir,
@@ -87,6 +98,9 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	)
 	if hasEnvironment {
 		command.Env = append(command.Env, "GOET_PYTHON_ENVIRONMENT_JSON="+environmentPath)
+	}
+	if hasDataAssets {
+		command.Env = append(command.Env, "GOET_DATA_ASSETS_JSON="+dataAssetsPath)
 	}
 
 	if err := command.Start(); err != nil {
@@ -119,7 +133,7 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("read python output json %s: %w", outputPath, err)
 	}
 
-	logicalOutput, outputSHA256, _, err := canonicalJSONDocument(outputJSON, "GOET_OUTPUT_JSON")
+	logicalOutput, outputSHA256, err := w.pythonLogicalOutput(item, outputJSON, staging.ArtifactDir)
 	if err != nil {
 		return WorkEvidence{}, err
 	}
@@ -204,6 +218,97 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		PreStateJSON:    string(preStateJSON),
 		PostStateJSON:   string(postStateJSON),
 	}, nil
+}
+
+func (w Worker) pythonLogicalOutput(item model.WorkItem, outputJSON []byte, artifactDir string) ([]byte, string, error) {
+	logicalOutput, outputSHA256, decoded, err := canonicalJSONDocument(outputJSON, "GOET_OUTPUT_JSON")
+	if err != nil {
+		return nil, "", err
+	}
+
+	artifacts, scriptOutput, hasArtifacts, err := pythonArtifactDeclarations(decoded)
+	if err != nil {
+		return nil, "", err
+	}
+	if !hasArtifacts {
+		return logicalOutput, outputSHA256, nil
+	}
+
+	runID := ""
+	if item.Source != nil {
+		runID = item.Source.RunID
+	}
+	promoted, err := PromoteArtifacts(context.Background(), ArtifactPromotionRequest{
+		StagingRoot: artifactDir,
+		DataRoot:    w.Config.DataDir,
+		RunID:       runID,
+		WorkItemID:  item.ID,
+		AttemptID:   item.AttemptID,
+		Manifest: model.ArtifactManifest{
+			Schema:       model.ArtifactManifestSchemaV1,
+			StorageScope: "artifact_staging",
+			Artifacts:    artifacts,
+			ScriptOutput: scriptOutput,
+		},
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("promote python artifacts: %w", err)
+	}
+
+	publishedAssets, err := w.publishPromotedArtifacts(item, promoted)
+	if err != nil {
+		return nil, "", fmt.Errorf("publish python artifacts: %w", err)
+	}
+	if len(publishedAssets) > 0 {
+		promoted.PublishedAssets = publishedAssets
+	}
+
+	data, err := json.Marshal(promoted)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode promoted artifact manifest: %w", err)
+	}
+	canonical, hash, _, err := canonicalJSONDocument(data, "promoted artifact manifest")
+	if err != nil {
+		return nil, "", err
+	}
+	return canonical, hash, nil
+}
+
+func pythonArtifactDeclarations(decoded any) ([]model.ArtifactDescriptor, any, bool, error) {
+	object, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, nil, false, nil
+	}
+	raw, ok := object["artifacts"]
+	if !ok {
+		return nil, nil, false, nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("encode artifacts declaration: %w", err)
+	}
+	var artifacts []model.ArtifactDescriptor
+	if err := json.Unmarshal(data, &artifacts); err != nil {
+		return nil, nil, false, fmt.Errorf("decode artifacts declaration: %w", err)
+	}
+	if len(artifacts) == 0 {
+		return nil, nil, false, nil
+	}
+	for i, artifact := range artifacts {
+		if err := artifact.Validate(); err != nil {
+			return nil, nil, false, fmt.Errorf("artifacts[%d]: %w", i, err)
+		}
+	}
+
+	scriptOutput := make(map[string]any, len(object)-1)
+	for key, value := range object {
+		if key == "artifacts" {
+			continue
+		}
+		scriptOutput[key] = value
+	}
+	return artifacts, scriptOutput, true, nil
 }
 
 func (w Worker) emitPythonSubprocessLogLines(item model.WorkItem, stdoutPath string, stderrPath string, fallbackLogDir string) error {

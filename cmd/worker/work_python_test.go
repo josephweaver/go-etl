@@ -425,6 +425,108 @@ func TestWorkerRunWorkItemRejectsInvalidPythonArgs(t *testing.T) {
 	}
 }
 
+func TestWorkerRunWorkItemPassesMaterializedDataAssetsToPython(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	dataRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"fixture": dataRoot}
+	writeFixture(t, dataRoot, "input.txt", "python asset")
+
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.environ["GOET_DATA_ASSETS_JSON"], "r", encoding="utf-8") as handle:
+    assets = json.load(handle)
+
+output = {
+    "asset_schema": assets["schema"],
+    "binding_name": assets["assets"][0]["binding_name"],
+    "local_path": assets["assets"][0]["local_path"],
+    "source_sha256": assets["assets"][0]["source_sha256"]
+}
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump(output, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	asset := localFileAsset("fixture", "input.txt", model.DataAssetCacheStrategyReference, "", nil)
+	item := pythonTestItem("python-assets-001", "attempt-assets-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"data_assets":       {Type: "data_assets", Value: []model.BoundDataAsset{asset}},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var output map[string]any
+	data, err := os.ReadFile(filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if err != nil {
+		t.Fatalf("read python output: %v", err)
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		t.Fatalf("decode python output: %v", err)
+	}
+	if output["asset_schema"] != model.MaterializedDataAssetManifestSchemaV1 {
+		t.Fatalf("unexpected asset schema: %#v", output)
+	}
+	if output["binding_name"] != "input_data" {
+		t.Fatalf("unexpected binding name: %#v", output)
+	}
+	if output["local_path"] != filepath.Join(dataRoot, "input.txt") {
+		t.Fatalf("unexpected local path: %#v", output)
+	}
+	if output["source_sha256"] != sha256Text("python asset") {
+		t.Fatalf("unexpected source hash: %#v", output)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "work", "data-assets.json")); err != nil {
+		t.Fatalf("expected materialized assets manifest: %v", err)
+	}
+}
+
+func TestWorkerRunWorkItemRejectsDataAssetBeforePythonStarts(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	dataRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"fixture": dataRoot}
+	writeFixture(t, dataRoot, "input.txt", "actual asset")
+
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.path.join(os.environ["GOET_DATA_DIR"], "python-ran.txt"), "w", encoding="utf-8") as handle:
+    handle.write("ran")
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({"ok": True}, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	wrongHash := sha256Text("wrong asset")
+	asset := localFileAsset("fixture", "input.txt", model.DataAssetCacheStrategyReference, "", &wrongHash)
+	item := pythonTestItem("python-assets-bad-001", "attempt-assets-bad-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"data_assets":       {Type: "data_assets", Value: []model.BoundDataAsset{asset}},
+	})
+
+	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "expected sha256") {
+		t.Fatalf("expected hash mismatch before python starts, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, "python-ran.txt")); !os.IsNotExist(err) {
+		t.Fatalf("python should not have created marker, stat err=%v", err)
+	}
+}
+
 func TestWorkerRunWorkItemRejectsNonZeroPythonExit(t *testing.T) {
 	requirePython3(t)
 
@@ -508,6 +610,355 @@ func TestWorkerRunWorkItemRejectsInvalidPythonOutputJSON(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestWorkerRunWorkItemPromotesPythonFileArtifact(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+artifact_path = os.path.join(os.environ["GOET_ARTIFACT_DIR"], "reports", "example.csv")
+os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+with open(artifact_path, "w", encoding="utf-8") as handle:
+    handle.write("id,value\n1,a\n")
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "ok",
+        "artifacts": [
+            {
+                "name": "example_output",
+                "kind": "file",
+                "format": "csv",
+                "path": "reports/example.csv"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-artifact-file-001", "attempt-artifact-file-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manifest := readArtifactManifestOutput(t, filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if manifest.StorageScope != artifactStorageScopeWorkerDataDir {
+		t.Fatalf("storage scope = %q", manifest.StorageScope)
+	}
+	if len(manifest.Artifacts) != 1 {
+		t.Fatalf("artifact count = %d", len(manifest.Artifacts))
+	}
+	artifact := manifest.Artifacts[0]
+	if artifact.Path != "artifacts/raw/python-artifact-file-001/reports/example.csv" {
+		t.Fatalf("artifact path = %q", artifact.Path)
+	}
+	if artifact.SHA256 != sha256Text("id,value\n1,a\n") {
+		t.Fatalf("artifact sha256 = %q", artifact.SHA256)
+	}
+	if artifact.SizeBytes == nil || *artifact.SizeBytes != int64(len("id,value\n1,a\n")) {
+		t.Fatalf("artifact size = %v", artifact.SizeBytes)
+	}
+	if got := readString(t, filepath.Join(worker.Config.DataDir, filepath.FromSlash(artifact.Path))); got != "id,value\n1,a\n" {
+		t.Fatalf("promoted artifact = %q", got)
+	}
+	scriptOutput, ok := manifest.ScriptOutput.(map[string]any)
+	if !ok || scriptOutput["result"] != "ok" {
+		t.Fatalf("script output = %#v", manifest.ScriptOutput)
+	}
+}
+
+func TestWorkerRunWorkItemPromotesPythonDirectoryArtifact(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+root = os.path.join(os.environ["GOET_ARTIFACT_DIR"], "dataset")
+os.makedirs(os.path.join(root, "nested"), exist_ok=True)
+with open(os.path.join(root, "part-b.txt"), "w", encoding="utf-8") as handle:
+    handle.write("b")
+with open(os.path.join(root, "nested", "part-a.txt"), "w", encoding="utf-8") as handle:
+    handle.write("aa")
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "ok",
+        "artifacts": [
+            {
+                "name": "dataset",
+                "kind": "directory",
+                "path": "dataset"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-artifact-dir-001", "attempt-artifact-dir-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manifest := readArtifactManifestOutput(t, filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	artifact := manifest.Artifacts[0]
+	promotedPath := filepath.Join(worker.Config.DataDir, filepath.FromSlash(artifact.Path))
+	evidence, err := directoryManifestEvidence(promotedPath)
+	if err != nil {
+		t.Fatalf("directory evidence: %v", err)
+	}
+	if artifact.ManifestSHA256 != evidence.sha256 {
+		t.Fatalf("manifest sha256 = %q, want %q", artifact.ManifestSHA256, evidence.sha256)
+	}
+	if artifact.SizeBytes == nil || *artifact.SizeBytes != int64(len("b")+len("aa")) {
+		t.Fatalf("artifact size = %v", artifact.SizeBytes)
+	}
+}
+
+func TestWorkerRunWorkItemPublishesPythonFileArtifact(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	publishedRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"published_data": publishedRoot}
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+artifact_path = os.path.join(os.environ["GOET_ARTIFACT_DIR"], "reports", "example.csv")
+os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+with open(artifact_path, "w", encoding="utf-8") as handle:
+    handle.write("id,value\n1,a\n")
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "ok",
+        "artifacts": [
+            {
+                "name": "example_output",
+                "kind": "file",
+                "format": "csv",
+                "path": "reports/example.csv"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-publish-file-001", "attempt-publish-file-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"publish": {Type: "publish_targets", Value: map[string]any{
+			"publish_example": map[string]any{
+				"from_artifact": "example_output",
+				"location": map[string]any{
+					"type":          model.DataProviderRegisteredLocation,
+					"location_name": "published_data",
+					"path":          "reports/example.csv",
+				},
+				"overwrite_policy": model.PublishedDataAssetOverwriteFailIfExists,
+			},
+		}},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manifest := readArtifactManifestOutput(t, filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if len(manifest.PublishedAssets) != 1 {
+		t.Fatalf("published asset count = %d", len(manifest.PublishedAssets))
+	}
+	published := manifest.PublishedAssets[0]
+	if published.Name != "publish_example" {
+		t.Fatalf("published name = %q", published.Name)
+	}
+	if published.FromArtifact != "example_output" {
+		t.Fatalf("published from_artifact = %q", published.FromArtifact)
+	}
+	if published.StorageScope != model.DataLocationTypeRegistered {
+		t.Fatalf("published storage scope = %q", published.StorageScope)
+	}
+	if published.LocationName != "published_data" {
+		t.Fatalf("published location_name = %q", published.LocationName)
+	}
+	if published.Path != "reports/example.csv" {
+		t.Fatalf("published path = %q", published.Path)
+	}
+	if published.SHA256 != sha256Text("id,value\n1,a\n") {
+		t.Fatalf("published sha256 = %q", published.SHA256)
+	}
+	if published.SizeBytes == nil || *published.SizeBytes != int64(len("id,value\n1,a\n")) {
+		t.Fatalf("published size = %v", published.SizeBytes)
+	}
+	if got := readString(t, filepath.Join(publishedRoot, "reports", "example.csv")); got != "id,value\n1,a\n" {
+		t.Fatalf("published file = %q", got)
+	}
+}
+
+func TestWorkerRunWorkItemPublishesPythonDirectoryArtifact(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	publishedRoot := t.TempDir()
+	worker.Config.DataLocationRoots = map[string]string{"published_data": publishedRoot}
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+root = os.path.join(os.environ["GOET_ARTIFACT_DIR"], "dataset")
+os.makedirs(os.path.join(root, "nested"), exist_ok=True)
+with open(os.path.join(root, "part-b.txt"), "w", encoding="utf-8") as handle:
+    handle.write("b")
+with open(os.path.join(root, "nested", "part-a.txt"), "w", encoding="utf-8") as handle:
+    handle.write("aa")
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "ok",
+        "artifacts": [
+            {
+                "name": "dataset",
+                "kind": "directory",
+                "path": "dataset"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-publish-dir-001", "attempt-publish-dir-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"publish": {Type: "publish_targets", Value: []model.BoundPublishTarget{
+			{
+				Name:            "publish_dataset",
+				FromArtifact:    "dataset",
+				TargetName:      "publish_dataset",
+				Location:        model.DataAssetLocation{Type: model.DataProviderRegisteredLocation, LocationName: "published_data", Path: "dataset/year=2024"},
+				OverwritePolicy: model.PublishedDataAssetOverwriteFailIfExists,
+			},
+		}},
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	manifest := readArtifactManifestOutput(t, filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if len(manifest.PublishedAssets) != 1 {
+		t.Fatalf("published asset count = %d", len(manifest.PublishedAssets))
+	}
+	published := manifest.PublishedAssets[0]
+	publishedPath := filepath.Join(publishedRoot, "dataset", "year=2024")
+	evidence, err := directoryManifestEvidence(publishedPath)
+	if err != nil {
+		t.Fatalf("directory evidence: %v", err)
+	}
+	if published.SHA256 != evidence.sha256 {
+		t.Fatalf("published sha256 = %q, want %q", published.SHA256, evidence.sha256)
+	}
+	if published.SizeBytes == nil || *published.SizeBytes != evidence.size {
+		t.Fatalf("published size = %v, want %d", published.SizeBytes, evidence.size)
+	}
+	if got := readString(t, filepath.Join(publishedPath, "nested", "part-a.txt")); got != "aa" {
+		t.Fatalf("published nested file = %q", got)
+	}
+}
+
+func TestWorkerRunWorkItemRejectsUnsafePythonArtifactPath(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "bad",
+        "artifacts": [
+            {
+                "name": "bad",
+                "kind": "file",
+                "path": "../escape.txt"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-artifact-unsafe-001", "attempt-artifact-unsafe-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+	})
+
+	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "artifacts[0]") {
+		t.Fatalf("expected unsafe artifact error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, item.OutputFilename)); !os.IsNotExist(err) {
+		t.Fatalf("failed artifact promotion should not write logical output, stat err=%v", err)
+	}
+}
+
+func TestWorkerRunWorkItemRejectsMissingPythonArtifact(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "missing",
+        "artifacts": [
+            {
+                "name": "missing",
+                "kind": "file",
+                "path": "missing.txt"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-artifact-missing-001", "attempt-artifact-missing-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+	})
+
+	if _, err := worker.Run(item); err == nil || !strings.Contains(err.Error(), "check artifact source") {
+		t.Fatalf("expected missing artifact error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, item.OutputFilename)); !os.IsNotExist(err) {
+		t.Fatalf("failed artifact promotion should not write logical output, stat err=%v", err)
 	}
 }
 
@@ -638,4 +1089,20 @@ func requirePython3(t *testing.T) {
 	if err := exec.Command(path, "--version").Run(); err != nil {
 		t.Skipf("python3 not functional: %v", err)
 	}
+}
+
+func readArtifactManifestOutput(t *testing.T, path string) model.ArtifactManifest {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read artifact manifest output: %v", err)
+	}
+	var manifest model.ArtifactManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode artifact manifest output: %v", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("validate artifact manifest output: %v", err)
+	}
+	return manifest
 }

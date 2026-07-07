@@ -2166,11 +2166,31 @@ func (c *Controller) submissionStatusHandler(w http.ResponseWriter, r *http.Requ
 		http.NotFound(w, r)
 		return
 	}
+	artifactOutputs, err := c.submissionArtifactOutputs(r.Context(), submissionID)
+	if err != nil {
+		http.Error(w, "query submission artifact outputs", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(status); err != nil {
+	if err := json.NewEncoder(w).Encode(submissionStatusResponse{
+		SubmissionStatus: status,
+		ArtifactOutputs:  artifactOutputs,
+	}); err != nil {
 		http.Error(w, "encode submission status", http.StatusInternalServerError)
 	}
+}
+
+type submissionStatusResponse struct {
+	model.SubmissionStatus
+	ArtifactOutputs []submissionArtifactOutput `json:"artifact_outputs,omitempty"`
+}
+
+type submissionArtifactOutput struct {
+	WorkItemID    string   `json:"work_item_id"`
+	ArtifactCount int      `json:"artifact_count"`
+	ArtifactNames []string `json:"artifact_names"`
+	StorageScope  string   `json:"storage_scope"`
 }
 
 func (c *Controller) controllerStatus(ctx context.Context) (model.ControllerStatus, error) {
@@ -2411,6 +2431,47 @@ func (c *Controller) submissionStatus(ctx context.Context, submissionID string) 
 		Skipped:        skipped,
 		Dependency:     dependencyStatus,
 	}, true, nil
+}
+
+func (c *Controller) submissionArtifactOutputs(ctx context.Context, submissionID string) ([]submissionArtifactOutput, error) {
+	if c.workflowStore == nil {
+		return nil, fmt.Errorf("workflow store required")
+	}
+
+	attempts, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, submissionID)
+	if err != nil {
+		return nil, fmt.Errorf("list terminal attempts for run %s: %w", submissionID, err)
+	}
+
+	summaries := make([]submissionArtifactOutput, 0)
+	for _, attempt := range attempts {
+		if attempt.TerminalState != "completed" || attempt.SkippedParentID != "" || strings.TrimSpace(attempt.OutputJSON) == "" {
+			continue
+		}
+		manifest, found, err := artifactManifestFromOutputJSON(attempt.OutputJSON)
+		if err != nil {
+			return nil, fmt.Errorf("work item %s output: %w", attempt.WorkItem.ID, err)
+		}
+		if !found {
+			continue
+		}
+
+		names := make([]string, 0, len(manifest.Artifacts))
+		for _, artifact := range manifest.Artifacts {
+			names = append(names, artifact.Name)
+		}
+		summaries = append(summaries, submissionArtifactOutput{
+			WorkItemID:    attempt.WorkItem.ID,
+			ArtifactCount: len(manifest.Artifacts),
+			ArtifactNames: names,
+			StorageScope:  manifest.StorageScope,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].WorkItemID < summaries[j].WorkItemID
+	})
+	return summaries, nil
 }
 
 func submissionDependencyStatusFromPlan(plan model.WorkflowDependencyPlan) *model.SubmissionDependencyStatus {
@@ -2703,6 +2764,19 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
 	}
+	workItem, found, err := c.workflowStore.GetWorkItem(r.Context(), failed.WorkItemID)
+	if err != nil {
+		http.Error(w, "get failed work item", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "failed work item not found", http.StatusInternalServerError)
+		return
+	}
+	if err := c.failCacheDataDependents(r.Context(), workItem, failure.Error); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := c.recordWorkItemDependencyFailure(r.Context(), failed.WorkItemID, failure.Error); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2749,6 +2823,20 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, "completed work item not found", http.StatusInternalServerError)
 		return
 	}
+	var completedPayload model.WorkItem
+	if err := json.Unmarshal([]byte(workItem.WorkerPayloadJSON), &completedPayload); err != nil {
+		http.Error(w, "decode completed worker payload", http.StatusInternalServerError)
+		return
+	}
+	if completedPayload.Type == model.WorkItemTypeCacheData {
+		if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if completion.OutputJSON != "" {
 		if err := c.RecordCompletedWorkItemOutput(r.Context(), RecordCompletedWorkItemOutputRequest{
 			SubmissionID:     workItem.RunID,
@@ -2769,6 +2857,10 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		terminalState = model.WorkItemMembershipStateSkipped
 	}
 	if err := c.recordWorkItemDependencyTerminal(r.Context(), completed.WorkItemID, terminalState); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2821,6 +2913,9 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 
 	outputJSON, outputJSONSHA256, err := canonicalJSONTextAndHash("output_json", completion.OutputJSON)
 	if err != nil {
+		return persistence.CompleteAttemptRequest{}, err
+	}
+	if err := validateArtifactManifestOutputJSON(outputJSON); err != nil {
 		return persistence.CompleteAttemptRequest{}, err
 	}
 	_, preStateEvidenceSHA256, err := canonicalJSONTextAndHash("pre_state_json", completion.PreStateJSON)
@@ -3042,6 +3137,20 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "load reuse candidates", http.StatusInternalServerError)
 		return
 	}
+	if item.Type == model.WorkItemTypeCommitData {
+		item, err = c.hydrateCommitDataWorkItem(r.Context(), claim, item)
+		if err != nil {
+			http.Error(w, "hydrate commit_data work item", http.StatusInternalServerError)
+			return
+		}
+	}
+	if item.Type != model.WorkItemTypeCacheData && item.Type != model.WorkItemTypeCommitData {
+		item, err = c.hydrateCacheDataDependentWorkItem(r.Context(), claim, item)
+		if err != nil {
+			http.Error(w, "hydrate cache_data dependent work item", http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
 		return
@@ -3051,6 +3160,63 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
 	}
+}
+
+func (c *Controller) hydrateCommitDataWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {
+	if _, ok := item.Parameters["artifact_manifest"]; ok {
+		return item, nil
+	}
+	parameter, ok := item.Parameters["commit_data"]
+	if !ok {
+		return model.WorkItem{}, fmt.Errorf("commit_data parameter is required")
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return model.WorkItem{}, fmt.Errorf("encode commit_data parameter: %w", err)
+	}
+	var payload model.CommitDataWorkItemPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return model.WorkItem{}, fmt.Errorf("decode commit_data parameter: %w", err)
+	}
+	if err := payload.Validate(); err != nil {
+		return model.WorkItem{}, err
+	}
+
+	sourceID := persistedDependencyID(item.DependsOn, payload.Source.FromWorkItemID)
+	if sourceID == "" {
+		return model.WorkItem{}, fmt.Errorf("commit_data source %q is not listed in depends_on", payload.Source.FromWorkItemID)
+	}
+	terminals, err := c.workflowStore.ListTerminalAttemptsForRun(ctx, claim.WorkItem.RunID)
+	if err != nil {
+		return model.WorkItem{}, err
+	}
+	for _, terminal := range terminals {
+		if terminal.TerminalState != "completed" || terminal.WorkItem.ID != sourceID {
+			continue
+		}
+		manifest, found, err := artifactManifestFromOutputJSON(terminal.OutputJSON)
+		if err != nil {
+			return model.WorkItem{}, err
+		}
+		if !found {
+			return model.WorkItem{}, fmt.Errorf("completed source %s output is not an artifact manifest", sourceID)
+		}
+		item.Parameters["artifact_manifest"] = model.Parameter{
+			Type:  "artifact_manifest",
+			Value: manifest,
+		}
+		return item, nil
+	}
+	return model.WorkItem{}, fmt.Errorf("completed source %s not found for commit_data", sourceID)
+}
+
+func persistedDependencyID(dependsOn []string, sourceWorkItemID string) string {
+	for _, dependencyID := range dependsOn {
+		if dependencyID == sourceWorkItemID || strings.HasSuffix(dependencyID, ":"+sourceWorkItemID) {
+			return dependencyID
+		}
+	}
+	return ""
 }
 
 func (c *Controller) persistedReuseCandidates(ctx context.Context, claim persistence.ClaimedWorkRecord) ([]model.WorkReuseCandidate, error) {

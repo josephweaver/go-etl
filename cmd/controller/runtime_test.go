@@ -70,11 +70,46 @@ func TestWorkerRuntimePrepareCreatesDirectories(t *testing.T) {
 	}
 }
 
+func TestWorkerRuntimePrepareCreatesLocalDirectoriesWithoutShellMkdir(t *testing.T) {
+	root := filepath.ToSlash(filepath.Join(t.TempDir(), "runtime"))
+	runtime := WorkerRuntime{
+		Root:          root,
+		AssetCacheDir: filepath.ToSlash(filepath.Join(t.TempDir(), "asset-cache")),
+		DataLocationRoots: map[string]string{
+			"fixture_data": filepath.ToSlash(filepath.Join(t.TempDir(), "fixture-data")),
+		},
+	}
+
+	if err := runtime.Prepare(context.Background(), LocalTransport{}, BashShellPlatform{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, dir := range []string{
+		filepath.FromSlash(root + "/artifacts"),
+		filepath.FromSlash(root + "/config"),
+		filepath.FromSlash(root + "/scripts"),
+		filepath.FromSlash(root + "/logs"),
+		filepath.FromSlash(root + "/tmp"),
+		filepath.FromSlash(root + "/data"),
+		filepath.FromSlash(runtime.AssetCacheDir),
+		filepath.FromSlash(runtime.DataLocationRoots["fixture_data"]),
+	} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Fatalf("runtime dir %s missing or not a dir: info=%v err=%v", dir, info, err)
+		}
+	}
+}
+
 func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	transport := &recordingTransport{}
 	runtime := WorkerRuntime{
 		Root:          "/data/goetl-test",
 		ControllerURL: "http://host.docker.internal:8080",
+		AssetCacheDir: "/data/goetl-test/cache/assets",
+		DataLocationRoots: map[string]string{
+			"fixture_data":   "/data/goetl-test/fixtures",
+			"published_data": "/data/goetl-test/published",
+		},
 	}
 
 	if err := runtime.Prepare(context.Background(), transport, BashShellPlatform{}); err != nil {
@@ -98,8 +133,29 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	if cfg.LogDir != "/data/goetl-test/logs" || cfg.TmpDir != "/data/goetl-test/tmp" || cfg.DataDir != "/data/goetl-test/data" {
 		t.Fatalf("unexpected runtime dirs: %+v", cfg)
 	}
+	if cfg.AssetCacheDir != "/data/goetl-test/cache/assets" {
+		t.Fatalf("asset cache dir = %q, want configured cache dir", cfg.AssetCacheDir)
+	}
+	if cfg.DataLocationRoots["fixture_data"] != "/data/goetl-test/fixtures" ||
+		cfg.DataLocationRoots["published_data"] != "/data/goetl-test/published" {
+		t.Fatalf("data location roots = %#v", cfg.DataLocationRoots)
+	}
 	if _, err := os.Stat(transport.copies[0].localPath); !os.IsNotExist(err) {
 		t.Fatalf("temp worker config still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestWorkerRuntimePathsUseConfiguredDataDir(t *testing.T) {
+	paths, err := (WorkerRuntime{
+		Root:    "/data/goetl-test",
+		DataDir: "/data/goetl-worker-data",
+	}).paths()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if paths.DataDir != "/data/goetl-worker-data" {
+		t.Fatalf("data dir = %q, want configured data dir", paths.DataDir)
 	}
 }
 

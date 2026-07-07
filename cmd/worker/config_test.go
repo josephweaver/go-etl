@@ -15,7 +15,16 @@ func TestLoadConfig(t *testing.T) {
 		"tmp_dir": "tmp",
 		"data_dir": "data",
 		"controller_url": "https://controller.local",
-		"python_executable": "python3"
+		"python_executable": "python3",
+		"seven_zip_executable": "tools/7z",
+		"rclone_executable": "tools/rclone",
+		"rclone_config_path": "secrets/rclone.conf",
+		"enable_gdrive_rclone_provider": true,
+		"asset_cache_dir": "asset-cache",
+		"max_asset_bytes": 1024,
+		"data_location_roots": {
+			"fixture": "fixtures"
+		}
 	}`)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
@@ -45,6 +54,34 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.PythonExecutable != "python3" {
 		t.Fatalf("unexpected python executable: %q", config.PythonExecutable)
+	}
+
+	if config.SevenZipExecutable != filepath.Join(root, "tools", "7z") {
+		t.Fatalf("unexpected seven zip executable: %q", config.SevenZipExecutable)
+	}
+
+	if config.RcloneExecutable != filepath.Join(root, "tools", "rclone") {
+		t.Fatalf("unexpected rclone executable: %q", config.RcloneExecutable)
+	}
+
+	if config.RcloneConfigPath != filepath.Join(root, "secrets", "rclone.conf") {
+		t.Fatalf("unexpected rclone config path: %q", config.RcloneConfigPath)
+	}
+
+	if !config.EnableGDriveRcloneProvider {
+		t.Fatal("expected gdrive rclone provider to be enabled")
+	}
+
+	if config.AssetCacheDir != filepath.Join(root, "asset-cache") {
+		t.Fatalf("unexpected asset cache dir: %q", config.AssetCacheDir)
+	}
+
+	if config.MaxAssetBytes != 1024 {
+		t.Fatalf("unexpected max asset bytes: %d", config.MaxAssetBytes)
+	}
+
+	if config.DataLocationRoots["fixture"] != filepath.Join(root, "fixtures") {
+		t.Fatalf("unexpected data location root: %q", config.DataLocationRoots["fixture"])
 	}
 }
 
@@ -113,6 +150,9 @@ func TestConfigValidate(t *testing.T) {
 		}, wantErr: true},
 		{name: "missing controller url", config: Config{
 			LogDir: "logs", TmpDir: "tmp", DataDir: "data",
+		}, wantErr: true},
+		{name: "negative max asset bytes", config: Config{
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "url", MaxAssetBytes: -1,
 		}, wantErr: true},
 	}
 

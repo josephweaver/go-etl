@@ -1,6 +1,6 @@
 # 007 Worker Archive Extraction and Selection
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

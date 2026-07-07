@@ -412,6 +412,48 @@ func TestWorkItemResourceConstraintValidate(t *testing.T) {
 	}
 }
 
+func TestCommitDataWorkItemPayloadValidate(t *testing.T) {
+	valid := CommitDataWorkItemPayload{
+		Operator:            string(WorkItemTypeCommitData),
+		TargetEnvironmentID: "target-local",
+		Source:              CommitDataSource{FromWorkItemID: "compute-001", FromArtifact: "summary"},
+		PublishTarget: BoundPublishTarget{
+			Name:            "publish_summary",
+			FromArtifact:    "summary",
+			TargetName:      "publish_summary",
+			Location:        DataAssetLocation{Type: DataProviderRegisteredLocation, LocationName: "published_data", Path: "reports/summary.csv"},
+			OverwritePolicy: PublishedDataAssetOverwriteFailIfExists,
+		},
+		ResourceConstraints: []WorkItemResourceConstraint{
+			{ResourceKey: "target:target-local/published-data-write:published_data", RequestedUnits: 1, Operator: WorkItemResourceConstraintOperatorLessEq, TargetUnits: 1},
+		},
+	}
+
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*CommitDataWorkItemPayload)
+	}{
+		{name: "wrong operator", mutate: func(payload *CommitDataWorkItemPayload) { payload.Operator = "cache_data" }},
+		{name: "missing source work item", mutate: func(payload *CommitDataWorkItemPayload) { payload.Source.FromWorkItemID = "" }},
+		{name: "target artifact mismatch", mutate: func(payload *CommitDataWorkItemPayload) { payload.PublishTarget.FromArtifact = "other" }},
+		{name: "invalid constraint", mutate: func(payload *CommitDataWorkItemPayload) { payload.ResourceConstraints[0].RequestedUnits = 0 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := valid
+			payload.ResourceConstraints = append([]WorkItemResourceConstraint(nil), valid.ResourceConstraints...)
+			test.mutate(&payload)
+			if err := payload.Validate(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:        "work-item-001",

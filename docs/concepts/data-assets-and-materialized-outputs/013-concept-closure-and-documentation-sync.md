@@ -1,6 +1,6 @@
 # 013 Concept Closure and Documentation Sync
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -137,3 +137,17 @@ None.
 - Be explicit that large data stays out of the source-control cache and SQLite.
 - Be explicit that publication copies bytes to a predefined named location; registry/catalog semantics remain future work.
 - Be explicit that real rclone credentials live outside GOET workflow files.
+
+## Implementation Evidence
+
+Implemented on 2026-07-07 as a documentation-only closure.
+
+Updated documentation records Phase 1 as implemented for filesystem-backed
+artifact manifests, provider-backed data bindings, immutable cache fixtures,
+ZIP-selected input assets, configured-executable rclone fixtures, named-location
+publication fixtures, fake-HPCC smoke evidence, and the CDL/Yan/Roy fixture
+pipeline.
+
+No Go production code, Go tests, runtime behavior, real HPCC configuration, real
+Google Drive credentials, real CDL/Yan/Roy data, object-store backends, retention
+cleanup, or data catalog behavior changed in this slice.

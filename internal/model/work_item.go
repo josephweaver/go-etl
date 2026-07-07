@@ -12,6 +12,8 @@ const (
 	WorkItemTypeWriteDemoOutput    WorkItemType = "write_demo_output"
 	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 	WorkItemTypePythonScript       WorkItemType = "python_script"
+	WorkItemTypeCacheData          WorkItemType = "cache_data"
+	WorkItemTypeCommitData         WorkItemType = "commit_data"
 )
 
 type WorkItem struct {
@@ -21,6 +23,7 @@ type WorkItem struct {
 	Source               *WorkItemSource      `json:"source,omitempty"`
 	OutputFilename       string               `json:"output_filename"`
 	Parameters           Parameters           `json:"parameters,omitempty"`
+	DependsOn            []string             `json:"depends_on,omitempty"`
 	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
 	WorkflowDefinitionID string               `json:"workflow_definition_id,omitempty"`
 	WorkflowFingerprint  string               `json:"workflow_fingerprint,omitempty"`
@@ -122,6 +125,44 @@ type WorkSkip struct {
 	Reason         string `json:"reason"`
 }
 
+type CacheDataWorkItemPayload struct {
+	Operator            string                       `json:"operator"`
+	TargetEnvironmentID string                       `json:"target_environment_id"`
+	AssetKey            string                       `json:"asset_key"`
+	DedupeKey           string                       `json:"dedupe_key"`
+	BindingName         string                       `json:"binding_name"`
+	ProviderName        string                       `json:"provider_name"`
+	ProviderType        string                       `json:"provider_type"`
+	Kind                string                       `json:"kind"`
+	Format              string                       `json:"format,omitempty"`
+	ResolvedLocation    DataAssetLocation            `json:"resolved_location"`
+	Cache               DataAssetCache               `json:"cache,omitempty"`
+	Integrity           DataAssetIntegrity           `json:"integrity,omitempty"`
+	Archive             *DataAssetArchive            `json:"archive,omitempty"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+	TransferPolicy      DataAssetTransferPolicy      `json:"transfer_policy,omitempty"`
+	TransferLimits      DataAssetTransferLimits      `json:"transfer_limits,omitempty"`
+	Parameters          map[string]any               `json:"parameters,omitempty"`
+	Metadata            map[string]any               `json:"metadata,omitempty"`
+}
+
+type CommitDataWorkItemPayload struct {
+	Operator            string                       `json:"operator"`
+	TargetEnvironmentID string                       `json:"target_environment_id"`
+	Source              CommitDataSource             `json:"source"`
+	PublishTarget       BoundPublishTarget           `json:"publish_target"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+}
+
+type CommitDataSource struct {
+	FromWorkItemID string `json:"from_work_item_id"`
+	FromArtifact   string `json:"from_artifact"`
+}
+
+type DataAssetTransferLimits struct {
+	MaxBytesPerSecond int64 `json:"max_bytes_per_second,omitempty"`
+}
+
 type ControllerStatus struct {
 	Pending                     int                         `json:"pending"`
 	Assigned                    int                         `json:"assigned"`
@@ -202,7 +243,113 @@ func (item WorkItem) validate(allowMissingPythonSource bool) error {
 			return fmt.Errorf("parameter %s value is required", name)
 		}
 	}
+	for i, dependency := range item.DependsOn {
+		if strings.TrimSpace(dependency) == "" {
+			return fmt.Errorf("depends_on[%d] is required", i)
+		}
+	}
 
+	return nil
+}
+
+func (payload CacheDataWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeCacheData) {
+		return fmt.Errorf("cache_data operator must be %q", WorkItemTypeCacheData)
+	}
+	if strings.TrimSpace(payload.TargetEnvironmentID) == "" {
+		return fmt.Errorf("cache_data target_environment_id is required")
+	}
+	if !strings.HasPrefix(payload.AssetKey, "sha256:") {
+		return fmt.Errorf("cache_data asset_key must use sha256: prefix")
+	}
+	if err := validateOptionalSHA256("cache_data asset_key", strings.TrimPrefix(payload.AssetKey, "sha256:")); err != nil {
+		return err
+	}
+	if strings.TrimSpace(payload.DedupeKey) == "" {
+		return fmt.Errorf("cache_data dedupe_key is required")
+	}
+	if err := validateDataName(payload.BindingName, "cache_data binding_name"); err != nil {
+		return err
+	}
+	if err := validateDataName(payload.ProviderName, "cache_data provider_name"); err != nil {
+		return err
+	}
+	if !isSupportedDataProvider(payload.ProviderType) {
+		return fmt.Errorf("unsupported cache_data provider_type %q", payload.ProviderType)
+	}
+	if strings.TrimSpace(payload.Kind) == "" {
+		return fmt.Errorf("cache_data kind is required")
+	}
+	if err := payload.ResolvedLocation.Validate(); err != nil {
+		return err
+	}
+	if err := payload.Cache.Validate(); err != nil {
+		return err
+	}
+	if err := payload.Integrity.Validate(); err != nil {
+		return err
+	}
+	if payload.Archive != nil {
+		if err := payload.Archive.Validate(); err != nil {
+			return err
+		}
+	}
+	for i, constraint := range payload.ResourceConstraints {
+		if strings.TrimSpace(constraint.ResourceKey) == "" {
+			return fmt.Errorf("cache_data resource_constraints[%d] resource_key is required", i)
+		}
+		if constraint.RequestedUnits <= 0 {
+			return fmt.Errorf("cache_data resource_constraints[%d] requested_units must be greater than 0", i)
+		}
+		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
+			return fmt.Errorf("cache_data resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
+		}
+		if constraint.TargetUnits < 0 {
+			return fmt.Errorf("cache_data resource_constraints[%d] target_units must be non-negative", i)
+		}
+	}
+	if err := payload.TransferPolicy.Validate(); err != nil {
+		return fmt.Errorf("cache_data transfer_policy: %w", err)
+	}
+	if payload.TransferLimits.MaxBytesPerSecond < 0 {
+		return fmt.Errorf("cache_data transfer_limits max_bytes_per_second must be non-negative")
+	}
+	return nil
+}
+
+func (payload CommitDataWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeCommitData) {
+		return fmt.Errorf("commit_data operator must be %q", WorkItemTypeCommitData)
+	}
+	if strings.TrimSpace(payload.TargetEnvironmentID) == "" {
+		return fmt.Errorf("commit_data target_environment_id is required")
+	}
+	if strings.TrimSpace(payload.Source.FromWorkItemID) == "" {
+		return fmt.Errorf("commit_data source from_work_item_id is required")
+	}
+	if err := validateDataName(payload.Source.FromArtifact, "commit_data source from_artifact"); err != nil {
+		return err
+	}
+	if err := payload.PublishTarget.Validate(); err != nil {
+		return fmt.Errorf("commit_data publish_target: %w", err)
+	}
+	if payload.PublishTarget.FromArtifact != payload.Source.FromArtifact {
+		return fmt.Errorf("commit_data publish_target from_artifact must match source from_artifact")
+	}
+	for i, constraint := range payload.ResourceConstraints {
+		if strings.TrimSpace(constraint.ResourceKey) == "" {
+			return fmt.Errorf("commit_data resource_constraints[%d] resource_key is required", i)
+		}
+		if constraint.RequestedUnits <= 0 {
+			return fmt.Errorf("commit_data resource_constraints[%d] requested_units must be greater than 0", i)
+		}
+		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
+			return fmt.Errorf("commit_data resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
+		}
+		if constraint.TargetUnits < 0 {
+			return fmt.Errorf("commit_data resource_constraints[%d] target_units must be non-negative", i)
+		}
+	}
 	return nil
 }
 

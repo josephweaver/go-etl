@@ -1775,6 +1775,63 @@ func TestSubmissionStatusHandlerReturns404ForUnknownSubmission(t *testing.T) {
 	}
 }
 
+func TestSubmissionStatusHandlerReturnsArtifactOutputSummary(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	item := submitAndClaimPersistedWork(t, controller)
+	complete := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"output_json":"{\"schema\":\"goet/artifact-manifest/v1\",\"storage_scope\":\"worker_data\",\"artifacts\":[{\"name\":\"summary\",\"kind\":\"file\",\"path\":\"reports/summary.json\"},{\"name\":\"tile-output\",\"kind\":\"directory\",\"path\":\"tiles/tile-001\"}]}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	completeResp := httptest.NewRecorder()
+	controller.completeWorkHandler(completeResp, complete)
+	if completeResp.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", completeResp.Code, completeResp.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/submissions/"+rawPersistenceRunID+"/status", nil)
+	response := httptest.NewRecorder()
+	controller.submissionStatusHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode submission status: %v", err)
+	}
+	rawOutputs, ok := decoded["artifact_outputs"].([]any)
+	if !ok || len(rawOutputs) != 1 {
+		t.Fatalf("artifact_outputs = %#v, want one summary", decoded["artifact_outputs"])
+	}
+	summary, ok := rawOutputs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("artifact output summary = %#v, want object", rawOutputs[0])
+	}
+	if summary["work_item_id"] != "test-001" {
+		t.Fatalf("work_item_id = %#v, want test-001", summary["work_item_id"])
+	}
+	if summary["artifact_count"] != float64(2) {
+		t.Fatalf("artifact_count = %#v, want 2", summary["artifact_count"])
+	}
+	if summary["storage_scope"] != "worker_data" {
+		t.Fatalf("storage_scope = %#v, want worker_data", summary["storage_scope"])
+	}
+	names, ok := summary["artifact_names"].([]any)
+	if !ok || len(names) != 2 || names[0] != "summary" || names[1] != "tile-output" {
+		t.Fatalf("artifact_names = %#v, want summary names", summary["artifact_names"])
+	}
+	if strings.Contains(response.Body.String(), `"artifacts":[`) {
+		t.Fatalf("status body exposes full artifact manifest: %s", response.Body.String())
+	}
+}
+
 func TestSubmissionStatusHandlerReturns404ForInvalidSubmissionStatusPath(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = openTestWorkflowExecutionStore(t)
@@ -2180,6 +2237,66 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 	}
 	if terminal[0].OutputJSONSHA256 == "" || terminal[0].PreStateSHA256 == "" || terminal[0].PostStateSHA256 == "" {
 		t.Fatalf("missing completion hashes: %+v", terminal[0])
+	}
+}
+
+func TestCompleteWorkHandlerAcceptsSchemaTaggedArtifactManifest(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	item := submitAndClaimPersistedWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"output_json":"{\"schema\":\"goet/artifact-manifest/v1\",\"storage_scope\":\"worker_data\",\"artifacts\":[{\"name\":\"summary\",\"kind\":\"file\",\"path\":\"reports/summary.json\"},{\"name\":\"tile-output\",\"kind\":\"directory\",\"path\":\"tiles/tile-001\"}]}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	terminal, err := store.ListTerminalAttemptsForRun(context.Background(), rawPersistenceRunID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminal) != 1 {
+		t.Fatalf("terminal count = %d, want 1: %+v", len(terminal), terminal)
+	}
+	want := `{"artifacts":[{"kind":"file","name":"summary","path":"reports/summary.json"},{"kind":"directory","name":"tile-output","path":"tiles/tile-001"}],"schema":"goet/artifact-manifest/v1","storage_scope":"worker_data"}`
+	if terminal[0].OutputJSON != want {
+		t.Fatalf("output json = %q, want %q", terminal[0].OutputJSON, want)
+	}
+}
+
+func TestCompleteWorkHandlerRejectsInvalidSchemaTaggedArtifactManifest(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	item := submitAndClaimPersistedWork(t, controller)
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"output_json":"{\"schema\":\"goet/artifact-manifest/v1\",\"storage_scope\":\"worker_data\",\"artifacts\":[{\"name\":\"summary\",\"kind\":\"file\",\"path\":\"../summary.json\"}]}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "artifact manifest") {
+		t.Fatalf("response body = %q, want artifact-manifest context", response.Body.String())
 	}
 }
 

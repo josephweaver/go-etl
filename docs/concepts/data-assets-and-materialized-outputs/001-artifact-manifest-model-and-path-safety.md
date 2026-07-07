@@ -1,6 +1,6 @@
 # 001 Artifact Manifest Model and Path Safety
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

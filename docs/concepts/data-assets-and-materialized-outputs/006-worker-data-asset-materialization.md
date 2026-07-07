@@ -1,6 +1,6 @@
 # 006 Worker Data Asset Materialization
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

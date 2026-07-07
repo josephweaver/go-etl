@@ -1,6 +1,6 @@
 # 002 Worker Artifact Staging and Promotion
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

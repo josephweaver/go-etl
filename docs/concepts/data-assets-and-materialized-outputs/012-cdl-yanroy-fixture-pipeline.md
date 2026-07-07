@@ -1,6 +1,6 @@
 # 012 CDL Yan/Roy Fixture Pipeline
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -306,3 +306,40 @@ Add Go tests only for bugs in artifact/data-asset/dependency behavior found whil
 - Keep crop-type labels in the lookup fixture so the script does not hard-code USDA classes.
 - Keep non-ag and nodata behavior in a declared policy file so the assignment logic is explicit.
 - A later real-data workflow should replace grid readers with raster window readers while keeping the same input-provider, output-schema, artifact-manifest, and publication shape.
+
+## Implemented Evidence
+
+Implemented on 2026-07-07.
+
+The sibling `../go-etl-demo-project` now contains:
+
+- fixture provider and publish-target declarations in `project.json`;
+- tiny CDL/Yan/Roy fixture files under `data/fixtures/cdl-yanroy`;
+- a ZIP-backed CDL grid at `data/fixtures/cdl-yanroy/archives/cdl_2023_fixture_tile_001.zip`;
+- the source-reference workflow `workflows/cdl-yanroy-fixture.json`;
+- local and fake-HPCC submission reference files under `submissions`;
+- the standard-library Python script `scripts/cdl_yanroy_fixture.py`.
+
+The GOET repository now contains repeatable smoke scripts:
+
+```powershell
+powershell -NoProfile -File scripts/cdl-yanroy-fixture-smoke.ps1
+powershell -NoProfile -File scripts/cdl-yanroy-fixture-smoke.ps1 -FakeHPCC
+```
+
+```bash
+bash scripts/cdl-yanroy-fixture-smoke.sh
+bash scripts/cdl-yanroy-fixture-smoke.sh --fake-hpcc
+```
+
+The validated PowerShell local and fake-HPCC smoke runs prove source admission,
+data binding, provider materialization, ZIP archive extraction, Python
+execution, artifact promotion, selected artifact publication, deterministic
+published CSV contents, and controller completion. The fake-HPCC PowerShell
+shim records and uses the generated Slurm worker script, then launches the
+generated worker command directly to avoid WSL/Windows path translation expanding
+this fixture slice.
+
+Real CDL downloads, real Yan/Roy tiles or archives, real Google Drive access,
+credentials, and geospatial Python dependencies remain intentionally out of
+scope for this implemented fixture.

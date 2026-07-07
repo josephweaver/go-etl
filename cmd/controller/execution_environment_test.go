@@ -15,7 +15,7 @@ func TestExecutionEnvironmentConfigValidate(t *testing.T) {
 			{
 				Name: "control",
 				Type: "docker",
-				Settings: map[string]string{
+				Settings: ExecutionComponentSettings{
 					"container": "slurmctld",
 				},
 			},
@@ -48,14 +48,14 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 		Name: "dockerized-slurm",
 		Transports: []ExecutionComponentConfig{{
 			Type: "docker",
-			Settings: map[string]string{
+			Settings: ExecutionComponentSettings{
 				"container":  "slurmctld",
 				"executable": "podman",
 			},
 		}},
 		Dialect:   ExecutionComponentConfig{Type: "bash"},
 		Scheduler: ExecutionComponentConfig{Type: "slurm"},
-		Runtime:   ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
+		Runtime:   ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{"root": "/data/goetl"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -98,7 +98,7 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 		Transports: []ExecutionComponentConfig{{Type: "local"}},
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
-		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/tmp/goetl"}},
+		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{"root": "/tmp/goetl"}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -120,7 +120,7 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
 		Runtime: ExecutionComponentConfig{
 			Type: "singularity_worker",
-			Settings: map[string]string{
+			Settings: ExecutionComponentSettings{
 				"root":                        "/tmp/goetl",
 				"controller_url":              "http://localhost:8080",
 				"image_path":                  "/tmp/goetl/images/goetl-worker.sif",
@@ -146,12 +146,52 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsWorkerRuntimeDataLocationRoots(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "fake-hpcc-data-assets",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "slurm"},
+		Runtime: ExecutionComponentConfig{
+			Type: "worker",
+			Settings: ExecutionComponentSettings{
+				"root":            ".run/fake-hpcc-data-assets/runtime",
+				"controller_url":  "http://localhost:8080",
+				"data_dir":        ".run/fake-hpcc-data-assets/worker-data",
+				"asset_cache_dir": ".run/fake-hpcc-data-assets/cache/assets",
+				"data_location_roots": map[string]any{
+					"fixture_data":   ".run/fake-hpcc-data-assets/fixture-data",
+					"published_data": ".run/fake-hpcc-data-assets/published-data",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runtime, ok := env.Runtime.(WorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
+	}
+	if runtime.DataDir != ".run/fake-hpcc-data-assets/worker-data" {
+		t.Fatalf("data dir = %q", runtime.DataDir)
+	}
+	if runtime.AssetCacheDir != ".run/fake-hpcc-data-assets/cache/assets" {
+		t.Fatalf("asset cache dir = %q", runtime.AssetCacheDir)
+	}
+	if runtime.DataLocationRoots["fixture_data"] != ".run/fake-hpcc-data-assets/fixture-data" ||
+		runtime.DataLocationRoots["published_data"] != ".run/fake-hpcc-data-assets/published-data" {
+		t.Fatalf("data location roots = %#v", runtime.DataLocationRoots)
+	}
+}
+
 func TestNewExecutionEnvironmentSupportsSSHTransport(t *testing.T) {
 	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name: "ssh-slurm",
 		Transports: []ExecutionComponentConfig{{
 			Type: "ssh",
-			Settings: map[string]string{
+			Settings: ExecutionComponentSettings{
 				"host":            "hpcc.example.edu",
 				"port":            "2222",
 				"user":            "researcher",

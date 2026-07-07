@@ -1019,6 +1019,44 @@ func (s *Store) GetWorkItem(ctx context.Context, workItemID string) (WorkItemRec
 	return getWorkItem(ctx, s.db, workItemID)
 }
 
+func (s *Store) ListWorkItemsForRun(ctx context.Context, runID string) ([]WorkItemRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	FROM work_items
+	WHERE run_id = ?
+	ORDER BY stage_index, work_item_index, work_item_id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list work items for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+
+	items := []WorkItemRecord{}
+	for rows.Next() {
+		item, err := scanWorkItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list work items for run %s: %w", runID, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list work items for run %s: %w", runID, err)
+	}
+	return items, nil
+}
+
 func (s *Store) ListWorkItemResourceConstraints(ctx context.Context, workItemID string) ([]WorkItemResourceConstraintRecord, error) {
 	if err := s.requireOpen(); err != nil {
 		return nil, err
@@ -2925,8 +2963,7 @@ func completedWorkMatchesRequest(completed CompletedWorkRecord, request Complete
 		completed.OutputJSON == request.OutputJSON &&
 		completed.OutputJSONSHA256 == request.OutputJSONSHA256 &&
 		completed.PreStateSHA256 == request.PreStateSHA256 &&
-		completed.PostStateSHA256 == request.PostStateSHA256 &&
-		completed.CompletedAt == request.CompletedAt
+		completed.PostStateSHA256 == request.PostStateSHA256
 }
 
 func failedWorkMatchesRequest(failed FailedWorkRecord, request FailAttemptRequest) bool {

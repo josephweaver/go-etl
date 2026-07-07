@@ -8,7 +8,7 @@ Source-control abstraction, GitHub resolution, local cache layout,
 materialization, and cache pin behavior are split out of this epic into:
 
 ```text
-docs/concepts/complete/source-control-resolution-and-cache/README.md
+docs/concepts/source-control-resolution-and-cache/README.md
 ```
 
 ## Reason

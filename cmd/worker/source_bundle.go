@@ -16,15 +16,16 @@ import (
 )
 
 type WorkStaging struct {
-	AttemptDir string
-	SourceDir  string
-	WorkDir    string
-	LogDir     string
+	AttemptDir  string
+	SourceDir   string
+	WorkDir     string
+	ArtifactDir string
+	LogDir      string
 }
 
 type stagedZipEntry struct {
 	file       *zip.File
-	normalized  string
+	normalized string
 	isDir      bool
 }
 
@@ -70,6 +71,7 @@ func (w Worker) stageWorkItemSourceBundle(item model.WorkItem) (WorkStaging, err
 	}
 	staging.SourceDir = filepath.Join(staging.AttemptDir, "source")
 	staging.WorkDir = filepath.Join(staging.AttemptDir, "work")
+	staging.ArtifactDir = filepath.Join(staging.AttemptDir, "artifacts")
 	staging.LogDir = filepath.Join(staging.AttemptDir, "logs")
 
 	if err := os.MkdirAll(staging.SourceDir, 0755); err != nil {
@@ -77,6 +79,9 @@ func (w Worker) stageWorkItemSourceBundle(item model.WorkItem) (WorkStaging, err
 	}
 	if err := os.MkdirAll(staging.WorkDir, 0755); err != nil {
 		return WorkStaging{}, fmt.Errorf("create work staging dir %s: %w", staging.WorkDir, err)
+	}
+	if err := os.MkdirAll(staging.ArtifactDir, 0755); err != nil {
+		return WorkStaging{}, fmt.Errorf("create artifact staging dir %s: %w", staging.ArtifactDir, err)
 	}
 	if err := os.MkdirAll(staging.LogDir, 0755); err != nil {
 		return WorkStaging{}, fmt.Errorf("create log staging dir %s: %w", staging.LogDir, err)
@@ -127,9 +132,9 @@ func validateSourceBundleEntries(entries []*zip.File) ([]stagedZipEntry, error) 
 
 		occupied[normalized] = kindFromBool(isDir)
 		plan = append(plan, stagedZipEntry{
-			file:      entry,
+			file:       entry,
 			normalized: normalized,
-			isDir:     isDir,
+			isDir:      isDir,
 		})
 	}
 

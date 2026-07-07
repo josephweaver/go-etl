@@ -1,6 +1,6 @@
 # 003 Python Artifact Output Contract
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
