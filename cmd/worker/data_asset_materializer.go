@@ -136,6 +136,8 @@ func materializationStrategy(asset model.BoundDataAsset) (string, error) {
 	switch asset.Provider {
 	case model.DataProviderHTTP:
 		return model.DataAssetCacheStrategyWorkerCache, nil
+	case model.DataProviderGDriveRclone:
+		return model.DataAssetCacheStrategyWorkerCache, nil
 	case model.DataProviderLocalFile, model.DataProviderRegisteredLocation:
 		return model.DataAssetCacheStrategyReference, nil
 	default:
@@ -144,8 +146,11 @@ func materializationStrategy(asset model.BoundDataAsset) (string, error) {
 }
 
 func (m assetMaterializer) materializeReference(asset model.BoundDataAsset) (model.MaterializedDataAsset, error) {
-	if asset.Provider == model.DataProviderHTTP {
+	switch asset.Provider {
+	case model.DataProviderHTTP:
 		return model.MaterializedDataAsset{}, fmt.Errorf("http assets require worker_cache materialization")
+	case model.DataProviderGDriveRclone:
+		return model.MaterializedDataAsset{}, fmt.Errorf("gdrive_rclone assets require worker_cache materialization")
 	}
 
 	localPath, err := m.resolveNamedLocationPath(asset.Location.LocationName, asset.Location.Path)
@@ -262,6 +267,8 @@ func (m assetMaterializer) acquireSource(asset model.BoundDataAsset, destination
 	switch asset.Provider {
 	case model.DataProviderHTTP:
 		return m.downloadHTTP(asset.Location.URI, destination)
+	case model.DataProviderGDriveRclone:
+		return m.acquireGDriveRclone(asset, destination)
 	case model.DataProviderLocalFile, model.DataProviderRegisteredLocation:
 		source, err := m.resolveNamedLocationPath(asset.Location.LocationName, asset.Location.Path)
 		if err != nil {

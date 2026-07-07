@@ -20,6 +20,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv("GOET_FAKE_7Z") == "1" {
 		os.Exit(runFakeSevenZip())
 	}
+	if os.Getenv("GOET_FAKE_RCLONE") == "1" {
+		os.Exit(runFakeRclone())
+	}
 	os.Exit(m.Run())
 }
 

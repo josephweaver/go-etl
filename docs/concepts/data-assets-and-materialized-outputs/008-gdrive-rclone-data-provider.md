@@ -1,6 +1,6 @@
 # 008 Google Drive Rclone Data Provider
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -183,6 +183,16 @@ Do not read controller scheduler, SSH, Slurm, or container files unless compile 
 
 ## Notes
 
+- Implemented in `cmd/worker/gdrive_rclone_provider.go` with worker config fields
+  `rclone_executable`, `rclone_config_path`, and
+  `enable_gdrive_rclone_provider`.
+- The worker invokes `rclone copyto` through `exec.CommandContext` with an
+  argument slice. Workflow JSON cannot pass arbitrary rclone flags.
+- Default tests use a fake rclone executable re-entered through the Go test
+  binary. They do not require real Google Drive access, rclone configuration,
+  OAuth credentials, internet access, or private LandCore paths.
+- The implementation uses path-based rclone access. `file_id` remains reserved
+  and fails clearly before invocation.
 - Prefer path-based rclone access for the first implementation. File-ID based access can be reserved in the model and implemented later if needed.
 - Rclone remote configuration should be supplied by deployment/container configuration, not project workflow files.
 - For the first LandCore run, it is acceptable to use `local_file` for a manually downloaded `ReleaseData.7z` while `gdrive_rclone` matures.

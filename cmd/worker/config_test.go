@@ -17,6 +17,9 @@ func TestLoadConfig(t *testing.T) {
 		"controller_url": "https://controller.local",
 		"python_executable": "python3",
 		"seven_zip_executable": "tools/7z",
+		"rclone_executable": "tools/rclone",
+		"rclone_config_path": "secrets/rclone.conf",
+		"enable_gdrive_rclone_provider": true,
 		"asset_cache_dir": "asset-cache",
 		"max_asset_bytes": 1024,
 		"data_location_roots": {
@@ -55,6 +58,18 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.SevenZipExecutable != filepath.Join(root, "tools", "7z") {
 		t.Fatalf("unexpected seven zip executable: %q", config.SevenZipExecutable)
+	}
+
+	if config.RcloneExecutable != filepath.Join(root, "tools", "rclone") {
+		t.Fatalf("unexpected rclone executable: %q", config.RcloneExecutable)
+	}
+
+	if config.RcloneConfigPath != filepath.Join(root, "secrets", "rclone.conf") {
+		t.Fatalf("unexpected rclone config path: %q", config.RcloneConfigPath)
+	}
+
+	if !config.EnableGDriveRcloneProvider {
+		t.Fatal("expected gdrive rclone provider to be enabled")
 	}
 
 	if config.AssetCacheDir != filepath.Join(root, "asset-cache") {

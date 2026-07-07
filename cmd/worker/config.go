@@ -8,15 +8,18 @@ import (
 )
 
 type Config struct {
-	LogDir             string            `json:"log_dir"`
-	TmpDir             string            `json:"tmp_dir"`
-	DataDir            string            `json:"data_dir"`
-	ControllerURL      string            `json:"controller_url"`
-	PythonExecutable   string            `json:"python_executable,omitempty"`
-	SevenZipExecutable string            `json:"seven_zip_executable,omitempty"`
-	AssetCacheDir      string            `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes      int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots  map[string]string `json:"data_location_roots,omitempty"`
+	LogDir                     string            `json:"log_dir"`
+	TmpDir                     string            `json:"tmp_dir"`
+	DataDir                    string            `json:"data_dir"`
+	ControllerURL              string            `json:"controller_url"`
+	PythonExecutable           string            `json:"python_executable,omitempty"`
+	SevenZipExecutable         string            `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable           string            `json:"rclone_executable,omitempty"`
+	RcloneConfigPath           string            `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider bool              `json:"enable_gdrive_rclone_provider,omitempty"`
+	AssetCacheDir              string            `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes              int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots          map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -47,6 +50,12 @@ func (c *Config) resolveRelativePaths(root string) {
 	}
 	if c.SevenZipExecutable != "" && pathLooksRelative(c.SevenZipExecutable) {
 		c.SevenZipExecutable = resolveRelativePath(root, c.SevenZipExecutable)
+	}
+	if c.RcloneExecutable != "" && pathLooksRelative(c.RcloneExecutable) {
+		c.RcloneExecutable = resolveRelativePath(root, c.RcloneExecutable)
+	}
+	if c.RcloneConfigPath != "" {
+		c.RcloneConfigPath = resolveRelativePath(root, c.RcloneConfigPath)
 	}
 	for name, dataRoot := range c.DataLocationRoots {
 		c.DataLocationRoots[name] = resolveRelativePath(root, dataRoot)
