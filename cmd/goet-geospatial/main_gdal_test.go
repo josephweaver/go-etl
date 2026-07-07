@@ -226,6 +226,57 @@ func TestRunStackAlignedRastersWritesStackAndMetadataArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunRasterPairValueCountsWritesCountsAndMetadataArtifacts(t *testing.T) {
+	skipIfGDALMissing(t)
+	dir := t.TempDir()
+	responsePath := filepath.Join(dir, "result.json")
+	fieldPath := createTestRaster(t, dir, "field", "1 1\n2 0")
+	cropPath := createTestRaster(t, dir, "crop", "5 0\n5 9")
+
+	requestJSON := `{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "raster_pair_value_counts",
+  "inputs": {
+    "field_raster": {"path": "` + fieldPath + `", "band": 1, "nodata": 0},
+    "value_raster": {"path": "` + cropPath + `", "band": 1, "nodata": 0}
+  },
+  "outputs": {
+    "counts_csv": "counts/field_crop.csv",
+    "metadata_json": "counts/field_crop.metadata.json"
+  },
+  "options": {
+    "chunk_rows": 1
+  }
+}
+`
+	requestPath := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(requestPath, []byte(requestJSON), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	if err := run([]string{"--request", requestPath, "--response", responsePath}); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	countsData, err := os.ReadFile(filepath.Join(dir, "counts", "field_crop.csv"))
+	if err != nil {
+		t.Fatalf("read counts csv: %v", err)
+	}
+	wantCSV := "field_id,crop_id,count\n1,5,1\n2,5,1\n"
+	if string(countsData) != wantCSV {
+		t.Fatalf("counts csv = %q, want %q", string(countsData), wantCSV)
+	}
+
+	metadataData, err := os.ReadFile(filepath.Join(dir, "counts", "field_crop.metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata json: %v", err)
+	}
+	if !strings.Contains(string(metadataData), `"valid_pixels": 2`) || !strings.Contains(string(metadataData), `"distinct_pairs": 2`) {
+		t.Fatalf("metadata json missing expected counts: %s", metadataData)
+	}
+}
+
 func createTestRasterForCli(t *testing.T, dir string) string {
 	return createTestRaster(t, dir, "cli", "1 2\n3 4")
 }

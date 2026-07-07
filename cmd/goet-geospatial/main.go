@@ -43,14 +43,20 @@ func run(args []string) error {
 	if err := json.Unmarshal(requestData, &request); err != nil {
 		return fmt.Errorf("decode request %s: %w", *requestPath, err)
 	}
-	if err := request.Validate(); err != nil {
-		return err
-	}
 
 	var result geospatial.OperationResult
 
 	switch request.Operation {
+	case geospatial.OperationRasterPairValueCounts:
+		countResult, err := geospatial.ExecuteRasterPairValueCounts(context.Background(), requestData, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = countResult
 	case geospatial.OperationRasterInfo:
+		if err := request.Validate(); err != nil {
+			return err
+		}
 		metadata, err := geospatial.CollectRasterMetadata(request.Inputs)
 		if err != nil {
 			return err
@@ -83,18 +89,27 @@ func run(args []string) error {
 			"rasters": metadata,
 		}
 	case geospatial.OperationAlignToGrid, geospatial.OperationReprojectCRS:
+		if err := request.Validate(); err != nil {
+			return err
+		}
 		alignmentResult, err := geospatial.ExecuteRasterAlignment(context.Background(), request, filepath.Dir(*responsePath))
 		if err != nil {
 			return err
 		}
 		result = alignmentResult
 	case geospatial.OperationStackAligned:
+		if err := request.Validate(); err != nil {
+			return err
+		}
 		stackResult, err := geospatial.ExecuteStackAlignedRasters(context.Background(), request, filepath.Dir(*responsePath))
 		if err != nil {
 			return err
 		}
 		result = stackResult
 	default:
+		if err := request.Validate(); err != nil {
+			return err
+		}
 		result = geospatial.NewValidationResult(request.Operation)
 	}
 
