@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
+image="${GOETL_WORKER_GDAL_IMAGE:-goetl/worker-gdal:dev}"
+tmp_root="${script_dir}/.docker-build-tmp"
+rm -rf "${tmp_root}"
+mkdir -p "${tmp_root}"
+trap 'rm -rf "${tmp_root}"' EXIT
+
+DOCKER_BUILDKIT=0 DOCKER_TMPDIR="${tmp_root}" docker build \
+  -t "${image}" \
+  -f "${script_dir}/Dockerfile" \
+  "${repo_root}"
+
+worker_output="$(docker run --rm "${image}" /missing-worker-config.json)"
+printf '%s\n' "${worker_output}"
+
+case "${worker_output}" in
+  *"invalid config:"*"missing-worker-config.json"*) ;;
+  *)
+    printf 'expected worker to report missing config, got: %s\n' "${worker_output}" >&2
+    exit 1
+    ;;
+esac
+
+gdal_version="$(docker run --rm "${image}" gdalinfo --version)"
+ogr_version="$(docker run --rm "${image}" ogrinfo --version)"
+printf 'gdalinfo: %s\n' "${gdal_version}"
+printf 'ogrinfo: %s\n' "${ogr_version}"
+
+case "${gdal_version}" in
+  *GDAL*) ;;
+  *)
+    printf 'expected gdalinfo to include a GDAL version, got: %s\n' "${gdal_version}" >&2
+    exit 1
+    ;;
+esac
+
+case "${ogr_version}" in
+  *OGR*|*GDAL*) ;;
+  *)
+    printf 'expected ogrinfo to include a version, got: %s\n' "${ogr_version}" >&2
+    exit 1
+    ;;
+esac
