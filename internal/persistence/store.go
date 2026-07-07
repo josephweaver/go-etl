@@ -2925,8 +2925,7 @@ func completedWorkMatchesRequest(completed CompletedWorkRecord, request Complete
 		completed.OutputJSON == request.OutputJSON &&
 		completed.OutputJSONSHA256 == request.OutputJSONSHA256 &&
 		completed.PreStateSHA256 == request.PreStateSHA256 &&
-		completed.PostStateSHA256 == request.PostStateSHA256 &&
-		completed.CompletedAt == request.CompletedAt
+		completed.PostStateSHA256 == request.PostStateSHA256
 }
 
 func failedWorkMatchesRequest(failed FailedWorkRecord, request FailAttemptRequest) bool {

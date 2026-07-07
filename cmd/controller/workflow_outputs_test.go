@@ -16,6 +16,40 @@ func TestValidateCompletedWorkOutputJSONSizeAcceptsSmallArtifactReference(t *tes
 	}
 }
 
+func TestValidateArtifactManifestOutputJSONAcceptsRecognizedValidManifest(t *testing.T) {
+	output := `{
+		"schema":"goet/artifact-manifest/v1",
+		"storage_scope":"worker_data",
+		"artifacts":[
+			{"name":"summary","kind":"file","path":"reports/summary.json"}
+		]
+	}`
+	if err := validateArtifactManifestOutputJSON(output); err != nil {
+		t.Fatalf("validateArtifactManifestOutputJSON() error = %v", err)
+	}
+}
+
+func TestValidateArtifactManifestOutputJSONRejectsRecognizedInvalidManifest(t *testing.T) {
+	output := `{
+		"schema":"goet/artifact-manifest/v1",
+		"storage_scope":"worker_data",
+		"artifacts":[
+			{"name":"summary","kind":"file","path":"../summary.json"}
+		]
+	}`
+	err := validateArtifactManifestOutputJSON(output)
+	if err == nil || !strings.Contains(err.Error(), "artifact manifest") {
+		t.Fatalf("error = %v, want artifact-manifest validation failure", err)
+	}
+}
+
+func TestValidateArtifactManifestOutputJSONIgnoresNonManifestOutput(t *testing.T) {
+	output := `{"schema":"goet/python-workitem-output/v1","logical_output":{"status":"ok"}}`
+	if err := validateArtifactManifestOutputJSON(output); err != nil {
+		t.Fatalf("validateArtifactManifestOutputJSON() error = %v", err)
+	}
+}
+
 func TestValidateCompletedWorkOutputJSONSizeRejectsOversizedOutput(t *testing.T) {
 	output := `{"log":"` + strings.Repeat("x", maxCompletedWorkOutputJSONBytes) + `"}`
 	err := validateCompletedWorkOutputJSONSize(output)

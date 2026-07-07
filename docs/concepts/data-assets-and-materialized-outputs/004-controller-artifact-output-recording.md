@@ -1,6 +1,6 @@
 # 004 Controller Artifact Output Recording
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
