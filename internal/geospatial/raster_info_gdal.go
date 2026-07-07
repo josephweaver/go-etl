@@ -59,12 +59,12 @@ func CollectRasterMetadata(inputs map[string]InputSpec) ([]RasterMetadata, error
 }
 
 func collectRasterMetadata(name string, spec InputSpec) (RasterMetadata, error) {
-	rawInfo, _, wkt, err := gdalInfoJSON(spec.Path)
+	rawInfo, rawDoc, _, wkt, err := gdalInfoJSON(spec.Path)
 	if err != nil {
 		return RasterMetadata{}, fmt.Errorf("read raster metadata: %w", err)
 	}
 
-	meta, err := parseGDALInfo(rawInfo)
+	meta, err := parseGDALInfo(rawInfo, rawDoc)
 	if err != nil {
 		return RasterMetadata{}, err
 	}
@@ -103,31 +103,31 @@ func collectRasterMetadata(name string, spec InputSpec) (RasterMetadata, error) 
 	}, nil
 }
 
-func gdalInfoJSON(rasterPath string) (gdalInfo, []byte, string, error) {
+func gdalInfoJSON(rasterPath string) (gdalInfo, map[string]any, []byte, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "gdalinfo", "-json", rasterPath)
 	rawOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		return gdalInfo{}, rawOutput, "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(rawOutput)))
+		return gdalInfo{}, nil, rawOutput, "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(rawOutput)))
 	}
 
 	var rawDoc map[string]any
 	if err := json.Unmarshal(rawOutput, &rawDoc); err != nil {
-		return gdalInfo{}, nil, "", fmt.Errorf("parse gdalinfo json: %w", err)
+		return gdalInfo{}, nil, nil, "", fmt.Errorf("parse gdalinfo json: %w", err)
 	}
 
 	var info gdalInfo
 	if err := json.Unmarshal(rawOutput, &info); err != nil {
-		return gdalInfo{}, nil, "", fmt.Errorf("parse gdalinfo json: %w", err)
+		return gdalInfo{}, nil, nil, "", fmt.Errorf("parse gdalinfo json: %w", err)
 	}
 
 	wkt := findWKTFromJSON(rawDoc)
-	return info, rawOutput, wkt, nil
+	return info, rawDoc, rawOutput, wkt, nil
 }
 
-func parseGDALInfo(info gdalInfo) (rasterInfo, error) {
+func parseGDALInfo(info gdalInfo, rawDoc map[string]any) (rasterInfo, error) {
 	if len(info.Size) != 2 {
 		return rasterInfo{}, fmt.Errorf("unexpected raster size %v", info.Size)
 	}
@@ -138,8 +138,10 @@ func parseGDALInfo(info gdalInfo) (rasterInfo, error) {
 	if len(info.GeoTransform) != 6 {
 		return rasterInfo{}, fmt.Errorf("unexpected geoTransform %v", info.GeoTransform)
 	}
+
+	driverName := resolveGDALDriverNameFromJSON(rawDoc["driver"], info.Driver)
 	return rasterInfo{
-		Driver:       resolveGDALDriverName(info.Driver),
+		Driver:       driverName,
 		Width:        width,
 		Height:       height,
 		Bands:        info.Bands,
@@ -155,6 +157,59 @@ func resolveGDALDriverName(driver gdalDriver) string {
 		return driver.ShortName
 	}
 	return strings.TrimSpace(driver.Description)
+}
+
+func resolveGDALDriverNameFromJSON(rawDriver any, fallback gdalDriver) string {
+	switch typed := rawDriver.(type) {
+	case map[string]any:
+		if name, ok := typed["name"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+		if name, ok := typed["shortName"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+		if name, ok := typed["short_name"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+		if name, ok := typed["description"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+		if name, ok := typed["longName"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+		if name, ok := typed["long_name"]; ok {
+			if s := strings.TrimSpace(toString(name)); s != "" {
+				return s
+			}
+		}
+	case string:
+		if s := strings.TrimSpace(typed); s != "" {
+			return s
+		}
+	}
+
+	return resolveGDALDriverName(fallback)
+}
+
+func toString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return ""
+	}
 }
 
 type rasterInfo struct {
