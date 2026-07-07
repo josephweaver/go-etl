@@ -20,6 +20,7 @@ Test files in this directory describe expected behavior but do not own productio
 
 - Controller process boundary.
 - HTTP API for work assignment, completion, failure, workflow submission, submission acknowledgement, submission-scoped status, and shutdown.
+- Resource-aware claim behavior: dependency-ready queue candidates must also satisfy controller-evaluated resource predicates to be assigned.
 - Durable queued, running, completed, and failed work state through the workflow-execution store.
 - Workflow submission orchestration, including initial ready-stage queueing and just-in-time downstream stage activation.
 - Controller-generated runtime metadata for work items.
@@ -53,6 +54,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Successful workflow admission returns a submission acknowledgement with `submission_id`, `workflow_id`, and initial work-item count.
 - `GET /submissions/{submission_id}/status` is the controller-owned status endpoint for one submission.
 - `GET /submissions/{submission_id}/logs` is the controller-owned log-read endpoint.
+- Queue visibility and status include resource-blocked queued work separately from generic pending work.
 
 ## Dependency Smoke
 

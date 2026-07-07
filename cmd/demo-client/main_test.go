@@ -834,6 +834,42 @@ func TestFormatFinalStatusIncludesReuseCandidates(t *testing.T) {
 	}
 }
 
+func TestFormatFinalStatusIncludesResourceConstraintSummary(t *testing.T) {
+	status := model.ControllerStatus{
+		Pending:                     1,
+		Assigned:                    2,
+		Failed:                      3,
+		PendingReuseCandidates:      4,
+		Attempts:                    5,
+		AttemptVariables:            6,
+		QueuedResourceEligibleCount: 1,
+		QueuedResourceBlockedCount:  2,
+		ResourceConstraintSummaries: []model.ResourceConstraintSummary{
+			{
+				ResourceKey:           "target:local/memory-mib",
+				TotalUnits:            65536,
+				BlockedCandidateCount: 2,
+			},
+			{
+				ResourceKey:           "ctlr/python-env:torch",
+				TotalUnits:            1,
+				BlockedCandidateCount: 1,
+			},
+		},
+	}
+
+	got := formatFinalStatus(status)
+	want := strings.Join([]string{
+		"final status: pending=1 assigned=2 failed=3 pending_reuse_candidates=4 attempts=5 attempt_variables=6",
+		"resources: 1 eligible, 2 blocked",
+		"  target:local/memory-mib running=65536 blocked=2",
+		"  ctlr/python-env:torch running=1 blocked=1",
+	}, "\n")
+	if got != want {
+		t.Fatalf("formatFinalStatus() = %q, want %q", got, want)
+	}
+}
+
 func TestFormatSubmissionLog(t *testing.T) {
 	got := formatSubmissionLog(model.LogObservation{
 		Timestamp: "2026-07-05T11:00:00Z",

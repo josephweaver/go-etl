@@ -360,14 +360,25 @@ func splitFlagArgs(args []string) ([]string, []string) {
 }
 
 func formatFinalStatus(status model.ControllerStatus) string {
-	return fmt.Sprintf("final status: pending=%d assigned=%d failed=%d pending_reuse_candidates=%d attempts=%d attempt_variables=%d",
+	lines := []string{fmt.Sprintf("final status: pending=%d assigned=%d failed=%d pending_reuse_candidates=%d attempts=%d attempt_variables=%d",
 		status.Pending,
 		status.Assigned,
 		status.Failed,
 		status.PendingReuseCandidates,
 		status.Attempts,
 		status.AttemptVariables,
-	)
+	)}
+
+	if status.QueuedResourceEligibleCount == 0 && status.QueuedResourceBlockedCount == 0 && status.RunningResourceClaimCount == 0 && len(status.ResourceConstraintSummaries) == 0 {
+		return lines[0]
+	}
+
+	lines = append(lines, fmt.Sprintf("resources: %d eligible, %d blocked", status.QueuedResourceEligibleCount, status.QueuedResourceBlockedCount))
+	for _, summary := range status.ResourceConstraintSummaries {
+		lines = append(lines, fmt.Sprintf("  %s running=%d blocked=%d", summary.ResourceKey, summary.TotalUnits, summary.BlockedCandidateCount))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func formatSubmissionAcknowledgement(acknowledgement model.SubmissionAcknowledgement) string {

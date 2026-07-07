@@ -1,6 +1,6 @@
 # 002 Resolve Resource Constraints At Work Creation
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

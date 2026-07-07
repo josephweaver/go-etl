@@ -1,6 +1,6 @@
 # 004 Operator Evaluator And Check Reader
 
-Status: Ready
+Status: implemented
 
 ## Objective
 

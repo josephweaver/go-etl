@@ -1,6 +1,6 @@
 # 006 Resource Status And Observability
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

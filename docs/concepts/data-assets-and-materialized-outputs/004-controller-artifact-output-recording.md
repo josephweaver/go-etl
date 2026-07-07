@@ -4,7 +4,7 @@ Status: proposed
 
 ## Objective
 
-Make the controller accept, persist, and surface compact artifact manifests returned as work-item logical outputs.
+Make the controller accept, persist, and surface compact artifact manifests returned as work-item logical outputs. The manifest may later include compact published-asset evidence, but the controller still must not read bytes.
 
 This slice should not make the controller read artifact bytes. It records the manifest evidence already produced by the worker and makes status/log surfaces useful enough to find produced artifacts.
 
@@ -75,6 +75,7 @@ Avoid scheduler, transport, container, and source-control files unless compile o
 - Worker promotion changes.
 - Python runner changes.
 - Data asset declarations or materialization.
+- Published-asset copying to named locations.
 - HPCC smoke automation.
 
 ## Acceptance Criteria
@@ -92,3 +93,4 @@ Avoid scheduler, transport, container, and source-control files unless compile o
 
 - Keep artifact manifests compact. Directory file-entry manifests may be referenced by hash rather than embedded in status output.
 - If output JSON is arbitrary user output, use the top-level `schema` value to identify artifact manifests.
+- If a later slice adds `published_assets`, the controller should still treat it as compact evidence only.

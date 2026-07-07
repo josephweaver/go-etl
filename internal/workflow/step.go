@@ -14,6 +14,19 @@ type Step struct {
 }
 
 func CompileStep(resolver variable.Resolver, step Step) ([]model.WorkItem, error) {
+	compiled, err := CompileStepItems(resolver, step)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]model.WorkItem, 0, len(compiled))
+	for _, item := range compiled {
+		items = append(items, item.WorkItem)
+	}
+	return items, nil
+}
+
+func CompileStepItems(resolver variable.Resolver, step Step) ([]CompiledFanOutWorkItem, error) {
 	if step.ID == "" {
 		return nil, fmt.Errorf("workflow step id is required")
 	}
@@ -30,5 +43,5 @@ func CompileStep(resolver variable.Resolver, step Step) ([]model.WorkItem, error
 		fanOut.WorkItem.IDPrefix = step.ID
 	}
 
-	return CompileFanOutStep(resolver, fanOut)
+	return CompileFanOutStepItems(resolver, fanOut)
 }

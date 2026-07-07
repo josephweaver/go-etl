@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
@@ -145,6 +147,223 @@ func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 
 	if items[1].Parameters["input_path"].Value != "demo-summary-input-2.txt" {
 		t.Fatalf("unexpected second input_path parameter: %+v", items[1].Parameters["input_path"])
+	}
+}
+
+func TestCompileFanOutWorkItemsResolvesResourceConstraints(t *testing.T) {
+	scope, err := variable.NewScope(
+		testObjectListVariable("records",
+			map[string]variable.TypedExpression{
+				"id":                   {Type: variable.TypeString, Expression: "fixture"},
+				"memory_allocated_mib": {Type: variable.TypeInt, Expression: 512},
+			},
+			map[string]variable.TypedExpression{
+				"id":                   {Type: variable.TypeString, Expression: "fixture-2"},
+				"memory_allocated_mib": {Type: variable.TypeInt, Expression: 1024},
+			},
+		),
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "local_memory_limit_mib"},
+			TypedExpression: variable.TypedExpression{
+				Type:       variable.TypeInt,
+				Expression: 2048,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	compiled, err := CompileFanOutWorkItemResults(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${records[*]}",
+		IDTokenAccessor:  ".id",
+		OutputAccessor:   ".id",
+		Type:             model.WorkItemTypeSummarizeInputFile,
+		IDPrefix:         "summary",
+		OutputPrefix:     "summary",
+		OutputExtension:  ".txt",
+		Parameters: model.Parameters{
+			"input_path": {Type: "path", Value: "input.txt"},
+		},
+		ResourceConstraints: []ResourceConstraintDeclaration{
+			{
+				ResourceKey: variable.TypedExpression{
+					Type:       variable.TypeString,
+					Expression: "target:local/memory-mib",
+				},
+				RequestedUnits: variable.TypedExpression{
+					Type:       variable.TypeInt,
+					Expression: "${step.memory_allocated_mib}",
+				},
+				Operator: variable.TypedExpression{
+					Type:       variable.TypeString,
+					Expression: "<=",
+				},
+				TargetUnits: variable.TypedExpression{
+					Type:       variable.TypeInt,
+					Expression: "${controller_config.local_memory_limit_mib}",
+				},
+			},
+			{
+				ResourceKey: variable.TypedExpression{
+					Type:       variable.TypeString,
+					Expression: "ctlr/python-env:torch",
+				},
+				RequestedUnits: variable.TypedExpression{
+					Type:       variable.TypeInt,
+					Expression: 1,
+				},
+				Operator: variable.TypedExpression{
+					Type:       variable.TypeString,
+					Expression: "<=",
+				},
+				TargetUnits: variable.TypedExpression{
+					Type:       variable.TypeInt,
+					Expression: 1,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(compiled[0].ResourceConstraints) != 2 {
+		t.Fatalf("first resource constraint count = %d, want 2", len(compiled[0].ResourceConstraints))
+	}
+	first := compiled[0].ResourceConstraints[0]
+	if first.WorkItemID != "summary-fixture" || first.ConstraintIndex != 0 || first.ResourceKey != "target:local/memory-mib" {
+		t.Fatalf("first constraint identity = %+v", first)
+	}
+	if first.RequestedUnits != 512 || first.Operator != model.WorkItemResourceConstraintOperatorLessEq || first.TargetUnits != 2048 {
+		t.Fatalf("first constraint predicate = %+v", first)
+	}
+	if compiled[1].ResourceConstraints[0].RequestedUnits != 1024 {
+		t.Fatalf("second requested units = %d, want 1024", compiled[1].ResourceConstraints[0].RequestedUnits)
+	}
+}
+
+func TestResourceConstraintDeclarationUnmarshalAcceptsWorkflowJSONShape(t *testing.T) {
+	var declaration ResourceConstraintDeclaration
+	if err := json.Unmarshal([]byte(`{
+		"resource_key": "target:local/memory-mib",
+		"requested_units": "${step.memory_allocated_mib}",
+		"operator": "<=",
+		"target_units": 2048
+	}`), &declaration); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	if declaration.ResourceKey.Type != variable.TypeString || declaration.ResourceKey.Expression != "target:local/memory-mib" {
+		t.Fatalf("resource key expression = %+v", declaration.ResourceKey)
+	}
+	if declaration.RequestedUnits.Type != variable.TypeInt || declaration.RequestedUnits.Expression != "${step.memory_allocated_mib}" {
+		t.Fatalf("requested units expression = %+v", declaration.RequestedUnits)
+	}
+	if declaration.TargetUnits.Type != variable.TypeInt {
+		t.Fatalf("target units type = %s, want int", declaration.TargetUnits.Type)
+	}
+}
+
+func TestCompileFanOutWorkItemsRejectsInvalidResourceConstraints(t *testing.T) {
+	tests := []struct {
+		name        string
+		constraint  ResourceConstraintDeclaration
+		wantMessage string
+	}{
+		{
+			name: "invalid operator",
+			constraint: testResourceConstraintDeclaration(
+				"target:local/memory-mib",
+				1,
+				"approximately",
+				2,
+			),
+			wantMessage: "unsupported resource constraint operator",
+		},
+		{
+			name: "non-integer requested units",
+			constraint: ResourceConstraintDeclaration{
+				ResourceKey:    testStringExpression("target:local/memory-mib"),
+				RequestedUnits: testStringExpression("1"),
+				Operator:       testStringExpression("<="),
+				TargetUnits:    testIntExpression(2),
+			},
+			wantMessage: "requested_units: has type string, want int",
+		},
+		{
+			name: "non-positive requested units",
+			constraint: testResourceConstraintDeclaration(
+				"target:local/memory-mib",
+				0,
+				"<=",
+				2,
+			),
+			wantMessage: "requested units must be greater than 0",
+		},
+		{
+			name: "negative target units",
+			constraint: testResourceConstraintDeclaration(
+				"target:local/memory-mib",
+				1,
+				"<=",
+				-1,
+			),
+			wantMessage: "target units must be non-negative",
+		},
+		{
+			name: "empty resource key",
+			constraint: testResourceConstraintDeclaration(
+				"",
+				1,
+				"<=",
+				2,
+			),
+			wantMessage: "resource_key: is required",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := testWorkflowResolver(t, 2024)
+			_, err := CompileFanOutWorkItemResults(resolver, FanOutWorkItemTemplate{
+				FanOutExpression: "${years[*]}",
+				Type:             model.WorkItemTypeWriteDemoOutput,
+				IDPrefix:         "cdl",
+				OutputPrefix:     "cdl",
+				OutputExtension:  ".txt",
+				ResourceConstraints: []ResourceConstraintDeclaration{
+					test.constraint,
+				},
+			})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("error = %v, want message containing %q", err, test.wantMessage)
+			}
+		})
+	}
+}
+
+func TestCompileFanOutWorkItemsRejectsDuplicateResourceKeys(t *testing.T) {
+	resolver := testWorkflowResolver(t, 2024)
+	_, err := CompileFanOutWorkItemResults(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${years[*]}",
+		Type:             model.WorkItemTypeWriteDemoOutput,
+		IDPrefix:         "cdl",
+		OutputPrefix:     "cdl",
+		OutputExtension:  ".txt",
+		ResourceConstraints: []ResourceConstraintDeclaration{
+			testResourceConstraintDeclaration("target:local/memory-mib", 1, "<=", 2),
+			testResourceConstraintDeclaration("target:local/memory-mib", 1, "<=", 2),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate resource key error")
+	}
+	if !strings.Contains(err.Error(), "duplicate resource_key") {
+		t.Fatalf("error = %v, want duplicate resource_key", err)
 	}
 }
 
@@ -360,4 +579,21 @@ func testObjectListVariable(key string, values ...map[string]variable.TypedExpre
 		Name:            variable.Name{Namespace: variable.NamespaceWorkflow, Key: key},
 		TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: items},
 	}
+}
+
+func testResourceConstraintDeclaration(resourceKey string, requestedUnits int, operator string, targetUnits int) ResourceConstraintDeclaration {
+	return ResourceConstraintDeclaration{
+		ResourceKey:    testStringExpression(resourceKey),
+		RequestedUnits: testIntExpression(requestedUnits),
+		Operator:       testStringExpression(operator),
+		TargetUnits:    testIntExpression(targetUnits),
+	}
+}
+
+func testStringExpression(value string) variable.TypedExpression {
+	return variable.TypedExpression{Type: variable.TypeString, Expression: value}
+}
+
+func testIntExpression(value int) variable.TypedExpression {
+	return variable.TypedExpression{Type: variable.TypeInt, Expression: value}
 }

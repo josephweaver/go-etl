@@ -39,7 +39,15 @@ func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
 					"TokenAccessor": ".next_year",
 					"Type": "write_demo_output",
 					"OutputPrefix": "summarize",
-					"OutputExtension": ".txt"
+					"OutputExtension": ".txt",
+					"resource_constraints": [
+						{
+							"resource_key": "ctlr/python-env:torch",
+							"requested_units": 1,
+							"operator": "<=",
+							"target_units": 1
+						}
+					]
 				}
 			}
 		}
@@ -79,6 +87,16 @@ func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
 	}
 	if payload.ID != "summarize-2026" || payload.OutputFilename != "summarize-2026.txt" {
 		t.Fatalf("activated payload = %+v, want workflow.step output token 2026", payload)
+	}
+	constraints, err := store.ListWorkItemResourceConstraints(context.Background(), queued[0].ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 1 || constraints[0].ResourceKey != "ctlr/python-env:torch" {
+		t.Fatalf("activated constraints = %+v, want python-env constraint", constraints)
+	}
+	if constraints[0].WorkItemID != queued[0].ID || constraints[0].RequestedUnits != 1 {
+		t.Fatalf("activated constraint = %+v, want resolved constraint for queued work item %s", constraints[0], queued[0].ID)
 	}
 
 	stage1, found, err := controller.ReadStageState(context.Background(), queued[0].RunID, 1)

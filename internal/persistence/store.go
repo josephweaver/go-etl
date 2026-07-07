@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"goetl/internal/model"
 )
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 4
+	SupportedSchemaVersion = 5
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -90,6 +92,27 @@ type WorkItemRecord struct {
 	CreatedAt            string
 }
 
+type WorkItemResourceConstraintRecord struct {
+	WorkItemID      string
+	ConstraintIndex int
+	ResourceKey     string
+	RequestedUnits  int
+	Operator        string
+	TargetUnits     int
+	CreatedAt       string
+}
+
+type QueuedResourceConstraintCheckRecord struct {
+	WorkItemID      string
+	QueuedAt        string
+	ConstraintIndex int
+	ResourceKey     string
+	TotalUnits      int64
+	RequestedUnits  int64
+	Operator        string
+	TargetUnits     int64
+}
+
 type WorkflowDependencyWorkItemRecord struct {
 	RunID         string
 	StageIndex    int
@@ -114,6 +137,12 @@ type WorkflowStepOutputFactRecord struct {
 type QueuedWorkRecord struct {
 	WorkItemRecord
 	QueuedAt string
+}
+
+type QueueWorkItemsRequest struct {
+	WorkItems           []WorkItemRecord
+	ResourceConstraints []WorkItemResourceConstraintRecord
+	QueuedWork          []QueuedWorkRecord
 }
 
 type WorkItemStatusCounts struct {
@@ -157,13 +186,14 @@ type TerminalAttemptRecord struct {
 }
 
 type CompleteStageRequest struct {
-	RunID            string
-	StageIndex       int
-	OutputJSON       string
-	OutputJSONSHA256 string
-	CompletedAt      string
-	ReadyWorkItems   []WorkItemRecord
-	ReadyQueuedWork  []QueuedWorkRecord
+	RunID                    string
+	StageIndex               int
+	OutputJSON               string
+	OutputJSONSHA256         string
+	CompletedAt              string
+	ReadyWorkItems           []WorkItemRecord
+	ReadyResourceConstraints []WorkItemResourceConstraintRecord
+	ReadyQueuedWork          []QueuedWorkRecord
 }
 
 type CompleteStageResult struct {
@@ -926,6 +956,38 @@ func (s *Store) InsertWorkItems(ctx context.Context, items []WorkItemRecord) err
 	return nil
 }
 
+func (s *Store) QueueWorkItems(ctx context.Context, request QueueWorkItemsRequest) error {
+	if err := s.requireOpen(); err != nil {
+		return err
+	}
+	if err := request.validate(); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin queued work item insert: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := insertWorkItems(ctx, tx, request.WorkItems); err != nil {
+		return err
+	}
+	if len(request.ResourceConstraints) != 0 {
+		if err := insertWorkItemResourceConstraints(ctx, tx, request.ResourceConstraints); err != nil {
+			return err
+		}
+	}
+	if err := enqueueWorkItems(ctx, tx, request.QueuedWork); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit queued work item insert: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) EnqueueWorkItems(ctx context.Context, items []QueuedWorkRecord) error {
 	if err := s.requireOpen(); err != nil {
 		return err
@@ -955,6 +1017,87 @@ func (s *Store) GetWorkItem(ctx context.Context, workItemID string) (WorkItemRec
 		return WorkItemRecord{}, false, err
 	}
 	return getWorkItem(ctx, s.db, workItemID)
+}
+
+func (s *Store) ListWorkItemResourceConstraints(ctx context.Context, workItemID string) ([]WorkItemResourceConstraintRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if workItemID == "" {
+		return nil, fmt.Errorf("work item id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	FROM work_item_resource_constraints
+	WHERE work_item_id = ?
+	ORDER BY constraint_index`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	constraints := []WorkItemResourceConstraintRecord{}
+	for rows.Next() {
+		var constraint WorkItemResourceConstraintRecord
+		if err := rows.Scan(
+			&constraint.WorkItemID,
+			&constraint.ConstraintIndex,
+			&constraint.ResourceKey,
+			&constraint.RequestedUnits,
+			&constraint.Operator,
+			&constraint.TargetUnits,
+			&constraint.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+		}
+		constraints = append(constraints, constraint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list work item resource constraints %s: %w", workItemID, err)
+	}
+	return constraints, nil
+}
+
+func (s *Store) ListQueuedResourceConstraintChecks(ctx context.Context) ([]QueuedResourceConstraintCheckRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		work_item_id,
+		queued_at,
+		constraint_index,
+		resource_key,
+		total_units,
+		requested_units,
+		operator,
+		target_units
+	FROM queued_resource_constraint_checks
+	ORDER BY queued_at, work_item_id, constraint_index`)
+	if err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+	}
+	defer rows.Close()
+
+	checks := []QueuedResourceConstraintCheckRecord{}
+	for rows.Next() {
+		check, err := scanQueuedResourceConstraintCheck(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+		}
+		checks = append(checks, check)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks: %w", err)
+	}
+	return checks, nil
 }
 
 func (s *Store) ListQueuedWorkItems(ctx context.Context) ([]QueuedWorkRecord, error) {
@@ -1184,6 +1327,11 @@ func (s *Store) CompleteStageIfReady(ctx context.Context, request CompleteStageR
 			return CompleteStageResult{}, err
 		}
 	}
+	if len(request.ReadyResourceConstraints) != 0 {
+		if err := insertWorkItemResourceConstraints(ctx, tx, request.ReadyResourceConstraints); err != nil {
+			return CompleteStageResult{}, err
+		}
+	}
 	if len(request.ReadyQueuedWork) != 0 {
 		if err := enqueueWorkItems(ctx, tx, request.ReadyQueuedWork); err != nil {
 			return CompleteStageResult{}, err
@@ -1214,26 +1362,29 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 	}
 	defer tx.Rollback()
 
-	queued, err := scanQueuedWork(tx.QueryRowContext(ctx, `SELECT
-		work_items.work_item_id,
-		work_items.run_id,
-		work_items.stage_index,
-		work_items.work_item_index,
-		work_items.worker_payload_json,
-		work_items.resolved_inputs_sha256,
-		work_items.created_at,
-		queued_work.queued_at
-	FROM queued_work
-	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
-	ORDER BY queued_work.queued_at, queued_work.work_item_id
-	LIMIT 1`))
-	if err == sql.ErrNoRows {
-		return ClaimedWorkRecord{}, false, nil
-	}
+	queuedItems, err := listQueuedWorkForClaim(ctx, tx)
 	if err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work: %w", err)
 	}
 
+	for _, queued := range queuedItems {
+		allowed, err := queuedResourceConstraintsAllow(ctx, tx, queued.ID)
+		if err != nil {
+			return ClaimedWorkRecord{}, false, fmt.Errorf("claim queued work %s: %w", queued.ID, err)
+		}
+		if !allowed {
+			continue
+		}
+		return claimQueuedWork(ctx, tx, request, queued)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ClaimedWorkRecord{}, false, fmt.Errorf("commit empty claim next work: %w", err)
+	}
+	return ClaimedWorkRecord{}, false, nil
+}
+
+func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, queued QueuedWorkRecord) (ClaimedWorkRecord, bool, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_attempts (
 		attempt_id,
 		work_item_id,
@@ -1643,6 +1794,42 @@ func enqueueWorkItems(ctx context.Context, tx *sql.Tx, items []QueuedWorkRecord)
 	return nil
 }
 
+func insertWorkItemResourceConstraints(ctx context.Context, tx *sql.Tx, constraints []WorkItemResourceConstraintRecord) error {
+	for _, constraint := range constraints {
+		existing, found, err := getWorkItemResourceConstraint(ctx, tx, constraint.WorkItemID, constraint.ConstraintIndex)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existing != constraint {
+				return fmt.Errorf("work item resource constraint %s/%d already exists with different values", constraint.WorkItemID, constraint.ConstraintIndex)
+			}
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			constraint.WorkItemID,
+			constraint.ConstraintIndex,
+			constraint.ResourceKey,
+			constraint.RequestedUnits,
+			constraint.Operator,
+			constraint.TargetUnits,
+			constraint.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert work item resource constraint %s/%d: %w", constraint.WorkItemID, constraint.ConstraintIndex, err)
+		}
+	}
+	return nil
+}
+
 func getProject(ctx context.Context, q queryer, projectID string) (ProjectRecord, bool, error) {
 	if projectID == "" {
 		return ProjectRecord{}, false, fmt.Errorf("project id is required")
@@ -1783,6 +1970,45 @@ func getWorkItem(ctx context.Context, q queryer, workItemID string) (WorkItemRec
 	return item, true, nil
 }
 
+func getWorkItemResourceConstraint(ctx context.Context, q queryer, workItemID string, constraintIndex int) (WorkItemResourceConstraintRecord, bool, error) {
+	if workItemID == "" {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("work item id is required")
+	}
+	if constraintIndex < 0 {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("constraint index must be non-negative")
+	}
+
+	var constraint WorkItemResourceConstraintRecord
+	err := q.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	FROM work_item_resource_constraints
+	WHERE work_item_id = ? AND constraint_index = ?`,
+		workItemID,
+		constraintIndex,
+	).Scan(
+		&constraint.WorkItemID,
+		&constraint.ConstraintIndex,
+		&constraint.ResourceKey,
+		&constraint.RequestedUnits,
+		&constraint.Operator,
+		&constraint.TargetUnits,
+		&constraint.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return WorkItemResourceConstraintRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkItemResourceConstraintRecord{}, false, fmt.Errorf("get work item resource constraint %s/%d: %w", workItemID, constraintIndex, err)
+	}
+	return constraint, true, nil
+}
+
 func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, bool, error) {
 	if workItemID == "" {
 		return "", false, fmt.Errorf("work item id is required")
@@ -1797,6 +2023,88 @@ func getQueuedWork(ctx context.Context, q queryer, workItemID string) (string, b
 		return "", false, fmt.Errorf("get queued work item %s: %w", workItemID, err)
 	}
 	return queuedAt, true, nil
+}
+
+func listQueuedWorkForClaim(ctx context.Context, tx *sql.Tx) ([]QueuedWorkRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		queued_work.queued_at
+	FROM queued_work
+	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
+	ORDER BY queued_work.queued_at, queued_work.work_item_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	queued := []QueuedWorkRecord{}
+	for rows.Next() {
+		item, err := scanQueuedWork(rows)
+		if err != nil {
+			return nil, err
+		}
+		queued = append(queued, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return queued, nil
+}
+
+func queuedResourceConstraintsAllow(ctx context.Context, tx *sql.Tx, workItemID string) (bool, error) {
+	checks, err := listQueuedResourceConstraintChecksForWorkItem(ctx, tx, workItemID)
+	if err != nil {
+		return false, err
+	}
+
+	modelChecks := make([]model.ResourceConstraintCheck, 0, len(checks))
+	for _, check := range checks {
+		modelChecks = append(modelChecks, model.ResourceConstraintCheck{
+			TotalUnits:     check.TotalUnits,
+			RequestedUnits: check.RequestedUnits,
+			Operator:       model.ResourceOperator(check.Operator),
+			TargetUnits:    check.TargetUnits,
+		})
+	}
+	return model.ResourceConstraintChecksAllow(modelChecks)
+}
+
+func listQueuedResourceConstraintChecksForWorkItem(ctx context.Context, tx *sql.Tx, workItemID string) ([]QueuedResourceConstraintCheckRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		work_item_id,
+		queued_at,
+		constraint_index,
+		resource_key,
+		total_units,
+		requested_units,
+		operator,
+		target_units
+	FROM queued_resource_constraint_checks
+	WHERE work_item_id = ?
+	ORDER BY constraint_index`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	checks := []QueuedResourceConstraintCheckRecord{}
+	for rows.Next() {
+		check, err := scanQueuedResourceConstraintCheck(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+		}
+		checks = append(checks, check)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list queued resource constraint checks for work item %s: %w", workItemID, err)
+	}
+	return checks, nil
 }
 
 func getWorkflowDependencyWorkItem(ctx context.Context, q queryer, runID, workItemID string) (WorkflowDependencyWorkItemRecord, bool, error) {
@@ -1997,6 +2305,21 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 		&item.QueuedAt,
 	)
 	return item, err
+}
+
+func scanQueuedResourceConstraintCheck(row scanner) (QueuedResourceConstraintCheckRecord, error) {
+	var check QueuedResourceConstraintCheckRecord
+	err := row.Scan(
+		&check.WorkItemID,
+		&check.QueuedAt,
+		&check.ConstraintIndex,
+		&check.ResourceKey,
+		&check.TotalUnits,
+		&check.RequestedUnits,
+		&check.Operator,
+		&check.TargetUnits,
+	)
+	return check, err
 }
 
 func scanWorkflowDependencyStep(row scanner) (WorkflowDependencyStepRecord, error) {
@@ -2252,6 +2575,21 @@ func (s *Store) requireOpen() error {
 	return nil
 }
 
+func (r QueueWorkItemsRequest) validate() error {
+	if err := validateWorkItems(r.WorkItems); err != nil {
+		return err
+	}
+	if err := validateQueuedWorkItems(r.QueuedWork); err != nil {
+		return err
+	}
+	if len(r.ResourceConstraints) != 0 {
+		if err := validateWorkItemResourceConstraints(r.ResourceConstraints); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r WorkflowRunRecord) validate() error {
 	if r.ID == "" {
 		return fmt.Errorf("run id is required")
@@ -2323,6 +2661,11 @@ func (r CompleteStageRequest) validate() error {
 			return fmt.Errorf("ready work: %w", err)
 		}
 	}
+	if len(r.ReadyResourceConstraints) != 0 {
+		if err := validateWorkItemResourceConstraints(r.ReadyResourceConstraints); err != nil {
+			return fmt.Errorf("ready resource constraints: %w", err)
+		}
+	}
 	if len(r.ReadyQueuedWork) != 0 {
 		if err := validateQueuedWorkItems(r.ReadyQueuedWork); err != nil {
 			return fmt.Errorf("ready queue: %w", err)
@@ -2364,6 +2707,31 @@ func (w WorkItemRecord) validate() error {
 	}
 	if w.CreatedAt == "" {
 		return fmt.Errorf("work item created at is required")
+	}
+	return nil
+}
+
+func (r WorkItemResourceConstraintRecord) validate() error {
+	if r.WorkItemID == "" {
+		return fmt.Errorf("resource constraint work item id is required")
+	}
+	if r.ConstraintIndex < 0 {
+		return fmt.Errorf("resource constraint index must be non-negative")
+	}
+	if r.ResourceKey == "" {
+		return fmt.Errorf("resource constraint key is required")
+	}
+	if r.RequestedUnits <= 0 {
+		return fmt.Errorf("resource constraint requested units must be positive")
+	}
+	if !validResourceConstraintOperator(r.Operator) {
+		return fmt.Errorf("unsupported resource constraint operator: %s", r.Operator)
+	}
+	if r.TargetUnits < 0 {
+		return fmt.Errorf("resource constraint target units must be non-negative")
+	}
+	if r.CreatedAt == "" {
+		return fmt.Errorf("resource constraint created at is required")
 	}
 	return nil
 }
@@ -2444,6 +2812,18 @@ func validateWorkItems(items []WorkItemRecord) error {
 	for index, item := range items {
 		if err := item.validate(); err != nil {
 			return fmt.Errorf("work item %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateWorkItemResourceConstraints(constraints []WorkItemResourceConstraintRecord) error {
+	if len(constraints) == 0 {
+		return fmt.Errorf("resource constraints are required")
+	}
+	for index, constraint := range constraints {
+		if err := constraint.validate(); err != nil {
+			return fmt.Errorf("resource constraint %d: %w", index, err)
 		}
 	}
 	return nil
@@ -2566,6 +2946,15 @@ func stageMatchesCompletionRequest(stage WorkflowStageRecord, request CompleteSt
 func validExecutorType(executorType string) bool {
 	switch executorType {
 	case ExecutorTypeWorker, ExecutorTypeController:
+		return true
+	default:
+		return false
+	}
+}
+
+func validResourceConstraintOperator(operator string) bool {
+	switch operator {
+	case "=", "!=", "<", ">", "<=", ">=":
 		return true
 	default:
 		return false

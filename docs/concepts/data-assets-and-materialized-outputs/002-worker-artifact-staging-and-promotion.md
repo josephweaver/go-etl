@@ -6,7 +6,7 @@ Status: proposed
 
 Add worker-side artifact staging and promotion for declared artifacts.
 
-This slice lets worker code validate script- or operation-declared artifacts under an attempt-local staging directory, compute evidence, and promote them into the worker's configured completed-output root. It does not change the Python subprocess contract yet; tests can call the worker artifact helper directly.
+This slice lets worker code validate script- or operation-declared artifacts under an attempt-local staging directory, compute evidence, and promote them into the worker's configured completed-output root. It does not publish artifacts to final named data locations yet and does not change the Python subprocess contract yet; tests can call the worker artifact helper directly.
 
 ## Current State
 
@@ -59,7 +59,7 @@ artifacts/raw/<work_item_id>/<artifact-relative-path>
 
 ## Concept Decision
 
-Use the worker's existing completed-output root as the first physical artifact root. Do not introduce a second mandatory `ArtifactDir` until there is evidence that `DataDir` and artifact root must diverge.
+Use the worker's existing completed-output root as the first physical artifact root. Do not introduce a second mandatory `ArtifactDir` until there is evidence that `DataDir` and artifact root must diverge. Treat this promoted root as attempt-output evidence, not necessarily the final published data-product location.
 
 Keep promotion in the worker. The controller should not open worker-local or HPCC-local paths to validate bytes.
 
@@ -101,6 +101,7 @@ Do not read controller, scheduler, transport, or container files unless compile 
 - Data asset declarations or downloads.
 - Slurm, SSH, Docker, Singularity, or fake HPCC changes.
 - Artifact cleanup or retention policy.
+- Copying selected artifacts to predeclared named publish locations.
 
 ## Acceptance Criteria
 
@@ -121,3 +122,4 @@ Do not read controller, scheduler, transport, or container files unless compile 
 - Prefer copy-then-atomic-rename within the destination root when practical.
 - Cross-filesystem rename may fail; the helper may copy then rename a temporary destination inside the data root.
 - Directory manifest order must be stable across platforms.
+- Publication to a named data location is deliberately deferred so artifact promotion can be tested independently.

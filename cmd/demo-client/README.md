@@ -23,6 +23,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Dependency-aware status display for stage and step readiness.
 - Wait and JSON output display.
 - Final local status display.
+- Final local status display now includes resource-admission summary when constrained work is in queue (eligible/blocked counts and compact resource summaries).
 - Bounded log output in text or JSON via submission ID.
 - Dependency transition log display via submission ID.
 - Example wiring between the reusable client helper and the controller executable.

@@ -34,6 +34,7 @@ func TestOpenStoreCreatesSQLiteDatabase(t *testing.T) {
 		"workflow_dependency_work_items",
 		"workflow_step_output_facts",
 		"work_items",
+		"work_item_resource_constraints",
 		"workers",
 		"work_item_attempts",
 		"queued_work",
@@ -82,8 +83,321 @@ func TestOpenStoreCreatesSQLiteDerivedRecoveryIndexes(t *testing.T) {
 			name:    "idx_failed_work_item_failed_at",
 			columns: []string{"work_item_id", "failed_at", "attempt_id"},
 		},
+		{
+			name:    "idx_work_item_resource_constraints_resource_key",
+			columns: []string{"resource_key"},
+		},
+		{
+			name:    "idx_work_item_resource_constraints_work_item_id",
+			columns: []string{"work_item_id"},
+		},
 	} {
 		assertSQLiteIndexColumns(t, ctx, store.db, index.name, index.columns)
+	}
+}
+
+func TestOpenStoreCreatesSQLiteQueuedResourceConstraintChecksView(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	insertMinimalStage(t, ctx, store.db)
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_items (
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	) VALUES ('work-item-001', 'run-001', 0, 0, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`, strings.Repeat("b", 64)); err != nil {
+		t.Fatalf("insert queued work item 001: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO queued_work (
+		work_item_id,
+		queued_at
+	) VALUES ('work-item-001', '2026-07-03T00:00:00Z')`); err != nil {
+		t.Fatalf("insert queued work item 001: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_items (
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	) VALUES ('work-item-002', 'run-001', 0, 1, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`, strings.Repeat("c", 64)); err != nil {
+		t.Fatalf("insert running work item 002: %v", err)
+	}
+	insertAttempt(t, ctx, store.db, "attempt-001", "work-item-002", "worker")
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO running_work (
+		attempt_id,
+		work_item_id,
+		queued_at,
+		started_at
+	) VALUES ('attempt-001', 'work-item-002', '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z')`); err != nil {
+		t.Fatalf("insert running work 002: %v", err)
+	}
+
+	for _, statement := range []string{
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 0, 'memory-mib', 2, '<=', 10, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 1, 'gpu-count', 1, '!=', 0, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-002', 0, 'memory-mib', 4, '>=', 8, '2026-07-03T00:00:00Z')`,
+	} {
+		if _, err := store.db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("insert constraint: %v", err)
+		}
+	}
+
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT
+			work_item_id,
+			queued_at,
+			constraint_index,
+			resource_key,
+			total_units,
+			requested_units,
+			operator,
+			target_units
+		FROM queued_resource_constraint_checks
+		WHERE work_item_id = 'work-item-001'
+		ORDER BY constraint_index
+	`)
+	if err != nil {
+		t.Fatalf("query queued checks rows: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		workItemID    string
+		queuedAt      string
+		constraintIdx int
+		resourceKey   string
+		totalUnits    int
+		requested     int
+		operator      string
+		targetUnits   int
+	}
+
+	checkRows := []row{}
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.workItemID, &r.queuedAt, &r.constraintIdx, &r.resourceKey, &r.totalUnits, &r.requested, &r.operator, &r.targetUnits); err != nil {
+			t.Fatalf("scan queued check row: %v", err)
+		}
+		checkRows = append(checkRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	if len(checkRows) != 2 {
+		t.Fatalf("check rows = %d, want 2", len(checkRows))
+	}
+
+	want := map[string]row{
+		"memory-mib": {
+			workItemID:    "work-item-001",
+			queuedAt:      "2026-07-03T00:00:00Z",
+			constraintIdx: 0,
+			resourceKey:   "memory-mib",
+			totalUnits:    4,
+			requested:     2,
+			operator:      "<=",
+			targetUnits:   10,
+		},
+		"gpu-count": {
+			workItemID:    "work-item-001",
+			queuedAt:      "2026-07-03T00:00:00Z",
+			constraintIdx: 1,
+			resourceKey:   "gpu-count",
+			totalUnits:    0,
+			requested:     1,
+			operator:      "!=",
+			targetUnits:   0,
+		},
+	}
+
+	for _, got := range checkRows {
+		wantRow, ok := want[got.resourceKey]
+		if !ok {
+			t.Fatalf("unexpected resource key %q", got.resourceKey)
+		}
+		if got.workItemID != wantRow.workItemID {
+			t.Fatalf("work item id for %s = %q, want %q", got.resourceKey, got.workItemID, wantRow.workItemID)
+		}
+		if got.queuedAt != wantRow.queuedAt {
+			t.Fatalf("queued_at for %s = %q, want %q", got.resourceKey, got.queuedAt, wantRow.queuedAt)
+		}
+		if got.constraintIdx != wantRow.constraintIdx {
+			t.Fatalf("constraint index for %s = %d, want %d", got.resourceKey, got.constraintIdx, wantRow.constraintIdx)
+		}
+		if got.totalUnits != wantRow.totalUnits {
+			t.Fatalf("total_units for %s = %d, want %d", got.resourceKey, got.totalUnits, wantRow.totalUnits)
+		}
+		if got.requested != wantRow.requested {
+			t.Fatalf("requested_units for %s = %d, want %d", got.resourceKey, got.requested, wantRow.requested)
+		}
+		if got.operator != wantRow.operator {
+			t.Fatalf("operator for %s = %s, want %s", got.resourceKey, got.operator, wantRow.operator)
+		}
+		if got.targetUnits != wantRow.targetUnits {
+			t.Fatalf("target_units for %s = %d, want %d", got.resourceKey, got.targetUnits, wantRow.targetUnits)
+		}
+	}
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_resource_constraint_checks WHERE work_item_id = 'work-item-002'`).Scan(&count); err != nil {
+		t.Fatalf("query work_item_002 check count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("work-item 002 queued checks = %d, want 0", count)
+	}
+}
+
+func TestOpenStoreRejectsInvalidWorkItemResourceConstraints(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	insertMinimalStage(t, ctx, store.db)
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_items (
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	) VALUES ('work-item-001', 'run-001', 0, 0, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`, strings.Repeat("b", 64)); err != nil {
+		t.Fatalf("insert work item: %v", err)
+	}
+
+	statementsToFail := []string{
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 0, 'memory-mib', 2, 'x', 10, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 1, '', 2, '<=', 10, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 2, 'memory-mib', 0, '<=', 10, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', 3, 'memory-mib', 2, '<=', -1, '2026-07-03T00:00:00Z')`,
+		`INSERT INTO work_item_resource_constraints (
+			work_item_id,
+			constraint_index,
+			resource_key,
+			requested_units,
+			operator,
+			target_units,
+			created_at
+		) VALUES ('work-item-001', -1, 'memory-mib', 2, '<=', 10, '2026-07-03T00:00:00Z')`,
+	}
+
+	for _, statement := range statementsToFail {
+		if _, err := store.db.ExecContext(ctx, statement); err == nil {
+			t.Fatalf("expected constraint insert to fail: %s", statement)
+		}
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	) VALUES ('work-item-001', 10, 'memory-mib', 4, '<=', 10, '2026-07-03T00:00:00Z')`); err != nil {
+		t.Fatalf("insert first memory-mib constraint: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	) VALUES ('work-item-001', 11, 'memory-mib', 1, '<=', 10, '2026-07-03T00:00:00Z')`); err == nil {
+		t.Fatalf("expected duplicate resource key insert to fail")
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	) VALUES ('work-item-001', 12, 'gpu-count', 1, '<=', 10, '2026-07-03T00:00:00Z')`); err != nil {
+		t.Fatalf("insert second constrained key: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_item_resource_constraints (
+		work_item_id,
+		constraint_index,
+		resource_key,
+		requested_units,
+		operator,
+		target_units,
+		created_at
+	) VALUES ('work-item-001', 12, 'other-resource', 1, '<=', 10, '2026-07-03T00:00:00Z')`); err == nil {
+		t.Fatalf("expected duplicate constraint index insert to fail")
 	}
 }
 

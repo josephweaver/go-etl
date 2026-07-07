@@ -1,6 +1,23 @@
 # Resource-Constrained Work Admission
 
-Status: Proposed
+Status: Complete
+
+Implementation tracker:
+
+| Slice | Status |
+|---|---|
+| `001-resource-constraint-model-and-schema.md` | Implemented |
+| `002-resolve-resource-constraints-at-work-creation.md` | Implemented |
+| `003-persist-constraints-with-work-items.md` | Implemented |
+| `004-operator-evaluator-and-check-reader.md` | Implemented |
+| `005-claim-next-resource-eligible-work.md` | Implemented |
+| `006-resource-status-and-observability.md` | Implemented |
+| `007-demo-fixtures-and-smoke-tests.md` | Implemented |
+| `008-docs-project-state-and-cleanup.md` | Implemented |
+
+Current State:
+
+Slices 001-008 are now implemented. Resource-constrained admission is controller-owned and enforced during claim-time evaluation using persisted constraint facts plus Go operator evaluation.
 
 ## Purpose
 

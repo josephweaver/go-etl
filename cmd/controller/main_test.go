@@ -1434,6 +1434,85 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerReportsResourceConstraintCountsAndClaims(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	runRequest := httptest.NewRequest(http.MethodPost, "/work", strings.NewReader(`{
+		"work_item":{
+			"id":"resource-running",
+			"type":"write_demo_output",
+			"output_filename":"running.txt"
+		},
+		"resource_constraints":[
+			{
+				"resource_key":"target:local/memory-mib",
+				"requested_units":1,
+				"operator":"<=",
+				"target_units":1
+			}
+		]
+	}`))
+	runResponse := httptest.NewRecorder()
+	controller.submitWorkHandler(runResponse, runRequest)
+	if runResponse.Code != http.StatusNoContent {
+		t.Fatalf("submit running work status code = %d, want 204: %s", runResponse.Code, runResponse.Body.String())
+	}
+
+	blockedRequest := httptest.NewRequest(http.MethodPost, "/work", strings.NewReader(`{
+		"work_item":{
+			"id":"resource-blocked",
+			"type":"write_demo_output",
+			"output_filename":"blocked.txt"
+		},
+		"resource_constraints":[
+			{
+				"resource_key":"target:local/memory-mib",
+				"requested_units":1,
+				"operator":"<=",
+				"target_units":1
+			}
+		]
+	}`))
+	blockedResponse := httptest.NewRecorder()
+	controller.submitWorkHandler(blockedResponse, blockedRequest)
+	if blockedResponse.Code != http.StatusNoContent {
+		t.Fatalf("submit blocked work status code = %d, want 204: %s", blockedResponse.Code, blockedResponse.Body.String())
+	}
+
+	_ = assignNextWork(t, controller)
+
+	status := getStatus(t, controller)
+
+	if status.Pending != 1 || status.Assigned != 1 || status.Failed != 0 {
+		t.Fatalf("unexpected persisted status: %+v", status)
+	}
+	if status.QueuedResourceEligibleCount != 0 {
+		t.Fatalf("queued_resource_eligible_count = %d, want 0", status.QueuedResourceEligibleCount)
+	}
+	if status.QueuedResourceBlockedCount != 1 {
+		t.Fatalf("queued_resource_blocked_count = %d, want 1", status.QueuedResourceBlockedCount)
+	}
+	if status.RunningResourceClaimCount != 1 {
+		t.Fatalf("running_resource_claim_count = %d, want 1", status.RunningResourceClaimCount)
+	}
+	if len(status.ResourceConstraintSummaries) != 1 {
+		t.Fatalf("resource summaries = %+v, want 1 summary", status.ResourceConstraintSummaries)
+	}
+	summary := status.ResourceConstraintSummaries[0]
+	if summary.ResourceKey != "target:local/memory-mib" {
+		t.Fatalf("resource_key = %q, want target:local/memory-mib", summary.ResourceKey)
+	}
+	if summary.TotalUnits != 1 {
+		t.Fatalf("total_units = %d, want 1", summary.TotalUnits)
+	}
+	if summary.BlockedCandidateCount != 1 {
+		t.Fatalf("blocked_candidate_count = %d, want 1", summary.BlockedCandidateCount)
+	}
+}
+
 func TestSubmissionStatusHandler(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1843,6 +1922,98 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 	}
 	if persisted.Parameters["year"].Value == nil {
 		t.Fatalf("persisted parameters = %+v, want year parameter", persisted.Parameters)
+	}
+}
+
+func TestSubmitWorkHandlerAcceptsRawWorkWrapperWithResourceConstraints(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"work_item": {
+			"id":"test-001",
+			"type":"write_demo_output",
+			"output_filename":"result.txt"
+		},
+		"resource_constraints": [
+			{
+				"resource_key": "ctlr/python-env:torch",
+				"requested_units": 1,
+				"operator": "<=",
+				"target_units": 1
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want 1", len(queued))
+	}
+	var persisted model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &persisted); err != nil {
+		t.Fatalf("decode worker payload json: %v", err)
+	}
+	if persisted.ID != "test-001" || persisted.OutputFilename != "result.txt" {
+		t.Fatalf("persisted payload = %+v, want wrapped work item only", persisted)
+	}
+	constraints, err := store.ListWorkItemResourceConstraints(context.Background(), queued[0].ID)
+	if err != nil {
+		t.Fatalf("ListWorkItemResourceConstraints() error = %v", err)
+	}
+	if len(constraints) != 1 {
+		t.Fatalf("constraint count = %d, want 1", len(constraints))
+	}
+	if constraints[0].WorkItemID != queued[0].ID || constraints[0].ResourceKey != "ctlr/python-env:torch" {
+		t.Fatalf("persisted constraint = %+v, want raw queued work constraint", constraints[0])
+	}
+	if constraints[0].RequestedUnits != 1 || constraints[0].Operator != "<=" || constraints[0].TargetUnits != 1 {
+		t.Fatalf("persisted constraint values = %+v, want resolved units/operator", constraints[0])
+	}
+}
+
+func TestSubmitWorkHandlerRejectsInvalidRawResourceConstraintsBeforeQueueMutation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"work_item": {
+			"id":"test-001",
+			"type":"write_demo_output",
+			"output_filename":"result.txt"
+		},
+		"resource_constraints": [
+			{
+				"resource_key": "ctlr/python-env:torch",
+				"requested_units": 0,
+				"operator": "<=",
+				"target_units": 1
+			}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued count = %d, want 0", len(queued))
 	}
 }
 
@@ -3502,7 +3673,15 @@ func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
 					"FanOutExpression": "${years[*]}",
 					"Type": "write_demo_output",
 					"OutputPrefix": "download",
-					"OutputExtension": ".txt"
+					"OutputExtension": ".txt",
+					"resource_constraints": [
+						{
+							"resource_key": "target:local/memory-mib",
+							"requested_units": 512,
+							"operator": "<=",
+							"target_units": 2048
+						}
+					]
 				}
 			}
 		},
@@ -3540,6 +3719,13 @@ func TestSubmitWorkflowHandlerQueuesOnlyInitialSequentialStage(t *testing.T) {
 	for _, item := range queued {
 		if item.StageIndex != 0 {
 			t.Fatalf("queued work has stage index %d, want 0", item.StageIndex)
+		}
+		constraints, err := store.ListWorkItemResourceConstraints(context.Background(), item.ID)
+		if err != nil {
+			t.Fatalf("ListWorkItemResourceConstraints(%s) error = %v", item.ID, err)
+		}
+		if len(constraints) != 1 || constraints[0].ResourceKey != "target:local/memory-mib" {
+			t.Fatalf("constraints for %s = %+v, want memory constraint", item.ID, constraints)
 		}
 	}
 }

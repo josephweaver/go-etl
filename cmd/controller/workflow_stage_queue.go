@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"goetl/internal/model"
 	"goetl/internal/persistence"
 	"goetl/internal/workflow"
 )
@@ -50,12 +51,13 @@ func splitCompiledWorkflowByStage(compileResult workflow.CompileResult, plan wor
 		workItemIndex := nextWorkItemIndex[item.StepID]
 		nextWorkItemIndex[item.StepID]++
 		stageItemsByIndex[stageIndex] = append(stageItemsByIndex[stageIndex], workflow.CompileStageWorkItem{
-			WorkflowID:    compileResult.WorkflowID,
-			StageIndex:    stageIndex,
-			StepIndex:     stepIndex,
-			StepID:        item.StepID,
-			WorkItemIndex: workItemIndex,
-			WorkItem:      item.WorkItem,
+			WorkflowID:          compileResult.WorkflowID,
+			StageIndex:          stageIndex,
+			StepIndex:           stepIndex,
+			StepID:              item.StepID,
+			WorkItemIndex:       workItemIndex,
+			WorkItem:            item.WorkItem,
+			ResourceConstraints: item.ResourceConstraints,
 		})
 	}
 
@@ -92,12 +94,13 @@ func persistenceRecordsFromCompiledStageResults(
 	stageResults []workflow.CompileStageResult,
 	codeVersion string,
 	submittedAt time.Time,
-) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, []compiledStageWorkItemMembership, error) {
+) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, []compiledStageWorkItemMembership, []persistence.WorkItemResourceConstraintRecord, error) {
 	stepInstances := make(map[string]string, len(stageResults))
 	timestamp := submittedAt.UTC().Format(time.RFC3339)
 	persistenceItems := make([]persistence.WorkItemRecord, 0)
 	queued := make([]persistence.QueuedWorkRecord, 0)
 	memberships := make([]compiledStageWorkItemMembership, 0)
+	resourceConstraints := make([]persistence.WorkItemResourceConstraintRecord, 0)
 	nextWorkItemIndexByStage := make(map[int]int, len(stageResults))
 
 	workflowID := ""
@@ -142,11 +145,11 @@ func persistenceRecordsFromCompiledStageResults(
 
 			payload, err := json.Marshal(itemPayload)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("encode workflow work item: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("encode workflow work item: %w", err)
 			}
 			_, resolvedInputsSHA256, err := canonicalSourceDocument(payload)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("hash workflow work item: %w", err)
+				return nil, nil, nil, nil, fmt.Errorf("hash workflow work item: %w", err)
 			}
 
 			id := runID + ":" + itemPayload.ID
@@ -170,8 +173,36 @@ func persistenceRecordsFromCompiledStageResults(
 				workItemID:    id,
 				workItemIndex: workItemIndex,
 			})
+			for _, constraint := range item.ResourceConstraints {
+				constraint.WorkItemID = id
+				constraint.CreatedAt = timestamp
+				if err := constraint.Validate(); err != nil {
+					return nil, nil, nil, nil, fmt.Errorf("validate resource constraint for work item %s: %w", id, err)
+				}
+				resourceConstraints = append(resourceConstraints, persistenceResourceConstraintRecord(constraint))
+			}
 		}
 	}
 
-	return persistenceItems, queued, memberships, nil
+	return persistenceItems, queued, memberships, resourceConstraints, nil
+}
+
+func persistenceResourceConstraintRecords(constraints []model.WorkItemResourceConstraint) []persistence.WorkItemResourceConstraintRecord {
+	records := make([]persistence.WorkItemResourceConstraintRecord, 0, len(constraints))
+	for _, constraint := range constraints {
+		records = append(records, persistenceResourceConstraintRecord(constraint))
+	}
+	return records
+}
+
+func persistenceResourceConstraintRecord(constraint model.WorkItemResourceConstraint) persistence.WorkItemResourceConstraintRecord {
+	return persistence.WorkItemResourceConstraintRecord{
+		WorkItemID:      constraint.WorkItemID,
+		ConstraintIndex: constraint.ConstraintIndex,
+		ResourceKey:     constraint.ResourceKey,
+		RequestedUnits:  constraint.RequestedUnits,
+		Operator:        string(constraint.Operator),
+		TargetUnits:     constraint.TargetUnits,
+		CreatedAt:       constraint.CreatedAt,
+	}
 }

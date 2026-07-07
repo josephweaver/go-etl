@@ -1,6 +1,6 @@
 # 001 Resource Constraint Model And Schema
 
-Status: Ready
+Status: Implemented
 
 ## Objective
 

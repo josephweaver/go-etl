@@ -107,6 +107,8 @@ Initial Ready-Stage Compilation
     v
 Dependency-Ready Work Items
     |
+dependency ready AND resource predicate true => assignable
+    |
     v
 Queue
     |
