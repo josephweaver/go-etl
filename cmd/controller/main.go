@@ -3144,6 +3144,13 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	if item.Type != model.WorkItemTypeCacheData && item.Type != model.WorkItemTypeCommitData {
+		item, err = c.hydrateCacheDataDependentWorkItem(r.Context(), claim, item)
+		if err != nil {
+			http.Error(w, "hydrate cache_data dependent work item", http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)
 		return

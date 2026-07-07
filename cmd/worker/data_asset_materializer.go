@@ -42,6 +42,17 @@ type workerCacheManifest struct {
 }
 
 func (w Worker) materializeDataAssets(item model.WorkItem, workDir string) (string, bool, error) {
+	if manifest, ok, err := materializedDataAssetsFromWorkItem(item); err != nil || ok {
+		if err != nil {
+			return "", false, err
+		}
+		path, err := writeMaterializedDataAssetsManifest(workDir, manifest)
+		if err != nil {
+			return "", false, err
+		}
+		return path, true, nil
+	}
+
 	assets, err := boundDataAssetsFromWorkItem(item)
 	if err != nil {
 		return "", false, err
@@ -66,15 +77,45 @@ func (w Worker) materializeDataAssets(item model.WorkItem, workDir string) (stri
 		return "", false, fmt.Errorf("validate materialized data assets manifest: %w", err)
 	}
 
+	path, err := writeMaterializedDataAssetsManifest(workDir, manifest)
+	if err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
+
+func materializedDataAssetsFromWorkItem(item model.WorkItem) (model.MaterializedDataAssetManifest, bool, error) {
+	parameter, ok := item.Parameters["materialized_data_assets"]
+	if !ok {
+		return model.MaterializedDataAssetManifest{}, false, nil
+	}
+	if parameter.Type != "materialized_data_assets" {
+		return model.MaterializedDataAssetManifest{}, false, fmt.Errorf("parameter materialized_data_assets has type %s, want materialized_data_assets", parameter.Type)
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return model.MaterializedDataAssetManifest{}, false, fmt.Errorf("encode materialized_data_assets parameter: %w", err)
+	}
+	var manifest model.MaterializedDataAssetManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return model.MaterializedDataAssetManifest{}, false, fmt.Errorf("decode materialized_data_assets parameter: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return model.MaterializedDataAssetManifest{}, false, fmt.Errorf("validate materialized_data_assets parameter: %w", err)
+	}
+	return manifest, true, nil
+}
+
+func writeMaterializedDataAssetsManifest(workDir string, manifest model.MaterializedDataAssetManifest) (string, error) {
 	path := filepath.Join(workDir, "data-assets.json")
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return "", false, fmt.Errorf("encode materialized data assets manifest: %w", err)
+		return "", fmt.Errorf("encode materialized data assets manifest: %w", err)
 	}
 	if err := atomicWriteFile(path, data, 0644); err != nil {
-		return "", false, fmt.Errorf("write materialized data assets manifest %s: %w", path, err)
+		return "", fmt.Errorf("write materialized data assets manifest %s: %w", path, err)
 	}
-	return path, true, nil
+	return path, nil
 }
 
 func boundDataAssetsFromWorkItem(item model.WorkItem) ([]model.BoundDataAsset, error) {

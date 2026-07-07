@@ -222,6 +222,111 @@ func TestHydrateCommitDataWorkItemUsesCompletedProducerArtifactManifest(t *testi
 	}
 }
 
+func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	cacheRecord := persistence.WorkItemRecord{
+		ID:                   run.ID + ":cache-data-field-tile",
+		RunID:                run.ID,
+		StageIndex:           0,
+		WorkItemIndex:        0,
+		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: "cache-data-field-tile", Type: model.WorkItemTypeCacheData, OutputFilename: "cache-data-field-tile.json"}),
+		ResolvedInputsSHA256: strings.Repeat("c", 64),
+		CreatedAt:            "2026-07-07T00:00:00Z",
+	}
+	computeRecord := persistence.WorkItemRecord{
+		ID:         run.ID + ":compute-field-cdl-composition",
+		RunID:      run.ID,
+		StageIndex: 0,
+		WorkerPayloadJSON: mustWorkItemJSON(t, model.WorkItem{
+			ID:             "compute-field-cdl-composition",
+			Type:           model.WorkItemTypePythonScript,
+			OutputFilename: "compute-field-cdl-composition.json",
+			DependsOn:      []string{cacheRecord.ID},
+			Parameters: model.Parameters{
+				"python_entrypoint": {Type: "path", Value: "scripts/field_cdl.py"},
+				"data_assets": {Type: "data_assets", Value: []model.BoundDataAsset{
+					{
+						BindingName:  "field_tile_fixture",
+						ProviderName: "field_tile_provider",
+						Kind:         "fixture_matrix",
+						Provider:     model.DataProviderLocalFile,
+						Location: model.DataAssetLocation{
+							Type:         model.DataProviderLocalFile,
+							LocationName: "fixture_data",
+							Path:         "field_tile.csv",
+						},
+					},
+				}},
+			},
+		}),
+		WorkItemIndex:        1,
+		ResolvedInputsSHA256: strings.Repeat("d", 64),
+		CreatedAt:            "2026-07-07T00:00:00Z",
+	}
+	if err := store.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
+		WorkItems: []persistence.WorkItemRecord{cacheRecord, computeRecord},
+		QueuedWork: []persistence.QueuedWorkRecord{
+			{WorkItemRecord: cacheRecord, QueuedAt: "2026-07-07T00:00:00Z"},
+		},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems() error = %v", err)
+	}
+	claimedCache, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-cache-field-tile", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:01Z"})
+	if err != nil || !found || claimedCache.WorkItem.ID != cacheRecord.ID {
+		t.Fatalf("ClaimNextWork(cache) = %+v found=%v err=%v, want cache", claimedCache, found, err)
+	}
+	if _, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+		AttemptID:        claimedCache.AttemptID,
+		OutputJSON:       `{"schema":"goet/materialized-data-assets/v1","asset_key":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","target_environment_id":"target-local","assets":[{"binding_name":"field_tile_fixture","provider_name":"field_tile_provider","provider_type":"local_file","kind":"fixture_matrix","format":"csv","local_path":"/target/cache/field_tile.csv","cache_key":"fixtures/field_tile.csv","source_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`,
+		OutputJSONSHA256: strings.Repeat("e", 64),
+		PreStateSHA256:   strings.Repeat("a", 64),
+		PostStateSHA256:  strings.Repeat("b", 64),
+		CompletedAt:      "2026-07-07T00:00:02Z",
+	}); err != nil || !found {
+		t.Fatalf("CompleteAttempt(cache) found=%v err=%v", found, err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: computeRecord, QueuedAt: "2026-07-07T00:00:03Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems(compute) error = %v", err)
+	}
+	claimedCompute, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-compute-field-cdl", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:04Z"})
+	if err != nil || !found || claimedCompute.WorkItem.ID != computeRecord.ID {
+		t.Fatalf("ClaimNextWork(compute) = %+v found=%v err=%v, want compute", claimedCompute, found, err)
+	}
+
+	var computeItem model.WorkItem
+	if err := json.Unmarshal([]byte(claimedCompute.WorkItem.WorkerPayloadJSON), &computeItem); err != nil {
+		t.Fatalf("decode compute payload: %v", err)
+	}
+	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claimedCompute, computeItem)
+	if err != nil {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+	}
+	parameter, ok := hydrated.Parameters["materialized_data_assets"]
+	if !ok {
+		t.Fatal("materialized_data_assets parameter missing")
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		t.Fatalf("marshal materialized_data_assets: %v", err)
+	}
+	var manifest model.MaterializedDataAssetManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode materialized_data_assets: %v", err)
+	}
+	if manifest.TargetEnvironmentID != "target-local" || len(manifest.Assets) != 1 {
+		t.Fatalf("manifest = %+v, want one target-local asset", manifest)
+	}
+	if manifest.Assets[0].BindingName != "field_tile_fixture" || manifest.Assets[0].LocalPath != "/target/cache/field_tile.csv" {
+		t.Fatalf("manifest asset = %+v, want completed cache_data local path", manifest.Assets[0])
+	}
+}
+
 func mustWorkItemJSON(t *testing.T, item model.WorkItem) string {
 	t.Helper()
 	data, err := json.Marshal(item)

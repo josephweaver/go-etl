@@ -56,6 +56,56 @@ func TestMaterializeDataAssetsReferencesLocalFileUnderNamedRoot(t *testing.T) {
 	}
 }
 
+func TestMaterializeDataAssetsUsesControllerProvidedManifest(t *testing.T) {
+	worker, _ := newDataAssetTestWorker(t)
+	worker.Config.DataLocationRoots = nil
+	localPath := filepath.Join(t.TempDir(), "cache", "input.csv")
+	size := int64(12)
+	manifest := model.MaterializedDataAssetManifest{
+		Schema:              model.MaterializedDataAssetManifestSchemaV1,
+		AssetKey:            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		TargetEnvironmentID: "target-local",
+		Assets: []model.MaterializedDataAsset{
+			{
+				BindingName:             "field_tile_fixture",
+				ProviderName:            "field_tile_provider",
+				ProviderType:            model.DataProviderLocalFile,
+				Kind:                    "fixture_matrix",
+				Format:                  "csv",
+				LocalPath:               localPath,
+				MaterializationStrategy: model.DataAssetCacheStrategyWorkerCache,
+				CacheKey:                "fixtures/field_tile.csv",
+				SourceSizeBytes:         &size,
+				SourceSHA256:            strings.Repeat("a", 64),
+			},
+		},
+	}
+	item := model.WorkItem{
+		ID: "compute-from-cache",
+		Parameters: model.Parameters{
+			"materialized_data_assets": {Type: "materialized_data_assets", Value: manifest},
+		},
+	}
+
+	manifestPath, ok, err := worker.materializeDataAssets(item, filepath.Join(worker.Config.TmpDir, "work"))
+	if err != nil {
+		t.Fatalf("materializeDataAssets() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("materializeDataAssets() ok = false, want true")
+	}
+	got := readMaterializedManifest(t, manifestPath)
+	if got.AssetKey != manifest.AssetKey || got.TargetEnvironmentID != "target-local" {
+		t.Fatalf("manifest identity = %+v, want controller-provided identity", got)
+	}
+	if len(got.Assets) != 1 || got.Assets[0].LocalPath != localPath {
+		t.Fatalf("manifest assets = %+v, want provided local path", got.Assets)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, "cache", "assets")); !os.IsNotExist(err) {
+		t.Fatalf("controller-provided manifest should not materialize provider data, stat err=%v", err)
+	}
+}
+
 func TestMaterializeDataAssetsCopiesLocalFileToWorkerCache(t *testing.T) {
 	worker, root := newDataAssetTestWorker(t)
 	writeFixture(t, root, "fixture/input.txt", "cache me")
