@@ -6,7 +6,7 @@ Status: proposed
 
 Add a shared model for materialized artifact manifests and a safe relative artifact-path validator.
 
-This slice defines the compact JSON contract that workers can report and controllers can persist when a work item produces files or directories. It does not change Python execution, worker promotion, controller persistence, data asset downloading, or HPCC behavior.
+This slice defines the compact JSON contract that workers can report and controllers can persist when a work item produces files or directories. It does not change Python execution, worker promotion, controller persistence, data provider binding, data asset downloading, published-asset copying, or HPCC behavior.
 
 ## Current State
 
@@ -103,6 +103,7 @@ Do not read controller, worker, scheduler, transport, or persistence files unles
 - Data asset downloading.
 - Fake HPCC, Slurm, SSH, Singularity, or container changes.
 - Artifact retention or cleanup policy.
+- Published-data-asset copy behavior.
 
 ## Acceptance Criteria
 
@@ -122,4 +123,5 @@ Do not read controller, worker, scheduler, transport, or persistence files unles
 
 - Keep the model compact. Do not add geospatial-specific fields to the shared artifact descriptor.
 - `metadata` is the escape hatch for domain-specific values such as `year`, `tile_id`, or `cdl_resolution_m`.
-- Do not define object-store or remote-download behavior in this slice.
+- Do not define object-store, remote-download, or published-location copy behavior in this slice.
+- A later slice may extend the manifest or add a sibling manifest for compact `published_assets` evidence.

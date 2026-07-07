@@ -6,7 +6,7 @@ Status: proposed
 
 Extend Python WorkItem execution so Python scripts can produce materialized artifacts through `GOET_ARTIFACT_DIR` and declare them in `GOET_OUTPUT_JSON`.
 
-This slice wires the artifact promotion helper into the Python runner. It does not add data asset materialization, controller persistence schema changes, or HPCC smoke automation.
+This slice wires the artifact promotion helper into the Python runner. It does not add data asset materialization, data-path command interpolation, published-asset copying, controller persistence schema changes, or HPCC smoke automation.
 
 ## Current State
 
@@ -85,7 +85,9 @@ Do not read controller scheduler, transport, Slurm, SSH, or container files unle
 
 - New Python package management.
 - GDAL/rasterio/numpy/pyarrow dependencies.
-- Data asset downloads.
+- Data asset downloads or data provider bindings.
+- `${data.<alias>.local_path}` command interpolation.
+- Published-asset copying to named locations.
 - Controller persistence schema changes.
 - Workflow compiler changes.
 - Fake HPCC smoke scripts.
@@ -108,3 +110,4 @@ Do not read controller scheduler, transport, Slurm, SSH, or container files unle
 - Do not make Python scripts aware of worker `DataDir`.
 - Do not allow absolute artifact paths in `GOET_OUTPUT_JSON`.
 - Keep fixture files small and standard-library-only.
+- Python scripts should receive final input data paths from a later data-binding slice; this slice is only about output artifacts.
