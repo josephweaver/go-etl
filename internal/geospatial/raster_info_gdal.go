@@ -28,7 +28,9 @@ type gdalInfo struct {
 }
 
 type gdalDriver struct {
+	Name        string `json:"name"`
 	Description string `json:"description"`
+	ShortName   string `json:"shortName"`
 }
 
 type gdalBand struct {
@@ -137,12 +139,22 @@ func parseGDALInfo(info gdalInfo) (rasterInfo, error) {
 		return rasterInfo{}, fmt.Errorf("unexpected geoTransform %v", info.GeoTransform)
 	}
 	return rasterInfo{
-		Driver:       info.Driver.Description,
+		Driver:       resolveGDALDriverName(info.Driver),
 		Width:        width,
 		Height:       height,
 		Bands:        info.Bands,
 		GeoTransform: info.GeoTransform,
 	}, nil
+}
+
+func resolveGDALDriverName(driver gdalDriver) string {
+	if strings.TrimSpace(driver.Name) != "" {
+		return driver.Name
+	}
+	if strings.TrimSpace(driver.ShortName) != "" {
+		return driver.ShortName
+	}
+	return strings.TrimSpace(driver.Description)
 }
 
 type rasterInfo struct {
