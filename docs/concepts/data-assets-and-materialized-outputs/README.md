@@ -1018,6 +1018,23 @@ The crop-type lookup table and crop-assignment policy should be declared source 
 12. `012-cdl-yanroy-fixture-pipeline.md` — add a fixture-sized field/CDL composition pipeline using tiny raster-like bound inputs, artifact outputs, and published fixture outputs.
 13. `013-concept-closure-and-documentation-sync.md` — close the concept phase and document deferred real-data, catalog, retention, and credential work.
 
+| OS                                    |           Model |   Reasoning | Why                                                     |
+| ------------------------------------- | --------------: | ----------: | ------------------------------------------------------- |
+| 001 Artifact Manifest Model           |        5.4-mini |      Medium | Schema/path safety; moderate but contained              |
+| 002 Worker Artifact Staging           |             5.4 |      Medium | File promotion semantics matter                         |
+| 003 Python Artifact Contract          | 5.3-codex-spark |      Medium | Small implementation + tests                            |
+| 004 Controller Recording              |             5.4 |      Medium | DB/state integration                                    |
+| 005 Data Location Provider Model      |             5.5 |        High | Core architecture; provider model needs care            |
+| 006 Worker Data Asset Materialization |             5.5 |        High | Cache immutability + integrity checks are important     |
+| 007 Archive Extraction/Selection      |             5.4 | Medium/High | Zip selection/path safety; use High if tests are tricky |
+| 008 GDrive Rclone Provider            |             5.4 |        High | External process boundary, fake rclone, secrets/config  |
+| 009 Python Data Argument Binding      | 5.3-codex-spark |      Medium | Good Spark candidate                                    |
+| 010 Publish Data Asset Copy           |        5.4-mini |      Medium | Mostly filesystem copy + provenance                     |
+| 011 Fake HPCC Smoke Path              | 5.3-codex-spark |      Medium | Integration smoke path; good separate-bucket usage      |
+| 012 CDL/YanRoy Fixture Pipeline       |             5.5 |        High | Scientific correctness + fixture semantics              |
+| 013 Closure/Docs Sync                 | 5.3-codex-spark |  Low/Medium | Documentation/project-state cleanup                     |
+
+
 ## Completion Criteria
 
 - Artifact manifests have a shared versioned JSON shape with validation tests.
