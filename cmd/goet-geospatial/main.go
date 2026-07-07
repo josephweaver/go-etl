@@ -49,6 +49,12 @@ func run(args []string) error {
 	var result geospatial.OperationResult
 
 	switch envelope.Operation {
+	case geospatial.OperationAggregateByPolygons:
+		aggregateResult, err := geospatial.ExecuteAggregateByPolygons(context.Background(), requestData, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = aggregateResult
 	case geospatial.OperationRasterPairValueCounts:
 		countResult, err := geospatial.ExecuteRasterPairValueCounts(context.Background(), requestData, filepath.Dir(*responsePath))
 		if err != nil {
