@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ const rawPersistenceWorkflowID = "__raw_workflow__"
 const rawPersistenceRunID = "__raw_run__"
 const rawPersistenceStageIndex = 0
 const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
+const maxResourceConstraintSummaries = 5
 
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
@@ -2192,11 +2194,83 @@ func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.Con
 	if err != nil {
 		return model.ControllerStatus{}, fmt.Errorf("list active workflow runs: %w", err)
 	}
+	checks, err := c.workflowStore.ListQueuedResourceConstraintChecks(ctx)
+	if err != nil {
+		return model.ControllerStatus{}, fmt.Errorf("list queued resource checks: %w", err)
+	}
 
 	status := model.ControllerStatus{
 		Pending:  len(queued),
 		Assigned: len(running),
 	}
+	resourceConstraintChecks := make(map[string][]resourceConstraintCheck, len(checks))
+	resourceConstraintSummaries := make(map[string]resourceConstraintSummary, len(checks))
+
+	for _, check := range checks {
+		modelCheck := model.ResourceConstraintCheck{
+			TotalUnits:     check.TotalUnits,
+			RequestedUnits: check.RequestedUnits,
+			Operator:       model.ResourceOperator(check.Operator),
+			TargetUnits:    check.TargetUnits,
+		}
+		resourceConstraintChecks[check.WorkItemID] = append(resourceConstraintChecks[check.WorkItemID], resourceConstraintCheck{
+			resourceKey: check.ResourceKey,
+			check:       modelCheck,
+		})
+		resourceConstraintSummaries[check.ResourceKey] = resourceConstraintSummary{
+			resourceKey: check.ResourceKey,
+			totalUnits:  check.TotalUnits,
+			blocked:     make(map[string]struct{}),
+		}
+	}
+
+	resourceConstrainedQueued := 0
+	for _, item := range queued {
+		checks, hasConstraints := resourceConstraintChecks[item.ID]
+		if !hasConstraints {
+			continue
+		}
+		resourceConstrainedQueued++
+
+		allowed, blockedKeys, err := resourceConstraintChecksAllow(checks)
+		if err != nil {
+			return model.ControllerStatus{}, fmt.Errorf("queued resource checks for work item %s: %w", item.ID, err)
+		}
+		if allowed {
+			status.QueuedResourceEligibleCount++
+			continue
+		}
+		status.QueuedResourceBlockedCount++
+		for _, key := range blockedKeys {
+			summary := resourceConstraintSummaries[key]
+			summary.blocked[item.ID] = struct{}{}
+			resourceConstraintSummaries[key] = summary
+		}
+	}
+
+	runningClaimed := 0
+	for _, work := range running {
+		records, err := c.workflowStore.ListWorkItemResourceConstraints(ctx, work.WorkItem.ID)
+		if err != nil {
+			return model.ControllerStatus{}, fmt.Errorf("list running resource constraints for work item %s: %w", work.WorkItem.ID, err)
+		}
+		if len(records) == 0 {
+			continue
+		}
+		runningClaimed++
+	}
+	status.RunningResourceClaimCount = runningClaimed
+
+	if resourceConstrainedQueued > 0 || status.RunningResourceClaimCount > 0 {
+		summaries := summarizeResourceConstraints(resourceConstraintSummaries)
+		if len(summaries) > maxResourceConstraintSummaries {
+			summaries = summaries[:maxResourceConstraintSummaries]
+		}
+		if len(summaries) > 0 {
+			status.ResourceConstraintSummaries = summaries
+		}
+	}
+
 	for _, run := range runs {
 		counts, err := c.workflowStore.CountWorkItemsForRun(ctx, run.ID)
 		if err != nil {
@@ -2205,6 +2279,72 @@ func (c *Controller) persistenceControllerStatus(ctx context.Context) (model.Con
 		status.Failed += counts.Failed
 	}
 	return status, nil
+}
+
+type resourceConstraintCheck struct {
+	resourceKey string
+	check       model.ResourceConstraintCheck
+}
+
+type resourceConstraintSummary struct {
+	resourceKey string
+	totalUnits  int64
+	blocked     map[string]struct{}
+}
+
+func resourceConstraintChecksAllow(checks []resourceConstraintCheck) (bool, []string, error) {
+	blocked := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		allowed, err := model.ResourceConstraintAllows(
+			check.check.TotalUnits,
+			check.check.RequestedUnits,
+			check.check.Operator,
+			check.check.TargetUnits,
+		)
+		if err != nil {
+			return false, nil, err
+		}
+		if !allowed {
+			blocked[check.resourceKey] = struct{}{}
+		}
+	}
+
+	if len(blocked) == 0 {
+		return true, nil, nil
+	}
+	keys := make([]string, 0, len(blocked))
+	for key := range blocked {
+		keys = append(keys, key)
+	}
+	return false, keys, nil
+}
+
+func summarizeResourceConstraints(summaries map[string]resourceConstraintSummary) []model.ResourceConstraintSummary {
+	reduced := make([]model.ResourceConstraintSummary, 0, len(summaries))
+	for resourceKey, summary := range summaries {
+		blocked := len(summary.blocked)
+		if blocked == 0 {
+			continue
+		}
+		reduced = append(reduced, model.ResourceConstraintSummary{
+			ResourceKey:           resourceKey,
+			TotalUnits:            summary.totalUnits,
+			BlockedCandidateCount: blocked,
+		})
+	}
+	sort.Slice(reduced, func(i, j int) bool {
+		left := reduced[i]
+		right := reduced[j]
+		if left.BlockedCandidateCount != right.BlockedCandidateCount {
+			return left.BlockedCandidateCount > right.BlockedCandidateCount
+		}
+		if left.TotalUnits != right.TotalUnits {
+			return left.TotalUnits > right.TotalUnits
+		}
+		return left.ResourceKey < right.ResourceKey
+	})
+
+	return reduced
 }
 
 func (c *Controller) submissionStatus(ctx context.Context, submissionID string) (model.SubmissionStatus, bool, error) {

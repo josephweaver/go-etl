@@ -123,12 +123,22 @@ type WorkSkip struct {
 }
 
 type ControllerStatus struct {
-	Pending                int `json:"pending"`
-	Assigned               int `json:"assigned"`
-	Failed                 int `json:"failed"`
-	PendingReuseCandidates int `json:"pending_reuse_candidates"`
-	Attempts               int `json:"attempts"`
-	AttemptVariables       int `json:"attempt_variables"`
+	Pending                     int                         `json:"pending"`
+	Assigned                    int                         `json:"assigned"`
+	Failed                      int                         `json:"failed"`
+	PendingReuseCandidates      int                         `json:"pending_reuse_candidates"`
+	Attempts                    int                         `json:"attempts"`
+	AttemptVariables            int                         `json:"attempt_variables"`
+	QueuedResourceEligibleCount int                         `json:"queued_resource_eligible_count,omitempty"`
+	QueuedResourceBlockedCount  int                         `json:"queued_resource_blocked_count,omitempty"`
+	RunningResourceClaimCount   int                         `json:"running_resource_claim_count,omitempty"`
+	ResourceConstraintSummaries []ResourceConstraintSummary `json:"resource_constraint_summaries,omitempty"`
+}
+
+type ResourceConstraintSummary struct {
+	ResourceKey           string `json:"resource_key"`
+	TotalUnits            int64  `json:"total_units"`
+	BlockedCandidateCount int    `json:"blocked_candidate_count"`
 }
 
 func (source WorkItemSource) Validate() error {

@@ -624,6 +624,45 @@ func TestControllerStatusJSONIncludesReuseCandidates(t *testing.T) {
 	}
 }
 
+func TestControllerStatusJSONIncludesResourceConstraintSummaries(t *testing.T) {
+	status := ControllerStatus{
+		Pending:                     1,
+		QueuedResourceEligibleCount: 1,
+		QueuedResourceBlockedCount:  2,
+		RunningResourceClaimCount:   3,
+		ResourceConstraintSummaries: []ResourceConstraintSummary{
+			{
+				ResourceKey:           "target:local/memory-mib",
+				TotalUnits:            65536,
+				BlockedCandidateCount: 2,
+			},
+		},
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+
+	var decoded ControllerStatus
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+
+	if decoded.QueuedResourceEligibleCount != 1 {
+		t.Fatalf("queued_resource_eligible_count = %d, want 1", decoded.QueuedResourceEligibleCount)
+	}
+	if decoded.QueuedResourceBlockedCount != 2 {
+		t.Fatalf("queued_resource_blocked_count = %d, want 2", decoded.QueuedResourceBlockedCount)
+	}
+	if decoded.RunningResourceClaimCount != 3 {
+		t.Fatalf("running_resource_claim_count = %d, want 3", decoded.RunningResourceClaimCount)
+	}
+	if len(decoded.ResourceConstraintSummaries) != 1 || decoded.ResourceConstraintSummaries[0].ResourceKey != "target:local/memory-mib" {
+		t.Fatalf("resource_constraint_summaries = %+v, want memory summary", decoded.ResourceConstraintSummaries)
+	}
+}
+
 func TestWorkSkipValidate(t *testing.T) {
 	tests := []struct {
 		name    string
