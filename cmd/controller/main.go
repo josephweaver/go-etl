@@ -2764,6 +2764,19 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "active attempt not found", http.StatusNotFound)
 		return
 	}
+	workItem, found, err := c.workflowStore.GetWorkItem(r.Context(), failed.WorkItemID)
+	if err != nil {
+		http.Error(w, "get failed work item", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "failed work item not found", http.StatusInternalServerError)
+		return
+	}
+	if err := c.failCacheDataDependents(r.Context(), workItem, failure.Error); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := c.recordWorkItemDependencyFailure(r.Context(), failed.WorkItemID, failure.Error); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2808,6 +2821,20 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 	}
 	if !found {
 		http.Error(w, "completed work item not found", http.StatusInternalServerError)
+		return
+	}
+	var completedPayload model.WorkItem
+	if err := json.Unmarshal([]byte(workItem.WorkerPayloadJSON), &completedPayload); err != nil {
+		http.Error(w, "decode completed worker payload", http.StatusInternalServerError)
+		return
+	}
+	if completedPayload.Type == model.WorkItemTypeCacheData {
+		if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if completion.OutputJSON != "" {

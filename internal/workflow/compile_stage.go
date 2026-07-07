@@ -80,5 +80,5 @@ func CompileWorkflowStage(resolver variable.Resolver, workflow Workflow, plan Wo
 		}
 	}
 
-	return result, nil
+	return PlanCacheDataWorkItems(result)
 }

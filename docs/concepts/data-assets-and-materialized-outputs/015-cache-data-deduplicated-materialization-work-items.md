@@ -1,6 +1,6 @@
 # 015 Cache Data Deduplicated Materialization Work Items
 
-Status: Proposed
+Status: implemented
 
 ## Objective
 

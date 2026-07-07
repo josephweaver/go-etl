@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"goetl/internal/model"
@@ -143,6 +144,12 @@ func persistenceRecordsFromCompiledStageResults(
 			})
 			itemPayload.CodeVersion = codeVersion
 
+			for index, dependencyID := range itemPayload.DependsOn {
+				if dependencyID != "" && !strings.HasPrefix(dependencyID, runID+":") {
+					itemPayload.DependsOn[index] = runID + ":" + dependencyID
+				}
+			}
+
 			payload, err := json.Marshal(itemPayload)
 			if err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("encode workflow work item: %w", err)
@@ -163,16 +170,20 @@ func persistenceRecordsFromCompiledStageResults(
 				CreatedAt:            timestamp,
 			}
 			persistenceItems = append(persistenceItems, record)
-			queued = append(queued, persistence.QueuedWorkRecord{
-				WorkItemRecord: record,
-				QueuedAt:       timestamp,
-			})
-			memberships = append(memberships, compiledStageWorkItemMembership{
-				stageIndex:    item.StageIndex,
-				stepIndex:     item.StepIndex,
-				workItemID:    id,
-				workItemIndex: workItemIndex,
-			})
+			if len(itemPayload.DependsOn) == 0 {
+				queued = append(queued, persistence.QueuedWorkRecord{
+					WorkItemRecord: record,
+					QueuedAt:       timestamp,
+				})
+				if itemPayload.Type != model.WorkItemTypeCacheData {
+					memberships = append(memberships, compiledStageWorkItemMembership{
+						stageIndex:    item.StageIndex,
+						stepIndex:     item.StepIndex,
+						workItemID:    id,
+						workItemIndex: workItemIndex,
+					})
+				}
+			}
 			for _, constraint := range item.ResourceConstraints {
 				constraint.WorkItemID = id
 				constraint.CreatedAt = timestamp

@@ -266,3 +266,97 @@ func TestPersistenceRecordsFromCompiledStageResultsStampsResourceConstraints(t *
 		t.Fatalf("constraint requested units = %d, want 512", constraints[0].RequestedUnits)
 	}
 }
+
+func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(t *testing.T) {
+	stageResult, err := workflow.PlanCacheDataWorkItems(workflow.CompileStageResult{
+		WorkflowID: "cdl",
+		StageIndex: 0,
+		WorkItems: []workflow.CompileStageWorkItem{
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    0,
+				StepIndex:     0,
+				StepID:        "compute",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "compute-001",
+					Type:           model.WorkItemTypePythonScript,
+					OutputFilename: "compute-001.json",
+					Parameters: model.Parameters{
+						"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
+						"target_environment_id": {Type: "string", Value: "target-local"},
+						"data_assets": {Type: "data_assets", Value: []model.BoundDataAsset{
+							controllerTestCacheDataAsset("cropland_year"),
+						}},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+	}
+
+	records, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records count = %d, want cache_data and compute", len(records))
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want only cache_data queued", len(queued))
+	}
+	var queuedPayload model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &queuedPayload); err != nil {
+		t.Fatalf("decode queued payload: %v", err)
+	}
+	if queuedPayload.Type != model.WorkItemTypeCacheData {
+		t.Fatalf("queued payload type = %s, want cache_data", queuedPayload.Type)
+	}
+	if len(memberships) != 0 {
+		t.Fatalf("memberships = %+v, want compute membership deferred until dependency is queued", memberships)
+	}
+
+	var computePayload model.WorkItem
+	for _, record := range records {
+		var payload model.WorkItem
+		if err := json.Unmarshal([]byte(record.WorkerPayloadJSON), &payload); err != nil {
+			t.Fatalf("decode record payload: %v", err)
+		}
+		if payload.Type == model.WorkItemTypePythonScript {
+			computePayload = payload
+		}
+	}
+	if len(computePayload.DependsOn) != 1 || computePayload.DependsOn[0] != queued[0].ID {
+		t.Fatalf("compute depends_on = %+v, want queued cache_data id %s", computePayload.DependsOn, queued[0].ID)
+	}
+}
+
+func controllerTestCacheDataAsset(bindingName string) model.BoundDataAsset {
+	required := true
+	return model.BoundDataAsset{
+		BindingName:  bindingName,
+		ProviderName: "cdl_zip",
+		Kind:         "raster_archive",
+		Format:       "geotiff_zip",
+		Provider:     model.DataProviderHTTP,
+		Location: model.DataAssetLocation{
+			Type: model.DataProviderHTTP,
+			URI:  "https://example.invalid/2023_30m_cdls.zip",
+		},
+		Integrity: model.DataAssetIntegrity{SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		Cache: model.DataAssetCache{
+			Strategy: model.DataAssetCacheStrategyWorkerCache,
+			CacheKey: "cdl/2023/30m/source.zip",
+		},
+		Archive: &model.DataAssetArchive{
+			Type: model.DataAssetArchiveTypeZip,
+			Select: []model.DataAssetArchiveSelect{
+				{Member: "2023_30m_cdls.tif", As: "cdl.tif", Required: &required},
+			},
+			Expose: model.DataAssetArchiveExposeSelectedPath,
+		},
+		Parameters: map[string]any{"year": 2023},
+	}
+}

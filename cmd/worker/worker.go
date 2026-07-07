@@ -77,6 +77,8 @@ func (w Worker) runWorkItem(item model.WorkItem) (WorkEvidence, error) {
 		return w.summarizeInputFile(item)
 	case model.WorkItemTypePythonScript:
 		return w.runPythonScript(item)
+	case model.WorkItemTypeCacheData:
+		return w.cacheData(item)
 	default:
 		return WorkEvidence{}, fmt.Errorf("unsupported work item type: %s", item.Type)
 	}

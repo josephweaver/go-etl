@@ -77,8 +77,10 @@ type DataAssetMaterialization struct {
 }
 
 type MaterializedDataAssetManifest struct {
-	Schema string                  `json:"schema"`
-	Assets []MaterializedDataAsset `json:"assets"`
+	Schema              string                  `json:"schema"`
+	AssetKey            string                  `json:"asset_key,omitempty"`
+	TargetEnvironmentID string                  `json:"target_environment_id,omitempty"`
+	Assets              []MaterializedDataAsset `json:"assets"`
 }
 
 type MaterializedDataAsset struct {
@@ -253,6 +255,17 @@ func (manifest MaterializedDataAssetManifest) EffectiveSchema() string {
 func (manifest MaterializedDataAssetManifest) Validate() error {
 	if manifest.EffectiveSchema() != MaterializedDataAssetManifestSchemaV1 {
 		return fmt.Errorf("unsupported materialized data asset manifest schema %q", manifest.Schema)
+	}
+	if manifest.AssetKey != "" {
+		if !strings.HasPrefix(manifest.AssetKey, "sha256:") {
+			return fmt.Errorf("materialized data asset manifest asset_key must use sha256: prefix")
+		}
+		if err := validateOptionalSHA256("materialized data asset manifest asset_key", strings.TrimPrefix(manifest.AssetKey, "sha256:")); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(manifest.TargetEnvironmentID) != manifest.TargetEnvironmentID {
+		return fmt.Errorf("materialized data asset manifest target_environment_id must not contain leading or trailing whitespace")
 	}
 	if len(manifest.Assets) == 0 {
 		return fmt.Errorf("at least one materialized data asset is required")
