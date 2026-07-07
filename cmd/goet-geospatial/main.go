@@ -39,21 +39,33 @@ func run(args []string) error {
 		return fmt.Errorf("read request %s: %w", *requestPath, err)
 	}
 
-	var request geospatial.OperationRequest
-	if err := json.Unmarshal(requestData, &request); err != nil {
+	var envelope struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(requestData, &envelope); err != nil {
 		return fmt.Errorf("decode request %s: %w", *requestPath, err)
 	}
 
 	var result geospatial.OperationResult
 
-	switch request.Operation {
+	switch envelope.Operation {
 	case geospatial.OperationRasterPairValueCounts:
 		countResult, err := geospatial.ExecuteRasterPairValueCounts(context.Background(), requestData, filepath.Dir(*responsePath))
 		if err != nil {
 			return err
 		}
 		result = countResult
+	case geospatial.OperationCropPolygons:
+		cropResult, err := geospatial.ExecuteCropByPolygons(context.Background(), requestData, filepath.Dir(*responsePath))
+		if err != nil {
+			return err
+		}
+		result = cropResult
 	case geospatial.OperationRasterInfo:
+		var request geospatial.OperationRequest
+		if err := json.Unmarshal(requestData, &request); err != nil {
+			return fmt.Errorf("decode request %s: %w", *requestPath, err)
+		}
 		if err := request.Validate(); err != nil {
 			return err
 		}
@@ -89,6 +101,10 @@ func run(args []string) error {
 			"rasters": metadata,
 		}
 	case geospatial.OperationAlignToGrid, geospatial.OperationReprojectCRS:
+		var request geospatial.OperationRequest
+		if err := json.Unmarshal(requestData, &request); err != nil {
+			return fmt.Errorf("decode request %s: %w", *requestPath, err)
+		}
 		if err := request.Validate(); err != nil {
 			return err
 		}
@@ -98,6 +114,10 @@ func run(args []string) error {
 		}
 		result = alignmentResult
 	case geospatial.OperationStackAligned:
+		var request geospatial.OperationRequest
+		if err := json.Unmarshal(requestData, &request); err != nil {
+			return fmt.Errorf("decode request %s: %w", *requestPath, err)
+		}
 		if err := request.Validate(); err != nil {
 			return err
 		}
@@ -107,6 +127,10 @@ func run(args []string) error {
 		}
 		result = stackResult
 	default:
+		var request geospatial.OperationRequest
+		if err := json.Unmarshal(requestData, &request); err != nil {
+			return fmt.Errorf("decode request %s: %w", *requestPath, err)
+		}
 		if err := request.Validate(); err != nil {
 			return err
 		}
