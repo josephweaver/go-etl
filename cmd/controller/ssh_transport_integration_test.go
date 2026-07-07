@@ -27,7 +27,7 @@ func TestSSHTransportIntegrationPreparesRuntimeOverSSH(t *testing.T) {
 		Transports: []ExecutionComponentConfig{{
 			Name: "login",
 			Type: "ssh",
-			Settings: map[string]string{
+			Settings: ExecutionComponentSettings{
 				"host":            host,
 				"port":            port,
 				"user":            "test-user",
@@ -40,7 +40,7 @@ func TestSSHTransportIntegrationPreparesRuntimeOverSSH(t *testing.T) {
 		Scheduler: ExecutionComponentConfig{Type: "direct_process"},
 		Runtime: ExecutionComponentConfig{
 			Type: "worker",
-			Settings: map[string]string{
+			Settings: ExecutionComponentSettings{
 				"root":           "runtime root",
 				"controller_url": "http://localhost:8080",
 			},

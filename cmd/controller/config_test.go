@@ -1058,11 +1058,11 @@ func TestInitConfiguredExecutionEnvironmentBuildsConfiguredEnvironment(t *testin
 		ExecutionEnvironment: ExecutionEnvironmentConfig{
 			Name: "dockerized-slurm",
 			Transports: []ExecutionComponentConfig{
-				{Type: "docker", Settings: map[string]string{"container": "slurmctld"}},
+				{Type: "docker", Settings: ExecutionComponentSettings{"container": "slurmctld"}},
 			},
 			Dialect:   ExecutionComponentConfig{Type: "bash"},
 			Scheduler: ExecutionComponentConfig{Type: "slurm"},
-			Runtime:   ExecutionComponentConfig{Type: "worker", Settings: map[string]string{"root": "/data/goetl"}},
+			Runtime:   ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{"root": "/data/goetl"}},
 		},
 	})
 	if err != nil {

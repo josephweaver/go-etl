@@ -168,9 +168,42 @@ func TestWriteFakeHPCCWorkerScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "'go' 'run' './cmd/worker' './cmd/worker/demo-config.json'"
+	want := "'/data/goetl/artifacts/goetl-worker' '/data/goetl/config/worker.json'"
 	if !strings.Contains(string(script), want) {
 		t.Fatalf("script missing fake HPCC worker command %q:\n%s", want, script)
+	}
+}
+
+func TestWriteFakeHPCCWorkerScriptConfig(t *testing.T) {
+	scriptRoot := filepath.Join(".run", "fake-hpcc-configured")
+	if err := os.RemoveAll(scriptRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(scriptRoot)
+	})
+
+	err := WriteFakeHPCCWorkerScriptConfig(FakeHPCCWorkerScriptConfig{
+		ScriptPath: filepath.Join(scriptRoot, "worker.slurm"),
+		Worker: SlurmWorkerScriptConfig{
+			JobName:          "goetl-worker",
+			WorkerExecutable: "go",
+			WorkerArgs:       []string{"run", "./cmd/worker"},
+			WorkerConfigPath: filepath.ToSlash(filepath.Join(".run", "fake-hpcc-configured", "worker.json")),
+			LogDir:           filepath.ToSlash(filepath.Join(".run", "fake-hpcc-configured", "logs")),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	script, err := os.ReadFile(filepath.Join(scriptRoot, "worker.slurm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "'go' 'run' './cmd/worker' '.run/fake-hpcc-configured/worker.json'"
+	if !strings.Contains(string(script), want) {
+		t.Fatalf("script missing configured fake HPCC worker command %q:\n%s", want, script)
 	}
 }
 

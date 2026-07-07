@@ -16,6 +16,11 @@ type SlurmWorkerScriptConfig struct {
 	Platform         ShellDialect
 }
 
+type FakeHPCCWorkerScriptConfig struct {
+	ScriptPath string
+	Worker     SlurmWorkerScriptConfig
+}
+
 func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	if err := cfg.validate(); err != nil {
 		return "", err
@@ -70,13 +75,26 @@ func WriteSlurmWorkerScript(path string, cfg SlurmWorkerScriptConfig) error {
 }
 
 func WriteFakeHPCCWorkerScript() error {
-	return WriteSlurmWorkerScript(".run/fake-hpcc/worker.slurm", SlurmWorkerScriptConfig{
-		JobName:          "goetl-worker",
-		WorkerExecutable: "go",
-		WorkerArgs:       []string{"run", "./cmd/worker"},
-		WorkerConfigPath: "./cmd/worker/demo-config.json",
-		LogDir:           ".run/fake-hpcc/logs",
+	paths, err := (WorkerRuntime{}).paths()
+	if err != nil {
+		return err
+	}
+	return WriteFakeHPCCWorkerScriptConfig(FakeHPCCWorkerScriptConfig{
+		Worker: SlurmWorkerScriptConfig{
+			JobName:          "goetl-worker",
+			WorkerExecutable: paths.WorkerExecutable,
+			WorkerConfigPath: paths.WorkerConfigPath,
+			LogDir:           paths.LogDir,
+		},
 	})
+}
+
+func WriteFakeHPCCWorkerScriptConfig(cfg FakeHPCCWorkerScriptConfig) error {
+	scriptPath := cfg.ScriptPath
+	if scriptPath == "" {
+		scriptPath = ".run/fake-hpcc/worker.slurm"
+	}
+	return WriteSlurmWorkerScript(scriptPath, cfg.Worker)
 }
 
 func (cfg SlurmWorkerScriptConfig) validate() error {

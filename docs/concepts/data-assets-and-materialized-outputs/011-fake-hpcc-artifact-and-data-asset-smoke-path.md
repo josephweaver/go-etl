@@ -1,6 +1,6 @@
 # 011 Fake HPCC Artifact and Data Asset Smoke Path
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -116,3 +116,19 @@ None by default. This is a smoke/runbook slice. Add Go tests only if the smoke e
 - Keep the fixture boring: a Python script that reads a small input text/CSV file and writes a small output file is enough.
 - This slice proves orchestration plumbing, not raster science.
 - If the fake environment is too heavy for a developer's local machine, the runbook should say so and document the minimum local checks that still run without it.
+
+## Implementation Evidence
+
+- Runbook: `docs/concepts/data-assets-and-materialized-outputs/fake-hpcc-data-assets-smoke.md`
+- PowerShell script: `scripts/fake-hpcc-data-assets-smoke.ps1`
+- Bash script: `scripts/fake-hpcc-data-assets-smoke.sh`
+- Validated smoke command: `bash scripts/fake-hpcc-data-assets-smoke.sh`
+- Validated output evidence:
+  - worker artifact manifest under `.run/fake-hpcc-data-assets/worker-data/fake-hpcc-data-assets-smoke.json`
+  - promoted artifact under `.run/fake-hpcc-data-assets/worker-data/artifacts/raw/fake-hpcc-data-assets-smoke/reports/summary.csv`
+  - published artifact under `.run/fake-hpcc-data-assets/published-data/reports/summary.csv`
+
+The implemented smoke proves the fake Slurm boundary through the configured
+execution environment using local transport plus `scripts/fake-hpcc/sbatch`.
+It does not prove real SSH, Dockerized Slurm containers, or SingularityCE image
+execution; those remain explicit unsupported cases in the runbook.

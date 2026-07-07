@@ -23,10 +23,12 @@ type ExecutionEnvironmentConfig struct {
 }
 
 type ExecutionComponentConfig struct {
-	Name     string            `json:"name,omitempty"`
-	Type     string            `json:"type"`
-	Settings map[string]string `json:"settings,omitempty"`
+	Name     string                     `json:"name,omitempty"`
+	Type     string                     `json:"type"`
+	Settings ExecutionComponentSettings `json:"settings,omitempty"`
 }
+
+type ExecutionComponentSettings map[string]any
 
 func (cfg ExecutionEnvironmentConfig) IsZero() bool {
 	return cfg.Name == "" &&
@@ -151,13 +153,20 @@ func newTransportFromConfig(cfg ExecutionComponentConfig) (Transport, error) {
 	case "local":
 		return LocalTransport{}, nil
 	case "docker":
-		container := cfg.Settings["container"]
+		container, err := cfg.Settings.String("container")
+		if err != nil {
+			return nil, err
+		}
 		if container == "" {
 			return nil, fmt.Errorf("docker transport setting container is required")
 		}
+		executable, err := cfg.Settings.String("executable")
+		if err != nil {
+			return nil, err
+		}
 		return DockerContainerTransport{
 			Docker: DockerTransport{
-				Executable: cfg.Settings["executable"],
+				Executable: executable,
 			},
 			Container: container,
 		}, nil
@@ -172,19 +181,59 @@ func newTransportFromConfig(cfg ExecutionComponentConfig) (Transport, error) {
 	}
 }
 
-func sshTransportConfigFromSettings(settings map[string]string) (SSHTransportConfig, error) {
-	cfg := SSHTransportConfig{
-		Host:           settings["host"],
-		User:           settings["user"],
-		IdentityFile:   settings["identity_file"],
-		IdentityEnv:    settings["identity_env"],
-		KnownHostsFile: settings["known_hosts_file"],
-		HostKeyPolicy:  settings["host_key_policy"],
-		PinnedHostKey:  settings["pinned_host_key"],
-		ConnectTimeout: settings["connect_timeout"],
-		CommandTimeout: settings["command_timeout"],
+func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTransportConfig, error) {
+	host, err := settings.String("host")
+	if err != nil {
+		return SSHTransportConfig{}, err
 	}
-	if port := settings["port"]; port != "" {
+	user, err := settings.String("user")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	identityFile, err := settings.String("identity_file")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	identityEnv, err := settings.String("identity_env")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	knownHostsFile, err := settings.String("known_hosts_file")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	hostKeyPolicy, err := settings.String("host_key_policy")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	pinnedHostKey, err := settings.String("pinned_host_key")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	connectTimeout, err := settings.String("connect_timeout")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	commandTimeout, err := settings.String("command_timeout")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	cfg := SSHTransportConfig{
+		Host:           host,
+		User:           user,
+		IdentityFile:   identityFile,
+		IdentityEnv:    identityEnv,
+		KnownHostsFile: knownHostsFile,
+		HostKeyPolicy:  hostKeyPolicy,
+		PinnedHostKey:  pinnedHostKey,
+		ConnectTimeout: connectTimeout,
+		CommandTimeout: commandTimeout,
+	}
+	port, err := settings.String("port")
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
+	if port != "" {
 		parsed, err := strconv.Atoi(port)
 		if err != nil {
 			return SSHTransportConfig{}, fmt.Errorf("ssh transport setting port must be an integer: %w", err)
@@ -218,26 +267,118 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 }
 
 func newRuntimeFromConfig(cfg ExecutionComponentConfig) (Runtime, error) {
+	workerRuntime, err := workerRuntimeFromSettings(cfg.Settings)
+	if err != nil {
+		return nil, err
+	}
 	switch cfg.Type {
 	case "worker":
-		return WorkerRuntime{
-			Root:                cfg.Settings["root"],
-			ControllerURL:       cfg.Settings["controller_url"],
-			LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
-		}, nil
+		return workerRuntime, nil
 	case "singularity_worker":
+		singularityExecutable, err := cfg.Settings.String("singularity_executable")
+		if err != nil {
+			return nil, err
+		}
+		imagePath, err := cfg.Settings.String("image_path")
+		if err != nil {
+			return nil, err
+		}
+		containerWorkerExecutable, err := cfg.Settings.String("container_worker_executable")
+		if err != nil {
+			return nil, err
+		}
+		bind, err := cfg.Settings.String("bind")
+		if err != nil {
+			return nil, err
+		}
 		return SingularityWorkerRuntime{
-			WorkerRuntime: WorkerRuntime{
-				Root:                cfg.Settings["root"],
-				ControllerURL:       cfg.Settings["controller_url"],
-				LocalWorkerArtifact: cfg.Settings["local_worker_artifact"],
-			},
-			SingularityExecutable:     cfg.Settings["singularity_executable"],
-			ImagePath:                 cfg.Settings["image_path"],
-			ContainerWorkerExecutable: cfg.Settings["container_worker_executable"],
-			Bind:                      cfg.Settings["bind"],
+			WorkerRuntime:             workerRuntime,
+			SingularityExecutable:     singularityExecutable,
+			ImagePath:                 imagePath,
+			ContainerWorkerExecutable: containerWorkerExecutable,
+			Bind:                      bind,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime type %q", cfg.Type)
 	}
+}
+
+func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRuntime, error) {
+	root, err := settings.String("root")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	controllerURL, err := settings.String("controller_url")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	localWorkerArtifact, err := settings.String("local_worker_artifact")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	dataDir, err := settings.String("data_dir")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	assetCacheDir, err := settings.String("asset_cache_dir")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	roots, err := settings.StringMap("data_location_roots")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	return WorkerRuntime{
+		Root:                root,
+		ControllerURL:       controllerURL,
+		LocalWorkerArtifact: localWorkerArtifact,
+		DataDir:             dataDir,
+		AssetCacheDir:       assetCacheDir,
+		DataLocationRoots:   roots,
+	}, nil
+}
+
+func (settings ExecutionComponentSettings) String(name string) (string, error) {
+	if len(settings) == 0 {
+		return "", nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return "", nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("setting %s must be a string", name)
+	}
+	return text, nil
+}
+
+func (settings ExecutionComponentSettings) StringMap(name string) (map[string]string, error) {
+	if len(settings) == 0 {
+		return nil, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	typed, ok := value.(map[string]any)
+	if !ok {
+		if stringMap, ok := value.(map[string]string); ok {
+			copied := make(map[string]string, len(stringMap))
+			for key, child := range stringMap {
+				copied[key] = child
+			}
+			return copied, nil
+		}
+		return nil, fmt.Errorf("setting %s must be an object with string values", name)
+	}
+	result := make(map[string]string, len(typed))
+	for key, child := range typed {
+		text, ok := child.(string)
+		if !ok {
+			return nil, fmt.Errorf("setting %s.%s must be a string", name, key)
+		}
+		result[key] = text
+	}
+	return result, nil
 }

@@ -1525,6 +1525,27 @@ delivery and fallback on failure.
 
 For HPCC work, use the configured execution-environment path against the locally controlled Dockerized Slurm cluster as the next integration target. Keep the controller-worker ownership split intact: Slurm starts capacity, but workers still pull assignments from the controller. The four current roles are transport, dialect, scheduler, and runtime; future backends should add implementations behind those roles instead of reintroducing hard-coded worker target strings. SSH is now one concrete transport implementation for that boundary; it should remain transport-level plumbing, while setup/questionnaire behavior belongs in client setup code.
 
+Operational slice 011 for data assets now has a validated fake-HPCC data-assets
+smoke path. `scripts/fake-hpcc-data-assets-smoke.sh` starts the controller with
+a configured execution environment that uses local transport, Bash dialect,
+Slurm scheduling through `scripts/fake-hpcc/sbatch`, and `WorkerRuntime`
+preparation. The controller writes a worker config containing `asset_cache_dir`
+and `data_location_roots`, submits a generated worker Slurm script, and the
+worker completes a source-reference Python workflow that references one named
+fixture input, extracts one zip-selected archive member, promotes one CSV
+artifact, publishes it to a named `published_data` root, and records artifact
+plus published-asset evidence. The validated command was:
+
+```bash
+bash scripts/fake-hpcc-data-assets-smoke.sh
+```
+
+The runbook is
+`docs/concepts/data-assets-and-materialized-outputs/fake-hpcc-data-assets-smoke.md`.
+This smoke proves the local fake Slurm boundary only; real SSH, Dockerized
+Slurm containers, and SingularityCE image execution remain separate future
+fake-HPCC boundaries.
+
 ## Likely Next Step
 
 Wire `internal/clientsetup.SSHSetup` into `cmd/demo-client` behind an explicit setup flag or subcommand so the questionnaire can create local key material and a generated controller config from the demo client. Keep remote `authorized_keys` installation and durable `known_hosts` file management as separate, explicit follow-up slices.

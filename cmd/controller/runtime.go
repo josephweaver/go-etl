@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,6 +23,9 @@ type WorkerRuntime struct {
 	Root                string
 	ControllerURL       string
 	LocalWorkerArtifact string
+	DataDir             string
+	AssetCacheDir       string
+	DataLocationRoots   map[string]string
 }
 
 func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
@@ -37,24 +41,9 @@ func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect
 		return err
 	}
 
-	dirs := []string{
-		path.Dir(paths.WorkerExecutable),
-		path.Dir(paths.WorkerConfigPath),
-		path.Dir(paths.WorkerScriptPath),
-		paths.LogDir,
-		paths.TmpDir,
-		paths.DataDir,
-	}
-	localizedDirs := make([]string, 0, len(dirs))
-	for _, dir := range dirs {
-		localized, err := dialect.LocalizePath(dir)
-		if err != nil {
-			return fmt.Errorf("runtime dir %q: %w", dir, err)
-		}
-		localizedDirs = append(localizedDirs, localized)
-	}
-	if _, err := transport.Exec(ctx, append([]string{"mkdir", "-p"}, localizedDirs...)...); err != nil {
-		return fmt.Errorf("create runtime dirs: %w", err)
+	dirs := r.runtimeDirs(paths)
+	if err := r.createRuntimeDirs(ctx, transport, dialect, dirs); err != nil {
+		return err
 	}
 
 	if r.ControllerURL != "" {
@@ -71,6 +60,51 @@ func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect
 	return nil
 }
 
+func (r WorkerRuntime) runtimeDirs(paths WorkerRuntimePaths) []string {
+	dirs := []string{
+		path.Dir(paths.WorkerExecutable),
+		path.Dir(paths.WorkerConfigPath),
+		path.Dir(paths.WorkerScriptPath),
+		paths.LogDir,
+		paths.TmpDir,
+		paths.DataDir,
+	}
+	if r.AssetCacheDir != "" {
+		dirs = append(dirs, r.AssetCacheDir)
+	}
+	for _, root := range r.DataLocationRoots {
+		dirs = append(dirs, root)
+	}
+	return dirs
+}
+
+func (r WorkerRuntime) createRuntimeDirs(ctx context.Context, transport Transport, dialect ShellDialect, dirs []string) error {
+	if _, ok := transport.(LocalTransport); ok {
+		for _, dir := range dirs {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.FromSlash(dir), 0o755); err != nil {
+				return fmt.Errorf("create local runtime dir %s: %w", dir, err)
+			}
+		}
+		return nil
+	}
+
+	localizedDirs := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		localized, err := dialect.LocalizePath(dir)
+		if err != nil {
+			return fmt.Errorf("runtime dir %q: %w", dir, err)
+		}
+		localizedDirs = append(localizedDirs, localized)
+	}
+	if _, err := transport.Exec(ctx, append([]string{"mkdir", "-p"}, localizedDirs...)...); err != nil {
+		return fmt.Errorf("create runtime dirs: %w", err)
+	}
+	return nil
+}
+
 type WorkerRuntimePaths struct {
 	Root             string
 	WorkerExecutable string
@@ -82,10 +116,12 @@ type WorkerRuntimePaths struct {
 }
 
 type WorkerConfig struct {
-	LogDir        string `json:"log_dir"`
-	TmpDir        string `json:"tmp_dir"`
-	DataDir       string `json:"data_dir"`
-	ControllerURL string `json:"controller_url"`
+	LogDir            string            `json:"log_dir"`
+	TmpDir            string            `json:"tmp_dir"`
+	DataDir           string            `json:"data_dir"`
+	ControllerURL     string            `json:"controller_url"`
+	AssetCacheDir     string            `json:"asset_cache_dir,omitempty"`
+	DataLocationRoots map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
@@ -96,6 +132,13 @@ func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
 	if containsNewline(root) {
 		return WorkerRuntimePaths{}, fmt.Errorf("runtime root must not contain newlines")
 	}
+	dataDir := r.DataDir
+	if dataDir == "" {
+		dataDir = path.Join(root, "data")
+	}
+	if containsNewline(dataDir) {
+		return WorkerRuntimePaths{}, fmt.Errorf("runtime data dir must not contain newlines")
+	}
 
 	return WorkerRuntimePaths{
 		Root:             root,
@@ -104,16 +147,26 @@ func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
 		WorkerScriptPath: path.Join(root, "scripts", "worker.slurm"),
 		LogDir:           path.Join(root, "logs"),
 		TmpDir:           path.Join(root, "tmp"),
-		DataDir:          path.Join(root, "data"),
+		DataDir:          dataDir,
 	}, nil
 }
 
 func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transport, paths WorkerRuntimePaths) error {
+	if containsNewline(r.AssetCacheDir) {
+		return fmt.Errorf("worker asset cache dir must not contain newlines")
+	}
+	for name, root := range r.DataLocationRoots {
+		if containsNewline(name) || containsNewline(root) {
+			return fmt.Errorf("worker data location roots must not contain newlines")
+		}
+	}
 	data, err := json.MarshalIndent(WorkerConfig{
-		LogDir:        paths.LogDir,
-		TmpDir:        paths.TmpDir,
-		DataDir:       paths.DataDir,
-		ControllerURL: r.ControllerURL,
+		LogDir:            paths.LogDir,
+		TmpDir:            paths.TmpDir,
+		DataDir:           paths.DataDir,
+		ControllerURL:     r.ControllerURL,
+		AssetCacheDir:     r.AssetCacheDir,
+		DataLocationRoots: r.DataLocationRoots,
 	}, "", "  ")
 	if err != nil {
 		return err
