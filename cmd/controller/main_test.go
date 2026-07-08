@@ -723,6 +723,61 @@ func TestNextWorkHandler(t *testing.T) {
 	}
 }
 
+func TestNextWorkHandlerReturnsExecutionEnvelopeProtectedRefsWithoutPlaintext(t *testing.T) {
+	const sentinel = "goet-controller-should-not-store-this-secret-003"
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"protected-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt",
+		"parameters":{
+			"year":{"type":"int","value":2026},
+			"gdrive_token":{
+				"type":"string",
+				"protected_ref":{"provider":"worker_env","key":"GOET_GDRIVE_TOKEN"},
+				"materialize":{"mode":"env","target":"GDRIVE_TOKEN"}
+			}
+		}
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	nextResp := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResp, nextReq)
+	if nextResp.Code != http.StatusOK {
+		t.Fatalf("next status = %d, want 200: %s", nextResp.Code, nextResp.Body.String())
+	}
+	if strings.Contains(nextResp.Body.String(), sentinel) {
+		t.Fatalf("assignment leaked sentinel: %s", nextResp.Body.String())
+	}
+
+	var item model.WorkItem
+	if err := json.NewDecoder(nextResp.Body).Decode(&item); err != nil {
+		t.Fatalf("decode assignment: %v", err)
+	}
+	if item.ExecutionEnvelope == nil {
+		t.Fatal("execution envelope = nil")
+	}
+	ref := item.ExecutionEnvelope.Variables.ProtectedRefs["gdrive_token"]
+	if ref.Provider != "worker_env" || ref.Key != "GOET_GDRIVE_TOKEN" {
+		t.Fatalf("protected ref = %+v", ref)
+	}
+	if ref.RedactionLabel != "${worker_env.GOET_GDRIVE_TOKEN}" {
+		t.Fatalf("redaction label = %q", ref.RedactionLabel)
+	}
+	if item.Parameters["gdrive_token"].Value != nil {
+		t.Fatalf("protected parameter value = %#v, want nil", item.Parameters["gdrive_token"].Value)
+	}
+}
+
 func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -3121,6 +3176,45 @@ func TestWorkflowRunRecordFromAdmittedManifestRecordsAdmissionContext(t *testing
 	}
 }
 
+func TestWorkflowRunRecordFromAdmittedManifestRejectsSensitivePlaintextSubmissionVariable(t *testing.T) {
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reposource.AdmittedSourceManifest{
+		Schema: reposource.AdmittedSourceManifestSchemaV1,
+		RunID:  "run-001",
+		Source: reposource.ResolvedSourceReference{
+			Repository: reposource.RepositoryIdentity{Value: "local:test"},
+		},
+		Files: []reposource.AdmittedSourceManifestFile{
+			{Role: reposource.FileRoleProject, SourcePath: "project.json", CachePath: "project.json"},
+			{Role: reposource.FileRoleWorkflow, SourcePath: "workflow.json", CachePath: "workflow.json"},
+		},
+	}
+	_, err = workflowRunRecordFromAdmittedManifest(
+		"run-001",
+		"project-001",
+		"workflow-001",
+		manifest,
+		[]variable.Variable{
+			{
+				Name:            variable.Name{Namespace: variable.NamespaceOverride, Key: "gdrive_token"},
+				TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "goet-controller-should-not-store-this-secret-003"},
+				Sensitive:       true,
+			},
+		},
+		time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC),
+		layout,
+	)
+	if err == nil {
+		t.Fatal("expected sensitive plaintext submission variable to be rejected")
+	}
+	if !strings.Contains(err.Error(), "sensitive plaintext") {
+		t.Fatalf("error = %v, want sensitive plaintext", err)
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -3460,7 +3554,7 @@ func TestSubmitWorkflowHandlerRejectsUnsafeSupplementalSourceManifestPathBeforeR
 }
 
 func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
-	items := workItemsWithRuntimeMetadata("summary", []workflow.CompiledWorkItem{
+	items, err := workItemsWithRuntimeMetadata("summary", []workflow.CompiledWorkItem{
 		{
 			WorkflowID: "summary",
 			StepID:     "summarize",
@@ -3486,6 +3580,9 @@ func TestWorkItemsWithRuntimeMetadataFingerprintsParameters(t *testing.T) {
 			},
 		},
 	}, "test-version")
+	if err != nil {
+		t.Fatalf("workItemsWithRuntimeMetadata() error = %v", err)
+	}
 
 	if items[0].InputFingerprint == items[1].InputFingerprint {
 		t.Fatalf("input fingerprints should differ: %s", items[0].InputFingerprint)

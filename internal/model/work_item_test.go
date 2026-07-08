@@ -2,7 +2,10 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"goetl/internal/variable"
 )
 
 func TestWorkItemValidate(t *testing.T) {
@@ -536,6 +539,76 @@ func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 
 	if decodedItem.Parameters["input_path"].Value != "/data/input.tif" {
 		t.Fatalf("unexpected input_path parameter: %+v", decodedItem.Parameters["input_path"])
+	}
+}
+
+func TestExecutionEnvelopeSeparatesPublicValuesAndProtectedReferences(t *testing.T) {
+	sentinel := "goet-controller-should-not-store-this-secret-003"
+	item := WorkItem{
+		ID:             "download-private-drive-fixture",
+		Type:           WorkItemTypePythonScript,
+		OutputFilename: "output.json",
+		Parameters: Parameters{
+			"year": {Type: "int", Value: 2026},
+			"gdrive_token": {
+				Type:         "string",
+				ProtectedRef: &variable.ProtectedRef{Provider: "worker_env", Key: "GOET_GDRIVE_TOKEN"},
+				Materialize:  &ParameterMaterialization{Mode: "env", Target: "GDRIVE_TOKEN"},
+			},
+		},
+	}
+
+	item, err := item.WithExecutionEnvelope()
+	if err != nil {
+		t.Fatalf("WithExecutionEnvelope() error = %v", err)
+	}
+	if item.ExecutionEnvelope.Schema != "goet/execution-envelope/v1" {
+		t.Fatalf("schema = %q", item.ExecutionEnvelope.Schema)
+	}
+	if item.ExecutionEnvelope.Variables.Public["year"].Value != 2026 {
+		t.Fatalf("public year = %+v", item.ExecutionEnvelope.Variables.Public["year"])
+	}
+	ref := item.ExecutionEnvelope.Variables.ProtectedRefs["gdrive_token"]
+	if ref.Provider != "worker_env" || ref.Key != "GOET_GDRIVE_TOKEN" {
+		t.Fatalf("protected ref = %+v", ref)
+	}
+	if ref.RedactionLabel != "${worker_env.GOET_GDRIVE_TOKEN}" {
+		t.Fatalf("redaction label = %q", ref.RedactionLabel)
+	}
+	if ref.Materialize == nil || ref.Materialize.Mode != "env" || ref.Materialize.Target != "GDRIVE_TOKEN" {
+		t.Fatalf("materialize = %+v", ref.Materialize)
+	}
+
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal item: %v", err)
+	}
+	if strings.Contains(string(encoded), sentinel) {
+		t.Fatalf("encoded item leaked sentinel: %s", encoded)
+	}
+	if strings.Contains(string(encoded), `"gdrive_token":{"type":"string","value"`) {
+		t.Fatalf("protected ref encoded as plaintext value: %s", encoded)
+	}
+}
+
+func TestWorkItemRejectsSensitivePlaintextParameter(t *testing.T) {
+	item := WorkItem{
+		ID:             "leaky",
+		Type:           WorkItemTypePythonScript,
+		OutputFilename: "output.json",
+		Source:         &WorkItemSource{RunID: "run-001", ManifestPath: "sources/workflow.manifest.json"},
+		Parameters: Parameters{
+			"token": {
+				Type:           "string",
+				Value:          "goet-controller-should-not-store-this-secret-003",
+				Sensitive:      true,
+				RedactionLabel: "[REDACTED:workflow.token]",
+			},
+		},
+	}
+
+	if err := item.Validate(); err == nil {
+		t.Fatal("expected sensitive plaintext parameter to be rejected")
 	}
 }
 

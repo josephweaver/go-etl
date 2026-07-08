@@ -132,13 +132,18 @@ func persistenceRecordsFromCompiledStageResults(
 				"id":                   item.StepID,
 			})
 			itemPayload.StepInstanceID = stepInstances[item.StepID]
+			itemPayload, err := itemPayload.WithExecutionEnvelope()
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("build execution envelope for work item %s: %w", item.WorkItem.ID, err)
+			}
+
 			itemPayload.WorkItemFingerprint = fingerprint("work-item", map[string]any{
 				"id":              itemPayload.ID,
 				"type":            itemPayload.Type,
 				"output_filename": itemPayload.OutputFilename,
-				"parameters":      itemPayload.Parameters,
+				"variables":       itemPayload.ExecutionEnvelope.Variables,
 			})
-			itemPayload.InputFingerprint = fingerprint("input", itemPayload.Parameters)
+			itemPayload.InputFingerprint = fingerprint("input", itemPayload.ExecutionEnvelope.Variables)
 			itemPayload.OutputFingerprint = fingerprint("output", map[string]any{
 				"output_filename": itemPayload.OutputFilename,
 			})

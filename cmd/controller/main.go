@@ -1143,6 +1143,10 @@ func (c *Controller) ensureRawPersistenceRun(ctx context.Context) error {
 }
 
 func persistenceRecordsFromRawWorkItem(item model.WorkItem, submittedAt time.Time) (persistence.WorkItemRecord, persistence.QueuedWorkRecord, error) {
+	item, err := item.WithExecutionEnvelope()
+	if err != nil {
+		return persistence.WorkItemRecord{}, persistence.QueuedWorkRecord{}, fmt.Errorf("build execution envelope for raw work item %s: %w", item.ID, err)
+	}
 	payload, err := json.Marshal(item)
 	if err != nil {
 		return persistence.WorkItemRecord{}, persistence.QueuedWorkRecord{}, fmt.Errorf("encode raw work item: %w", err)
@@ -1742,6 +1746,10 @@ func workflowRunRecordFromAdmittedManifest(runID string, projectID string, workf
 	if err != nil {
 		return persistence.WorkflowRunRecord{}, err
 	}
+	variables, err = safeWorkflowRunSubmissionVariables(variables)
+	if err != nil {
+		return persistence.WorkflowRunRecord{}, err
+	}
 	admissionContext := workflowRunSourceAdmissionContext{
 		Schema:      manifest.Schema,
 		ManifestRef: filepath.ToSlash(paths.ManifestPath),
@@ -1784,6 +1792,20 @@ func workflowRunRecordFromAdmittedManifest(runID string, projectID string, workf
 	}, nil
 }
 
+func safeWorkflowRunSubmissionVariables(variables []variable.Variable) ([]variable.Variable, error) {
+	safe := make([]variable.Variable, 0, len(variables))
+	for _, item := range variables {
+		if item.Sensitive && item.ProtectedRef == nil {
+			return nil, fmt.Errorf("submission variable %s is sensitive plaintext; use protected_ref", item.Name)
+		}
+		if err := item.Validate(); err != nil {
+			return nil, err
+		}
+		safe = append(safe, item)
+	}
+	return safe, nil
+}
+
 func sourceProvenanceWarning(source reposource.ResolvedSourceReference) string {
 	if source.RevisionID == nil {
 		return reposource.LocalProvenanceWarning
@@ -1809,7 +1831,10 @@ func stageRecordsFromWorkflow(runID string, workflowPath string, workflowDefinit
 }
 
 func persistenceRecordsFromCompiledWorkflow(runID string, workflowDefinition workflow.Workflow, compileResult workflow.CompileResult, codeVersion string, submittedAt time.Time) ([]persistence.WorkItemRecord, []persistence.QueuedWorkRecord, error) {
-	items := workItemsWithRuntimeMetadata(compileResult.WorkflowID, compileResult.WorkItems, codeVersion)
+	items, err := workItemsWithRuntimeMetadata(compileResult.WorkflowID, compileResult.WorkItems, codeVersion)
+	if err != nil {
+		return nil, nil, err
+	}
 	stageIndexes := make(map[string]int, len(workflowDefinition.Steps))
 	nextWorkItemIndex := make(map[int]int, len(workflowDefinition.Steps))
 	for index, step := range workflowDefinition.Steps {
@@ -1889,7 +1914,7 @@ func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variab
 	return nil
 }
 
-func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) []model.WorkItem {
+func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) ([]model.WorkItem, error) {
 	workflowInstanceID := workflowID + "-instance-" + randomHex(8)
 	workflowFingerprint := fingerprint("workflow", map[string]any{
 		"id": workflowID,
@@ -1907,13 +1932,18 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 			"id":                   compiled.StepID,
 		})
 		item.StepInstanceID = workflowInstanceID + "-step-" + compiled.StepID
+		var err error
+		item, err = item.WithExecutionEnvelope()
+		if err != nil {
+			return nil, fmt.Errorf("build execution envelope for work item %s: %w", item.ID, err)
+		}
 		item.WorkItemFingerprint = fingerprint("work-item", map[string]any{
 			"id":              item.ID,
 			"type":            item.Type,
 			"output_filename": item.OutputFilename,
-			"parameters":      item.Parameters,
+			"variables":       item.ExecutionEnvelope.Variables,
 		})
-		item.InputFingerprint = fingerprint("input", item.Parameters)
+		item.InputFingerprint = fingerprint("input", item.ExecutionEnvelope.Variables)
 		item.OutputFingerprint = fingerprint("output", map[string]any{
 			"output_filename": item.OutputFilename,
 		})
@@ -1921,7 +1951,7 @@ func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.Co
 		items = append(items, item)
 	}
 
-	return items
+	return items, nil
 }
 
 func controllerCodeVersion(resolver variable.Resolver) (string, error) {
@@ -3150,6 +3180,11 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 			http.Error(w, "hydrate cache_data dependent work item", http.StatusInternalServerError)
 			return
 		}
+	}
+	item, err = item.WithExecutionEnvelope()
+	if err != nil {
+		http.Error(w, "build execution envelope", http.StatusInternalServerError)
+		return
 	}
 	if err := item.Validate(); err != nil {
 		http.Error(w, "validate persisted worker payload", http.StatusInternalServerError)

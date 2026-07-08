@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"goetl/internal/model"
+	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
 
@@ -264,6 +266,105 @@ func TestPersistenceRecordsFromCompiledStageResultsStampsResourceConstraints(t *
 	}
 	if constraints[0].RequestedUnits != 512 {
 		t.Fatalf("constraint requested units = %d, want 512", constraints[0].RequestedUnits)
+	}
+}
+
+func TestPersistenceRecordsFromCompiledStageResultsPersistsProtectedRefsWithoutPlaintext(t *testing.T) {
+	const sentinel = "goet-controller-should-not-store-this-secret-003"
+	stageResult := workflow.CompileStageResult{
+		WorkflowID: "cdl",
+		StageIndex: 0,
+		WorkItems: []workflow.CompileStageWorkItem{
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    0,
+				StepIndex:     0,
+				StepID:        "download",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "download-private",
+					Type:           model.WorkItemTypePythonScript,
+					OutputFilename: "download-private.json",
+					Parameters: model.Parameters{
+						"year": {Type: "int", Value: 2026},
+						"gdrive_token": {
+							Type:         "string",
+							ProtectedRef: &variable.ProtectedRef{Provider: "worker_env", Key: "GOET_GDRIVE_TOKEN"},
+							Materialize:  &model.ParameterMaterialization{Mode: "env", Target: "GDRIVE_TOKEN"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	records, queued, _, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
+	}
+	if len(records) != 1 || len(queued) != 1 {
+		t.Fatalf("records=%d queued=%d, want one persisted queued work item", len(records), len(queued))
+	}
+	if strings.Contains(records[0].WorkerPayloadJSON, sentinel) {
+		t.Fatalf("worker payload leaked sentinel: %s", records[0].WorkerPayloadJSON)
+	}
+	if strings.Contains(records[0].ResolvedInputsSHA256, sentinel) {
+		t.Fatalf("resolved input hash leaked sentinel: %s", records[0].ResolvedInputsSHA256)
+	}
+
+	var payload model.WorkItem
+	if err := json.Unmarshal([]byte(records[0].WorkerPayloadJSON), &payload); err != nil {
+		t.Fatalf("decode worker payload: %v", err)
+	}
+	if payload.ExecutionEnvelope == nil {
+		t.Fatal("execution envelope = nil")
+	}
+	if got := payload.ExecutionEnvelope.Variables.Public["year"].Value; got != float64(2026) {
+		t.Fatalf("public year = %#v, want 2026", got)
+	}
+	ref := payload.ExecutionEnvelope.Variables.ProtectedRefs["gdrive_token"]
+	if ref.Provider != "worker_env" || ref.Key != "GOET_GDRIVE_TOKEN" {
+		t.Fatalf("protected ref = %+v", ref)
+	}
+	if ref.RedactionLabel != "${worker_env.GOET_GDRIVE_TOKEN}" {
+		t.Fatalf("redaction label = %q", ref.RedactionLabel)
+	}
+	if payload.Parameters["gdrive_token"].Value != nil {
+		t.Fatalf("parameter plaintext value = %#v, want nil", payload.Parameters["gdrive_token"].Value)
+	}
+}
+
+func TestPersistenceRecordsFromCompiledStageResultsRejectsSensitivePlaintext(t *testing.T) {
+	stageResult := workflow.CompileStageResult{
+		WorkflowID: "cdl",
+		StageIndex: 0,
+		WorkItems: []workflow.CompileStageWorkItem{
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    0,
+				StepIndex:     0,
+				StepID:        "download",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "download-private",
+					Type:           model.WorkItemTypePythonScript,
+					OutputFilename: "download-private.json",
+					Parameters: model.Parameters{
+						"gdrive_token": {
+							Type:           "string",
+							Value:          "goet-controller-should-not-store-this-secret-003",
+							Sensitive:      true,
+							RedactionLabel: "[REDACTED:workflow.gdrive_token]",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, _, _, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("expected sensitive plaintext parameter to be rejected")
 	}
 }
 
