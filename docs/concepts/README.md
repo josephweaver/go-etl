@@ -12,7 +12,6 @@ Concept link for its authoritative scope.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
 - [Geospatial Worker Plugins](geospatial-worker-plugins/README.md) - Add GDAL-backed geospatial operations and fixture smoke coverage for CDL/Yan/Roy-style raster workflows.
-- [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Preserve sensitivity metadata through variable resolution, diagnostics, persistence, and execution boundaries.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
 - [Workflow Dependency Resolution](workflow-dependency-resolution/README.md) - Resolve dependencies between complete workflows and delay dependent execution until prerequisites succeed.
 - [Workflow Execution Persistence](workflow-execution-persistence/README.md) - Make the database authoritative for workflow runs, steps, work items, attempts, resolver inputs, and outputs across controller restarts.
@@ -31,6 +30,7 @@ above.
 - [Execution Observability](execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
 - [Controller Startup Resolution](controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
+- [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Phase 1 implements sensitivity metadata, protected references, worker-local secret materialization, controlled-output redaction, and the phase-1 boundary between protected references and plaintext execution secrets.
 - [Repository Source Resolution and Cache](source-control-resolution-and-cache/README.md) - Provides repository-source resolution, controller cache population, verified cached reads, and explicit materialization for admitted workflow sources.
 - [Structured Variable Resolution](structured-variable-resolution/README.md) - Adds recursively resolved, explicitly typed object and list expressions.
 - [Python WorkItem](python-workitem/README.md) - Phase 1 complete for admitted-source system Python execution, including end-to-end smoke-path validation.

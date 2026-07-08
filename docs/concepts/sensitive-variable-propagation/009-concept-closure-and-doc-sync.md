@@ -1,6 +1,6 @@
 # 009 Concept Closure and Documentation Sync
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -8,9 +8,15 @@ Close the Sensitive Variable Propagation concept after the model, controller, wo
 
 This is primarily a documentation and status synchronization slice unless documentation reveals a concrete mismatch.
 
+## Implemented State
+
+- `docs/concepts/sensitive-variable-propagation/README.md` now describes the phase-1 sensitive-variable boundary in current-state language and lists the implemented slices.
+- `docs/concepts/README.md` lists Sensitive Variable Metadata and Propagation under Completed Strategic Concepts.
+- `PROJECT_STATE.md` records the implemented phase-1 sensitive-variable capability without claiming unsupported secret-manager, artifact-scanning, or transformed-leak protection.
+
 ## Current State
 
-The Strategic Concept starts as proposed. Earlier slices should have added:
+The Strategic Concept is now phase 1 implemented. Earlier slices added:
 
 - sensitivity metadata and safe rendering;
 - protected-reference declarations;

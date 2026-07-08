@@ -1,6 +1,6 @@
 # Sensitive Variable Propagation
 
-Status: Proposed
+Status: Phase 1 implemented for worker-local protected references and controlled-output redaction
 
 ## Purpose
 
@@ -16,6 +16,19 @@ User-defined subprocesses receive only deliberate, minimal materializations.
 ```
 
 This concept does not pretend that just-in-time materialization makes secrets magically safe. It defines where plaintext may exist, who is allowed to see it, how it must be represented, and which boundaries are intentionally weaker.
+
+## Current State
+
+Phase 1 is implemented. GOET now keeps sensitive values inside the typed variable model as metadata plus protected references, preserves those references through controller planning and persistence, materializes worker-local `worker_env` references only at worker execution boundaries, and redacts exact materialized values from GOET-controlled logs, status, and persistence surfaces.
+
+The implemented boundary is intentionally narrow:
+
+- controller-side planning sees protected references, not plaintext execution secrets;
+- trusted Go work-item handlers receive typed sensitive values through the worker boundary;
+- user subprocesses receive only explicit materializations such as env vars or temp files;
+- exact materialized secret values are scrubbed from GOET-controlled stdout/stderr, logs, and status;
+- artifacts are not scanned by phase-1 sensitive-variable protection;
+- external secret managers and encrypted client-submitted protected stores remain deferred.
 
 ## Goals
 
@@ -250,17 +263,17 @@ If secret rotation should invalidate reuse in the future, that should be handled
 - `execution-events` and `logging` should route only redacted representations of sensitive data.
 - `resource-constraint` may eventually gate credentialed provider calls or shared network/download pressure, but it does not own secret handling.
 
-## Proposed Slices
+## Implemented Slices
 
-1. `001-sensitive-metadata-and-safe-rendering.md` — add sensitivity metadata, propagation, and safe rendering to typed variables/resolved values.
-2. `002-protected-reference-model.md` — implemented.
-3. `003-controller-envelope-and-persistence.md` — preserve public values and protected references through controller work compilation, assignment payloads, status, and snapshots.
-4. `004-worker-secret-resolver-and-redactor.md` — add worker-local protected-value resolution plus attempt-local redaction primitives.
-5. `005-trusted-go-workitem-sensitive-context.md` — pass typed sensitive values to trusted in-process Go work-item handlers through a safe context.
-6. `006-python-subprocess-secret-materialization.md` — materialize sensitive values for Python subprocesses through explicit env/file/stdin surfaces, never command-line arguments.
-7. `007-controlled-sink-redaction-tests.md` — add sentinel tests that verify logs, events, stdout/stderr, status, errors, and structured outputs do not persist exact secrets.
-8. `008-credentialed-worker-fixture-smoke.md` — prove the boundary with a small worker-local credential fixture, avoiding real secret managers and large data.
-9. `009-concept-closure-and-doc-sync.md` — update concept index, project state, and docs after the implementation slices land.
+1. `001-sensitive-metadata-and-safe-rendering.md` - implemented.
+2. `002-protected-reference-model.md` - implemented.
+3. `003-controller-envelope-and-persistence.md` - implemented.
+4. `004-worker-secret-resolver-and-redactor.md` - implemented.
+5. `005-trusted-go-workitem-sensitive-context.md` - implemented.
+6. `006-python-subprocess-secret-materialization.md` - implemented.
+7. `007-controlled-sink-redaction-tests.md` - implemented.
+8. `008-credentialed-worker-fixture-smoke.md` - implemented.
+9. `009-concept-closure-and-doc-sync.md` - implemented.
 
 ## Completion Criteria
 
