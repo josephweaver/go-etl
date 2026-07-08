@@ -7,6 +7,7 @@ import (
 )
 
 const sensitiveSentinel = "goet-secret-sentinel-001"
+const controlledSinkSentinel007 = "goet-secret-sentinel-007-do-not-persist"
 
 func TestVariableJSONRoundTripIncludesSensitiveFlag(t *testing.T) {
 	text := `{
@@ -76,6 +77,29 @@ func TestResolvedValueSafeRenderingRedactsSensitiveScalar(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"sensitive":true`) {
 		t.Fatalf("MarshalJSON() = %s, want sensitive metadata", encoded)
+	}
+}
+
+func TestResolvedValueSafeRenderingRedactsControlledSinkSentinel(t *testing.T) {
+	value := ResolvedValue{
+		Type:           TypeString,
+		Value:          controlledSinkSentinel007,
+		Sensitive:      true,
+		RedactionLabel: "[REDACTED:workflow.api_token]",
+		Provenance:     "workflow.api_token",
+	}
+
+	rendered := []string{value.String(), value.GoString()}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+	rendered = append(rendered, string(encoded))
+
+	for _, text := range rendered {
+		if strings.Contains(text, controlledSinkSentinel007) {
+			t.Fatalf("safe rendering leaked sentinel: %s", text)
+		}
 	}
 }
 

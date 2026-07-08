@@ -1489,6 +1489,58 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestStatusHandlerControlledSinkSentinelOmitsProtectedPlaintext(t *testing.T) {
+	const sentinel = "goet-secret-sentinel-007-do-not-persist"
+
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	work := testPersistenceWorkItem("persisted-protected", run.ID, 0, 0)
+	work.WorkerPayloadJSON = `{
+		"id":"persisted-protected",
+		"type":"python_script",
+		"output_filename":"protected.json",
+		"parameters":{
+			"gdrive_token":{
+				"type":"string",
+				"protected_ref":{"provider":"worker_env","key":"GOET_TEST_CONTROLLED_SINK_STATUS_SECRET"},
+				"materialize":{"mode":"env","target":"GDRIVE_TOKEN"}
+			}
+		}
+	}`
+	if strings.Contains(work.WorkerPayloadJSON, sentinel) {
+		t.Fatal("test fixture accidentally stores plaintext sentinel")
+	}
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+
+	controller := newController()
+	controller.workflowStore = store
+
+	response := httptest.NewRecorder()
+	controller.statusHandler(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), sentinel) {
+		t.Fatalf("controller status leaked sentinel: %s", response.Body.String())
+	}
+
+	var status model.ControllerStatus
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Pending != 1 || status.Assigned != 0 || status.Failed != 0 {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
 func TestStatusHandlerReportsResourceConstraintCountsAndClaims(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

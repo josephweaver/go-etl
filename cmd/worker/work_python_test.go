@@ -383,10 +383,56 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 	}
 }
 
+func TestWorkerRunWorkItemControlledSinkSentinelRedactsFailureStdoutAndStderr(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-sentinel-007-do-not-persist"
+	t.Setenv("GOET_TEST_CONTROLLED_SINK_FAILURE_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import os
+import sys
+
+secret = os.environ["GDRIVE_TOKEN"]
+print("stdout " + secret)
+print("stderr " + secret, file=sys.stderr)
+sys.exit(7)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-failure-007", "attempt-secret-failure-007", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_CONTROLLED_SINK_FAILURE_SECRET", "env", "GDRIVE_TOKEN"),
+	})
+
+	_, err := worker.Run(item)
+	if err == nil || !strings.Contains(err.Error(), "python process exited with error") {
+		t.Fatalf("expected python failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("failure error leaked secret: %v", err)
+	}
+
+	stdoutLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stdout.log"))
+	stderrLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stderr.log"))
+	for _, logText := range []string{stdoutLog, stderrLog} {
+		if strings.Contains(logText, secret) {
+			t.Fatalf("captured subprocess log leaked secret: %q", logText)
+		}
+		if !strings.Contains(logText, "${worker_env.GOET_TEST_CONTROLLED_SINK_FAILURE_SECRET}") {
+			t.Fatalf("captured subprocess log missing redaction label: %q", logText)
+		}
+	}
+}
+
 func TestWorkerRunWorkItemRejectsPythonOutputContainingMaterializedSecret(t *testing.T) {
 	requirePython3(t)
 
-	secret := "goet-secret-python-output-006"
+	secret := "goet-secret-sentinel-007-do-not-persist"
 	t.Setenv("GOET_TEST_PYTHON_OUTPUT_SECRET", secret)
 
 	worker := newPythonTestWorker(t)
@@ -931,6 +977,62 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 	scriptOutput, ok := manifest.ScriptOutput.(map[string]any)
 	if !ok || scriptOutput["result"] != "ok" {
 		t.Fatalf("script output = %#v", manifest.ScriptOutput)
+	}
+}
+
+func TestWorkerRunWorkItemDoesNotScanArtifactContentsForControlledSinkSentinel(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-sentinel-007-do-not-persist"
+	t.Setenv("GOET_TEST_CONTROLLED_SINK_ARTIFACT_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+artifact_path = os.path.join(os.environ["GOET_ARTIFACT_DIR"], "reports", "leaky.txt")
+os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+with open(artifact_path, "w", encoding="utf-8") as handle:
+    handle.write(os.environ["GDRIVE_TOKEN"])
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "result": "artifact content is outside phase-1 secret scanning",
+        "artifacts": [
+            {
+                "name": "leaky_report",
+                "kind": "file",
+                "path": "reports/leaky.txt"
+            }
+        ]
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-artifact-secret-007", "attempt-artifact-secret-007", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_CONTROLLED_SINK_ARTIFACT_SECRET", "env", "GDRIVE_TOKEN"),
+	})
+
+	evidence, err := worker.Run(item)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(evidence.OutputJSON, secret) {
+		t.Fatalf("evidence leaked artifact secret: %s", evidence.OutputJSON)
+	}
+
+	manifest := readArtifactManifestOutput(t, filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if len(manifest.Artifacts) != 1 {
+		t.Fatalf("artifact count = %d, want one artifact", len(manifest.Artifacts))
+	}
+	artifactPath := filepath.Join(worker.Config.DataDir, filepath.FromSlash(manifest.Artifacts[0].Path))
+	if got := readString(t, artifactPath); got != secret {
+		t.Fatalf("artifact content = %q, want unscanned sentinel fixture", got)
 	}
 }
 

@@ -1,6 +1,6 @@
 # 007 Controlled Sink Redaction Tests
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
