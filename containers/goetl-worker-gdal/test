@@ -26,8 +26,8 @@ case "${worker_output}" in
     ;;
 esac
 
-gdal_version="$(docker run --rm "${image}" gdalinfo --version)"
-ogr_version="$(docker run --rm "${image}" ogrinfo --version)"
+gdal_version="$(docker run --rm --entrypoint /bin/sh "${image}" -lc "gdalinfo --version")"
+ogr_version="$(docker run --rm --entrypoint /bin/sh "${image}" -lc "ogrinfo --version")"
 printf 'gdalinfo: %s\n' "${gdal_version}"
 printf 'ogrinfo: %s\n' "${ogr_version}"
 
@@ -47,31 +47,46 @@ case "${ogr_version}" in
     ;;
 esac
 
-smoke_dir="${tmp_root}/raster_info"
+smoke_dir="${tmp_root}/cdl_fixture"
 mkdir -p "${smoke_dir}"
+
 cat > "${smoke_dir}/field.asc" <<'EOF_ASC'
-ncols 2
-nrows 2
+ncols 3
+nrows 3
 xllcorner 0 0
 cellsize 30
 NODATA_value 0
-1 2
-3 4
+1 1 2
+1 2 2
+3 3 3
+EOF_ASC
+
+cat > "${smoke_dir}/cdl.asc" <<'EOF_ASC'
+ncols 3
+nrows 3
+xllcorner 0 0
+cellsize 30
+NODATA_value 0
+5 5 1
+5 1 1
+2 2 4
 EOF_ASC
 
 docker run --rm \
+  --entrypoint /bin/sh \
   -v "${smoke_dir}:/work" \
   "${image}" \
-  /bin/sh -lc \
-  "gdal_translate -of GTiff -ot UInt16 -a_nodata 0 -a_srs EPSG:5070 -a_ullr 0 60 60 0 /work/field.asc /work/field.tif"
+  -lc \
+  "gdal_translate -of GTiff -ot UInt16 -a_nodata 0 -a_srs EPSG:5070 -a_ullr 0 90 90 0 /work/field.asc /work/field.tif && \
+   gdal_translate -of GTiff -ot UInt16 -a_nodata 0 -a_srs EPSG:5070 -a_ullr 0 90 90 0 /work/cdl.asc /work/cdl.tif"
 
-cat > "${smoke_dir}/request.json" <<'EOF_JSON'
+cat > "${smoke_dir}/request_raster_info.json" <<'EOF_JSON'
 {
   "api_version": "goet.geospatial/v1alpha1",
   "kind": "GeospatialOperationRequest",
   "operation": "raster_info",
   "inputs": {
-    "cdl": { "path": "/work/field.tif" },
+    "cdl": { "path": "/work/cdl.tif" },
     "field": { "path": "/work/field.tif" }
   },
   "outputs": {
@@ -85,38 +100,200 @@ docker run --rm \
   -v "${smoke_dir}:/work" \
   --entrypoint /goetl/goet-geospatial \
   "${image}" \
-  --request /work/request.json \
-  --response /work/result.json
+  --request /work/request_raster_info.json \
+  --response /work/result_raster_info.json
 
-result="$(cat "${smoke_dir}/result.json")"
-for expected in '"operation": "raster_info"' '"name": "field"' '"name": "cdl"' ; do
-  case "${result}" in
-    *"${expected}"*) ;;
-    *)
-      printf 'expected raster_info result to include %s, got: %s\n' "${expected}" "${result}" >&2
-      exit 1
-      ;;
-  esac
-done
+cat > "${smoke_dir}/request_align.json" <<'EOF_JSON'
+{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "align_to_grid",
+  "inputs": {
+    "source_raster": { "path": "/work/cdl.tif", "band": 1, "nodata": 0 }
+  },
+  "outputs": {
+    "raster_tif": "aligned/cdl.tif",
+    "metadata_json": "aligned/align_metadata.json"
+  },
+  "options": {
+    "like_raster": "/work/field.tif",
+    "resampling": "nearest"
+  }
+}
+EOF_JSON
 
-metadata="$(cat "${smoke_dir}/metadata/raster_info.json")"
-for expected in '"name": "field"' '"name": "cdl"' '"driver": "GTiff"' '"epsg": 5070' ; do
-  case "${metadata}" in
-    *"${expected}"*) ;;
-    *)
-      printf 'expected metadata artifact to include %s, got: %s\n' "${expected}" "${metadata}" >&2
-      exit 1
-      ;;
-  esac
-done
+docker run --rm \
+  -v "${smoke_dir}:/work" \
+  --entrypoint /goetl/goet-geospatial \
+  "${image}" \
+  --request /work/request_align.json \
+  --response /work/result_align.json
 
-cdl_line="$(grep -n '"name": "cdl"' "${smoke_dir}/metadata/raster_info.json" | cut -d: -f1 | head -n 1)"
-field_line="$(grep -n '"name": "field"' "${smoke_dir}/metadata/raster_info.json" | cut -d: -f1 | head -n 1)"
-if [ -z "${cdl_line}" ] || [ -z "${field_line}" ]; then
-  printf 'could not inspect raster metadata ordering in %s\n' "${smoke_dir}/metadata/raster_info.json" >&2
+cat > "${smoke_dir}/request_pair_counts.json" <<'EOF_JSON'
+{
+  "api_version": "goet.geospatial/v1alpha1",
+  "kind": "GeospatialOperationRequest",
+  "operation": "raster_pair_value_counts",
+  "inputs": {
+    "field_raster": { "path": "/work/field.tif", "band": 1, "nodata": 0 },
+    "value_raster": { "path": "/work/aligned/cdl.tif", "band": 1, "nodata": 0 }
+  },
+  "outputs": {
+    "counts_csv": "results/counts.csv",
+    "metadata_json": "results/metadata.json"
+  },
+  "options": {
+    "require_aligned_grid": true,
+    "chunk_rows": 2,
+    "field_dtype": "uint16",
+    "value_dtype": "uint16"
+  }
+}
+EOF_JSON
+
+docker run --rm \
+  -v "${smoke_dir}:/work" \
+  --entrypoint /goetl/goet-geospatial \
+  "${image}" \
+  --request /work/request_pair_counts.json \
+  --response /work/result_pair_counts.json
+
+cat > "${smoke_dir}/request_summary.py" <<'EOF_PY'
+import csv
+
+counts_path = "/work/results/counts.csv"
+summary_path = "/work/results/summary.csv"
+
+with open(counts_path, newline="", encoding="utf-8") as handle:
+    reader = csv.DictReader(handle)
+    rows = list(reader)
+
+if not rows:
+    raise SystemExit("counts output is empty")
+
+totals = {}
+for row in rows:
+    field_id = int(row["field_id"])
+    count = int(row["count"])
+    totals[field_id] = totals.get(field_id, 0) + count
+
+summary_rows = []
+for row in rows:
+    field_id = int(row["field_id"])
+    count = int(row["count"])
+    total_count = totals[field_id]
+    summary_rows.append({
+        "field_id": row["field_id"],
+        "crop_id": row["crop_id"],
+        "count": row["count"],
+        "total_count": str(total_count),
+        "proportion": f"{count/total_count:.6f}",
+    })
+
+max_by_field = {}
+for row in summary_rows:
+    value = int(row["count"])
+    field_id = row["field_id"]
+    if field_id not in max_by_field or value > max_by_field[field_id][0]:
+        max_by_field[field_id] = (value, row["crop_id"])
+
+for row in summary_rows:
+    row["is_dominant"] = str(
+        row["crop_id"] == max_by_field[row["field_id"]][1]
+    ).lower()
+
+with open(summary_path, "w", encoding="utf-8", newline="") as handle:
+    writer = csv.DictWriter(
+        handle,
+        fieldnames=["field_id", "crop_id", "count", "total_count", "proportion", "is_dominant"],
+    )
+    writer.writeheader()
+    writer.writerows(summary_rows)
+EOF_PY
+
+docker run --rm \
+  --entrypoint /bin/sh \
+  -v "${smoke_dir}:/work" \
+  "${image}" \
+  -lc \
+  "python3 /work/request_summary.py"
+
+cat > "${smoke_dir}/expected_counts.csv" <<'EOF_CSV'
+field_id,crop_id,count
+1,5,3
+2,1,3
+3,2,2
+3,4,1
+EOF_CSV
+
+cat > "${smoke_dir}/expected_summary.csv" <<'EOF_CSV'
+field_id,crop_id,count,total_count,proportion,is_dominant
+1,5,3,3,1.000000,true
+2,1,3,3,1.000000,true
+3,2,2,3,0.666667,true
+3,4,1,3,0.333333,false
+EOF_CSV
+
+result_raster_info="$(cat "${smoke_dir}/result_raster_info.json")"
+result_align="$(cat "${smoke_dir}/result_align.json")"
+result_pair_counts="$(cat "${smoke_dir}/result_pair_counts.json")"
+
+if ! printf '%s\n' "${result_raster_info}" | grep -q '"operation": "raster_info"'; then
+  printf 'expected raster_info result operation, got: %s\n' "${result_raster_info}" >&2
   exit 1
 fi
-if [ "${cdl_line}" -lt "${field_line}" ]; then
-  printf 'expected "field" metadata before "cdl" in %s\n' "${smoke_dir}/metadata/raster_info.json" >&2
+if ! printf '%s\n' "${result_align}" | grep -q '"operation": "align_to_grid"'; then
+  printf 'expected align_to_grid result operation, got: %s\n' "${result_align}" >&2
   exit 1
 fi
+if ! printf '%s\n' "${result_pair_counts}" | grep -q '"operation": "raster_pair_value_counts"'; then
+  printf 'expected raster_pair_value_counts result operation, got: %s\n' "${result_pair_counts}" >&2
+  exit 1
+fi
+
+cat > "${smoke_dir}/verify_workflow.py" <<'EOF_PY'
+import csv
+import sys
+
+
+def read_rows(path):
+    with open(path, newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+expected_counts = read_rows("/work/expected_counts.csv")
+actual_counts = read_rows("/work/results/counts.csv")
+if actual_counts != expected_counts:
+    raise SystemExit(
+        "unexpected field/crop counts:\n"
+        f"expected={expected_counts}\n"
+        f"actual={actual_counts}\n"
+    )
+
+expected_summary = read_rows("/work/expected_summary.csv")
+actual_summary = read_rows("/work/results/summary.csv")
+if actual_summary != expected_summary:
+    raise SystemExit(
+        "unexpected summary:\n"
+        f"expected={expected_summary}\n"
+        f"actual={actual_summary}\n"
+    )
+
+print("fixture workflow counts and summary match expected values")
+EOF_PY
+
+docker run --rm \
+  --entrypoint /bin/sh \
+  -v "${smoke_dir}:/work" \
+  "${image}" \
+  -lc \
+  "python3 /work/verify_workflow.py"
+
+while IFS= read -r -d '' result_path; do
+  if grep -q '"operation": "polygonize_raster"' "$result_path"; then
+    printf 'fixture path should not invoke polygonization\n' >&2
+    exit 1
+  fi
+done < <(find "${smoke_dir}" -maxdepth 1 -name 'result_*.json' -print0)
+
+printf 'gdal cdl yan/roy fixture workflow smoke passed\n'

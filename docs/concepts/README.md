@@ -11,6 +11,7 @@ Concept link for its authoritative scope.
 - [Controller Resilience](controller-resilience/README.md) - Define controller process identity and restart behavior for work, reports, and orchestration state.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
+- [Geospatial Worker Plugins](geospatial-worker-plugins/README.md) - Add GDAL-backed geospatial operations and fixture smoke coverage for CDL/Yan/Roy-style raster workflows.
 - [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Preserve sensitivity metadata through variable resolution, diagnostics, persistence, and execution boundaries.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
 - [Workflow Dependency Resolution](workflow-dependency-resolution/README.md) - Resolve dependencies between complete workflows and delay dependent execution until prerequisites succeed.

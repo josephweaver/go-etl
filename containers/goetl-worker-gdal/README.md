@@ -35,3 +35,6 @@ The test verifies:
   exists.
 - `gdalinfo --version` succeeds and prints a GDAL version string.
 - `ogrinfo --version` succeeds and prints a version string.
+- `goet-geospatial` fixture path runs `raster_info`, `align_to_grid`,
+  `raster_pair_value_counts`, and a downstream summary CSV check on tiny local
+  rasters.

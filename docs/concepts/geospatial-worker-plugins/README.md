@@ -216,7 +216,7 @@ The plugin result should be compact:
 | `007-crop-by-polygons.md` | Implemented | GPT-5.5 high reasoning | Vector/raster CRS, cutline, and output explosion risks. |
 | `008-polygonize-raster.md` | implemented | GPT-5.5 high reasoning | Geometry explosion and GDAL utility behavior need guardrails. |
 | `009-aggregate-by-polygons.md` | implemented | GPT-5.5 high reasoning | Categorical zonal stats require a precise inclusion policy. |
-| `010-cdl-yanroy-fixture-workflow-and-docs.md` | Proposed | GPT-5.3-Codex-Spark after 001-006 pass | Integration/docs only if dependencies are complete. |
+| `010-cdl-yanroy-fixture-workflow-and-docs.md` | Implemented | GPT-5.3-Codex-Spark after 001-006 pass | GDAL fixture workflow smoke with raster metadata, align-to-grid, pair counting, and summary output. |
 
 ## Suggested Implementation Order
 
