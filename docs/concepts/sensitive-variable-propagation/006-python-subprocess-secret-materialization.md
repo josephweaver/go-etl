@@ -1,6 +1,6 @@
 # 006 Python Subprocess Secret Materialization
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

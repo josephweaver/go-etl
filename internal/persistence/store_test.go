@@ -877,6 +877,99 @@ func TestStoreInsertAndGetWorkItem(t *testing.T) {
 	}
 }
 
+func TestStoreControlledSinkSentinelPersistsOnlyRedactedSerializedRecords(t *testing.T) {
+	const sentinel = "goet-secret-sentinel-007-do-not-persist"
+	const redactionLabel = "${worker_env.GOET_TEST_CONTROLLED_SINK_PERSISTENCE_SECRET}"
+
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	run := insertTestRunWithStage(t, ctx, store)
+	completed := testWorkItemRecord("work-completed", run.ID, 0, 0)
+	completed.WorkerPayloadJSON = `{"parameters":{"gdrive_token":{"type":"string","protected_ref":{"provider":"worker_env","key":"GOET_TEST_CONTROLLED_SINK_PERSISTENCE_SECRET"},"redaction_label":"${worker_env.GOET_TEST_CONTROLLED_SINK_PERSISTENCE_SECRET}"}}}`
+	failed := testWorkItemRecord("work-failed", run.ID, 0, 1)
+	failed.WorkerPayloadJSON = completed.WorkerPayloadJSON
+
+	if err := store.InsertWorkItems(ctx, []WorkItemRecord{completed, failed}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{
+		{WorkItemRecord: completed, QueuedAt: "2026-07-03T00:00:00Z"},
+		{WorkItemRecord: failed, QueuedAt: "2026-07-03T00:00:01Z"},
+	}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, ClaimWorkRequest{
+		AttemptID:    "attempt-completed",
+		ExecutorType: ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:02Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork(completed) found=%v error=%v, want success", found, err)
+	}
+	if _, found, err := store.CompleteAttempt(ctx, CompleteAttemptRequest{
+		AttemptID:        "attempt-completed",
+		OutputJSON:       `{"token":"${worker_env.GOET_TEST_CONTROLLED_SINK_PERSISTENCE_SECRET}"}`,
+		OutputJSONSHA256: strings.Repeat("d", 64),
+		PreStateSHA256:   strings.Repeat("e", 64),
+		PostStateSHA256:  strings.Repeat("f", 64),
+		CompletedAt:      "2026-07-03T00:00:03Z",
+	}); err != nil || !found {
+		t.Fatalf("CompleteAttempt() found=%v error=%v, want success", found, err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, ClaimWorkRequest{
+		AttemptID:    "attempt-failed",
+		ExecutorType: ExecutorTypeWorker,
+		StartedAt:    "2026-07-03T00:00:04Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork(failed) found=%v error=%v, want success", found, err)
+	}
+	if _, found, err := store.FailAttempt(ctx, FailAttemptRequest{
+		AttemptID: "attempt-failed",
+		Error:     "worker emitted " + redactionLabel,
+		FailedAt:  "2026-07-03T00:00:05Z",
+	}); err != nil || !found {
+		t.Fatalf("FailAttempt() found=%v error=%v, want success", found, err)
+	}
+
+	rows, err := store.db.QueryContext(ctx, `SELECT record_text FROM (
+		SELECT submission_context_json AS record_text FROM workflow_instances WHERE run_id = ?
+		UNION ALL
+		SELECT worker_payload_json AS record_text FROM work_items WHERE run_id = ?
+		UNION ALL
+		SELECT attempt_id || ' ' || work_item_id || ' ' || executor_type AS record_text FROM work_item_attempts
+		WHERE work_item_id IN (?, ?)
+		UNION ALL
+		SELECT output_json AS record_text FROM completed_work WHERE work_item_id = ?
+		UNION ALL
+		SELECT error AS record_text FROM failed_work WHERE work_item_id = ?
+	) ORDER BY record_text`, run.ID, run.ID, completed.ID, failed.ID, completed.ID, failed.ID)
+	if err != nil {
+		t.Fatalf("query serialized persistence rows: %v", err)
+	}
+	defer rows.Close()
+
+	var serialized strings.Builder
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			t.Fatalf("scan serialized row: %v", err)
+		}
+		serialized.WriteString(text)
+		serialized.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate serialized rows: %v", err)
+	}
+
+	got := serialized.String()
+	if strings.Contains(got, sentinel) {
+		t.Fatalf("persistence rows leaked sentinel: %s", got)
+	}
+	if !strings.Contains(got, redactionLabel) {
+		t.Fatalf("persistence rows missing redaction label evidence: %s", got)
+	}
+}
+
 func TestStoreQueueWorkItemsPersistsResourceConstraints(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))

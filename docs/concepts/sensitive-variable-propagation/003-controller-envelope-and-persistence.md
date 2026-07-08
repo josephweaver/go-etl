@@ -1,6 +1,6 @@
 # 003 Controller Envelope and Persistence
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -145,3 +145,14 @@ goet-controller-should-not-store-this-secret-003
 ```
 
 Tests should inspect serialized JSON/database fields where practical and fail if this exact value appears.
+
+## Implemented State
+
+Implemented on 2026-07-08.
+
+- `model.WorkItem` can carry a `goet/execution-envelope/v1` execution envelope that separates public parameter values from protected references.
+- Controller work-item persistence builds the envelope before writing `work_items.worker_payload_json`.
+- `/work/next` rebuilds the envelope after assignment-time public parameter hydration so worker assignment JSON contains protected references and redaction labels, not plaintext secret values.
+- Sensitive plaintext work-item parameters are rejected at the controller persistence boundary unless they use `protected_ref`.
+- Client-submitted sensitive plaintext workflow-run variables are rejected before `submission_context_json` is created; protected-reference variables remain serializable because they contain provider/key metadata, not plaintext.
+- Work-item and input fingerprints use execution-envelope variables. For protected references, the included identity is non-secret provider, key, redaction label, and optional materialization hint metadata. Plaintext sensitive values are not accepted into these fingerprints.

@@ -8,10 +8,15 @@ import (
 )
 
 func ParseLiteral(variable Variable) (ResolvedValue, error) {
+	if variable.ProtectedRef != nil {
+		return protectedReferenceValue(variable.Type, *variable.ProtectedRef)
+	}
+
 	value, err := parseLiteralExpression(variable.TypedExpression)
 	if err != nil {
 		return ResolvedValue{}, fmt.Errorf("parse literal variable %s: %w", variable.Name.String(), err)
 	}
+	value = mergeSensitivity(value, variable.Sensitive, variable.Name.String())
 	return value, nil
 }
 

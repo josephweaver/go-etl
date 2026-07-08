@@ -12,12 +12,18 @@ import (
 	"goetl/internal/model"
 )
 
-func (w Worker) writeDemoOutput(item model.WorkItem) (WorkEvidence, error) {
+func (w Worker) writeDemoOutput(ctx OperationContext) (WorkEvidence, error) {
+	item := ctx.WorkItem
 	tmpPath := filepath.Join(w.Config.TmpDir, item.OutputFilename)
 	dataPath := filepath.Join(w.Config.DataDir, item.OutputFilename)
 
-	if err := w.log("starting work item: " + item.ID); err != nil {
+	if err := ctx.Logger.Log("starting work item: " + item.ID); err != nil {
 		return WorkEvidence{}, err
+	}
+	if secret, ok := ctx.Sensitive["demo_secret"]; ok {
+		if err := ctx.Logger.Log("trusted demo secret received: " + secret.Plaintext()); err != nil {
+			return WorkEvidence{}, err
+		}
 	}
 
 	preState, err := outputFileState(dataPath)
@@ -36,7 +42,7 @@ func (w Worker) writeDemoOutput(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 	if candidate, ok := matchingReuseCandidate(item, inputSHA256, expectedOutputSHA256, preStateSHA256); ok {
-		if err := w.log("skipped work item: " + item.ID); err != nil {
+		if err := ctx.Logger.Log("skipped work item: " + item.ID); err != nil {
 			return WorkEvidence{}, err
 		}
 		return outputEvidence(item, dataPath, int64(len(output)), preState, preState, inputSHA256, expectedOutputSHA256, candidate)
@@ -46,7 +52,7 @@ func (w Worker) writeDemoOutput(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("write temporary output %s: %w", tmpPath, err)
 	}
 
-	if err := w.log("wrote temporary output: " + tmpPath); err != nil {
+	if err := ctx.Logger.Log("wrote temporary output: " + tmpPath); err != nil {
 		return WorkEvidence{}, err
 	}
 
@@ -58,7 +64,7 @@ func (w Worker) writeDemoOutput(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("move output from %s to %s: %w", tmpPath, dataPath, err)
 	}
 
-	if err := w.log("completed work item: " + item.ID); err != nil {
+	if err := ctx.Logger.Log("completed work item: " + item.ID); err != nil {
 		return WorkEvidence{}, err
 	}
 

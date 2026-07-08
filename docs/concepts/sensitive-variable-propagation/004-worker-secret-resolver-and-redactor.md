@@ -1,6 +1,6 @@
 # 004 Worker Secret Resolver and Redactor
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

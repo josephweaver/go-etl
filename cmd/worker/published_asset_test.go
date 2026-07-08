@@ -273,7 +273,7 @@ func TestCommitDataPublishesFileArtifactAndEmitsEvidence(t *testing.T) {
 		SHA256:      sha256Text(content),
 	})
 
-	evidence, err := worker.commitData(item)
+	evidence, err := worker.commitData(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("commitData() error = %v", err)
 	}
@@ -319,14 +319,14 @@ func TestCommitDataRejectsMissingArtifactUnsafePathAndExistingTarget(t *testing.
 		payload.Source.FromArtifact = "missing"
 		payload.PublishTarget.FromArtifact = "missing"
 		item.Parameters["commit_data"] = model.Parameter{Type: "commit_data", Value: payload}
-		if _, err := worker.commitData(item); err == nil || !strings.Contains(err.Error(), "unknown artifact") {
+		if _, err := worker.commitData(newTestOperationContext(t, worker, item)); err == nil || !strings.Contains(err.Error(), "unknown artifact") {
 			t.Fatalf("commitData() error = %v, want unknown artifact", err)
 		}
 	})
 
 	t.Run("unsafe target path", func(t *testing.T) {
 		item := testCommitDataItem("../escape.csv", descriptor)
-		if _, err := worker.commitData(item); err == nil || !strings.Contains(err.Error(), "path") {
+		if _, err := worker.commitData(newTestOperationContext(t, worker, item)); err == nil || !strings.Contains(err.Error(), "path") {
 			t.Fatalf("commitData() error = %v, want unsafe path", err)
 		}
 	})
@@ -340,7 +340,7 @@ func TestCommitDataRejectsMissingArtifactUnsafePathAndExistingTarget(t *testing.
 			t.Fatalf("write existing target: %v", err)
 		}
 		item := testCommitDataItem("reports/summary.csv", descriptor)
-		if _, err := worker.commitData(item); err == nil || !strings.Contains(err.Error(), "already exists") {
+		if _, err := worker.commitData(newTestOperationContext(t, worker, item)); err == nil || !strings.Contains(err.Error(), "already exists") {
 			t.Fatalf("commitData() error = %v, want already exists", err)
 		}
 		if got := readString(t, existingPath); got != "existing" {

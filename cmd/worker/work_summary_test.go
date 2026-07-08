@@ -25,7 +25,7 @@ func TestWorkerSummarizeInputFile(t *testing.T) {
 		},
 	}
 
-	evidence, err := worker.summarizeInputFile(item)
+	evidence, err := worker.summarizeInputFile(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestWorkerSummarizeInputFileRequiresInputPath(t *testing.T) {
 		OutputFilename: "summary.txt",
 	}
 
-	if _, err := worker.summarizeInputFile(item); err == nil {
+	if _, err := worker.summarizeInputFile(newTestOperationContext(t, worker, item)); err == nil {
 		t.Fatal("expected an error")
 	}
 }

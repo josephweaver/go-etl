@@ -415,6 +415,9 @@ func bindParameterAccessors(parameters model.Parameters, value variable.Resolved
 		}
 
 		parameter.Value = resolved.Value
+		parameter.Sensitive = resolved.Sensitive
+		parameter.RedactionLabel = resolved.RedactionLabel
+		parameter.ProtectedRef = resolved.ProtectedRef
 		parameters[name] = parameter
 	}
 

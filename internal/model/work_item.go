@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"goetl/internal/variable"
 )
 
 type WorkItemType string
@@ -23,6 +25,7 @@ type WorkItem struct {
 	Source               *WorkItemSource      `json:"source,omitempty"`
 	OutputFilename       string               `json:"output_filename"`
 	Parameters           Parameters           `json:"parameters,omitempty"`
+	ExecutionEnvelope    *ExecutionEnvelope   `json:"execution_envelope,omitempty"`
 	DependsOn            []string             `json:"depends_on,omitempty"`
 	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
 	WorkflowDefinitionID string               `json:"workflow_definition_id,omitempty"`
@@ -78,8 +81,46 @@ type WorkReuseCandidate struct {
 type Parameters map[string]Parameter
 
 type Parameter struct {
+	Type           string                    `json:"type"`
+	Value          any                       `json:"value,omitempty"`
+	Sensitive      bool                      `json:"sensitive,omitempty"`
+	RedactionLabel string                    `json:"redaction_label,omitempty"`
+	ProtectedRef   *variable.ProtectedRef    `json:"protected_ref,omitempty"`
+	Materialize    *ParameterMaterialization `json:"materialize,omitempty"`
+}
+
+type ParameterMaterialization struct {
+	Mode   string `json:"mode"`
+	Target string `json:"target"`
+}
+
+type ExecutionEnvelope struct {
+	Schema    string                     `json:"schema"`
+	WorkItem  ExecutionEnvelopeWorkItem  `json:"work_item,omitempty"`
+	Variables ExecutionEnvelopeVariables `json:"variables"`
+}
+
+type ExecutionEnvelopeWorkItem struct {
+	ID   string       `json:"id"`
+	Type WorkItemType `json:"type"`
+}
+
+type ExecutionEnvelopeVariables struct {
+	Public        map[string]ExecutionEnvelopePublicValue        `json:"public,omitempty"`
+	ProtectedRefs map[string]ExecutionEnvelopeProtectedReference `json:"protected_refs,omitempty"`
+}
+
+type ExecutionEnvelopePublicValue struct {
 	Type  string `json:"type"`
 	Value any    `json:"value"`
+}
+
+type ExecutionEnvelopeProtectedReference struct {
+	Type           string                    `json:"type"`
+	Provider       string                    `json:"provider"`
+	Key            string                    `json:"key"`
+	RedactionLabel string                    `json:"redaction_label"`
+	Materialize    *ParameterMaterialization `json:"materialize,omitempty"`
 }
 
 type WorkCompletion struct {
@@ -204,6 +245,58 @@ func (item WorkItem) ValidateForWorkflowCompile() error {
 	return item.validate(true)
 }
 
+func (item WorkItem) WithExecutionEnvelope() (WorkItem, error) {
+	envelope, err := NewExecutionEnvelope(item)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	item.ExecutionEnvelope = &envelope
+	return item, nil
+}
+
+func NewExecutionEnvelope(item WorkItem) (ExecutionEnvelope, error) {
+	envelope := ExecutionEnvelope{
+		Schema: "goet/execution-envelope/v1",
+		WorkItem: ExecutionEnvelopeWorkItem{
+			ID:   item.ID,
+			Type: item.Type,
+		},
+		Variables: ExecutionEnvelopeVariables{
+			Public:        map[string]ExecutionEnvelopePublicValue{},
+			ProtectedRefs: map[string]ExecutionEnvelopeProtectedReference{},
+		},
+	}
+
+	for name, parameter := range item.Parameters {
+		if err := parameter.Validate(); err != nil {
+			return ExecutionEnvelope{}, fmt.Errorf("parameter %s: %w", name, err)
+		}
+		if parameter.ProtectedRef != nil {
+			ref := parameter.ProtectedRef.Normalize()
+			envelope.Variables.ProtectedRefs[name] = ExecutionEnvelopeProtectedReference{
+				Type:           parameter.Type,
+				Provider:       ref.Provider,
+				Key:            ref.Key,
+				RedactionLabel: ref.RedactionLabelValue(),
+				Materialize:    parameter.Materialize,
+			}
+			continue
+		}
+		envelope.Variables.Public[name] = ExecutionEnvelopePublicValue{
+			Type:  parameter.Type,
+			Value: parameter.Value,
+		}
+	}
+
+	if len(envelope.Variables.Public) == 0 {
+		envelope.Variables.Public = nil
+	}
+	if len(envelope.Variables.ProtectedRefs) == 0 {
+		envelope.Variables.ProtectedRefs = nil
+	}
+	return envelope, nil
+}
+
 func (item WorkItem) validate(allowMissingPythonSource bool) error {
 	if item.ID == "" {
 		return fmt.Errorf("work item id is required")
@@ -236,11 +329,13 @@ func (item WorkItem) validate(allowMissingPythonSource bool) error {
 		if name == "" {
 			return fmt.Errorf("parameter name is required")
 		}
-		if parameter.Type == "" {
-			return fmt.Errorf("parameter %s type is required", name)
+		if err := parameter.Validate(); err != nil {
+			return fmt.Errorf("parameter %s: %w", name, err)
 		}
-		if parameter.Value == nil {
-			return fmt.Errorf("parameter %s value is required", name)
+	}
+	if item.ExecutionEnvelope != nil {
+		if err := item.ExecutionEnvelope.Validate(); err != nil {
+			return fmt.Errorf("execution envelope: %w", err)
 		}
 	}
 	for i, dependency := range item.DependsOn {
@@ -249,6 +344,91 @@ func (item WorkItem) validate(allowMissingPythonSource bool) error {
 		}
 	}
 
+	return nil
+}
+
+func (p Parameter) Validate() error {
+	if p.Type == "" {
+		return fmt.Errorf("type is required")
+	}
+	if p.ProtectedRef != nil {
+		if err := p.ProtectedRef.Validate(); err != nil {
+			return err
+		}
+		if p.Value != nil {
+			return fmt.Errorf("protected reference value must be omitted")
+		}
+		if p.Materialize != nil {
+			if err := p.Materialize.Validate(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if p.Sensitive {
+		return fmt.Errorf("sensitive parameter must use protected_ref")
+	}
+	if p.Value == nil {
+		return fmt.Errorf("value is required")
+	}
+	if p.Materialize != nil {
+		return fmt.Errorf("materialize requires protected_ref")
+	}
+	return nil
+}
+
+func (m ParameterMaterialization) Validate() error {
+	if strings.TrimSpace(m.Mode) == "" {
+		return fmt.Errorf("materialize mode is required")
+	}
+	if m.Mode != "env" && m.Mode != "file" {
+		return fmt.Errorf("unsupported materialize mode %q", m.Mode)
+	}
+	if strings.TrimSpace(m.Target) == "" {
+		return fmt.Errorf("materialize target is required")
+	}
+	if strings.TrimSpace(m.Target) != m.Target || strings.ContainsAny(m.Target, " \t\r\n=") {
+		return fmt.Errorf("materialize target must be an environment variable name")
+	}
+	return nil
+}
+
+func (e ExecutionEnvelope) Validate() error {
+	if e.Schema != "goet/execution-envelope/v1" {
+		return fmt.Errorf("unsupported schema %q", e.Schema)
+	}
+	for name, value := range e.Variables.Public {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("public variable name is required")
+		}
+		if strings.TrimSpace(value.Type) == "" {
+			return fmt.Errorf("public variable %s type is required", name)
+		}
+		if value.Value == nil {
+			return fmt.Errorf("public variable %s value is required", name)
+		}
+	}
+	for name, ref := range e.Variables.ProtectedRefs {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("protected reference name is required")
+		}
+		if strings.TrimSpace(ref.Type) == "" {
+			return fmt.Errorf("protected reference %s type is required", name)
+		}
+		protectedRef := variable.ProtectedRef{
+			Provider:       ref.Provider,
+			Key:            ref.Key,
+			RedactionLabel: ref.RedactionLabel,
+		}
+		if err := protectedRef.Validate(); err != nil {
+			return fmt.Errorf("protected reference %s: %w", name, err)
+		}
+		if ref.Materialize != nil {
+			if err := ref.Materialize.Validate(); err != nil {
+				return fmt.Errorf("protected reference %s: %w", name, err)
+			}
+		}
+	}
 	return nil
 }
 

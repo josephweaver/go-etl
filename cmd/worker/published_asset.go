@@ -121,7 +121,8 @@ func (plan publishPlan) evidence() model.PublishedDataAsset {
 	}
 }
 
-func (w Worker) commitData(item model.WorkItem) (WorkEvidence, error) {
+func (w Worker) commitData(ctx OperationContext) (WorkEvidence, error) {
+	item := ctx.WorkItem
 	payload, manifest, err := commitDataPayloadFromWorkItem(item)
 	if err != nil {
 		return WorkEvidence{}, err

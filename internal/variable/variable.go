@@ -8,6 +8,8 @@ import (
 type Variable struct {
 	Name Name
 	TypedExpression
+	Sensitive    bool
+	ProtectedRef *ProtectedRef
 }
 
 type variableNameJSON struct {
@@ -16,9 +18,11 @@ type variableNameJSON struct {
 }
 
 type variableJSON struct {
-	Name       variableNameJSON `json:"name"`
-	Type       string           `json:"type"`
-	Expression json.RawMessage  `json:"expression"`
+	Name         variableNameJSON `json:"name"`
+	Type         string           `json:"type"`
+	Expression   json.RawMessage  `json:"expression,omitempty"`
+	Sensitive    bool             `json:"sensitive,omitempty"`
+	ProtectedRef *ProtectedRef    `json:"protected_ref,omitempty"`
 }
 
 func (v Variable) MarshalJSON() ([]byte, error) {
@@ -26,17 +30,23 @@ func (v Variable) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
+	sensitive := v.Sensitive || v.ProtectedRef != nil
+
 	return json.Marshal(struct {
-		Name       variableNameJSON `json:"name"`
-		Type       string           `json:"type"`
-		Expression any              `json:"expression"`
+		Name         variableNameJSON `json:"name"`
+		Type         string           `json:"type"`
+		Expression   any              `json:"expression,omitempty"`
+		Sensitive    bool             `json:"sensitive,omitempty"`
+		ProtectedRef *ProtectedRef    `json:"protected_ref,omitempty"`
 	}{
 		Name: variableNameJSON{
 			Namespace: v.Name.Namespace,
 			Key:       v.Name.Key,
 		},
-		Type:       v.Type.String(),
-		Expression: v.Expression,
+		Type:         v.Type.String(),
+		Expression:   v.TypedExpression.Expression,
+		Sensitive:    sensitive,
+		ProtectedRef: v.ProtectedRef,
 	})
 }
 
@@ -48,55 +58,97 @@ func (v *Variable) UnmarshalJSON(data []byte) error {
 	if encoded.Type == "" {
 		return fmt.Errorf("variable type is required")
 	}
-	if encoded.Expression == nil {
-		return fmt.Errorf("variable expression is required")
-	}
 
 	expressionType, err := expressionType(encoded.Type)
 	if err != nil {
 		return err
 	}
-	expression, err := decodeExpressionValue(expressionType, encoded.Expression)
-	if err != nil {
-		return err
+
+	if encoded.ProtectedRef != nil {
+		if encoded.Expression != nil {
+			return fmt.Errorf("protected reference variable expression must be omitted")
+		}
+		if !encoded.Sensitive {
+			encoded.Sensitive = true
+		}
+		v.ProtectedRef = encoded.ProtectedRef
+	} else {
+		if encoded.Expression == nil {
+			return fmt.Errorf("variable expression is required")
+		}
+		expression, err := decodeExpressionValue(expressionType, encoded.Expression)
+		if err != nil {
+			return err
+		}
+		v.TypedExpression = TypedExpression{
+			Type:       expressionType,
+			Expression: expression,
+		}
 	}
 
 	v.Name = Name{
 		Namespace: encoded.Name.Namespace,
 		Key:       encoded.Name.Key,
 	}
-	v.TypedExpression = TypedExpression{
-		Type:       expressionType,
-		Expression: expression,
+	if encoded.ProtectedRef != nil {
+		v.TypedExpression = TypedExpression{Type: expressionType}
+	}
+	v.Sensitive = encoded.Sensitive
+	if v.ProtectedRef != nil && !v.Sensitive {
+		v.Sensitive = true
 	}
 	return v.Validate()
 }
 
 type ResolvedValue struct {
-	Type   Type
-	Value  any
-	Object map[string]ResolvedValue
-	List   []ResolvedValue
+	Type           Type
+	Value          any
+	Object         map[string]ResolvedValue
+	List           []ResolvedValue
+	Sensitive      bool
+	RedactionLabel string
+	Provenance     string
+	ProtectedRef   *ProtectedRef
 }
 
 func (v Variable) Validate() error {
 	if err := v.Name.Validate(); err != nil {
 		return err
 	}
+	if v.ProtectedRef != nil {
+		if err := v.ProtectedRef.Validate(); err != nil {
+			return err
+		}
+		if v.TypedExpression.Expression != nil {
+			return fmt.Errorf("protected reference variable expression must be omitted")
+		}
+		if !v.TypedExpression.Type.Valid() {
+			return fmt.Errorf("unsupported expression type: %s", v.TypedExpression.Type)
+		}
+		return nil
+	}
 	return v.TypedExpression.ValidateDefinition()
 }
 
 func ResolvedObject(fields map[string]ResolvedValue) ResolvedValue {
+	sensitive, label, provenance := aggregateSensitivity(fields, nil)
 	return ResolvedValue{
-		Type:   TypeObject,
-		Object: fields,
+		Type:           TypeObject,
+		Object:         fields,
+		Sensitive:      sensitive,
+		RedactionLabel: label,
+		Provenance:     provenance,
 	}
 }
 
 func ResolvedList(values []ResolvedValue) ResolvedValue {
+	sensitive, label, provenance := aggregateSensitivity(nil, values)
 	return ResolvedValue{
-		Type: TypeList,
-		List: values,
+		Type:           TypeList,
+		List:           values,
+		Sensitive:      sensitive,
+		RedactionLabel: label,
+		Provenance:     provenance,
 	}
 }
 

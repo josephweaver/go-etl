@@ -18,7 +18,7 @@ func TestWorkerWriteDemoOutput(t *testing.T) {
 		OutputFilename: "result.txt",
 	}
 
-	evidence, err := worker.writeDemoOutput(item)
+	evidence, err := worker.writeDemoOutput(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestWorkerWriteDemoOutputOverwritesExistingOutput(t *testing.T) {
 		t.Fatalf("write stale output: %v", err)
 	}
 
-	evidence, err := worker.writeDemoOutput(item)
+	evidence, err := worker.writeDemoOutput(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestWorkerWriteDemoOutputSkipsMatchingReuseCandidate(t *testing.T) {
 		Type:           model.WorkItemTypeWriteDemoOutput,
 		OutputFilename: "result.txt",
 	}
-	firstEvidence, err := worker.writeDemoOutput(item)
+	firstEvidence, err := worker.writeDemoOutput(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("first write error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestWorkerWriteDemoOutputSkipsMatchingReuseCandidate(t *testing.T) {
 			PostStateSHA256: firstEvidence.PostStateSHA256,
 		},
 	}
-	secondEvidence, err := worker.writeDemoOutput(item)
+	secondEvidence, err := worker.writeDemoOutput(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("second write error: %v", err)
 	}

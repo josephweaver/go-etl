@@ -150,6 +150,61 @@ func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 	}
 }
 
+func TestCompileFanOutWorkItemsPreservesProtectedReferenceParameterAccessor(t *testing.T) {
+	scope, err := variable.NewScope(
+		variable.Variable{
+			Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "tokens"},
+			TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+				{Type: variable.TypeObject, Expression: map[string]variable.TypedExpression{
+					"id":     {Type: variable.TypeString, Expression: "fixture"},
+					"secret": {Type: variable.TypeString, Expression: "${gdrive_token}"},
+				}},
+			}},
+		},
+		variable.Variable{
+			Name:            variable.Name{Namespace: variable.NamespaceWorkflow, Key: "gdrive_token"},
+			TypedExpression: variable.TypedExpression{Type: variable.TypeString},
+			ProtectedRef:    &variable.ProtectedRef{Provider: "worker_env", Key: "GOET_GDRIVE_TOKEN"},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	items, err := CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${tokens[*]}",
+		Type:             model.WorkItemTypePythonScript,
+		IDPrefix:         "download",
+		OutputPrefix:     "download",
+		OutputExtension:  ".json",
+		TokenAccessor:    ".id",
+		Parameters: model.Parameters{
+			"gdrive_token": {Type: "string"},
+		},
+		ParameterAccessors: map[string]string{
+			"gdrive_token": ".secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileFanOutWorkItems() error = %v", err)
+	}
+
+	parameter := items[0].Parameters["gdrive_token"]
+	if !parameter.Sensitive {
+		t.Fatal("expected protected reference parameter to remain sensitive")
+	}
+	if parameter.Value != nil {
+		t.Fatalf("parameter value = %#v, want no plaintext", parameter.Value)
+	}
+	if parameter.ProtectedRef == nil {
+		t.Fatal("expected protected reference on parameter")
+	}
+	if parameter.RedactionLabel != "${worker_env.GOET_GDRIVE_TOKEN}" {
+		t.Fatalf("redaction label = %q", parameter.RedactionLabel)
+	}
+}
+
 func TestCompileFanOutWorkItemsResolvesResourceConstraints(t *testing.T) {
 	scope, err := variable.NewScope(
 		testObjectListVariable("records",

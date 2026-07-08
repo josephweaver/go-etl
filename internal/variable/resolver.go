@@ -278,7 +278,15 @@ func (r Resolver) resolveVariable(variable Variable, depth int, context resoluti
 	}
 
 	context.chain = append(append([]Name{}, context.chain...), variable.Name)
-	return r.resolveExpression(variable.TypedExpression, depth, context)
+	if variable.ProtectedRef != nil {
+		return protectedReferenceValue(variable.Type, *variable.ProtectedRef)
+	}
+
+	value, err := r.resolveExpression(variable.TypedExpression, depth, context)
+	if err != nil {
+		return ResolvedValue{}, err
+	}
+	return mergeSensitivity(value, variable.Sensitive, variable.Name.String()), nil
 }
 
 func (r Resolver) resolveReference(reference Reference, depth int, context resolutionContext) (ResolvedValue, error) {
@@ -361,11 +369,19 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int, conte
 			return resolved, nil
 		}
 		if expression.Type == TypeString || expression.Type == TypePath {
-			interpolated, err := r.interpolate(expressionText, depth, context)
+			interpolated, sensitive, label, provenance, err := r.interpolate(expressionText, depth, context)
 			if err != nil {
 				return ResolvedValue{}, err
 			}
 			expression.Expression = interpolated
+			defer func() {
+				if err == nil {
+					value = mergeSensitivity(value, sensitive, provenance)
+					if value.RedactionLabel == "" && label != "" {
+						value.RedactionLabel = label
+					}
+				}
+			}()
 		} else {
 			expression.Expression = unescapeExpression(expressionText)
 		}
@@ -413,41 +429,49 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int, conte
 	}
 }
 
-func (r Resolver) interpolate(expression string, depth int, context resolutionContext) (string, error) {
+func (r Resolver) interpolate(expression string, depth int, context resolutionContext) (string, bool, string, string, error) {
 	tokens, err := parseInterpolationTokens(expression)
 	if err != nil {
-		return "", err
+		return "", false, "", "", err
 	}
 
 	var result strings.Builder
+	sensitive := false
+	label := ""
+	provenance := ""
 	previous := 0
 	for _, token := range tokens {
 		result.WriteString(unescapeExpression(expression[previous:token.start]))
 
 		reference, accessor, err := parseReferenceExpression(token.reference)
 		if err != nil {
-			return "", fmt.Errorf("parse reference expression: %w", err)
+			return "", false, "", "", fmt.Errorf("parse reference expression: %w", err)
 		}
 		resolved, err := r.resolveReference(reference, depth+1, context)
 		if err != nil {
-			return "", err
+			return "", false, "", "", err
 		}
 		if accessor != "" {
 			resolved, err = ApplyAccessor(resolved, accessor)
 			if err != nil {
-				return "", err
+				return "", false, "", "", err
 			}
+		}
+		if resolved.Sensitive && !sensitive {
+			sensitive = true
+			label = resolved.RedactionLabel
+			provenance = resolved.Provenance
 		}
 
 		text, err := interpolationText(resolved)
 		if err != nil {
-			return "", fmt.Errorf("interpolate %s: %w", token.reference, err)
+			return "", false, "", "", fmt.Errorf("interpolate %s: %w", token.reference, err)
 		}
 		result.WriteString(text)
 		previous = token.end
 	}
 	result.WriteString(unescapeExpression(expression[previous:]))
-	return result.String(), nil
+	return result.String(), sensitive, label, provenance, nil
 }
 
 type locatedError struct {
