@@ -1,6 +1,6 @@
 # 005 Trusted Go WorkItem Sensitive Context
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

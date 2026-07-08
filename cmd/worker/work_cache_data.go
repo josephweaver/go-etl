@@ -9,7 +9,8 @@ import (
 	"goetl/internal/model"
 )
 
-func (w Worker) cacheData(item model.WorkItem) (WorkEvidence, error) {
+func (w Worker) cacheData(ctx OperationContext) (WorkEvidence, error) {
+	item := ctx.WorkItem
 	payload, asset, err := cacheDataPayloadFromWorkItem(item)
 	if err != nil {
 		return WorkEvidence{}, err

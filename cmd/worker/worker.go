@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,17 +72,40 @@ func (w Worker) runWorkItem(item model.WorkItem) (WorkEvidence, error) {
 	}
 
 	switch item.Type {
-	case model.WorkItemTypeWriteDemoOutput:
-		return w.writeDemoOutput(item)
-	case model.WorkItemTypeSummarizeInputFile:
-		return w.summarizeInputFile(item)
 	case model.WorkItemTypePythonScript:
 		return w.runPythonScript(item)
-	case model.WorkItemTypeCacheData:
-		return w.cacheData(item)
-	case model.WorkItemTypeCommitData:
-		return w.commitData(item)
+	case model.WorkItemTypeWriteDemoOutput,
+		model.WorkItemTypeSummarizeInputFile,
+		model.WorkItemTypeCacheData,
+		model.WorkItemTypeCommitData:
 	default:
 		return WorkEvidence{}, fmt.Errorf("unsupported work item type: %s", item.Type)
+	}
+
+	operation, err := w.operationContext(context.Background(), item, trustedGoSensitiveNeeds(item.Type))
+	if err != nil {
+		return WorkEvidence{}, fmt.Errorf("build operation context: %w", err)
+	}
+
+	switch item.Type {
+	case model.WorkItemTypeWriteDemoOutput:
+		return w.writeDemoOutput(operation)
+	case model.WorkItemTypeSummarizeInputFile:
+		return w.summarizeInputFile(operation)
+	case model.WorkItemTypeCacheData:
+		return w.cacheData(operation)
+	case model.WorkItemTypeCommitData:
+		return w.commitData(operation)
+	default:
+		return WorkEvidence{}, fmt.Errorf("unsupported work item type: %s", item.Type)
+	}
+}
+
+func trustedGoSensitiveNeeds(itemType model.WorkItemType) []string {
+	switch itemType {
+	case model.WorkItemTypeWriteDemoOutput:
+		return []string{"demo_secret"}
+	default:
+		return nil
 	}
 }

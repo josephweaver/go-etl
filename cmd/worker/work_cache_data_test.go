@@ -30,7 +30,8 @@ func TestWorkerCacheDataMaterializesAndReportsManifest(t *testing.T) {
 		Parameters:          asset.Parameters,
 	}
 
-	evidence, err := worker.cacheData(cacheDataTestItem(payload, asset))
+	item := cacheDataTestItem(payload, asset)
+	evidence, err := worker.cacheData(newTestOperationContext(t, worker, item))
 	if err != nil {
 		t.Fatalf("cacheData() error = %v", err)
 	}
@@ -91,7 +92,8 @@ func TestWorkerCacheDataFailsOnConflictingImmutableCacheEvidence(t *testing.T) {
 		Integrity:           asset.Integrity,
 	}
 
-	_, err := worker.cacheData(cacheDataTestItem(payload, asset))
+	item := cacheDataTestItem(payload, asset)
+	_, err := worker.cacheData(newTestOperationContext(t, worker, item))
 	if err == nil || !strings.Contains(err.Error(), "asset cache source does not match manifest") {
 		t.Fatalf("cacheData() error = %v, want conflicting cache evidence", err)
 	}
