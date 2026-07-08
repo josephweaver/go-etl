@@ -278,6 +278,10 @@ func (r Resolver) resolveVariable(variable Variable, depth int, context resoluti
 	}
 
 	context.chain = append(append([]Name{}, context.chain...), variable.Name)
+	if variable.ProtectedRef != nil {
+		return protectedReferenceValue(variable.Type, *variable.ProtectedRef)
+	}
+
 	value, err := r.resolveExpression(variable.TypedExpression, depth, context)
 	if err != nil {
 		return ResolvedValue{}, err

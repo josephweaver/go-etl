@@ -253,7 +253,7 @@ If secret rotation should invalidate reuse in the future, that should be handled
 ## Proposed Slices
 
 1. `001-sensitive-metadata-and-safe-rendering.md` — add sensitivity metadata, propagation, and safe rendering to typed variables/resolved values.
-2. `002-protected-reference-model.md` — add protected-reference declarations and validation without plaintext lookup.
+2. `002-protected-reference-model.md` — implemented.
 3. `003-controller-envelope-and-persistence.md` — preserve public values and protected references through controller work compilation, assignment payloads, status, and snapshots.
 4. `004-worker-secret-resolver-and-redactor.md` — add worker-local protected-value resolution plus attempt-local redaction primitives.
 5. `005-trusted-go-workitem-sensitive-context.md` — pass typed sensitive values to trusted in-process Go work-item handlers through a safe context.

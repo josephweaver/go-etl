@@ -1,6 +1,6 @@
 # 002 Protected Reference Model
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

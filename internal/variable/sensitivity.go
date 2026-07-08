@@ -13,6 +13,7 @@ type resolvedValueJSON struct {
 	Sensitive      bool                         `json:"sensitive,omitempty"`
 	RedactionLabel string                       `json:"redaction_label,omitempty"`
 	Provenance     string                       `json:"provenance,omitempty"`
+	ProtectedRef   *ProtectedRef                `json:"protected_ref,omitempty"`
 	Value          any                          `json:"value,omitempty"`
 	Object         map[string]resolvedValueJSON `json:"object,omitempty"`
 	List           []resolvedValueJSON          `json:"list,omitempty"`
@@ -26,7 +27,7 @@ func (v ResolvedValue) String() string {
 		}
 		return string(encoded)
 	}
-	if v.Sensitive {
+	if v.isSensitive() {
 		return v.redactionLabel()
 	}
 	return fmt.Sprint(v.Value)
@@ -42,10 +43,13 @@ func (v ResolvedValue) MarshalJSON() ([]byte, error) {
 
 func (v ResolvedValue) safeJSON() resolvedValueJSON {
 	encoded := resolvedValueJSON{
-		Type:           v.Type.String(),
-		Sensitive:      v.Sensitive,
-		RedactionLabel: v.RedactionLabel,
-		Provenance:     v.Provenance,
+		Type:         v.Type.String(),
+		Sensitive:    v.isSensitive(),
+		ProtectedRef: v.ProtectedRef,
+	}
+	if v.isSensitive() {
+		encoded.RedactionLabel = v.redactionLabel()
+		encoded.Provenance = v.resolvedProvenance()
 	}
 
 	switch v.Type {
@@ -60,7 +64,9 @@ func (v ResolvedValue) safeJSON() resolvedValueJSON {
 			encoded.List = append(encoded.List, child.safeJSON())
 		}
 	default:
-		if v.Sensitive {
+		if v.ProtectedRef != nil {
+			encoded.ProtectedRef = v.ProtectedRef
+		} else if v.isSensitive() {
 			encoded.Value = v.redactionLabel()
 		} else {
 			encoded.Value = v.Value
@@ -74,19 +80,48 @@ func (v ResolvedValue) redactionLabel() string {
 	if v.RedactionLabel != "" {
 		return v.RedactionLabel
 	}
+	if v.ProtectedRef != nil {
+		return v.ProtectedRef.RedactionLabelValue()
+	}
 	return redactedLabel
 }
 
+func (v ResolvedValue) isSensitive() bool {
+	return v.Sensitive || v.ProtectedRef != nil
+}
+
+func (v ResolvedValue) resolvedProvenance() string {
+	if v.Provenance != "" {
+		return v.Provenance
+	}
+	if v.ProtectedRef != nil {
+		return v.ProtectedRef.Provenance()
+	}
+	return ""
+}
+
 func mergeSensitivity(value ResolvedValue, sensitive bool, provenance string) ResolvedValue {
+	if value.ProtectedRef != nil {
+		sensitive = true
+		provenance = value.ProtectedRef.Provenance()
+	}
 	if !sensitive {
 		return value
 	}
 
-	if !value.Sensitive {
-		value.Sensitive = true
-	}
+	value.Sensitive = true
 	if value.RedactionLabel == "" {
-		value.RedactionLabel = redactionLabelForProvenance(provenance)
+		if value.ProtectedRef != nil {
+			value.RedactionLabel = value.ProtectedRef.RedactionLabelValue()
+		} else {
+			value.RedactionLabel = redactionLabelForProvenance(provenance)
+		}
+	}
+	if value.ProtectedRef != nil {
+		if value.Provenance == "" {
+			value.Provenance = provenance
+		}
+		return value
 	}
 	if value.Provenance == "" {
 		value.Provenance = provenance
@@ -96,13 +131,13 @@ func mergeSensitivity(value ResolvedValue, sensitive bool, provenance string) Re
 
 func aggregateSensitivity(fields map[string]ResolvedValue, values []ResolvedValue) (bool, string, string) {
 	for _, child := range fields {
-		if child.Sensitive {
-			return true, child.RedactionLabel, child.Provenance
+		if child.isSensitive() {
+			return true, child.redactionLabel(), child.resolvedProvenance()
 		}
 	}
 	for _, child := range values {
-		if child.Sensitive {
-			return true, child.RedactionLabel, child.Provenance
+		if child.isSensitive() {
+			return true, child.redactionLabel(), child.resolvedProvenance()
 		}
 	}
 	return false, "", ""
