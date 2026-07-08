@@ -381,11 +381,14 @@ func (m ParameterMaterialization) Validate() error {
 	if strings.TrimSpace(m.Mode) == "" {
 		return fmt.Errorf("materialize mode is required")
 	}
-	if m.Mode != "env" {
+	if m.Mode != "env" && m.Mode != "file" {
 		return fmt.Errorf("unsupported materialize mode %q", m.Mode)
 	}
 	if strings.TrimSpace(m.Target) == "" {
 		return fmt.Errorf("materialize target is required")
+	}
+	if strings.TrimSpace(m.Target) != m.Target || strings.ContainsAny(m.Target, " \t\r\n=") {
+		return fmt.Errorf("materialize target must be an environment variable name")
 	}
 	return nil
 }

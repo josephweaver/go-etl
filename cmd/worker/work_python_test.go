@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"goetl/internal/model"
+	"goetl/internal/variable"
 )
 
 func TestWorkerRunWorkItemDispatchesPythonScript(t *testing.T) {
@@ -305,6 +306,261 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 	}
 	if !containsAll(stderrObservations, []string{"stderr one", "stderr two"}) {
 		t.Fatalf("missing expected stderr observations: %#v", stderrObservations)
+	}
+}
+
+func TestWorkerRunWorkItemMaterializesWorkerEnvSecretToPythonEnvAndRedactsLogs(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-python-env-006"
+	t.Setenv("GOET_TEST_PYTHON_ENV_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+import sys
+
+secret = os.environ["GDRIVE_TOKEN"]
+with open(os.environ["GOET_INPUT_JSON"], "r", encoding="utf-8") as handle:
+    input_json = handle.read()
+
+print("stdout " + secret)
+print("stderr " + secret, file=sys.stderr)
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "secret_available": secret == "goet-secret-python-env-006",
+        "argv_has_secret": any(secret in arg for arg in sys.argv),
+        "input_has_secret": secret in input_json
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-env-001", "attempt-secret-env-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_PYTHON_ENV_SECRET", "env", "GDRIVE_TOKEN"),
+	})
+
+	evidence, err := worker.Run(item)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(evidence.OutputJSON, secret) {
+		t.Fatalf("evidence leaked secret: %s", evidence.OutputJSON)
+	}
+
+	var output map[string]any
+	data, err := os.ReadFile(filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if output["secret_available"] != true {
+		t.Fatalf("secret was not available through env: %#v", output)
+	}
+	if output["argv_has_secret"] != false {
+		t.Fatalf("secret reached argv: %#v", output)
+	}
+	if output["input_has_secret"] != false {
+		t.Fatalf("secret reached GOET_INPUT_JSON: %#v", output)
+	}
+
+	stdoutLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stdout.log"))
+	stderrLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stderr.log"))
+	for _, logText := range []string{stdoutLog, stderrLog} {
+		if strings.Contains(logText, secret) {
+			t.Fatalf("log leaked secret: %q", logText)
+		}
+		if !strings.Contains(logText, "${worker_env.GOET_TEST_PYTHON_ENV_SECRET}") {
+			t.Fatalf("log did not contain redaction label: %q", logText)
+		}
+	}
+}
+
+func TestWorkerRunWorkItemRejectsPythonOutputContainingMaterializedSecret(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-python-output-006"
+	t.Setenv("GOET_TEST_PYTHON_OUTPUT_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({"leak": os.environ["GDRIVE_TOKEN"]}, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-output-001", "attempt-secret-output-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_PYTHON_OUTPUT_SECRET", "env", "GDRIVE_TOKEN"),
+	})
+
+	_, err := worker.Run(item)
+	if err == nil || !strings.Contains(err.Error(), "GOET_OUTPUT_JSON contains a materialized sensitive value") {
+		t.Fatalf("expected secret output rejection, got %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked secret: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, item.OutputFilename)); !os.IsNotExist(err) {
+		t.Fatalf("secret output should not be persisted, stat err=%v", err)
+	}
+}
+
+func TestWorkerRunWorkItemMaterializesProtectedRefToTempFileAndRemovesIt(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-python-file-006"
+	t.Setenv("GOET_TEST_PYTHON_FILE_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import json
+import os
+import sys
+
+secret_path = os.environ["GDRIVE_TOKEN_FILE"]
+with open(secret_path, "r", encoding="utf-8") as handle:
+    secret = handle.read()
+
+print(secret)
+with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
+    json.dump({
+        "secret_path": secret_path,
+        "content_ok": secret == "goet-secret-python-file-006",
+        "argv_has_secret": any(secret in arg for arg in sys.argv)
+    }, handle)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-file-001", "attempt-secret-file-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_PYTHON_FILE_SECRET", "file", "GDRIVE_TOKEN_FILE"),
+	})
+
+	if _, err := worker.Run(item); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var output map[string]any
+	data, err := os.ReadFile(filepath.Join(worker.Config.DataDir, item.OutputFilename))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if output["content_ok"] != true {
+		t.Fatalf("secret file content was not available: %#v", output)
+	}
+	if output["argv_has_secret"] != false {
+		t.Fatalf("secret reached argv: %#v", output)
+	}
+	secretPath, ok := output["secret_path"].(string)
+	if !ok || secretPath == "" {
+		t.Fatalf("missing secret path output: %#v", output)
+	}
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("secret file should be removed after success, stat err=%v path=%s", err, secretPath)
+	}
+
+	stdoutLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stdout.log"))
+	if strings.Contains(stdoutLog, secret) {
+		t.Fatalf("stdout leaked file-materialized secret: %q", stdoutLog)
+	}
+}
+
+func TestWorkerRunWorkItemRemovesTempSecretFileAfterPythonFailure(t *testing.T) {
+	requirePython3(t)
+
+	secret := "goet-secret-python-file-failure-006"
+	t.Setenv("GOET_TEST_PYTHON_FILE_FAILURE_SECRET", secret)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import os
+import sys
+
+secret_path = os.environ["GDRIVE_TOKEN_FILE"]
+with open(secret_path, "r", encoding="utf-8") as handle:
+    secret = handle.read()
+with open(os.path.join(os.environ["GOET_WORK_DIR"], "secret-path.txt"), "w", encoding="utf-8") as handle:
+    handle.write(secret_path)
+print(secret)
+sys.exit(7)
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-file-failure-001", "attempt-secret-file-failure-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_PYTHON_FILE_FAILURE_SECRET", "file", "GDRIVE_TOKEN_FILE"),
+	})
+
+	_, err := worker.Run(item)
+	if err == nil || !strings.Contains(err.Error(), "python process exited with error") {
+		t.Fatalf("expected python failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("failure leaked secret: %v", err)
+	}
+
+	secretPath := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "work", "secret-path.txt"))
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("secret file should be removed after failure, stat err=%v path=%s", err, secretPath)
+	}
+	stdoutLog := readString(t, filepath.Join(worker.Config.TmpDir, "attempts", item.AttemptID, "logs", "stdout.log"))
+	if strings.Contains(stdoutLog, secret) {
+		t.Fatalf("stdout leaked secret after failure: %q", stdoutLog)
+	}
+}
+
+func TestWorkerRunWorkItemMissingWorkerEnvSecretFailsSanitizedBeforePythonStarts(t *testing.T) {
+	requirePython3(t)
+
+	worker := newPythonTestWorker(t)
+	server := newPythonSourceServer(t, map[string]string{
+		"scripts/run.py": strings.TrimSpace(`
+import os
+
+with open(os.path.join(os.environ["GOET_DATA_DIR"], "python-ran.txt"), "w", encoding="utf-8") as handle:
+    handle.write("ran")
+`),
+	})
+	t.Cleanup(server.Close)
+	worker.Config.ControllerURL = server.URL
+
+	item := pythonTestItem("python-secret-missing-001", "attempt-secret-missing-001", model.Parameters{
+		"python_entrypoint": {Type: "path", Value: "scripts/run.py"},
+		"gdrive_token":      secretProtectedParameter("GOET_TEST_PYTHON_MISSING_SECRET", "env", "GDRIVE_TOKEN"),
+	})
+
+	_, err := worker.Run(item)
+	if err == nil {
+		t.Fatal("expected missing worker env error")
+	}
+	if !strings.Contains(err.Error(), "${worker_env.GOET_TEST_PYTHON_MISSING_SECRET}") {
+		t.Fatalf("missing env error did not include redaction label: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Config.DataDir, "python-ran.txt")); !os.IsNotExist(err) {
+		t.Fatalf("python should not start when worker env secret is missing, stat err=%v", err)
 	}
 }
 
@@ -1088,6 +1344,14 @@ func requirePython3(t *testing.T) {
 
 	if err := exec.Command(path, "--version").Run(); err != nil {
 		t.Skipf("python3 not functional: %v", err)
+	}
+}
+
+func secretProtectedParameter(key string, mode string, target string) model.Parameter {
+	return model.Parameter{
+		Type:         "string",
+		ProtectedRef: &variable.ProtectedRef{Provider: "worker_env", Key: key},
+		Materialize:  &model.ParameterMaterialization{Mode: mode, Target: target},
 	}
 }
 

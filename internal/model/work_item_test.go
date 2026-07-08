@@ -612,6 +612,35 @@ func TestWorkItemRejectsSensitivePlaintextParameter(t *testing.T) {
 	}
 }
 
+func TestParameterMaterializationValidateModesAndTargets(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   ParameterMaterialization
+		wantErr bool
+	}{
+		{name: "env", value: ParameterMaterialization{Mode: "env", Target: "GDRIVE_TOKEN"}},
+		{name: "file", value: ParameterMaterialization{Mode: "file", Target: "GDRIVE_TOKEN_FILE"}},
+		{name: "stdin deferred", value: ParameterMaterialization{Mode: "stdin", Target: "GDRIVE_TOKEN"}, wantErr: true},
+		{name: "empty mode", value: ParameterMaterialization{Mode: "", Target: "GDRIVE_TOKEN"}, wantErr: true},
+		{name: "empty target", value: ParameterMaterialization{Mode: "env", Target: ""}, wantErr: true},
+		{name: "target with equals", value: ParameterMaterialization{Mode: "env", Target: "BAD=TARGET"}, wantErr: true},
+		{name: "target with whitespace", value: ParameterMaterialization{Mode: "file", Target: " GDRIVE_TOKEN_FILE "}, wantErr: true},
+		{name: "target with internal whitespace", value: ParameterMaterialization{Mode: "env", Target: "BAD TARGET"}, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.value.Validate()
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkCompletionJSONIncludesAttemptMetadata(t *testing.T) {
 	completion := WorkCompletion{
 		ID:                   "work-item-001",

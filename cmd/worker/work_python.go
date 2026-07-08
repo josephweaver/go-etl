@@ -103,6 +103,13 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		command.Env = append(command.Env, "GOET_DATA_ASSETS_JSON="+dataAssetsPath)
 	}
 
+	secretEnv, redactor, cleanupSecrets, err := w.materializePythonProtectedRefs(context.Background(), item, staging.WorkDir)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	defer cleanupSecrets()
+	command.Env = append(command.Env, secretEnv...)
+
 	if err := command.Start(); err != nil {
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
@@ -112,6 +119,9 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	if err := command.Wait(); err != nil {
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
+		if scrubErr := scrubPythonSubprocessLogs(stdoutPath, stderrPath, redactor); scrubErr != nil {
+			return WorkEvidence{}, scrubErr
+		}
 		return WorkEvidence{}, fmt.Errorf("python process exited with error: %w", err)
 	}
 
@@ -123,6 +133,10 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		return WorkEvidence{}, fmt.Errorf("close stderr log %s: %w", stderrPath, err)
 	}
 
+	if err := scrubPythonSubprocessLogs(stdoutPath, stderrPath, redactor); err != nil {
+		return WorkEvidence{}, err
+	}
+
 	_ = w.emitPythonSubprocessLogLines(item, stdoutPath, stderrPath, staging.LogDir)
 
 	outputJSON, err := os.ReadFile(outputPath)
@@ -131,6 +145,9 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 	}
 	if err != nil {
 		return WorkEvidence{}, fmt.Errorf("read python output json %s: %w", outputPath, err)
+	}
+	if redactor.RedactString(string(outputJSON)) != string(outputJSON) {
+		return WorkEvidence{}, fmt.Errorf("GOET_OUTPUT_JSON contains a materialized sensitive value")
 	}
 
 	logicalOutput, outputSHA256, err := w.pythonLogicalOutput(item, outputJSON, staging.ArtifactDir)
@@ -218,6 +235,97 @@ func (w Worker) runPythonScript(item model.WorkItem) (WorkEvidence, error) {
 		PreStateJSON:    string(preStateJSON),
 		PostStateJSON:   string(postStateJSON),
 	}, nil
+}
+
+func (w Worker) materializePythonProtectedRefs(ctx context.Context, item model.WorkItem, workDir string) ([]string, *Redactor, func(), error) {
+	envelope := item.ExecutionEnvelope
+	if envelope == nil {
+		built, err := model.NewExecutionEnvelope(item)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		envelope = &built
+	}
+
+	redactor := NewRedactor()
+	cleanup := func() {}
+	if len(envelope.Variables.ProtectedRefs) == 0 {
+		return nil, redactor, cleanup, nil
+	}
+
+	resolver := WorkerEnvProtectedValueResolver{}
+	secretEnv := []string{}
+	secretDir := ""
+	secretFileCount := 0
+
+	for _, name := range sortedKeys(envelope.Variables.ProtectedRefs) {
+		ref := envelope.Variables.ProtectedRefs[name]
+		if ref.Materialize == nil {
+			continue
+		}
+
+		value, err := resolver.ResolveProtectedValue(ctx, ref)
+		if err != nil {
+			cleanup()
+			return nil, nil, nil, fmt.Errorf("resolve python materialized sensitive value %s: %w", name, err)
+		}
+		redactor.Register(value)
+
+		switch ref.Materialize.Mode {
+		case "env":
+			secretEnv = append(secretEnv, ref.Materialize.Target+"="+value.Plaintext())
+		case "file":
+			if secretDir == "" {
+				secretDir = filepath.Join(workDir, "secret-materializations")
+				if err := os.MkdirAll(secretDir, 0700); err != nil {
+					return nil, nil, nil, fmt.Errorf("create python secret materialization directory: %w", err)
+				}
+				cleanup = func() {
+					_ = os.RemoveAll(secretDir)
+				}
+			}
+			secretFileCount++
+			path := filepath.Join(secretDir, fmt.Sprintf("secret-%d", secretFileCount))
+			if err := os.WriteFile(path, []byte(value.Plaintext()), 0600); err != nil {
+				cleanup()
+				return nil, nil, nil, fmt.Errorf("write python secret materialization file: %w", err)
+			}
+			secretEnv = append(secretEnv, ref.Materialize.Target+"="+path)
+		default:
+			cleanup()
+			return nil, nil, nil, fmt.Errorf("unsupported python secret materialization mode %q", ref.Materialize.Mode)
+		}
+	}
+
+	return secretEnv, redactor, cleanup, nil
+}
+
+func scrubPythonSubprocessLogs(stdoutPath string, stderrPath string, redactor *Redactor) error {
+	if err := scrubPythonSubprocessLog(stdoutPath, redactor); err != nil {
+		return err
+	}
+	return scrubPythonSubprocessLog(stderrPath, redactor)
+}
+
+func scrubPythonSubprocessLog(path string, redactor *Redactor) error {
+	if redactor == nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read python subprocess log %s for redaction: %w", path, err)
+	}
+	redacted := redactor.RedactBytes(data)
+	if string(redacted) == string(data) {
+		return nil
+	}
+	if err := atomicWriteFile(path, redacted, 0644); err != nil {
+		return fmt.Errorf("rewrite redacted python subprocess log %s: %w", path, err)
+	}
+	return nil
 }
 
 func (w Worker) pythonLogicalOutput(item model.WorkItem, outputJSON []byte, artifactDir string) ([]byte, string, error) {
