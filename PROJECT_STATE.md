@@ -17,6 +17,7 @@ This is the concise current-state index for GOET. The pre-split root state file 
 ## Concept State
 
 - Data assets and materialized outputs: [`docs/concepts/data-assets-and-materialized-outputs/STATE.md`](docs/concepts/data-assets-and-materialized-outputs/STATE.md)
+- Geospatial worker plugins: [`docs/concepts/geospatial-worker-plugins/README.md`](docs/concepts/geospatial-worker-plugins/README.md). Operational slices `002-geospatial-operation-contract`, `003-raster-info-and-bounding-boxes`, `004-reproject-and-align-raster`, `005-stack-aligned-rasters`, `006-raster-pair-value-counts`, `007-crop-by-polygons`, `008-polygonize-raster`, `009-aggregate-by-polygons`, and `010-cdl-yanroy-fixture-workflow-and-docs` are implemented. `010` adds a GDAL worker smoke fixture workflow (`containers/goetl-worker-gdal/test`) that runs raster metadata, grid validation, align-to-grid, pair counting, and summary CSV generation.
 - Dependency-aware workflows: [`docs/concepts/dependency-aware-workflows/STATE.md`](docs/concepts/dependency-aware-workflows/STATE.md)
 - Resource-constrained work admission: [`docs/concepts/resource-constrained-work-admission/STATE.md`](docs/concepts/resource-constrained-work-admission/STATE.md)
 - Workflow execution persistence: [`docs/concepts/workflow-execution-persistence/STATE.md`](docs/concepts/workflow-execution-persistence/STATE.md)

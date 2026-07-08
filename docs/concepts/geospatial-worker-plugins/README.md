@@ -208,15 +208,15 @@ The plugin result should be compact:
 | Slice | Status | Recommended model | Why |
 |---|---|---|---|
 | `001-gdal-worker-image-baseline.md` | Proposed | GPT-5.3-Codex-Spark | Container/package/test/doc work with narrow behavior. |
-| `002-geospatial-operation-contract.md` | Proposed | GPT-5.5 high reasoning | Defines the long-lived plugin boundary. |
-| `003-raster-info-and-bounding-boxes.md` | Proposed | GPT-5.3-Codex-Spark | Read-only metadata operation with small fixtures. |
-| `004-reproject-and-align-raster.md` | Proposed | GPT-5.5 high reasoning | CRS/grid/resampling semantics are correctness-sensitive. |
-| `005-stack-aligned-rasters.md` | Proposed | GPT-5.3-Codex-Spark | Mechanical after alignment validator exists. |
-| `006-raster-pair-value-counts.md` | Proposed | GPT-5.5 high reasoning | Core product algorithm; chunking and numeric invariants matter. |
-| `007-crop-by-polygons.md` | Proposed | GPT-5.5 high reasoning | Vector/raster CRS, cutline, and output explosion risks. |
-| `008-polygonize-raster.md` | Proposed | GPT-5.5 high reasoning | Geometry explosion and GDAL utility behavior need guardrails. |
-| `009-aggregate-by-polygons.md` | Proposed | GPT-5.5 high reasoning | Categorical zonal stats require a precise inclusion policy. |
-| `010-cdl-yanroy-fixture-workflow-and-docs.md` | Proposed | GPT-5.3-Codex-Spark after 001-006 pass | Integration/docs only if dependencies are complete. |
+| `002-geospatial-operation-contract.md` | implemented | GPT-5.5 high reasoning | Defines the long-lived plugin boundary. |
+| `003-raster-info-and-bounding-boxes.md` | implemented | GPT-5.3-Codex-Spark | Read-only metadata operation with small fixtures. |
+| `004-reproject-and-align-raster.md` | implemented | GPT-5.5 high reasoning | CRS/grid/resampling semantics are correctness-sensitive. |
+| `005-stack-aligned-rasters.md` | Implemented | GPT-5.3-Codex-Spark | Mechanical after alignment validator exists. |
+| `006-raster-pair-value-counts.md` | Implemented | GPT-5.5 high reasoning | Core product algorithm; chunking and numeric invariants matter. |
+| `007-crop-by-polygons.md` | Implemented | GPT-5.5 high reasoning | Vector/raster CRS, cutline, and output explosion risks. |
+| `008-polygonize-raster.md` | implemented | GPT-5.5 high reasoning | Geometry explosion and GDAL utility behavior need guardrails. |
+| `009-aggregate-by-polygons.md` | implemented | GPT-5.5 high reasoning | Categorical zonal stats require a precise inclusion policy. |
+| `010-cdl-yanroy-fixture-workflow-and-docs.md` | Implemented | GPT-5.3-Codex-Spark after 001-006 pass | GDAL fixture workflow smoke with raster metadata, align-to-grid, pair counting, and summary output. |
 
 ## Suggested Implementation Order
 

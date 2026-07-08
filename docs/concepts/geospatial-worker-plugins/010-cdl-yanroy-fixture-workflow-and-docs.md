@@ -1,6 +1,6 @@
 # 010 CDL Yan/Roy Fixture Workflow And Docs
 
-Status: Proposed  
+Status: Implemented  
 Recommended model: GPT-5.3-Codex-Spark after slices 001-006 pass  
 Reference: EC-3 / operational slice / files(4)+test+doc
 

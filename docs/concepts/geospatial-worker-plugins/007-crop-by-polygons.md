@@ -1,6 +1,6 @@
 # 007 Crop By Polygons
 
-Status: Proposed  
+Status: implemented  
 Recommended model: GPT-5.5 with high reasoning  
 Reference: EC-3 / operational slice / files(4)+test+doc
 

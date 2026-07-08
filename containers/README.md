@@ -22,6 +22,9 @@ compiled Go worker and the minimal OS packages needed to make HTTPS requests.
 Python, R, and ETL libraries should be added in later slices when the worker has
 a script-execution work item to exercise them.
 
+A GDAL-enabled sibling image is available at `goetl-worker-gdal/` for worker
+operations that require native GDAL dependencies and command-line tools.
+
 Run the narrow verification from WSL or another shell with Docker available:
 
 ```bash

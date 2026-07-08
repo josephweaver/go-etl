@@ -1,8 +1,8 @@
 # 001 GDAL Worker Image Baseline
 
-Status: Proposed  
+Status: Implemented  
 Recommended model: GPT-5.3-Codex-Spark  
-Reference: EC-3 / operational slice / files(4)+test+doc
+Reference: EC-3 / operational slice / files(4)+test+doc+newfiles+cleanup
 
 ## Objective
 

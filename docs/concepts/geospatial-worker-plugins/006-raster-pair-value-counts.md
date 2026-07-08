@@ -1,6 +1,6 @@
 # 006 Raster Pair Value Counts
 
-Status: Proposed  
+Status: Implemented  
 Recommended model: GPT-5.5 with high reasoning  
 Reference: EC-3 / operational slice / files(4)+test+doc
 

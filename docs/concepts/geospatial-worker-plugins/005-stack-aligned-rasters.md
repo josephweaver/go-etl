@@ -1,6 +1,6 @@
 # 005 Stack Aligned Rasters
 
-Status: Proposed  
+Status: Implemented  
 Recommended model: GPT-5.3-Codex-Spark  
 Reference: EC-3 / operational slice / files(4)+test+doc
 
@@ -33,10 +33,8 @@ Example request:
 {
   "operation": "stack_aligned_rasters",
   "inputs": {
-    "rasters": [
-      {"name": "field_id", "path": "/worker/data/yanroy_aligned.tif", "band": 1, "output_band": 1},
-      {"name": "crop_id", "path": "/worker/data/cdl_2023_aligned.tif", "band": 1, "output_band": 2}
-    ]
+    "field_id": {"path": "/worker/data/yanroy_aligned.tif", "band": 1, "output_band": 1},
+    "crop_id":  {"path": "/worker/data/cdl_2023_aligned.tif", "band": 1, "output_band": 2}
   },
   "outputs": {
     "stacked_raster": "field_cdl_stack.tif",
