@@ -1,6 +1,6 @@
 # 001 Sensitive Metadata and Safe Rendering
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

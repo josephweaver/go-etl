@@ -8,6 +8,7 @@ import (
 type Variable struct {
 	Name Name
 	TypedExpression
+	Sensitive bool
 }
 
 type variableNameJSON struct {
@@ -19,6 +20,7 @@ type variableJSON struct {
 	Name       variableNameJSON `json:"name"`
 	Type       string           `json:"type"`
 	Expression json.RawMessage  `json:"expression"`
+	Sensitive  bool             `json:"sensitive,omitempty"`
 }
 
 func (v Variable) MarshalJSON() ([]byte, error) {
@@ -30,6 +32,7 @@ func (v Variable) MarshalJSON() ([]byte, error) {
 		Name       variableNameJSON `json:"name"`
 		Type       string           `json:"type"`
 		Expression any              `json:"expression"`
+		Sensitive  bool             `json:"sensitive,omitempty"`
 	}{
 		Name: variableNameJSON{
 			Namespace: v.Name.Namespace,
@@ -37,6 +40,7 @@ func (v Variable) MarshalJSON() ([]byte, error) {
 		},
 		Type:       v.Type.String(),
 		Expression: v.Expression,
+		Sensitive:  v.Sensitive,
 	})
 }
 
@@ -69,14 +73,18 @@ func (v *Variable) UnmarshalJSON(data []byte) error {
 		Type:       expressionType,
 		Expression: expression,
 	}
+	v.Sensitive = encoded.Sensitive
 	return v.Validate()
 }
 
 type ResolvedValue struct {
-	Type   Type
-	Value  any
-	Object map[string]ResolvedValue
-	List   []ResolvedValue
+	Type           Type
+	Value          any
+	Object         map[string]ResolvedValue
+	List           []ResolvedValue
+	Sensitive      bool
+	RedactionLabel string
+	Provenance     string
 }
 
 func (v Variable) Validate() error {
@@ -87,16 +95,24 @@ func (v Variable) Validate() error {
 }
 
 func ResolvedObject(fields map[string]ResolvedValue) ResolvedValue {
+	sensitive, label, provenance := aggregateSensitivity(fields, nil)
 	return ResolvedValue{
-		Type:   TypeObject,
-		Object: fields,
+		Type:           TypeObject,
+		Object:         fields,
+		Sensitive:      sensitive,
+		RedactionLabel: label,
+		Provenance:     provenance,
 	}
 }
 
 func ResolvedList(values []ResolvedValue) ResolvedValue {
+	sensitive, label, provenance := aggregateSensitivity(nil, values)
 	return ResolvedValue{
-		Type: TypeList,
-		List: values,
+		Type:           TypeList,
+		List:           values,
+		Sensitive:      sensitive,
+		RedactionLabel: label,
+		Provenance:     provenance,
 	}
 }
 

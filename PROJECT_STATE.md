@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
 
@@ -22,4 +22,5 @@ This is the concise current-state index for GOET. The pre-split root state file 
 - Resource-constrained work admission: [`docs/concepts/resource-constrained-work-admission/STATE.md`](docs/concepts/resource-constrained-work-admission/STATE.md)
 - Workflow execution persistence: [`docs/concepts/workflow-execution-persistence/STATE.md`](docs/concepts/workflow-execution-persistence/STATE.md)
 - Operational observability: [`docs/concepts/operational-observability/STATE.md`](docs/concepts/operational-observability/STATE.md)
+- Sensitive variable propagation: [`docs/concepts/sensitive-variable-propagation/README.md`](docs/concepts/sensitive-variable-propagation/README.md). Operational slice `001-sensitive-metadata-and-safe-rendering` is implemented. `internal/variable` variable declarations now accept `sensitive`, resolved values now carry sensitivity metadata plus safe redaction labels, and sensitivity propagates through references, aggregates, accessors, and interpolation without exposing plaintext through default string or JSON rendering.
 - Source-control resolution and cache: [`docs/concepts/source-control-resolution-and-cache/STATE.md`](docs/concepts/source-control-resolution-and-cache/STATE.md)

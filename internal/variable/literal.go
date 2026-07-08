@@ -12,6 +12,7 @@ func ParseLiteral(variable Variable) (ResolvedValue, error) {
 	if err != nil {
 		return ResolvedValue{}, fmt.Errorf("parse literal variable %s: %w", variable.Name.String(), err)
 	}
+	value = mergeSensitivity(value, variable.Sensitive, variable.Name.String())
 	return value, nil
 }
 
