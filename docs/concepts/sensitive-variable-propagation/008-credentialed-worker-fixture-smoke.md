@@ -1,6 +1,6 @@
 # 008 Credentialed Worker Fixture Smoke
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -114,3 +114,12 @@ No new Go tests required unless the smoke exposes a production bug.
 ## Notes
 
 Do not assign this slice to `5.3-codex-spark`. Smoke tests and environment choreography have been unreliable for Spark-class runs.
+
+## Implemented State
+
+Implemented on 2026-07-08.
+
+- Added the runbook `docs/concepts/sensitive-variable-propagation/credentialed-worker-fixture-smoke.md`.
+- Added `scripts/sensitive-variable-fixture-smoke.ps1`, which creates temporary sibling-demo fixture files, starts the controller without `GOET_FIXTURE_TOKEN`, starts the worker with `GOET_FIXTURE_TOKEN`, submits a `worker_env:GOET_FIXTURE_TOKEN` protected reference, and verifies completion.
+- The smoke fixture deliberately prints the raw fixture secret to stdout and stderr, then verifies captured logs and controller logs contain `${worker_env.GOET_FIXTURE_TOKEN}` instead of the raw sentinel.
+- The smoke verifies controller status, submission status, worker output, captured stdout/stderr, controller logs, and `.run/controller/workflow-execution.sqlite` do not contain `goet-fixture-secret-008-do-not-persist`.
