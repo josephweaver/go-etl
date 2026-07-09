@@ -85,7 +85,13 @@ type WorkflowRunSubmission struct {
 type InlineWorkflowRunSubmission struct {
 	Project   json.RawMessage     `json:"project"`
 	Workflow  json.RawMessage     `json:"workflow"`
+	Files     []InlineSourceFile  `json:"files,omitempty"`
 	Variables []variable.Variable `json:"variables,omitempty"`
+}
+
+type InlineSourceFile struct {
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
 }
 
 type workflowAdmissionRequest struct {
@@ -96,6 +102,8 @@ type workflowAdmissionRequest struct {
 type WorkerStarter interface {
 	StartWorker(targetEnvironment string, resolver variable.Resolver) error
 }
+
+var errWorkerTargetEnvironmentNotConfigured = errors.New("worker_target_environment is not configured")
 
 type WorkReuseDecision struct {
 	Reusable       bool
@@ -1422,10 +1430,6 @@ func (c *Controller) submitInlineWorkflowRunToStore(ctx context.Context, submiss
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
-	if len(supplementalSourcePaths(declared)) != 0 {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("inline workflow source_manifest files require source-reference submission")
-	}
-
 	source := reposource.ResolvedSourceReference{
 		Repository:   reposource.RepositoryIdentity{Value: "inline:submission"},
 		RequestedRef: "submitted-json",
@@ -1435,6 +1439,11 @@ func (c *Controller) submitInlineWorkflowRunToStore(ctx context.Context, submiss
 		inlineReadFileResult(source.Repository, projectPath, submission.Project),
 		inlineReadFileResult(source.Repository, workflowPath, submission.Workflow),
 	}
+	supplementalReads, err := inlineSupplementalReadFileResults(source.Repository, supplementalSourcePaths(declared), submission.Files)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
+	reads = append(reads, supplementalReads...)
 	sourceSubmission := WorkflowRunSubmission{
 		Project: SourceDocumentReference{
 			Repository: source.Repository.Value,
@@ -1449,6 +1458,46 @@ func (c *Controller) submitInlineWorkflowRunToStore(ctx context.Context, submiss
 		Variables: append(projectVariables, submission.Variables...),
 	}
 	return c.submitAdmittedWorkflowReadsToStore(ctx, sourceSubmission, source, reads, submittedAt)
+}
+
+func inlineSupplementalReadFileResults(repository reposource.RepositoryIdentity, requiredPaths []string, files []InlineSourceFile) ([]reposource.ReadFileResult, error) {
+	required := make(map[string]struct{}, len(requiredPaths))
+	for _, path := range requiredPaths {
+		clean, err := reposource.ValidateRepositoryRelativePath(path)
+		if err != nil {
+			return nil, err
+		}
+		required[clean] = struct{}{}
+	}
+
+	byPath := make(map[string]reposource.ReadFileResult, len(files))
+	for _, file := range files {
+		clean, err := reposource.ValidateRepositoryRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := byPath[clean]; ok {
+			return nil, fmt.Errorf("duplicate inline source file %s", clean)
+		}
+		if _, ok := required[clean]; !ok {
+			return nil, fmt.Errorf("inline source file %s is not declared in source_manifest", clean)
+		}
+		byPath[clean] = inlineReadFileResult(repository, clean, file.Content)
+	}
+
+	reads := make([]reposource.ReadFileResult, 0, len(requiredPaths))
+	for _, path := range requiredPaths {
+		clean, err := reposource.ValidateRepositoryRelativePath(path)
+		if err != nil {
+			return nil, err
+		}
+		read, ok := byPath[clean]
+		if !ok {
+			return nil, fmt.Errorf("inline source file %s is required by source_manifest", clean)
+		}
+		reads = append(reads, read)
+	}
+	return reads, nil
 }
 
 func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, submission WorkflowRunSubmission, resolved reposource.ResolvedSourceReference, allReads []reposource.ReadFileResult, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
@@ -1693,7 +1742,7 @@ func (c *Controller) startWorkers(ctx context.Context, resolver variable.Resolve
 		return err
 	}
 	if targetEnvironment == "" {
-		return nil
+		return errWorkerTargetEnvironmentNotConfigured
 	}
 	if c.workerStarter == nil {
 		return fmt.Errorf("worker starter is required")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,8 @@ type WorkerRuntime struct {
 	LocalWorkerArtifact string
 	DataDir             string
 	AssetCacheDir       string
+	PythonExecutable    string
+	MaxAssetBytes       int64
 	DataLocationRoots   map[string]string
 }
 
@@ -121,6 +124,8 @@ type WorkerConfig struct {
 	DataDir           string            `json:"data_dir"`
 	ControllerURL     string            `json:"controller_url"`
 	AssetCacheDir     string            `json:"asset_cache_dir,omitempty"`
+	PythonExecutable  string            `json:"python_executable,omitempty"`
+	MaxAssetBytes     int64             `json:"max_asset_bytes,omitempty"`
 	DataLocationRoots map[string]string `json:"data_location_roots,omitempty"`
 }
 
@@ -160,14 +165,25 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 			return fmt.Errorf("worker data location roots must not contain newlines")
 		}
 	}
-	data, err := json.MarshalIndent(WorkerConfig{
+	cfg := WorkerConfig{
 		LogDir:            paths.LogDir,
 		TmpDir:            paths.TmpDir,
 		DataDir:           paths.DataDir,
 		ControllerURL:     r.ControllerURL,
 		AssetCacheDir:     r.AssetCacheDir,
+		PythonExecutable:  r.PythonExecutable,
+		MaxAssetBytes:     r.MaxAssetBytes,
 		DataLocationRoots: r.DataLocationRoots,
-	}, "", "  ")
+	}
+	if _, ok := transport.(LocalTransport); ok {
+		var err error
+		cfg, err = absoluteLocalWorkerConfig(cfg)
+		if err != nil {
+			return err
+		}
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -194,9 +210,55 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 	return nil
 }
 
+func absoluteLocalWorkerConfig(cfg WorkerConfig) (WorkerConfig, error) {
+	var err error
+	if cfg.LogDir, err = absoluteLocalPath(cfg.LogDir); err != nil {
+		return WorkerConfig{}, fmt.Errorf("worker log dir: %w", err)
+	}
+	if cfg.TmpDir, err = absoluteLocalPath(cfg.TmpDir); err != nil {
+		return WorkerConfig{}, fmt.Errorf("worker tmp dir: %w", err)
+	}
+	if cfg.DataDir, err = absoluteLocalPath(cfg.DataDir); err != nil {
+		return WorkerConfig{}, fmt.Errorf("worker data dir: %w", err)
+	}
+	if cfg.AssetCacheDir != "" {
+		if cfg.AssetCacheDir, err = absoluteLocalPath(cfg.AssetCacheDir); err != nil {
+			return WorkerConfig{}, fmt.Errorf("worker asset cache dir: %w", err)
+		}
+	}
+	if len(cfg.DataLocationRoots) > 0 {
+		roots := make(map[string]string, len(cfg.DataLocationRoots))
+		for name, root := range cfg.DataLocationRoots {
+			roots[name], err = absoluteLocalPath(root)
+			if err != nil {
+				return WorkerConfig{}, fmt.Errorf("worker data location root %s: %w", name, err)
+			}
+		}
+		cfg.DataLocationRoots = roots
+	}
+	return cfg, nil
+}
+
+func absoluteLocalPath(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	return filepath.Abs(filepath.FromSlash(value))
+}
+
 func (r WorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Transport, dialect ShellDialect, paths WorkerRuntimePaths) error {
-	if err := transport.Copy(ctx, r.LocalWorkerArtifact, paths.WorkerExecutable); err != nil {
-		return fmt.Errorf("copy worker artifact: %w", err)
+	shouldCopy := true
+	if _, ok := transport.(LocalTransport); ok {
+		same, err := sameLocalFileContent(r.LocalWorkerArtifact, paths.WorkerExecutable)
+		if err != nil {
+			return fmt.Errorf("compare worker artifact: %w", err)
+		}
+		shouldCopy = !same
+	}
+	if shouldCopy {
+		if err := transport.Copy(ctx, r.LocalWorkerArtifact, paths.WorkerExecutable); err != nil {
+			return fmt.Errorf("copy worker artifact: %w", err)
+		}
 	}
 	workerExecutable, err := dialect.LocalizePath(paths.WorkerExecutable)
 	if err != nil {
@@ -206,6 +268,21 @@ func (r WorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Trans
 		return fmt.Errorf("chmod worker artifact: %w", err)
 	}
 	return nil
+}
+
+func sameLocalFileContent(sourcePath string, destinationPath string) (bool, error) {
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return false, fmt.Errorf("read source %s: %w", sourcePath, err)
+	}
+	destination, err := os.ReadFile(destinationPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read destination %s: %w", destinationPath, err)
+	}
+	return bytes.Equal(source, destination), nil
 }
 
 type SingularityWorkerRuntime struct {

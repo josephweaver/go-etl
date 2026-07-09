@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -260,6 +261,10 @@ func (c *Controller) EvaluateWorkerCapacity(ctx context.Context, now time.Time) 
 	_, err = c.workerExecutor.Evaluate(ctx, now, cfg, c.workerDemand, func(ctx context.Context, count int) error {
 		return c.startWorkers(ctx, c.launchResolver, count)
 	})
+	if errors.Is(err, errWorkerTargetEnvironmentNotConfigured) {
+		fmt.Println("worker_start_skipped reason=worker_target_environment_not_configured")
+		return nil
+	}
 	return err
 }
 

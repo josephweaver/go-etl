@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -103,9 +104,11 @@ func TestWorkerRuntimePrepareCreatesLocalDirectoriesWithoutShellMkdir(t *testing
 func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	transport := &recordingTransport{}
 	runtime := WorkerRuntime{
-		Root:          "/data/goetl-test",
-		ControllerURL: "http://host.docker.internal:8080",
-		AssetCacheDir: "/data/goetl-test/cache/assets",
+		Root:             "/data/goetl-test",
+		ControllerURL:    "http://host.docker.internal:8080",
+		AssetCacheDir:    "/data/goetl-test/cache/assets",
+		PythonExecutable: "python3",
+		MaxAssetBytes:    20000000000,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
 			"published_data": "/data/goetl-test/published",
@@ -136,12 +139,53 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	if cfg.AssetCacheDir != "/data/goetl-test/cache/assets" {
 		t.Fatalf("asset cache dir = %q, want configured cache dir", cfg.AssetCacheDir)
 	}
+	if cfg.PythonExecutable != "python3" {
+		t.Fatalf("python executable = %q, want python3", cfg.PythonExecutable)
+	}
+	if cfg.MaxAssetBytes != 20000000000 {
+		t.Fatalf("max asset bytes = %d, want 20000000000", cfg.MaxAssetBytes)
+	}
 	if cfg.DataLocationRoots["fixture_data"] != "/data/goetl-test/fixtures" ||
 		cfg.DataLocationRoots["published_data"] != "/data/goetl-test/published" {
 		t.Fatalf("data location roots = %#v", cfg.DataLocationRoots)
 	}
 	if _, err := os.Stat(transport.copies[0].localPath); !os.IsNotExist(err) {
 		t.Fatalf("temp worker config still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestWorkerRuntimePrepareWritesAbsoluteLocalWorkerConfigPaths(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime")
+	runtime := WorkerRuntime{
+		Root:          filepath.ToSlash(root),
+		ControllerURL: "http://localhost:8080",
+		DataLocationRoots: map[string]string{
+			"fixture_data": filepath.ToSlash(filepath.Join(root, "fixtures")),
+		},
+	}
+
+	if err := runtime.Prepare(context.Background(), LocalTransport{}, BashShellPlatform{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "config", "worker.json"))
+	if err != nil {
+		t.Fatalf("read worker config: %v", err)
+	}
+	var cfg WorkerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("decode worker config: %v", err)
+	}
+
+	for name, path := range map[string]string{
+		"log_dir":                   cfg.LogDir,
+		"tmp_dir":                   cfg.TmpDir,
+		"data_dir":                  cfg.DataDir,
+		"data_location_roots.value": cfg.DataLocationRoots["fixture_data"],
+	} {
+		if !filepath.IsAbs(path) {
+			t.Fatalf("%s = %q, want absolute path", name, path)
+		}
 	}
 }
 
@@ -179,6 +223,45 @@ func TestWorkerRuntimePrepareUploadsArtifact(t *testing.T) {
 	want := []string{"chmod", "0755", "/data/goetl-test/artifacts/goetl-worker"}
 	if !stringSlicesEqual(transport.execArgs, want) {
 		t.Fatalf("exec args = %#v, want chmod command", transport.execArgs)
+	}
+}
+
+func TestWorkerRuntimePrepareSkipsMatchingLocalArtifactCopy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("local artifact upload uses chmod")
+	}
+
+	root := t.TempDir()
+	source := filepath.Join(root, "source-worker")
+	destination := filepath.Join(root, "runtime", "artifacts", "goetl-worker")
+	if err := os.WriteFile(source, []byte("same-worker"), 0o755); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatalf("create destination dir: %v", err)
+	}
+	if err := os.WriteFile(destination, []byte("same-worker"), 0o755); err != nil {
+		t.Fatalf("write destination: %v", err)
+	}
+	before, err := os.Stat(destination)
+	if err != nil {
+		t.Fatalf("stat destination: %v", err)
+	}
+
+	runtime := WorkerRuntime{
+		Root:                filepath.ToSlash(filepath.Join(root, "runtime")),
+		LocalWorkerArtifact: source,
+	}
+	if err := runtime.Prepare(context.Background(), LocalTransport{}, BashShellPlatform{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, err := os.Stat(destination)
+	if err != nil {
+		t.Fatalf("stat destination after prepare: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("destination artifact was rewritten: before=%s after=%s", before.ModTime(), after.ModTime())
 	}
 }
 

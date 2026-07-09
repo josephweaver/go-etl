@@ -321,6 +321,31 @@ func TestEvaluateWorkerCapacityDoesNotStartForResourceBlockedQueuedWork(t *testi
 	}
 }
 
+func TestEvaluateWorkerCapacitySkipsMissingWorkerTargetWithoutInflightReservation(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	queuedAt := "2026-07-09T12:00:00Z"
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	work := testPersistenceWorkItem("queued-no-worker-target", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: queuedAt}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	controller := newController()
+	controller.workflowStore = store
+
+	if err := controller.EvaluateWorkerCapacity(ctx, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("EvaluateWorkerCapacity() error = %v", err)
+	}
+	state := controller.workerExecutor.Snapshot()
+	if len(state.InflightStarts) != 0 {
+		t.Fatalf("inflight starts = %d, want 0", len(state.InflightStarts))
+	}
+}
+
 func fixedDemand(demand WorkerDemand) func(context.Context) (WorkerDemand, error) {
 	return func(context.Context) (WorkerDemand, error) {
 		return demand, nil

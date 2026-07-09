@@ -315,6 +315,75 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	}
 }
 
+func TestExecuteSubmitCommandPostsInlineSourceManifestFiles(t *testing.T) {
+	var received inlineSubmitPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode workflow submission: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+	projectPath := writeMainTestFile(t, dir, "project.json", `{"id":"go-etl-demo"}`)
+	workflowPath := writeMainTestFile(t, dir, "workflow.json", `{
+		"workflow": {"ID": "cdl-demo", "Steps": []},
+		"source_manifest": {
+			"files": [
+				{"role": "support_file", "path": "scripts/helper.py", "content_type": "text/x-python"}
+			]
+		}
+	}`)
+	writeMainTestFile(t, dir, filepath.Join("scripts", "helper.py"), "print('helper')\n")
+
+	err = executeCommand(cliCommand{
+		Kind:          commandSubmit,
+		ControllerURL: server.URL,
+		ProjectPath:   projectPath,
+		WorkflowPath:  workflowPath,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("executeCommand() error = %v", err)
+	}
+
+	if len(received.Files) != 1 {
+		t.Fatalf("inline file count = %d, want 1", len(received.Files))
+	}
+	if received.Files[0].Path != "scripts/helper.py" {
+		t.Fatalf("inline file path = %q, want scripts/helper.py", received.Files[0].Path)
+	}
+	if string(received.Files[0].Content) != "print('helper')\n" {
+		t.Fatalf("inline file content = %q, want helper script", string(received.Files[0].Content))
+	}
+}
+
 func TestExecuteSubmitCommandPostsRepositoryReferences(t *testing.T) {
 	var received client.WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1093,6 +1162,9 @@ func writeMainTestFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", name, err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", name, err)
 	}

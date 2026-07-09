@@ -98,7 +98,11 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 		Transports: []ExecutionComponentConfig{{Type: "local"}},
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
-		Runtime:    ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{"root": "/tmp/goetl"}},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root":              "/tmp/goetl",
+			"python_executable": "python3",
+			"max_asset_bytes":   float64(20000000000),
+		}},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -109,6 +113,16 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 	if _, ok := env.Scheduler.(DirectProcessScheduler); !ok {
 		t.Fatalf("scheduler type = %T, want DirectProcessScheduler", env.Scheduler)
+	}
+	runtime, ok := env.Runtime.(WorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
+	}
+	if runtime.PythonExecutable != "python3" {
+		t.Fatalf("python executable = %q, want python3", runtime.PythonExecutable)
+	}
+	if runtime.MaxAssetBytes != 20000000000 {
+		t.Fatalf("max asset bytes = %d, want 20000000000", runtime.MaxAssetBytes)
 	}
 }
 

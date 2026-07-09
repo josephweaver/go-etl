@@ -15,6 +15,7 @@ import (
 
 	"goetl/internal/client"
 	"goetl/internal/model"
+	"goetl/internal/reposource"
 	"goetl/internal/variable"
 )
 
@@ -260,8 +261,14 @@ func validateSubmitCommand(command cliCommand) error {
 }
 
 type inlineSubmitPayload struct {
-	Project  json.RawMessage `json:"project"`
-	Workflow json.RawMessage `json:"workflow"`
+	Project  json.RawMessage     `json:"project"`
+	Workflow json.RawMessage     `json:"workflow"`
+	Files    []inlineFilePayload `json:"files,omitempty"`
+}
+
+type inlineFilePayload struct {
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
 }
 
 func submitPayload(command cliCommand) (any, error) {
@@ -288,10 +295,50 @@ func submitPayload(command cliCommand) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	files, err := readInlineSourceManifestFiles(workflow)
+	if err != nil {
+		return nil, err
+	}
 	return inlineSubmitPayload{
 		Project:  project,
 		Workflow: workflow,
+		Files:    files,
 	}, nil
+}
+
+func readInlineSourceManifestFiles(workflow json.RawMessage) ([]inlineFilePayload, error) {
+	var submission client.WorkflowSubmission
+	if err := json.Unmarshal(workflow, &submission); err != nil {
+		return nil, fmt.Errorf("decode workflow source_manifest: %w", err)
+	}
+	declared, err := submission.SourceManifest.DeclaredSourceFiles()
+	if err != nil {
+		return nil, err
+	}
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get local source root: %w", err)
+	}
+	files := make([]inlineFilePayload, 0, len(declared))
+	for _, file := range declared {
+		clean, err := reposource.ValidateRepositoryRelativePath(file.SourcePath)
+		if err != nil {
+			return nil, err
+		}
+		path := filepath.Join(root, filepath.FromSlash(clean))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read source_manifest file %q: %w", clean, err)
+		}
+		files = append(files, inlineFilePayload{
+			Path:    clean,
+			Content: data,
+		})
+	}
+	return files, nil
 }
 
 func readJSONFile(path string, name string) (json.RawMessage, error) {

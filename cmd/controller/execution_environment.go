@@ -324,6 +324,14 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	pythonExecutable, err := settings.String("python_executable")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	maxAssetBytes, err := settings.Int64("max_asset_bytes")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	roots, err := settings.StringMap("data_location_roots")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -334,6 +342,8 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		LocalWorkerArtifact: localWorkerArtifact,
 		DataDir:             dataDir,
 		AssetCacheDir:       assetCacheDir,
+		PythonExecutable:    pythonExecutable,
+		MaxAssetBytes:       maxAssetBytes,
 		DataLocationRoots:   roots,
 	}, nil
 }
@@ -381,4 +391,28 @@ func (settings ExecutionComponentSettings) StringMap(name string) (map[string]st
 		result[key] = text
 	}
 	return result, nil
+}
+
+func (settings ExecutionComponentSettings) Int64(name string) (int64, error) {
+	if len(settings) == 0 {
+		return 0, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return 0, nil
+	}
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), nil
+	case int64:
+		return typed, nil
+	case float64:
+		asInt := int64(typed)
+		if typed != float64(asInt) {
+			return 0, fmt.Errorf("setting %s must be an integer", name)
+		}
+		return asInt, nil
+	default:
+		return 0, fmt.Errorf("setting %s must be an integer", name)
+	}
 }

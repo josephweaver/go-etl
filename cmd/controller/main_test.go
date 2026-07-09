@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -3486,6 +3487,72 @@ func TestSubmitWorkflowHandlerAdmitsInlineProjectAndWorkflowJSON(t *testing.T) {
 	}
 	if submissionContext.Variables[0].Name != (variable.Name{Namespace: variable.NamespaceProjectConfig, Key: "id"}) {
 		t.Fatalf("first variable = %+v, want project_config.id", submissionContext.Variables[0].Name)
+	}
+}
+
+func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+	helper := []byte("print('helper')\n")
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"id": "inline-project"
+		},
+		"workflow": {
+			"workflow": {
+				"ID": "inline-workflow",
+				"Steps": []
+			},
+			"source_manifest": {
+				"files": [
+					{"role": "support_file", "path": "scripts/helper.py", "content_type": "text/x-python"}
+				]
+			}
+		},
+		"files": [
+			{"path": "scripts/helper.py", "content": "`+base64.StdEncoding.EncodeToString(helper)+`"}
+		]
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	var submissionContext workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runs[0].SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	manifest, err := readAdmittedSourceManifest(submissionContext.SourceAdmission.ManifestRef)
+	if err != nil {
+		t.Fatalf("read admitted source manifest: %v", err)
+	}
+	cacheAccess, err := reposource.NewCacheAccess(layout, manifest)
+	if err != nil {
+		t.Fatalf("NewCacheAccess() error = %v", err)
+	}
+	got, err := cacheAccess.ReadFile("scripts/helper.py")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(helper) {
+		t.Fatalf("cached helper = %q, want %q", string(got), string(helper))
 	}
 }
 
