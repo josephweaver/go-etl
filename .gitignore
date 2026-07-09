@@ -1,4 +1,5 @@
 .run/
+.runs/
 cmd/worker/.run/data/
 cmd/worker/.run/logs/
 cmd/worker/.run/tmp/
