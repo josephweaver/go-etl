@@ -26,6 +26,8 @@ else:
 
 A newly started worker counts as active capacity until it claims work or its launch reservation expires. This makes slow worker startup naturally dampen launch rate, producing the desired power-curve ramp without requiring a complex scheduler.
 
+Set `controller_config.worker_execution_pattern` to `null` when the controller should admit and serve work without scheduling worker processes. The null pattern still evaluates durable demand for observability, but always returns zero worker starts and records no inflight launch reservations.
+
 ## Related note
 
 The attached LandCore `issues.md` reports a separate smoke blocker: `POST /workflow` returns a generic 500 before creating a workflow run. This worker-capacity slice should not try to fix that admission/compile bug directly, but it should make the controller ready to consume queued work once admission succeeds.
