@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,17 @@ type WorkflowRunSubmission struct {
 	Project   SourceDocumentReference `json:"project"`
 	Workflow  SourceDocumentReference `json:"workflow"`
 	Variables []variable.Variable     `json:"variables,omitempty"`
+}
+
+type InlineWorkflowRunSubmission struct {
+	Project   json.RawMessage     `json:"project"`
+	Workflow  json.RawMessage     `json:"workflow"`
+	Variables []variable.Variable `json:"variables,omitempty"`
+}
+
+type workflowAdmissionRequest struct {
+	Source *WorkflowRunSubmission
+	Inline *InlineWorkflowRunSubmission
 }
 
 type WorkerStarter interface {
@@ -565,11 +577,8 @@ func initConfiguredExecutionEnvironment(config ControllerConfig) (*ExecutionEnvi
 	return &env, nil
 }
 
-func initRepositorySourceProviders(workingDirectory string) map[string]reposource.Provider {
-	repository := reposource.RepositoryIdentity{Value: "local:demo", DisplayName: "Demo"}
-	return map[string]reposource.Provider{
-		repository.Value: reposource.NewLocalProvider(repository, filepath.Join(workingDirectory, "..", "go-etl-demo-project")),
-	}
+func initRepositorySourceProviders(_ string) map[string]reposource.Provider {
+	return map[string]reposource.Provider{}
 }
 
 func initMainDatabase(ctx context.Context, resolver variable.Resolver) (*sql.DB, error) {
@@ -1221,16 +1230,17 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var submission WorkflowRunSubmission
-	if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read workflow run submission", http.StatusBadRequest)
+		return
+	}
+	submission, err := decodeWorkflowAdmissionRequest(body)
+	if err != nil {
 		http.Error(w, "decode workflow run submission", http.StatusBadRequest)
 		return
 	}
-	if err := submission.validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	ack, err := c.submitWorkflowRunToStore(r.Context(), submission, time.Now().UTC())
+	ack, err := c.submitWorkflowAdmissionToStore(r.Context(), submission, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, errSourceReferenceAdmissionNotImplemented) {
 			http.Error(w, err.Error(), http.StatusNotImplemented)
@@ -1244,6 +1254,62 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 	if err := json.NewEncoder(w).Encode(ack); err != nil {
 		http.Error(w, "encode submission acknowledgement", http.StatusInternalServerError)
 	}
+}
+
+func decodeWorkflowAdmissionRequest(data []byte) (workflowAdmissionRequest, error) {
+	var source WorkflowRunSubmission
+	if err := json.Unmarshal(data, &source); err == nil {
+		if err := source.validate(); err == nil {
+			return workflowAdmissionRequest{Source: &source}, nil
+		} else if workflowRunSubmissionLooksSourceReferenced(data) {
+			return workflowAdmissionRequest{}, err
+		}
+	}
+
+	var inline InlineWorkflowRunSubmission
+	if err := json.Unmarshal(data, &inline); err != nil {
+		return workflowAdmissionRequest{}, err
+	}
+	if len(inline.Workflow) == 0 {
+		return workflowAdmissionRequest{}, fmt.Errorf("workflow is required")
+	}
+	if len(inline.Project) == 0 {
+		var legacy WorkflowSubmission
+		if err := json.Unmarshal(data, &legacy); err != nil || legacy.Workflow.ID == "" {
+			return workflowAdmissionRequest{}, fmt.Errorf("project is required")
+		}
+		workflowData, err := json.Marshal(legacy)
+		if err != nil {
+			return workflowAdmissionRequest{}, fmt.Errorf("encode legacy workflow submission: %w", err)
+		}
+		inline.Project = json.RawMessage(`{}`)
+		inline.Workflow = workflowData
+	}
+	return workflowAdmissionRequest{Inline: &inline}, nil
+}
+
+func workflowRunSubmissionLooksSourceReferenced(data []byte) bool {
+	var raw struct {
+		Project  json.RawMessage `json:"project"`
+		Workflow json.RawMessage `json:"workflow"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return rawObjectHasAny(raw.Project, "repository", "ref", "path") || rawObjectHasAny(raw.Workflow, "repository", "ref", "path")
+}
+
+func rawObjectHasAny(data []byte, keys ...string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := fields[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s WorkflowRunSubmission) validate() error {
@@ -1267,6 +1333,16 @@ func (r SourceDocumentReference) validate(name string) error {
 		return fmt.Errorf("%s path is required", name)
 	}
 	return nil
+}
+
+func (c *Controller) submitWorkflowAdmissionToStore(ctx context.Context, request workflowAdmissionRequest, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
+	if request.Source != nil {
+		return c.submitWorkflowRunToStore(ctx, *request.Source, submittedAt)
+	}
+	if request.Inline != nil {
+		return c.submitInlineWorkflowRunToStore(ctx, *request.Inline, submittedAt)
+	}
+	return model.SubmissionAcknowledgement{}, fmt.Errorf("workflow admission request is empty")
 }
 
 func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission WorkflowRunSubmission, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
@@ -1319,6 +1395,87 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return model.SubmissionAcknowledgement{}, fmt.Errorf("read supplemental source: %w", err)
 	}
 	allReads := append(append([]reposource.ReadFileResult{}, initialReads...), supplementalReads...)
+
+	return c.submitAdmittedWorkflowReadsToStore(ctx, submission, resolved, allReads, submittedAt)
+}
+
+func (c *Controller) submitInlineWorkflowRunToStore(ctx context.Context, submission InlineWorkflowRunSubmission, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
+	projectVariables, err := projectVariablesFromJSON(submission.Project)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode inline project source: %w", err)
+	}
+	_, projectHash, err := canonicalSourceDocument(submission.Project)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize inline project source: %w", err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(submission.Workflow)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize inline workflow source: %w", err)
+	}
+	workflowSubmission, err := decodeWorkflowSourceSubmission(submission.Workflow)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode inline workflow source: %w", err)
+	}
+	projectPath := "project.json"
+	workflowPath := "workflow.json"
+	declared, err := declaredSourceFiles(projectPath, projectHash, workflowPath, workflowHash, workflowSubmission.SourceManifest)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
+	if len(supplementalSourcePaths(declared)) != 0 {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("inline workflow source_manifest files require source-reference submission")
+	}
+
+	source := reposource.ResolvedSourceReference{
+		Repository:   reposource.RepositoryIdentity{Value: "inline:submission"},
+		RequestedRef: "submitted-json",
+		RevisionID:   nil,
+	}
+	reads := []reposource.ReadFileResult{
+		inlineReadFileResult(source.Repository, projectPath, submission.Project),
+		inlineReadFileResult(source.Repository, workflowPath, submission.Workflow),
+	}
+	sourceSubmission := WorkflowRunSubmission{
+		Project: SourceDocumentReference{
+			Repository: source.Repository.Value,
+			Ref:        source.RequestedRef,
+			Path:       projectPath,
+		},
+		Workflow: SourceDocumentReference{
+			Repository: source.Repository.Value,
+			Ref:        source.RequestedRef,
+			Path:       workflowPath,
+		},
+		Variables: append(projectVariables, submission.Variables...),
+	}
+	return c.submitAdmittedWorkflowReadsToStore(ctx, sourceSubmission, source, reads, submittedAt)
+}
+
+func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, submission WorkflowRunSubmission, resolved reposource.ResolvedSourceReference, allReads []reposource.ReadFileResult, submittedAt time.Time) (model.SubmissionAcknowledgement, error) {
+	projectRead, err := requiredReadByPath(allReads, submission.Project.Path)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
+	workflowRead, err := requiredReadByPath(allReads, submission.Workflow.Path)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
+	_, projectHash, err := canonicalSourceDocument(projectRead.Content.Data)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize project source: %w", err)
+	}
+	_, workflowHash, err := canonicalSourceDocument(workflowRead.Content.Data)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize workflow source: %w", err)
+	}
+	workflowSubmission, err := decodeWorkflowSourceSubmission(workflowRead.Content.Data)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode workflow source: %w", err)
+	}
+	declared, err := declaredSourceFiles(submission.Project.Path, projectHash, submission.Workflow.Path, workflowHash, workflowSubmission.SourceManifest)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
 
 	runID := "run-" + randomHex(16)
 	manifest, err := reposource.BuildAdmittedSourceManifest(runID, resolved, declared, allReads)
@@ -1584,6 +1741,14 @@ func (c *Controller) repositorySourceProvider(ref SourceDocumentReference) (repo
 			return provider, nil
 		}
 	}
+	if strings.HasPrefix(ref.Repository, "local:") {
+		root, err := localRepositoryRoot(c.repoCacheLayout.Root(), ref.Repository)
+		if err != nil {
+			return nil, err
+		}
+		repository := reposource.RepositoryIdentity{Value: ref.Repository}
+		return reposource.NewLocalProvider(repository, root), nil
+	}
 	if strings.HasPrefix(ref.Repository, "github.com/") {
 		parts := strings.Split(ref.Repository, "/")
 		if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
@@ -1592,6 +1757,110 @@ func (c *Controller) repositorySourceProvider(ref SourceDocumentReference) (repo
 		return reposource.NewGitHubProvider(parts[1], parts[2]), nil
 	}
 	return nil, fmt.Errorf("unknown source repository: %s", ref.Repository)
+}
+
+func localRepositoryRoot(cacheRoot string, repository string) (string, error) {
+	if cacheRoot == "" {
+		return "", fmt.Errorf("controller repository cache is required for local source repository %s", repository)
+	}
+	alias := strings.TrimSpace(strings.TrimPrefix(repository, "local:"))
+	if alias == "" {
+		return "", fmt.Errorf("local repository alias is required")
+	}
+	if alias == "." || alias == ".." || strings.ContainsAny(alias, `/\:`) {
+		return "", fmt.Errorf("local repository alias %q must be a single safe path segment", alias)
+	}
+	return filepath.Join(cacheRoot, "local", "sources", alias, "files"), nil
+}
+
+func inlineReadFileResult(repository reposource.RepositoryIdentity, sourcePath string, data []byte) reposource.ReadFileResult {
+	hash := sha256.Sum256(data)
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	return reposource.ReadFileResult{
+		Request: reposource.SourceFileRequest{
+			Repository: repository,
+			SourcePath: sourcePath,
+		},
+		Content: reposource.SourceFileContent{
+			Data: copied,
+		},
+		RawSHA256: hex.EncodeToString(hash[:]),
+		SizeBytes: int64(len(data)),
+	}
+}
+
+func projectVariablesFromJSON(data []byte) ([]variable.Variable, error) {
+	var fields map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("project source contains multiple JSON values")
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("project source must be a JSON object")
+	}
+
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	variables := make([]variable.Variable, 0, len(fields))
+	for _, key := range keys {
+		expression, err := typedExpressionFromJSON(fields[key])
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", key, err)
+		}
+		variables = append(variables, variable.Variable{
+			Name:            variable.Name{Namespace: variable.NamespaceProjectConfig, Key: key},
+			TypedExpression: expression,
+		})
+	}
+	return variables, nil
+}
+
+func typedExpressionFromJSON(value any) (variable.TypedExpression, error) {
+	switch typed := value.(type) {
+	case string:
+		return variable.TypedExpression{Type: variable.TypeString, Expression: typed}, nil
+	case json.Number:
+		integer, err := strconv.Atoi(typed.String())
+		if err != nil {
+			return variable.TypedExpression{}, fmt.Errorf("number %q is not a supported integer", typed.String())
+		}
+		return variable.TypedExpression{Type: variable.TypeInt, Expression: integer}, nil
+	case bool:
+		return variable.TypedExpression{Type: variable.TypeBool, Expression: typed}, nil
+	case map[string]any:
+		fields := make(map[string]variable.TypedExpression, len(typed))
+		for key, child := range typed {
+			expression, err := typedExpressionFromJSON(child)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("object field %q: %w", key, err)
+			}
+			fields[key] = expression
+		}
+		return variable.TypedExpression{Type: variable.TypeObject, Expression: fields}, nil
+	case []any:
+		items := make([]variable.TypedExpression, 0, len(typed))
+		for index, child := range typed {
+			expression, err := typedExpressionFromJSON(child)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("list item %d: %w", index, err)
+			}
+			items = append(items, expression)
+		}
+		return variable.TypedExpression{Type: variable.TypeList, Expression: items}, nil
+	case nil:
+		return variable.TypedExpression{}, fmt.Errorf("null is not supported")
+	default:
+		return variable.TypedExpression{}, fmt.Errorf("unsupported JSON value %T", value)
+	}
 }
 
 func requiredReadByPath(reads []reposource.ReadFileResult, path string) (reposource.ReadFileResult, error) {

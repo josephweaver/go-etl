@@ -12,7 +12,6 @@ import (
 
 	"goetl/internal/client"
 	"goetl/internal/model"
-	"goetl/internal/variable"
 )
 
 func TestDemoWorkflowRunPath(t *testing.T) {
@@ -70,6 +69,18 @@ func TestParseSubmitCommand(t *testing.T) {
 				JSON:          true,
 			},
 		},
+		{
+			name: "repository source reference",
+			args: []string{"goet", "submit", "--controller-url", "http://controller:8080", "--repo", "github.com/acme/workflows", "--ref", "v1", "--project", "project.json", "--workflow", "workflows/cdl.json"},
+			want: cliCommand{
+				Kind:          commandSubmit,
+				ControllerURL: "http://controller:8080",
+				Repository:    "github.com/acme/workflows",
+				Ref:           "v1",
+				ProjectPath:   "project.json",
+				WorkflowPath:  "workflows/cdl.json",
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -115,6 +126,11 @@ func TestParseSubmitCommandValidation(t *testing.T) {
 			name:    "rejects watch",
 			args:    []string{"goet", "submit", "--controller", "controller.json", "--project", "project.json", "--workflow", "workflow.json", "--watch"},
 			wantErr: "flag provided but not defined: -watch",
+		},
+		{
+			name:    "rejects ref without repo",
+			args:    []string{"goet", "submit", "--controller", "controller.json", "--ref", "main", "--project", "project.json", "--workflow", "workflow.json"},
+			wantErr: "--ref requires --repo",
 		},
 	}
 
@@ -228,7 +244,7 @@ func TestParseLogsCommandValidation(t *testing.T) {
 }
 
 func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
-	var received client.WorkflowSubmission
+	var received inlineSubmitPayload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status":
@@ -280,22 +296,77 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 		t.Fatalf("executeCommand() error = %v", err)
 	}
 
-	if received.Workflow.ID != "cdl-demo" {
-		t.Fatalf("received workflow ID = %q, want cdl-demo", received.Workflow.ID)
+	var receivedWorkflow client.WorkflowSubmission
+	if err := json.Unmarshal(received.Workflow, &receivedWorkflow); err != nil {
+		t.Fatalf("decode embedded workflow: %v", err)
 	}
-	if len(received.Workflow.Variables) != 1 {
-		t.Fatalf("workflow variable count = %d, want 1", len(received.Workflow.Variables))
+	if receivedWorkflow.Workflow.ID != "cdl-demo" {
+		t.Fatalf("received workflow ID = %q, want cdl-demo", receivedWorkflow.Workflow.ID)
 	}
-	if len(received.Variables) != 2 {
-		t.Fatalf("submission variable count = %d, want 2", len(received.Variables))
+	if len(receivedWorkflow.Workflow.Variables) != 1 {
+		t.Fatalf("workflow variable count = %d, want 1", len(receivedWorkflow.Workflow.Variables))
 	}
-	if received.Variables[0].Name != (variable.Name{Namespace: variable.NamespaceProjectConfig, Key: "id"}) {
-		t.Fatalf("first submission variable = %+v, want project_config.id", received.Variables[0].Name)
+	var receivedProject map[string]any
+	if err := json.Unmarshal(received.Project, &receivedProject); err != nil {
+		t.Fatalf("decode embedded project: %v", err)
+	}
+	if receivedProject["id"] != "go-etl-demo" {
+		t.Fatalf("project id = %v, want go-etl-demo", receivedProject["id"])
+	}
+}
+
+func TestExecuteSubmitCommandPostsRepositoryReferences(t *testing.T) {
+	var received client.WorkflowRunSubmission
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			w.WriteHeader(http.StatusOK)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode workflow run submission: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "cdl-demo",
+				InitialWorkItemCount: 0,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	err := executeCommand(cliCommand{
+		Kind:          commandSubmit,
+		ControllerURL: server.URL,
+		Repository:    "github.com/acme/workflows",
+		Ref:           "main",
+		ProjectPath:   "project.json",
+		WorkflowPath:  "workflows/cdl.json",
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("executeCommand() error = %v", err)
+	}
+
+	if received.Project.Repository != "github.com/acme/workflows" {
+		t.Fatalf("project repository = %q, want github.com/acme/workflows", received.Project.Repository)
+	}
+	if received.Project.Ref != "main" {
+		t.Fatalf("project ref = %q, want main", received.Project.Ref)
+	}
+	if received.Project.Path != "project.json" {
+		t.Fatalf("project path = %q, want project.json", received.Project.Path)
+	}
+	if received.Workflow.Path != "workflows/cdl.json" {
+		t.Fatalf("workflow path = %q, want workflows/cdl.json", received.Workflow.Path)
 	}
 }
 
 func TestExecuteSubmitCommandWaitsForCompletedSubmission(t *testing.T) {
-	var received client.WorkflowSubmission
+	var received inlineSubmitPayload
 	statusChecks := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -376,8 +447,12 @@ func TestExecuteSubmitCommandWaitsForCompletedSubmission(t *testing.T) {
 	if got := strings.TrimSpace(output); got != want {
 		t.Fatalf("wait output = %q, want %q", got, want)
 	}
-	if received.Workflow.ID != "cdl-demo" {
-		t.Fatalf("received workflow ID = %q, want cdl-demo", received.Workflow.ID)
+	var receivedWorkflow client.WorkflowSubmission
+	if err := json.Unmarshal(received.Workflow, &receivedWorkflow); err != nil {
+		t.Fatalf("decode embedded workflow: %v", err)
+	}
+	if receivedWorkflow.Workflow.ID != "cdl-demo" {
+		t.Fatalf("received workflow ID = %q, want cdl-demo", receivedWorkflow.Workflow.ID)
 	}
 }
 
