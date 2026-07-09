@@ -125,19 +125,44 @@ func TestControllerCanHoldWorkflowExecutionStore(t *testing.T) {
 	}
 }
 
-func TestInitRepositorySourceProvidersResolvesDemoProject(t *testing.T) {
+func TestRepositorySourceProviderResolvesLocalRoot(t *testing.T) {
+	cacheRoot := t.TempDir()
+	sourceRoot := filepath.Join(cacheRoot, "local", "sources", "demo", "files")
+	if err := os.MkdirAll(sourceRoot, 0o700); err != nil {
+		t.Fatalf("create source fixture root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "project.json"), []byte(`{"id":"local-test"}`), 0o600); err != nil {
+		t.Fatalf("write project fixture: %v", err)
+	}
+	repository := "local:demo"
+
 	providers := initRepositorySourceProviders(filepath.Join(mustGetwd(t), "..", ".."))
-	provider, ok := providers["local:demo"]
-	if !ok {
-		t.Fatal("local:demo provider missing")
+	if len(providers) != 0 {
+		t.Fatalf("startup provider count = %d, want 0", len(providers))
+	}
+	controller := newController()
+	controller.repoSourceProviders = providers
+	layout, err := reposource.NewCacheLayout(cacheRoot)
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+
+	provider, err := controller.repositorySourceProvider(SourceDocumentReference{
+		Repository: repository,
+		Ref:        "main",
+		Path:       "project.json",
+	})
+	if err != nil {
+		t.Fatalf("repositorySourceProvider() error = %v", err)
 	}
 
 	resolved, err := provider.Resolve(context.Background(), "main")
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if resolved.Repository.Value != "local:demo" {
-		t.Fatalf("repository identity = %q, want local:demo", resolved.Repository.Value)
+	if resolved.Repository.Value != repository {
+		t.Fatalf("repository identity = %q, want %q", resolved.Repository.Value, repository)
 	}
 	if resolved.RevisionID != nil {
 		t.Fatalf("revision id = %q, want nil", *resolved.RevisionID)
@@ -2960,11 +2985,16 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	}
 }
 
-func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t *testing.T) {
+func TestSubmitWorkflowHandlerAdmitsLegacyInlineWorkflowPayload(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	controller := newController()
 	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
 
 	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
 		"workflow": {
@@ -2976,8 +3006,8 @@ func TestSubmitWorkflowHandlerRejectsInlinePayloadWhenWorkflowStoreConfigured(t 
 
 	controller.submitWorkflowHandler(response, request)
 
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400", response.Code)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -3395,6 +3425,67 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	}
 	if starter.targets[0] != "local" {
 		t.Fatalf("worker starter target = %q, want local", starter.targets[0])
+	}
+}
+
+func TestSubmitWorkflowHandlerAdmitsInlineProjectAndWorkflowJSON(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"id": "inline-project",
+			"year": 2026
+		},
+		"workflow": {
+			"workflow": {
+				"ID": "inline-workflow",
+				"Steps": []
+			},
+			"source_manifest": {}
+		}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode acknowledgement: %v", err)
+	}
+	if acknowledgement.WorkflowID != "inline-workflow" {
+		t.Fatalf("workflow id = %q, want inline-workflow", acknowledgement.WorkflowID)
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	var submissionContext workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runs[0].SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if submissionContext.SourceAdmission.Source.RepositoryIdentity != "inline:submission" {
+		t.Fatalf("source repository = %q, want inline:submission", submissionContext.SourceAdmission.Source.RepositoryIdentity)
+	}
+	if len(submissionContext.Variables) != 2 {
+		t.Fatalf("submission variable count = %d, want 2", len(submissionContext.Variables))
+	}
+	if submissionContext.Variables[0].Name != (variable.Name{Namespace: variable.NamespaceProjectConfig, Key: "id"}) {
+		t.Fatalf("first variable = %+v, want project_config.id", submissionContext.Variables[0].Name)
 	}
 }
 

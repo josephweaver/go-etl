@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -69,18 +70,17 @@ func executeCommand(command cliCommand, httpClient *http.Client) error {
 }
 
 func submitCommand(command cliCommand, httpClient *http.Client) error {
-	inputs, err := client.LoadCLIInputs(client.CLIInputPaths{
-		ControllerPath: command.ControllerPath,
-		ControllerURL:  command.ControllerURL,
-		ProjectPath:    command.ProjectPath,
-		WorkflowPath:   command.WorkflowPath,
-	})
+	controllerURL, resolver, starter, err := submitControllerRuntime(command)
 	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
 
-	controllerClient := client.NewControllerClientWithStarter(httpClient, inputs.Resolver, inputs.Starter)
-	acknowledgement, err := controllerClient.SubmitWorkflowAcknowledgement(inputs.Submission)
+	controllerClient := client.NewControllerClientWithStarter(httpClient, resolver, starter)
+	payload, err := submitPayload(command)
+	if err != nil {
+		return fmt.Errorf("goet submit: %w", err)
+	}
+	acknowledgement, err := submitPayloadAcknowledgement(httpClient, controllerClient, controllerURL, payload)
 	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
@@ -174,6 +174,8 @@ type cliCommand struct {
 	WorkflowRunPath string
 	ControllerPath  string
 	ControllerURL   string
+	Repository      string
+	Ref             string
 	ProjectPath     string
 	WorkflowPath    string
 	SubmissionID    string
@@ -213,6 +215,9 @@ func parseSubmitCommand(args []string) (cliCommand, error) {
 	command := cliCommand{Kind: commandSubmit}
 	flags.StringVar(&command.ControllerPath, "controller", "", "controller configuration path")
 	flags.StringVar(&command.ControllerURL, "controller-url", "", "controller URL")
+	flags.StringVar(&command.Repository, "repo", "", "source repository identity")
+	flags.StringVar(&command.Repository, "repository", "", "source repository identity")
+	flags.StringVar(&command.Ref, "ref", "", "source repository ref")
 	flags.StringVar(&command.ProjectPath, "project", "", "project configuration path")
 	flags.StringVar(&command.WorkflowPath, "workflow", "", "workflow configuration path")
 	flags.BoolVar(&command.Wait, "wait", false, "wait for completion")
@@ -226,6 +231,9 @@ func parseSubmitCommand(args []string) (cliCommand, error) {
 	}
 	if err := validateSubmitCommand(command); err != nil {
 		return cliCommand{}, err
+	}
+	if command.Repository != "" && command.Ref == "" {
+		command.Ref = "main"
 	}
 
 	return command, nil
@@ -244,8 +252,147 @@ func validateSubmitCommand(command cliCommand) error {
 	if command.WorkflowPath == "" {
 		return errors.New("goet submit: --workflow is required")
 	}
+	if command.Ref != "" && command.Repository == "" {
+		return errors.New("goet submit: --ref requires --repo")
+	}
 
 	return nil
+}
+
+type inlineSubmitPayload struct {
+	Project  json.RawMessage `json:"project"`
+	Workflow json.RawMessage `json:"workflow"`
+}
+
+func submitPayload(command cliCommand) (any, error) {
+	if command.Repository != "" {
+		return client.WorkflowRunSubmission{
+			Project: client.SourceDocumentReference{
+				Repository: command.Repository,
+				Ref:        command.Ref,
+				Path:       filepath.ToSlash(command.ProjectPath),
+			},
+			Workflow: client.SourceDocumentReference{
+				Repository: command.Repository,
+				Ref:        command.Ref,
+				Path:       filepath.ToSlash(command.WorkflowPath),
+			},
+		}, nil
+	}
+
+	project, err := readJSONFile(command.ProjectPath, "project")
+	if err != nil {
+		return nil, err
+	}
+	workflow, err := readJSONFile(command.WorkflowPath, "workflow")
+	if err != nil {
+		return nil, err
+	}
+	return inlineSubmitPayload{
+		Project:  project,
+		Workflow: workflow,
+	}, nil
+}
+
+func readJSONFile(path string, name string) (json.RawMessage, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s file %q: %w", name, path, err)
+	}
+	if err := validateSingleJSONDocument(data); err != nil {
+		return nil, fmt.Errorf("decode %s file %q: %w", name, path, err)
+	}
+	return json.RawMessage(data), nil
+}
+
+func validateSingleJSONDocument(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("multiple JSON values")
+	}
+	return nil
+}
+
+func submitControllerRuntime(command cliCommand) (string, variable.Resolver, client.ControllerStarter, error) {
+	var controllerVariables []variable.Variable
+	var starter client.ControllerStarter
+	controllerURL := command.ControllerURL
+
+	if command.ControllerPath != "" {
+		if _, err := readJSONFile(command.ControllerPath, "controller"); err != nil {
+			return "", variable.Resolver{}, nil, err
+		}
+		controllerURL = defaultControllerURL
+		controllerVariables = localControllerVariables(command.ControllerPath, controllerURL)
+	} else {
+		controllerVariables = remoteControllerVariables(controllerURL)
+	}
+
+	controllerScope, err := variable.NewScope(controllerVariables...)
+	if err != nil {
+		return "", variable.Resolver{}, nil, fmt.Errorf("build CLI controller variables: %w", err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(controllerScope), variable.ResolverConfig{})
+	if command.ControllerPath != "" {
+		starter = client.NewLocalControllerStarter(resolver)
+	}
+	return controllerURL, resolver, starter, nil
+}
+
+func submitPayloadAcknowledgement(httpClient *http.Client, controllerClient client.ControllerClient, controllerURL string, payload any) (model.SubmissionAcknowledgement, error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if err := controllerClient.EnsureController(controllerURL); err != nil {
+		return model.SubmissionAcknowledgement{}, err
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("encode workflow submission: %w", err)
+	}
+	url := strings.TrimRight(controllerURL, "/") + "/workflow"
+	response, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusAccepted {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
+	}
+
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode submission acknowledgement: %w", err)
+	}
+	return acknowledgement, nil
+}
+
+func remoteControllerVariables(controllerURL string) []variable.Variable {
+	return []variable.Variable{
+		{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_url"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: controllerURL}},
+		{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "client_status_poll_interval"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "1s"}},
+	}
+}
+
+func localControllerVariables(controllerPath, controllerURL string) []variable.Variable {
+	variables := remoteControllerVariables(controllerURL)
+	variables = append(variables,
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_executable"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "go"}},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_args"}, TypedExpression: variable.TypedExpression{Type: variable.TypeList, Expression: []variable.TypedExpression{
+			{Type: variable.TypeString, Expression: "run"},
+			{Type: variable.TypeString, Expression: "./cmd/controller"},
+			{Type: variable.TypeString, Expression: "--config"},
+			{Type: variable.TypeString, Expression: controllerPath},
+		}}},
+		variable.Variable{Name: variable.Name{Namespace: variable.NamespaceControllerConfig, Key: "controller_start_lock_path"}, TypedExpression: variable.TypedExpression{Type: variable.TypeString, Expression: "controller-start.lock"}},
+	)
+	return variables
 }
 
 func parseStatusCommand(args []string) (cliCommand, error) {
