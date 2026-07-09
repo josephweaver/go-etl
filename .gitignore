@@ -4,3 +4,5 @@ cmd/worker/.run/logs/
 cmd/worker/.run/tmp/
 controller-start.lock
 go-etl.code-workspace
+.runs/controller/workflow-execution.sqlite
+.runs/controller/workflow-execution.sqlite.controller.lock

@@ -10,7 +10,10 @@ import (
 	"goetl/internal/variable"
 )
 
-const workerExecutionPatternOneByOneUntilSaturated = "one_by_one_until_saturated"
+const (
+	workerExecutionPatternOneByOneUntilSaturated = "one_by_one_until_saturated"
+	workerExecutionPatternNull                   = "null"
+)
 
 type WorkerDemand struct {
 	PendingQueued    int
@@ -67,6 +70,12 @@ func (p OneByOneUntilSaturatedPattern) Plan(now time.Time, demand WorkerDemand, 
 	}
 }
 
+type NullWorkerExecutionPattern struct{}
+
+func (p NullWorkerExecutionPattern) Plan(now time.Time, demand WorkerDemand, state WorkerExecutionState, cfg WorkerExecutionConfig) WorkerStartPlan {
+	return WorkerStartPlan{Reason: "worker_scheduling_disabled"}
+}
+
 func (s WorkerExecutionState) UnexpiredInflightStarts(now time.Time, timeout time.Duration) []WorkerStartReservation {
 	if timeout <= 0 {
 		return append([]WorkerStartReservation(nil), s.InflightStarts...)
@@ -89,9 +98,6 @@ type WorkerCapacityManager struct {
 }
 
 func NewWorkerCapacityManager(pattern WorkerExecutionPattern) *WorkerCapacityManager {
-	if pattern == nil {
-		pattern = OneByOneUntilSaturatedPattern{}
-	}
 	return &WorkerCapacityManager{pattern: pattern}
 }
 
@@ -118,8 +124,9 @@ func (m *WorkerCapacityManager) Evaluate(
 	if cfg.Pattern == "" {
 		cfg.Pattern = workerExecutionPatternOneByOneUntilSaturated
 	}
-	if cfg.Pattern != workerExecutionPatternOneByOneUntilSaturated {
-		return WorkerStartPlan{}, fmt.Errorf("unsupported worker execution pattern %q", cfg.Pattern)
+	pattern, err := m.patternForConfig(cfg.Pattern)
+	if err != nil {
+		return WorkerStartPlan{}, err
 	}
 
 	demand, err := demandFn(ctx)
@@ -128,7 +135,7 @@ func (m *WorkerCapacityManager) Evaluate(
 	}
 
 	m.pruneExpiredInflightStarts(now, cfg.InflightStartTimeout)
-	plan := m.pattern.Plan(now, demand, m.state, cfg)
+	plan := pattern.Plan(now, demand, m.state, cfg)
 	fmt.Printf("worker_capacity_evaluation pending_queued=%d pending_claimable=%d running_attempts=%d inflight_starts=%d start_count=%d reason=%s pattern=%s\n",
 		demand.PendingQueued,
 		demand.PendingClaimable,
@@ -150,6 +157,20 @@ func (m *WorkerCapacityManager) Evaluate(
 		return plan, err
 	}
 	return plan, nil
+}
+
+func (m *WorkerCapacityManager) patternForConfig(pattern string) (WorkerExecutionPattern, error) {
+	switch pattern {
+	case workerExecutionPatternOneByOneUntilSaturated:
+		if m.pattern != nil {
+			return m.pattern, nil
+		}
+		return OneByOneUntilSaturatedPattern{}, nil
+	case workerExecutionPatternNull:
+		return NullWorkerExecutionPattern{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported worker execution pattern %q", pattern)
+	}
 }
 
 func (m *WorkerCapacityManager) ConfirmInflightStartClaimed() bool {

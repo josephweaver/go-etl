@@ -115,6 +115,19 @@ func TestOneByOneIgnoresExpiredInflightStart(t *testing.T) {
 	}
 }
 
+func TestNullWorkerExecutionPatternDoesNotStart(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	pattern := NullWorkerExecutionPattern{}
+
+	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 5}, WorkerExecutionState{}, WorkerExecutionConfig{})
+	if plan.StartCount != 0 {
+		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
+	}
+	if plan.Reason != "worker_scheduling_disabled" {
+		t.Fatalf("Reason = %q, want worker_scheduling_disabled", plan.Reason)
+	}
+}
+
 func TestEvaluateWorkerCapacityStartsOneWorker(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
@@ -135,6 +148,34 @@ func TestEvaluateWorkerCapacityStartsOneWorker(t *testing.T) {
 	}
 	if starts != 1 {
 		t.Fatalf("starts = %d, want 1", starts)
+	}
+}
+
+func TestEvaluateWorkerCapacityNullPatternDoesNotLaunchOrReserve(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	manager := NewWorkerCapacityManager(nil)
+	cfg := defaultWorkerExecutionConfig()
+	cfg.Pattern = workerExecutionPatternNull
+
+	plan, err := manager.Evaluate(context.Background(), now, cfg, fixedDemand(WorkerDemand{
+		PendingQueued:    5,
+		PendingClaimable: 5,
+	}), func(ctx context.Context, count int) error {
+		t.Fatalf("launchFn called with count %d", count)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if plan.StartCount != 0 {
+		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
+	}
+	if plan.Reason != "worker_scheduling_disabled" {
+		t.Fatalf("Reason = %q, want worker_scheduling_disabled", plan.Reason)
+	}
+	state := manager.Snapshot()
+	if len(state.InflightStarts) != 0 {
+		t.Fatalf("inflight starts = %d, want 0", len(state.InflightStarts))
 	}
 }
 
