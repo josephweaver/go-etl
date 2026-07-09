@@ -38,7 +38,7 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 			return nil
 		}
 
-		stageResult, resolver, codeVersion, err := c.compileActivationStage(ctx, runID, *plan, nextStageIndex)
+		stageResult, _, codeVersion, err := c.compileActivationStage(ctx, runID, *plan, nextStageIndex)
 		if err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
@@ -83,17 +83,7 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		if err := c.MarkWorkflowStageReady(ctx, runID, nextStageIndex); err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
-		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-		if err != nil {
-			return err
-		}
-		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
-		if err != nil {
-			return err
-		}
-		startCount := c.scaler.PlanStarts(activatedAt, queuedCount, runningCount, scaleCfg)
-		c.scaler.RecordStart(activatedAt, startCount, runningCount)
-		return c.startWorkers(ctx, resolver, startCount)
+		return c.EvaluateWorkerCapacity(ctx, activatedAt)
 	}
 }
 

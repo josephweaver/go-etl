@@ -48,6 +48,9 @@ type Controller struct {
 	repoSourceProviders map[string]reposource.Provider
 	repoCacheLayout     reposource.CacheLayout
 	workerStarter       WorkerStarter
+	launchResolver      variable.Resolver
+	workerExecutor      *WorkerCapacityManager
+	asyncWorkerCapacity bool
 	logSink             logObservationSink
 	shutdown            func(context.Context) error
 	env                 *ExecutionEnvironment
@@ -135,6 +138,7 @@ type controllerHTTPSettings struct {
 func newController() *Controller {
 	return &Controller{
 		workerStarter:   LocalWorkerStarter{},
+		workerExecutor:  NewWorkerCapacityManager(nil),
 		normalAdmission: true,
 		scaleCfg: WorkerScaleConfig{
 			MaxCount:                2,
@@ -309,6 +313,8 @@ func buildControllerServer(
 		return nil, nil, fmt.Errorf("controller repository cache failed: %w", err)
 	}
 	controller.env = executionEnvironment
+	controller.launchResolver = resolver
+	controller.asyncWorkerCapacity = true
 	controller.maxRequestBytes = httpSettings.MaxRequestBytes
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
@@ -317,6 +323,13 @@ func buildControllerServer(
 		}
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
+	}
+	if err := controller.EvaluateWorkerCapacity(context.Background(), now().UTC()); err != nil {
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		workflowStore.Close()
+		return nil, nil, fmt.Errorf("controller worker capacity failed: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -1033,6 +1046,10 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "persist work item", http.StatusInternalServerError)
 		return
 	}
+	if err := c.EvaluateWorkerCapacity(r.Context(), submittedAt); err != nil {
+		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1219,7 +1236,7 @@ func (c *Controller) submitWorkflowHandler(w http.ResponseWriter, r *http.Reques
 			http.Error(w, err.Error(), http.StatusNotImplemented)
 			return
 		}
-		http.Error(w, "persist workflow run", http.StatusInternalServerError)
+		http.Error(w, "workflow admission: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1387,7 +1404,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 
 		result, err := workflow.CompileWorkflowStage(resolver, workflowSubmission.Workflow, plan, 0)
 		if err != nil {
-			return model.SubmissionAcknowledgement{}, err
+			return model.SubmissionAcknowledgement{}, fmt.Errorf("compile initial workflow stage: %w", err)
 		}
 		stageResult = &result
 
@@ -1482,17 +1499,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	}
 
 	if !autoAdvanced {
-		scaleCfg, err := workerScaleConfig(resolver, c.scaleCfg)
-		if err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
-		queuedCount, runningCount, err := c.persistedWorkDemand(ctx)
-		if err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
-		startCount := c.scaler.PlanStarts(submittedAt, queuedCount, runningCount, scaleCfg)
-		c.scaler.RecordStart(submittedAt, startCount, runningCount)
-		if err := c.startWorkers(ctx, resolver, startCount); err != nil {
+		if err := c.EvaluateWorkerCapacity(ctx, submittedAt); err != nil {
 			return model.SubmissionAcknowledgement{}, err
 		}
 	}
@@ -1888,7 +1895,15 @@ func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variab
 
 	workerCfg, err := workerLaunchConfig(resolver)
 	if err != nil {
-		return err
+		launchErr := err
+		var ok bool
+		workerCfg, ok, err = c.workerLaunchConfigFromExecutionEnvironment()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return launchErr
+		}
 	}
 	workerCfg.slurm.Platform = c.env.Dialect
 	if runtime, ok := c.env.Runtime.(WorkerScriptRuntime); ok {
@@ -1912,6 +1927,36 @@ func (c *Controller) startConfiguredWorkers(ctx context.Context, resolver variab
 		}
 	}
 	return nil
+}
+
+func (c *Controller) workerLaunchConfigFromExecutionEnvironment() (workerLaunchConfigSpec, bool, error) {
+	if c == nil || c.env == nil || c.env.Runtime == nil {
+		return workerLaunchConfigSpec{}, false, nil
+	}
+
+	var runtime WorkerRuntime
+	switch configured := c.env.Runtime.(type) {
+	case WorkerRuntime:
+		runtime = configured
+	case SingularityWorkerRuntime:
+		runtime = configured.WorkerRuntime
+	default:
+		return workerLaunchConfigSpec{}, false, nil
+	}
+
+	paths, err := runtime.paths()
+	if err != nil {
+		return workerLaunchConfigSpec{}, false, err
+	}
+	return workerLaunchConfigSpec{
+		scriptPath: paths.WorkerScriptPath,
+		slurm: SlurmWorkerScriptConfig{
+			JobName:          "goetl-worker",
+			WorkerExecutable: paths.WorkerExecutable,
+			WorkerConfigPath: paths.WorkerConfigPath,
+			LogDir:           paths.LogDir,
+		},
+	}, true, nil
 }
 
 func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) ([]model.WorkItem, error) {
@@ -2863,6 +2908,10 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
+			http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
+			return
+		}
 		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2899,6 +2948,10 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
+		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
+		return
 	}
 
 	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
@@ -3194,7 +3247,9 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
+		return
 	}
+	c.ConfirmWorkerStartClaimedAndEvaluateAsync()
 }
 
 func (c *Controller) hydrateCommitDataWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {

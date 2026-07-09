@@ -30,6 +30,9 @@
     {"name": {"namespace": "controller_config", "key": "controller_temp_cleanup_age_milliseconds"}, "type": "int", "expression": 86400000},
     {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_max_size_mb"}, "type": "int", "expression": 10240},
     {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_retention_milliseconds"}, "type": "int", "expression": 604800000},
-    {"name": {"namespace": "controller_config", "key": "controller_storage_min_free_mb"}, "type": "int", "expression": 1024}
+    {"name": {"namespace": "controller_config", "key": "controller_storage_min_free_mb"}, "type": "int", "expression": 1024},
+    {"name": {"namespace": "controller_config", "key": "worker_execution_pattern"}, "type": "string", "expression": "one_by_one_until_saturated"},
+    {"name": {"namespace": "controller_config", "key": "worker_max_active"}, "type": "int", "expression": 2},
+    {"name": {"namespace": "controller_config", "key": "worker_inflight_start_timeout"}, "type": "string", "expression": "5m"}
   ]
 }

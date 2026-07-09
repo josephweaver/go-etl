@@ -150,6 +150,50 @@ func TestCompileFanOutWorkItemsBindsParameterAccessors(t *testing.T) {
 	}
 }
 
+func TestCompileFanOutWorkItemsBindsListParameterAccessor(t *testing.T) {
+	scope, err := variable.NewScope(testObjectListVariable("records",
+		map[string]variable.TypedExpression{
+			"id": {Type: variable.TypeString, Expression: "fixture"},
+			"python_args": {Type: variable.TypeList, Expression: []variable.TypedExpression{
+				{Type: variable.TypeString, Expression: "--input"},
+				{Type: variable.TypeString, Expression: "demo.csv"},
+			}},
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+
+	items, err := CompileFanOutWorkItems(resolver, FanOutWorkItemTemplate{
+		FanOutExpression: "${records[*]}",
+		IDTokenAccessor:  ".id",
+		OutputAccessor:   ".id",
+		Type:             model.WorkItemTypePythonScript,
+		IDPrefix:         "python",
+		OutputPrefix:     "python",
+		OutputExtension:  ".json",
+		Parameters: model.Parameters{
+			"python_args": {Type: "list", Value: []any{}},
+		},
+		ParameterAccessors: map[string]string{
+			"python_args": ".python_args",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args, ok := items[0].Parameters["python_args"].Value.([]any)
+	if !ok {
+		t.Fatalf("python_args parameter type = %T, want []any", items[0].Parameters["python_args"].Value)
+	}
+	if len(args) != 2 || args[0] != "--input" || args[1] != "demo.csv" {
+		t.Fatalf("python_args parameter = %#v", args)
+	}
+}
+
 func TestCompileFanOutWorkItemsPreservesProtectedReferenceParameterAccessor(t *testing.T) {
 	scope, err := variable.NewScope(
 		variable.Variable{
