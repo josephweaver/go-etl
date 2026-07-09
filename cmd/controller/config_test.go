@@ -281,6 +281,9 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		"controller_artifact_cache_max_size_mb",
 		"controller_artifact_cache_retention_milliseconds",
 		"controller_storage_min_free_mb",
+		"worker_execution_pattern",
+		"worker_max_active",
+		"worker_inflight_start_timeout",
 	}
 	actualKeys := make(map[string]bool, len(document.Variables))
 	for _, item := range document.Variables {

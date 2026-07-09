@@ -414,7 +414,7 @@ func bindParameterAccessors(parameters model.Parameters, value variable.Resolved
 			return fmt.Errorf("parameter %s: %w", name, err)
 		}
 
-		parameter.Value = resolved.Value
+		parameter.Value = parameterValueFromResolved(resolved)
 		parameter.Sensitive = resolved.Sensitive
 		parameter.RedactionLabel = resolved.RedactionLabel
 		parameter.ProtectedRef = resolved.ProtectedRef
@@ -422,6 +422,25 @@ func bindParameterAccessors(parameters model.Parameters, value variable.Resolved
 	}
 
 	return nil
+}
+
+func parameterValueFromResolved(value variable.ResolvedValue) any {
+	switch value.Type.Kind {
+	case variable.KindObject:
+		fields := make(map[string]any, len(value.Object))
+		for name, field := range value.Object {
+			fields[name] = parameterValueFromResolved(field)
+		}
+		return fields
+	case variable.KindList:
+		items := make([]any, 0, len(value.List))
+		for _, item := range value.List {
+			items = append(items, parameterValueFromResolved(item))
+		}
+		return items
+	default:
+		return value.Value
+	}
 }
 
 func fanOutTemplateToken(value variable.ResolvedValue, fallbackAccessor string, accessor string) (string, error) {

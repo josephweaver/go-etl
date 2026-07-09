@@ -3274,6 +3274,7 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	controller.workflowStore = store
 	starter := &testWorkerStarter{}
 	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
 	configureTestLocalRepoSource(t, controller, "local:demo", filepath.Join("..", "..", "..", "go-etl-demo-project"))
 
 	submissionPath := filepath.Join("..", "..", "..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
@@ -3389,8 +3390,8 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if claimed.ID == "" || claimed.AttemptID == "" {
 		t.Fatalf("claimed work is incomplete: %+v", claimed)
 	}
-	if starter.calls != 2 {
-		t.Fatalf("worker starter calls = %d, want 2", starter.calls)
+	if starter.calls != 1 {
+		t.Fatalf("worker starter calls = %d, want 1", starter.calls)
 	}
 	if starter.targets[0] != "local" {
 		t.Fatalf("worker starter target = %q, want local", starter.targets[0])
@@ -3798,13 +3799,12 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 	}
 }
 
-func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
+func TestSubmitWorkflowHandlerStartsOneWorkerForInitialClaimableDemand(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
-	controller.scaleCfg = WorkerScaleConfig{MinCount: 2, MaxCount: 2, CountPerStart: 2}
 	root := setupLocalWorkflowSource(t, controller)
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
@@ -3813,12 +3813,12 @@ func TestSubmitWorkflowHandlerStartsPlannedWorkerCount(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 2 {
+	if scheduler.calls != 1 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
 
-func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
+func TestSubmitWorkflowHandlerIgnoresSubmittedWorkerScaleConfig(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
@@ -3853,12 +3853,12 @@ func TestSubmitWorkflowHandlerUsesSubmittedWorkerScaleConfig(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 2 {
+	if scheduler.calls != 1 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
 
-func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
+func TestSubmitWorkflowHandlerIgnoresInvalidSubmittedWorkerScaleConfig(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	controller := newController()
@@ -3878,7 +3878,7 @@ func TestSubmitWorkflowHandlerRejectsInvalidWorkerScaleConfig(t *testing.T) {
 		`)
 
 	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusInternalServerError {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 }
@@ -4341,6 +4341,106 @@ func TestSubmitWorkflowHandlerRejectsInvalidParallelWithBeforeQueueMutation(t *t
 	}
 }
 
+func TestSubmitWorkflowHandlerReportsAdmissionPhaseAndCause(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
+		t,
+		root,
+		`
+			{
+				"name": {"namespace": "workflow", "key": "pair_runs"},
+				"type": "list",
+				"expression": [
+					{"type": "object", "expression": {"id": {"type": "string", "expression": "2010"}}}
+				]
+			}
+		`,
+		"",
+		`
+			{
+				"ID": "pair-counts",
+				"FanOut": {
+					"WorkItem": {
+						"FanOutExpression": "${missing_pair_runs[*]}",
+						"IDTokenAccessor": ".id",
+						"Type": "python_script",
+						"IDPrefix": "field_crop_year_counts",
+						"OutputPrefix": "field_crop_year_counts",
+						"OutputExtension": ".json"
+					}
+				}
+			}
+		`,
+	)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status code = %d, want 500", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "compile initial workflow stage") {
+		t.Fatalf("response body = %q, want admission phase", body)
+	}
+	if !strings.Contains(body, "missing_pair_runs") {
+		t.Fatalf("response body = %q, want underlying compile error", body)
+	}
+}
+
+func TestSubmitWorkflowHandlerAdmitsSyntheticFieldYearCropWorkflow(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	root := setupLocalWorkflowSource(t, controller)
+	writeSyntheticFieldYearCropWorkflowSource(t, root)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode submission acknowledgement: %v", err)
+	}
+	if acknowledgement.SubmissionID == "" {
+		t.Fatal("submission id is empty")
+	}
+
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	if runs[0].ID != acknowledgement.SubmissionID {
+		t.Fatalf("run id = %q, want acknowledgement %q", runs[0].ID, acknowledgement.SubmissionID)
+	}
+
+	stages, err := controller.ListWorkflowStages(context.Background(), acknowledgement.SubmissionID)
+	if err != nil {
+		t.Fatalf("ListWorkflowStages() error = %v", err)
+	}
+	if len(stages) != 2 {
+		t.Fatalf("stage count = %d, want 2", len(stages))
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued work count = %d, want 1 initial item", len(queued))
+	}
+	if queued[0].StageIndex != 0 {
+		t.Fatalf("queued stage index = %d, want 0", queued[0].StageIndex)
+	}
+}
+
 func writeLocalWorkflowSourceWithVariableDeclarationsAndSteps(
 	t *testing.T,
 	root string,
@@ -4493,6 +4593,131 @@ func writeLocalWorkflowSourceWithSteps(t *testing.T, root string, years []int, v
 	}
 }
 
+func writeSyntheticFieldYearCropWorkflowSource(t *testing.T, root string) {
+	t.Helper()
+
+	scriptDir := filepath.Join(root, "field-year-crop", "scripts", "python")
+	if err := os.MkdirAll(scriptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"run_geospatial_pair_counts.py",
+		"summarize_field_crop_counts.py",
+		"field_crop_common.py",
+	} {
+		if err := os.WriteFile(filepath.Join(scriptDir, name), []byte("# synthetic LandCore admission fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	workflowJSON := `{
+		"workflow": {
+			"ID": "local-synthetic-field-crop-year",
+			"Variables": [
+				{
+					"name": {"namespace": "workflow", "key": "pair_runs"},
+					"type": "list",
+					"expression": [
+						{
+							"type": "object",
+							"expression": {
+								"id": {"type": "string", "expression": "2010"},
+								"python_entrypoint": {"type": "path", "expression": "field-year-crop/scripts/python/run_geospatial_pair_counts.py"},
+								"python_args": {
+									"type": "list",
+									"expression": [
+										{"type": "string", "expression": "--field-raster=/tmp/landcore-field-year-crop/local-synthetic/field.tif"},
+										{"type": "string", "expression": "--value-raster=/tmp/landcore-field-year-crop/local-synthetic/cdl.tif"},
+										{"type": "string", "expression": "--year=2010"},
+										{"type": "string", "expression": "--geospatial-executable=goet-geospatial"}
+									]
+								}
+							}
+						}
+					]
+				},
+				{
+					"name": {"namespace": "workflow", "key": "summary_runs"},
+					"type": "list",
+					"expression": [
+						{
+							"type": "object",
+							"expression": {
+								"id": {"type": "string", "expression": "2010"},
+								"python_entrypoint": {"type": "path", "expression": "field-year-crop/scripts/python/summarize_field_crop_counts.py"},
+								"python_args": {
+									"type": "list",
+									"expression": [
+										{"type": "string", "expression": "--counts-csv=/tmp/landcore-field-year-crop/local-synthetic/field_crop_year_counts.csv"},
+										{"type": "string", "expression": "--year=2010"}
+									]
+								}
+							}
+						}
+					]
+				}
+			],
+			"Steps": [
+				{
+					"ID": "pair-counts",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${pair_runs[*]}",
+							"IDTokenAccessor": ".id",
+							"OutputAccessor": ".id",
+							"Type": "python_script",
+							"IDPrefix": "field_crop_year_counts",
+							"OutputPrefix": "field_crop_year_counts",
+							"OutputExtension": ".json",
+							"Parameters": {
+								"python_entrypoint": {"type": "path", "expression": "field-year-crop/scripts/python/run_geospatial_pair_counts.py"},
+								"python_args": {"type": "list", "expression": [{"type": "string", "expression": "unused"}]}
+							},
+							"ParameterAccessors": {
+								"python_entrypoint": ".python_entrypoint",
+								"python_args": ".python_args"
+							}
+						}
+					}
+				},
+				{
+					"ID": "summarize",
+					"FanOut": {
+						"WorkItem": {
+							"FanOutExpression": "${summary_runs[*]}",
+							"IDTokenAccessor": ".id",
+							"OutputAccessor": ".id",
+							"Type": "python_script",
+							"IDPrefix": "field_crop_year_summary",
+							"OutputPrefix": "field_crop_year_summary",
+							"OutputExtension": ".json",
+							"Parameters": {
+								"python_entrypoint": {"type": "path", "expression": "field-year-crop/scripts/python/summarize_field_crop_counts.py"},
+								"python_args": {"type": "list", "expression": [{"type": "string", "expression": "unused"}]}
+							},
+							"ParameterAccessors": {
+								"python_entrypoint": ".python_entrypoint",
+								"python_args": ".python_args"
+							}
+						}
+					}
+				}
+			]
+		},
+		"source_manifest": {
+			"files": [
+				{"role": "python_entrypoint", "path": "field-year-crop/scripts/python/run_geospatial_pair_counts.py", "content_type": "text/x-python"},
+				{"role": "python_entrypoint", "path": "field-year-crop/scripts/python/summarize_field_crop_counts.py", "content_type": "text/x-python"},
+				{"role": "support_file", "path": "field-year-crop/scripts/python/field_crop_common.py", "content_type": "text/x-python"}
+			]
+		},
+		"variables": []
+	}`
+	if err := os.WriteFile(filepath.Join(root, "workflows", "demo-workflow.json"), []byte(workflowJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func submitLocalWorkflowSource(t *testing.T, controller *Controller) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -4541,7 +4766,34 @@ func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
 		Dialect:   BashShellPlatform{},
 		Scheduler: scheduler,
 	}
+	controller.launchResolver = testWorkerLaunchResolver()
 	return controller
+}
+
+func testWorkerLaunchResolver() variable.Resolver {
+	var variables []variable.Variable
+	if err := json.Unmarshal([]byte("["+testSlurmWorkerVariables+"]"), &variables); err != nil {
+		panic(err)
+	}
+	scope, err := variable.NewScope(variables...)
+	if err != nil {
+		panic(err)
+	}
+	return variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+}
+
+func testLocalWorkerLaunchResolver() variable.Resolver {
+	scope, err := variable.NewScope(variable.Variable{
+		Name: variable.Name{Namespace: variable.NamespaceWorkerConfig, Key: "worker_target_environment"},
+		TypedExpression: variable.TypedExpression{
+			Type:       variable.TypeString,
+			Expression: "local",
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
 }
 
 func TestSubmitWorkflowHandlerRejectsInvalidPayload(t *testing.T) {
