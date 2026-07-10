@@ -12,6 +12,7 @@ Concept link for its authoritative scope.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
 - [Canonical JSON Variable Loading](canonical-json-variable-loading/README.md) - Load controller, project, workflow, and override JSON into implicit typed namespaces using canonical JSON value shapes.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
+- [Enhanced Python Worker](enhanced-python-worker/README.md) - Add a Python worker runtime with common dependencies, mounted `.venv` selection, and explicit `python-create-env` work items.
 - [Geospatial Worker Plugins](geospatial-worker-plugins/README.md) - Add GDAL-backed geospatial operations and fixture smoke coverage for CDL/Yan/Roy-style raster workflows.
 - [SSH Refinement](ssh-refinement/README.md) - Add ProxyJump support, laptop-controller callback tunnels, and safer SSH config ergonomics for real HPCC runs.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
