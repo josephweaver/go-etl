@@ -1,0 +1,199 @@
+# OS-009: Network Security and External Smoke
+
+Status: Proposed  
+Minimum recommended model: GPT-5.5 with high reasoning  
+Reference: EC-4 / operational slice / tests+fixtures+runbook
+
+## Objective
+
+Prove the secure network boundary end to end, including negative authorization,
+credential non-disclosure, HTTPS ingress, and a real worker callback outside the
+controller host.
+
+## Test Layers
+
+### Layer 1: Pure authorization
+
+Cover every registered route and method:
+
+```text
+public
+missing credential
+invalid credential
+client
+worker
+admin
+unknown route
+wrong method
+```
+
+Assertions include status code and whether the underlying handler ran.
+
+### Layer 2: Controller HTTP integration
+
+Start an in-process controller with test credentials and verify:
+
+- public health;
+- authenticated status;
+- workflow admission;
+- worker claim;
+- completion;
+- failure;
+- logs/source-bundle policy;
+- admin shutdown;
+- recovery-mode interaction;
+- request-size behavior remains intact.
+
+### Layer 3: TLS client integration
+
+Use `httptest.NewTLSServer` or an equivalent local TLS fixture to verify:
+
+- standard trusted test client succeeds;
+- untrusted certificate fails safely;
+- HTTPS base URL handling;
+- redirect rejection;
+- authorization header does not cross origins.
+
+### Layer 4: Fake HPCC HTTPS smoke
+
+Run:
+
+```text
+controller -> HTTPS ingress fixture -> fake HPCC worker
+```
+
+The worker must:
+
+- read its token from a file;
+- claim work;
+- run a fixture;
+- report completion;
+- leave no token sentinel in generated config, logs, output, or persistence.
+
+### Layer 5: Laptop external smoke
+
+Manual or guarded integration run:
+
+```text
+laptop controller
+  -> managed HTTPS test ingress
+  -> request from unrelated network or HPCC compute allocation
+```
+
+Prove:
+
+- `/healthz` externally;
+- unauthorized protected route returns `401`;
+- authenticated worker reaches controller;
+- no SSH reverse callback tunnel is active;
+- one tiny assignment completes.
+
+### Layer 6: Production-like server smoke
+
+On a Linux VM/container-host fixture:
+
+```text
+public/staged HTTPS
+  -> Caddy or equivalent
+  -> loopback controller
+```
+
+Verify only 80/443 are exposed for API ingress and 8080 is unavailable remotely.
+
+## Credential Sentinel
+
+Use a distinctive test value such as:
+
+```text
+goet-controller-auth-sentinel-009-do-not-persist
+```
+
+After every controlled smoke, inspect:
+
+- controller stdout/stderr;
+- controller filesystem logs;
+- worker stdout/stderr;
+- worker logs;
+- generated worker JSON;
+- Slurm script;
+- status/submission JSON;
+- structured outputs;
+- SQLite text/blob fields;
+- ingress access logs;
+- test artifacts under GORC control.
+
+The exact sentinel must be absent except in the intentionally created restrictive
+credential fixture file.
+
+## Failure Cases
+
+Test or document:
+
+- missing credential;
+- wrong role;
+- expired/rotated token represented by an invalid old token;
+- unreadable worker token file;
+- controller unavailable;
+- ingress unavailable;
+- laptop sleeps or ingress exits;
+- DNS name resolves but endpoint is unreachable;
+- TLS certificate not trusted;
+- public URL changed after worker launch;
+- non-loopback startup with authentication disabled;
+- plain external HTTP URL;
+- reverse proxy strips `Authorization`;
+- cross-origin redirect;
+- oversized error response;
+- controller shutdown requested by non-admin.
+
+## Required Context
+
+Read first:
+
+- all implemented slices in this concept;
+- fake HPCC runbook;
+- test and smoke status;
+- SSH callback preflight;
+- sensitive-variable sentinel tests;
+- controller persistence inspection helpers.
+
+## Allowed Production/Test Files
+
+- `internal/controllerauth/*_test.go`
+- `internal/controllerhttp/*_test.go`
+- `cmd/controller/*_test.go`
+- `cmd/worker/*_test.go`
+- fake-HPCC smoke fixtures/scripts
+- `scripts/network/smoke-controller-endpoint`
+- `docs/deployment/laptop-test-controller-ingress.md`
+- `docs/deployment/dedicated-controller-server.md`
+- `docs/TEST_AND_SMOKE_STATUS.md` only after evidence exists
+- this concept README only for tracker/status updates
+
+Do not weaken production code solely to simplify a test.
+
+## Acceptance Criteria
+
+- Complete route-role matrix passes.
+- Token sentinels are absent from controlled surfaces.
+- Cross-origin credential forwarding is impossible.
+- Worker token-file failure is safe and actionable.
+- Fake HPCC completes through authenticated HTTPS.
+- Laptop external test completes without SSH reverse callback tunneling.
+- A request from the actual Slurm compute context reaches `/healthz` and performs
+  an authenticated worker operation where site policy permits.
+- Production-like ingress keeps 8080 private.
+- Existing SSH execution and Slurm submission tests remain green.
+- Evidence and exact commands are recorded in the smoke-status document.
+
+## Stop Conditions
+
+Stop and append to `issues.md` if:
+
+- the token appears outside the intended credential file/in-memory boundary;
+- external ingress strips authorization;
+- an endpoint is missing from the route matrix;
+- a state-changing request must be automatically retried;
+- the HPCC compute network blocks the selected public HTTPS endpoint;
+- laptop ingress is being treated as production evidence;
+- port 8080 is publicly reachable in the production-like profile.

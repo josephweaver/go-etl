@@ -31,7 +31,12 @@ basic POSIX shell utilities used by worker scripts
 ## Configuration Boundary
 
 The image should not bake workflow-specific source files or private credentials.
-The environment root is mounted at runtime and is not part of the image.
+The Python environment Data Asset materialization root is mounted at runtime and
+is not part of the image.
+
+The image must expose enough runtime fingerprint information for environment
+asset identity, including Python major/minor version, platform/architecture, and
+the GDAL version when GDAL-backed Python packages are expected.
 
 ## Validation
 
@@ -45,6 +50,7 @@ osgeo.gdal import
 gdalinfo
 7z/7za/7zr
 goet worker
+runtime fingerprint
 ```
 
 ## Stop Conditions
