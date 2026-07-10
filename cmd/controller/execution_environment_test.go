@@ -165,7 +165,6 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 				"image_path":                  "/tmp/goetl/images/goetl-worker.sif",
 				"container_worker_executable": "/goetl/goetl-worker",
 				"singularity_executable":      "singularity",
-				"bind":                        "/tmp/goetl:/data/goetl",
 			},
 		},
 	})
@@ -182,6 +181,25 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 	}
 	if runtime.ImagePath != "/tmp/goetl/images/goetl-worker.sif" {
 		t.Fatalf("image path = %q, want configured image path", runtime.ImagePath)
+	}
+	script, err := runtime.WorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/tmp/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/tmp/goetl/config/worker.json",
+		LogDir:           "/tmp/goetl/logs",
+	})
+	if err != nil {
+		t.Fatalf("worker script: %v", err)
+	}
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/tmp/goetl:/tmp/goetl",
+		"/tmp/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
 	}
 }
 

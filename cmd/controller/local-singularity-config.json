@@ -48,8 +48,7 @@
         "controller_url": "http://localhost:8080",
         "singularity_executable": "singularity",
         "image_path": "docker-archive:/tmp/goetl-worker-dev.tar",
-        "container_worker_executable": "/goetl/goetl-worker",
-        "bind": "/tmp/goetl-local-singularity:/tmp/goetl-local-singularity"
+        "container_worker_executable": "/goetl/goetl-worker"
       }
     }
   }

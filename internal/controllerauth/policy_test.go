@@ -270,3 +270,67 @@ func TestControllerPolicyClassify(t *testing.T) {
 		})
 	}
 }
+
+func TestControllerPolicyRouteRoleMatrix(t *testing.T) {
+	policy := ControllerPolicy()
+
+	routes := []struct {
+		name         string
+		method       string
+		path         string
+		public       bool
+		allowedRoles []Role
+	}{
+		{name: "health", method: http.MethodGet, path: "/healthz", public: true},
+		{name: "workflow submission", method: http.MethodPost, path: "/workflow", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "source bundle", method: http.MethodGet, path: "/workflow-runs/run-1/source-bundle.zip", allowedRoles: []Role{RoleClient, RoleWorker, RoleAdmin}},
+		{name: "submission status", method: http.MethodGet, path: "/submissions/submission-1/status", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "submission logs", method: http.MethodGet, path: "/submissions/submission-1/logs", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "raw work submission", method: http.MethodPost, path: "/work", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "worker claim", method: http.MethodGet, path: "/work/next", allowedRoles: []Role{RoleWorker, RoleAdmin}},
+		{name: "worker complete", method: http.MethodPost, path: "/work/complete", allowedRoles: []Role{RoleWorker, RoleAdmin}},
+		{name: "worker fail", method: http.MethodPost, path: "/work/fail", allowedRoles: []Role{RoleWorker, RoleAdmin}},
+		{name: "controller status", method: http.MethodGet, path: "/status", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "observation logs", method: http.MethodGet, path: "/observations/logs", allowedRoles: []Role{RoleClient, RoleAdmin}},
+		{name: "shutdown", method: http.MethodPost, path: "/shutdown", allowedRoles: []Role{RoleAdmin}},
+	}
+	roles := []Role{"", RoleClient, RoleWorker, RoleAdmin}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			for _, role := range roles {
+				got := policy.Authorize(route.method, route.path, role)
+				want := DecisionDenied
+				if route.public {
+					want = DecisionPublic
+				} else if roleAllowed(role, route.allowedRoles) {
+					want = DecisionAllowed
+				}
+				if got != want {
+					t.Fatalf("Authorize(%q, %q, %q) = %q, want %q", route.method, route.path, role, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestControllerPolicyUnknownAndWrongMethodMatrix(t *testing.T) {
+	policy := ControllerPolicy()
+	for _, role := range []Role{"", RoleClient, RoleWorker, RoleAdmin} {
+		if got := policy.Authorize(http.MethodGet, "/not-a-controller-route", role); got != DecisionNotFound {
+			t.Fatalf("Authorize unknown route as %q = %q, want %q", role, got, DecisionNotFound)
+		}
+		if got := policy.Authorize(http.MethodDelete, "/status", role); got != DecisionMethodNotAllowed {
+			t.Fatalf("Authorize wrong method as %q = %q, want %q", role, got, DecisionMethodNotAllowed)
+		}
+	}
+}
+
+func roleAllowed(role Role, allowed []Role) bool {
+	for _, candidate := range allowed {
+		if role == candidate {
+			return true
+		}
+	}
+	return false
+}

@@ -1,7 +1,7 @@
 # OS-009: Network Security and External Smoke
 
-Status: Proposed  
-Minimum recommended model: GPT-5.5 with high reasoning  
+Status: Implemented
+Minimum recommended model: GPT-5.5 with high reasoning
 Reference: EC-4 / operational slice / tests+fixtures+runbook
 
 ## Objective
@@ -185,6 +185,38 @@ Do not weaken production code solely to simplify a test.
 - Production-like ingress keeps 8080 private.
 - Existing SSH execution and Slurm submission tests remain green.
 - Evidence and exact commands are recorded in the smoke-status document.
+
+## Implementation State
+
+Partial OS-009 evidence exists in `docs/TEST_AND_SMOKE_STATUS.md`:
+
+- focused automated route-role and controller HTTP client tests pass;
+- a Google Compute Engine VM at `34.10.225.164` serves the controller through
+  trusted HTTPS at `https://34-10-225-164.sslip.io`;
+- public TCP `80` and `443` are reachable while `8080` is not reachable
+  externally;
+- the controller process listens on `127.0.0.1:8080`;
+- public `/healthz`, unauthenticated protected-route rejection, authenticated
+  status, and HTTP-to-HTTPS redirect smoke checks pass;
+- an external worker process on the development machine claimed and completed a
+  `write_demo_output` item through the VM HTTPS endpoint;
+- a current `goetl-worker.sif` was built from `containers/goetl-worker`, verified
+  with SingularityCE, and staged on the dedicated controller VM at
+  `/opt/gorc/images/goetl-worker.sif`;
+- the `singularity_worker` runtime now defaults an omitted `bind` setting to
+  `<runtime root>:<runtime root>`, keeping generated worker config, token file,
+  logs, temp, data, and cache paths under one root mounted into the container;
+- the dedicated VM scheduled an actual HPCC Slurm worker through SSH transport;
+- the HPCC Slurm job ran the staged Singularity image, claimed
+  `os009-hpcc-worker-001` through the VM HTTPS endpoint, wrote
+  `os009-hpcc-worker-001.txt`, and reported completion;
+- the OS-009 sentinel is absent from controlled logs, local worker artifacts, VM
+  OS-009 state files, VM journal output, HPCC runtime files outside the worker
+  token file, and SQLite state outside credential fixture files.
+
+Remaining gap:
+
+- no OS-009 external smoke evidence gap remains open.
 
 ## Stop Conditions
 

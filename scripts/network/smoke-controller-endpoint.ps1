@@ -15,6 +15,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Add-Type -AssemblyName System.Net.Http
 
 function Write-Usage {
     @'

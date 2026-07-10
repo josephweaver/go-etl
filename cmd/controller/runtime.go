@@ -481,10 +481,18 @@ func (r SingularityWorkerRuntime) WorkerScript(cfg SlurmWorkerScriptConfig) (Slu
 	if containsNewline(r.ImagePath) || containsNewline(r.ContainerWorkerExecutable) || containsNewline(r.Bind) {
 		return SlurmWorkerScriptConfig{}, fmt.Errorf("singularity runtime values must not contain newlines")
 	}
+	bind := r.Bind
+	if bind == "" {
+		paths, err := r.paths()
+		if err != nil {
+			return SlurmWorkerScriptConfig{}, err
+		}
+		bind = paths.Root + ":" + paths.Root
+	}
 
 	args := []string{"exec"}
-	if r.Bind != "" {
-		args = append(args, "--bind", r.Bind)
+	if bind != "" {
+		args = append(args, "--bind", bind)
 	}
 	args = append(args, r.ImagePath, r.ContainerWorkerExecutable)
 	args = append(args, cfg.WorkerArgs...)

@@ -487,6 +487,37 @@ func TestSingularityWorkerRuntimeWorkerScript(t *testing.T) {
 	}
 }
 
+func TestSingularityWorkerRuntimeWorkerScriptBindsRuntimeRootByDefault(t *testing.T) {
+	runtime := SingularityWorkerRuntime{
+		WorkerRuntime: WorkerRuntime{
+			Root: "/data/goetl",
+		},
+		ImagePath:                 "/data/goetl/images/goetl-worker.sif",
+		ContainerWorkerExecutable: "/goetl/goetl-worker",
+	}
+
+	cfg, err := runtime.WorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/data/goetl/config/worker.json",
+		LogDir:           "/data/goetl/logs",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/data/goetl:/data/goetl",
+		"/data/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(cfg.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", cfg.WorkerArgs, wantArgs)
+	}
+}
+
 func TestSingularityWorkerRuntimeWorkerScriptRequiresImage(t *testing.T) {
 	_, err := (SingularityWorkerRuntime{
 		ContainerWorkerExecutable: "/goetl/goetl-worker",

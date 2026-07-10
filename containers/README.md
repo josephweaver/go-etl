@@ -40,8 +40,18 @@ The expected production entrypoint is:
 The expected HPCC/Singularity command shape is:
 
 ```bash
-singularity exec goetl-worker.sif /goetl/goetl-worker /data/goetl/config/worker.json
+singularity exec \
+  --bind /data/goetl:/data/goetl \
+  goetl-worker.sif \
+  /goetl/goetl-worker \
+  /data/goetl/config/worker.json
 ```
+
+The controller's `singularity_worker` runtime binds the runtime root to the same
+absolute path inside the container when `runtime.settings.bind` is omitted. For
+example, a runtime root of `/data/goetl` produces `--bind /data/goetl:/data/goetl`.
+Use an explicit `bind` value only when the host and container paths intentionally
+differ.
 
 For local WSL testing with SingularityCE installed, export the Docker image to a
 Docker archive:
@@ -55,6 +65,13 @@ The local Singularity controller fixture uses that archive through:
 
 ```text
 docker-archive:/tmp/goetl-worker-dev.tar
+```
+
+To build a SIF from the local Docker image:
+
+```bash
+docker save -o /tmp/goetl-worker-dev.tar goetl/worker:dev
+singularity build /tmp/goetl-worker.sif docker-archive:/tmp/goetl-worker-dev.tar
 ```
 
 Run the local controller-to-Singularity worker demo from WSL:

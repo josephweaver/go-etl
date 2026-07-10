@@ -2,8 +2,15 @@ package controllerhttp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -281,6 +288,90 @@ func TestDoAllowsSameOriginRedirect(t *testing.T) {
 	}
 }
 
+func TestDoUsesTrustedHTTPSFixture(t *testing.T) {
+	var sawAuthorization string
+	server := newTrustedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	token, err := NewSensitiveToken("client-secret")
+	if err != nil {
+		t.Fatalf("NewSensitiveToken() error = %v", err)
+	}
+	client, err := New(Config{
+		BaseURL: server.URL,
+		HTTP: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			// This test fixture uses explicit verification so it can exercise a
+			// local trusted HTTPS path without installing a CA in the OS trust store.
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+			VerifyConnection: func(state tls.ConnectionState) error {
+				if len(state.PeerCertificates) == 0 {
+					return errors.New("server did not provide a certificate")
+				}
+				return state.PeerCertificates[0].VerifyHostname("127.0.0.1")
+			},
+		}}},
+		Token: NewStaticTokenProvider(token),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	transport, ok := client.http.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || transport.TLSClientConfig.VerifyConnection == nil {
+		t.Fatalf("trusted test transport was not preserved")
+	}
+	request, err := client.NewRequest(context.Background(), http.MethodGet, "/status", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	response, err := client.Do(request, http.StatusNoContent)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer response.Body.Close()
+	if sawAuthorization != "Bearer client-secret" {
+		t.Fatalf("Authorization = %q", sawAuthorization)
+	}
+}
+
+func TestDoRejectsUntrustedHTTPSFixture(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	token, err := NewSensitiveToken("client-secret")
+	if err != nil {
+		t.Fatalf("NewSensitiveToken() error = %v", err)
+	}
+	client, err := New(Config{
+		BaseURL: server.URL,
+		Token:   NewStaticTokenProvider(token),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	request, err := client.NewRequest(context.Background(), http.MethodGet, "/status", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	response, err := client.Do(request, http.StatusNoContent)
+	if response != nil {
+		response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected untrusted certificate error")
+	}
+	if strings.Contains(err.Error(), "client-secret") {
+		t.Fatalf("error leaked token: %q", err.Error())
+	}
+}
+
 func TestDoHonorsContextCancellation(t *testing.T) {
 	token, err := NewSensitiveToken("client-secret")
 	if err != nil {
@@ -318,5 +409,93 @@ func TestPathJoinEscapesSegments(t *testing.T) {
 	}
 	if !strings.Contains(path, "sub%201") {
 		t.Fatalf("path = %q, want escaped segment", path)
+	}
+}
+
+type trustedTLSServer struct {
+	URL      string
+	server   *http.Server
+	listener net.Listener
+}
+
+func (s *trustedTLSServer) Close() {
+	_ = s.server.Close()
+	_ = s.listener.Close()
+}
+
+func newTrustedTLSServer(t *testing.T, handler http.Handler) *trustedTLSServer {
+	t.Helper()
+
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "goetl test CA"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		MaxPathLenZero:        true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA certificate: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA certificate: %v", err)
+	}
+
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create server certificate: %v", err)
+	}
+	serverCert, err := x509.ParseCertificate(serverDER)
+	if err != nil {
+		t.Fatalf("parse server certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+	if _, err := serverCert.Verify(x509.VerifyOptions{Roots: roots, DNSName: "127.0.0.1"}); err != nil {
+		t.Fatalf("verify generated server certificate: %v", err)
+	}
+	certificate := tls.Certificate{
+		Certificate: [][]byte{serverDER, caDER},
+		PrivateKey:  serverKey,
+		Leaf:        serverCert,
+	}
+
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("listen TLS fixture: %v", err)
+	}
+	server := &http.Server{Handler: handler}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	return &trustedTLSServer{
+		URL:      "https://" + listener.Addr().String(),
+		server:   server,
+		listener: listener,
 	}
 }
