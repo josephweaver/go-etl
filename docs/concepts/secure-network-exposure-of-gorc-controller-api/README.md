@@ -124,7 +124,7 @@ The first secure network boundary should use role-scoped bearer credentials:
 |---|---|---|
 | `client` | CLI or trusted automation | Submit workflows/raw work; read status, logs, and permitted source artifacts |
 | `worker` | GORC worker runtime | Claim work; report completion/failure; send worker observations; obtain worker-required controller artifacts |
-| `admin` | Operator | Administrative operations, especially shutdown; may be treated as a superset where explicitly documented |
+| `admin` | Operator | Administrative operations, especially shutdown; phase 1 treats admin as a reviewed superset where the route policy table lists it |
 
 `/healthz` may remain unauthenticated, but it must disclose only minimal liveness
 information.
@@ -284,44 +284,77 @@ Rules:
 
 ## Candidate Authentication Configuration
 
-The exact JSON placement should follow the repository's canonical configuration
-direction. A top-level object is shown because `execution_environment` already
-uses a structured top-level contract and credential sources are not ordinary
-workflow variables.
+Controller API authentication is a structured typed variable, not a raw-token
+top-level JSON field. The controller resolves it from:
+
+```text
+controller_config.authentication
+```
+
+The safe local default belongs in `cmd/controller/defaults.json`:
 
 ```json
 {
-  "api_version": "goet/v1alpha1",
-  "kind": "Controller",
-  "variables": [
-    {
-      "name": {
-        "namespace": "controller_config",
-        "key": "controller_url"
-      },
-      "type": "string",
-      "expression": "https://controller.example.org"
+  "name": {"namespace": "controller_config", "key": "authentication"},
+  "type": "object",
+  "expression": {
+    "mode": {"type": "string", "expression": "disabled"},
+    "credentials": {"type": "list", "expression": []}
+  }
+}
+```
+
+The explicit test-only advertised-HTTP override also belongs in
+`cmd/controller/defaults.json` and defaults to `false`:
+
+```json
+{
+  "name": {
+    "namespace": "controller_config",
+    "key": "controller_insecure_external_http_allowed"
+  },
+  "type": "bool",
+  "expression": false
+}
+```
+
+A bearer controller configuration supplies an overriding typed variable:
+
+```json
+{
+  "name": {"namespace": "controller_config", "key": "authentication"},
+  "type": "object",
+  "expression": {
+    "mode": {"type": "string", "expression": "bearer"},
+    "credentials": {
+      "type": "list",
+      "expression": [
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "primary-client"},
+            "role": {"type": "string", "expression": "client"},
+            "token_env": {"type": "string", "expression": "GOET_CONTROLLER_CLIENT_TOKEN"}
+          }
+        },
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "hpcc-workers"},
+            "role": {"type": "string", "expression": "worker"},
+            "token_env": {"type": "string", "expression": "GOET_CONTROLLER_WORKER_TOKEN"}
+          }
+        },
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "operator"},
+            "role": {"type": "string", "expression": "admin"},
+            "token_file": {"type": "path", "expression": "/etc/goet/secrets/controller-admin-token"}
+          }
+        }
+      ]
     }
-  ],
-  "authentication": {
-    "mode": "bearer",
-    "credentials": [
-      {
-        "id": "primary-client",
-        "role": "client",
-        "token_env": "GOET_CONTROLLER_CLIENT_TOKEN"
-      },
-      {
-        "id": "hpcc-workers",
-        "role": "worker",
-        "token_env": "GOET_CONTROLLER_WORKER_TOKEN"
-      },
-      {
-        "id": "operator",
-        "role": "admin",
-        "token_file": "/etc/goet/secrets/controller-admin-token"
-      }
-    ]
   }
 }
 ```
@@ -333,11 +366,23 @@ Requirements:
 - empty tokens are rejected;
 - duplicate token material across roles is rejected;
 - raw token values are never rendered;
+- unknown authentication fields are rejected;
 - configured tokens are transformed into constant-time comparison material in
   memory;
 - authentication-disabled mode is rejected for non-loopback listeners;
-- external advertised HTTP URLs require an explicit test-only insecure override;
+- plain external advertised HTTP URLs require
+  `controller_config.controller_insecure_external_http_allowed = true`;
 - HTTPS is required for laptop external testing and production.
+
+Loopback classification is deterministic and does not perform DNS lookup:
+
+- listen hosts `localhost`, `127.0.0.0/8`, and `::1` are loopback;
+- listen hosts `0.0.0.0`, `::`, any non-loopback IP literal, and any hostname
+  other than `localhost` are non-loopback;
+- advertised `http://localhost`, `http://127.x.x.x`, and `http://[::1]` URLs are
+  local HTTP URLs;
+- advertised `http://` URLs with any other host require the explicit insecure
+  override.
 
 ## Candidate Worker Configuration
 
@@ -363,19 +408,23 @@ not required to establish the HTTP contract.
 
 ## Route Authorization Policy
 
-The implementation must inventory actual route callers before finalizing the
-table. The initial policy is:
+Every registered route and method must have an explicit policy. The OS-001 route
+contract is:
 
-| Route family | Initial role |
-|---|---|
-| `GET /healthz` | public |
-| workflow/raw-work admission | `client` or `admin` |
-| submission status and logs | `client` or `admin` |
-| controller status | `client` or `admin` |
-| work claim/complete/fail | `worker` or `admin` |
-| worker observations | `worker` or `admin` |
-| worker-required source bundles | `worker` or `admin`; add `client` only if current CLI behavior requires it |
-| shutdown | `admin` only |
+| Method | Route | Access |
+|---|---|---|
+| `GET` | `/healthz` | public |
+| `POST` | `/workflow` | `client`, `admin` |
+| `GET` | `/workflow-runs/{run}/source-bundle.zip` | `client`, `worker`, `admin` |
+| `GET` | `/submissions/{id}/status` | `client`, `admin` |
+| `GET` | `/submissions/{id}/logs` | `client`, `admin` |
+| `POST` | `/work` | `client`, `admin` |
+| `GET` | `/work/next` | `worker`, `admin` |
+| `POST` | `/work/complete` | `worker`, `admin` |
+| `POST` | `/work/fail` | `worker`, `admin` |
+| `GET` | `/status` | `client`, `admin` |
+| `GET` | `/observations/logs` | `client`, `admin` |
+| `POST` | `/shutdown` | `admin` |
 
 Existing callback preflight should use the minimal public `/healthz` endpoint rather
 than relying on authenticated `/status`.
@@ -538,7 +587,7 @@ credential propagation, retry/idempotency issue, or deployment assumption that
 cannot be proven, stop and append it to:
 
 ```text
-docs/concepts/secure-network-exposure-of-controller-api/issues.md
+docs/concepts/secure-network-exposure-of-gorc-controller-api/issues.md
 ```
 
 Do not silently:
