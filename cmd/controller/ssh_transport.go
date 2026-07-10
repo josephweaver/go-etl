@@ -10,12 +10,14 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 const (
@@ -28,6 +30,21 @@ const (
 )
 
 type SSHTransportConfig struct {
+	Host           string              `json:"host"`
+	Port           int                 `json:"port,omitempty"`
+	User           string              `json:"user"`
+	IdentityFile   string              `json:"identity_file,omitempty"`
+	IdentityEnv    string              `json:"identity_env,omitempty"`
+	KnownHostsFile string              `json:"known_hosts_file,omitempty"`
+	HostKeyPolicy  string              `json:"host_key_policy,omitempty"`
+	PinnedHostKey  string              `json:"pinned_host_key,omitempty"`
+	ConnectTimeout string              `json:"connect_timeout,omitempty"`
+	CommandTimeout string              `json:"command_timeout,omitempty"`
+	KeepAlive      bool                `json:"keep_alive,omitempty"`
+	JumpHosts      []SSHJumpHostConfig `json:"jump_hosts,omitempty"`
+}
+
+type SSHJumpHostConfig struct {
 	Host           string `json:"host"`
 	Port           int    `json:"port,omitempty"`
 	User           string `json:"user"`
@@ -36,15 +53,13 @@ type SSHTransportConfig struct {
 	KnownHostsFile string `json:"known_hosts_file,omitempty"`
 	HostKeyPolicy  string `json:"host_key_policy,omitempty"`
 	PinnedHostKey  string `json:"pinned_host_key,omitempty"`
-	ConnectTimeout string `json:"connect_timeout,omitempty"`
-	CommandTimeout string `json:"command_timeout,omitempty"`
-	KeepAlive      bool   `json:"keep_alive,omitempty"`
 }
 
 type SSHTransport struct {
-	Config  SSHTransportConfig
-	Dialect ShellDialect
-	client  *ssh.Client
+	Config      SSHTransportConfig
+	Dialect     ShellDialect
+	client      *ssh.Client
+	jumpClients []*ssh.Client
 }
 
 type RemoteFileInfo struct {
@@ -58,10 +73,8 @@ func (t *SSHTransport) Connect(ctx context.Context) error {
 	if err := t.Config.Validate(); err != nil {
 		return err
 	}
-
-	clientConfig, err := t.sshClientConfig()
-	if err != nil {
-		return err
+	if t.client != nil || len(t.jumpClients) > 0 {
+		_ = t.Close()
 	}
 
 	dialCtx, cancel, err := t.connectContext(ctx)
@@ -70,29 +83,62 @@ func (t *SSHTransport) Connect(ctx context.Context) error {
 	}
 	defer cancel()
 
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", t.address())
-	if err != nil {
-		return fmt.Errorf("ssh connect to %s: %w", t.address(), err)
+	dial := func(ctx context.Context, network string, address string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
 
-	sshConn, channels, requests, err := ssh.NewClientConn(conn, t.address(), clientConfig)
-	if err != nil {
-		_ = conn.Close()
-		return fmt.Errorf("ssh handshake with %s: %w", t.address(), err)
+	jumpClients := make([]*ssh.Client, 0, len(t.Config.JumpHosts))
+	closeJumpClients := func() {
+		for index := len(jumpClients) - 1; index >= 0; index-- {
+			_ = jumpClients[index].Close()
+		}
 	}
 
-	t.client = ssh.NewClient(sshConn, channels, requests)
+	for index := range t.Config.JumpHosts {
+		endpoint := t.Config.jumpHostEndpoint(index)
+		jumpClient, err := connectSSHEndpoint(dialCtx, endpoint, dial)
+		if err != nil {
+			closeJumpClients()
+			return fmt.Errorf("ssh connect jump_hosts[%d] %s: %w", index, sshAddress(endpoint), err)
+		}
+		jumpClients = append(jumpClients, jumpClient)
+		hopIndex := index
+		dial = func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return dialSSHClient(ctx, jumpClients[hopIndex], network, address)
+		}
+	}
+
+	targetClient, err := connectSSHEndpoint(dialCtx, t.Config.targetEndpoint(), dial)
+	if err != nil {
+		closeJumpClients()
+		if len(t.Config.JumpHosts) > 0 {
+			lastHop := t.Config.jumpHostEndpoint(len(t.Config.JumpHosts) - 1)
+			return fmt.Errorf("ssh connect target %s through jump_hosts[%d] %s: %w", t.address(), len(t.Config.JumpHosts)-1, sshAddress(lastHop), err)
+		}
+		return err
+	}
+
+	t.client = targetClient
+	t.jumpClients = jumpClients
 	return nil
 }
 
 func (t *SSHTransport) Close() error {
+	var closeErr error
 	if t.client == nil {
-		return nil
+		closeErr = nil
+	} else {
+		closeErr = t.client.Close()
+		t.client = nil
 	}
 
-	err := t.client.Close()
-	t.client = nil
-	return err
+	for index := len(t.jumpClients) - 1; index >= 0; index-- {
+		if err := t.jumpClients[index].Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	t.jumpClients = nil
+	return closeErr
 }
 
 func (t *SSHTransport) Exec(ctx context.Context, args ...string) ([]byte, error) {
@@ -344,22 +390,7 @@ func (t *SSHTransport) sftpClient(ctx context.Context) (*sftp.Client, error) {
 }
 
 func (cfg SSHTransportConfig) Validate() error {
-	if cfg.Host == "" {
-		return fmt.Errorf("ssh host is required")
-	}
-	if cfg.User == "" {
-		return fmt.Errorf("ssh user is required")
-	}
-	if cfg.Port < 0 || cfg.Port > 65535 {
-		return fmt.Errorf("ssh port must be between 1 and 65535")
-	}
-	if cfg.IdentityFile == "" && cfg.IdentityEnv == "" {
-		return fmt.Errorf("ssh identity_file or identity_env is required")
-	}
-	if cfg.IdentityFile != "" && cfg.IdentityEnv != "" {
-		return fmt.Errorf("ssh identity_file and identity_env are mutually exclusive")
-	}
-	if err := cfg.validateHostKeyPolicy(); err != nil {
+	if err := validateSSHEndpointConfig("ssh", cfg.targetEndpoint(), true); err != nil {
 		return err
 	}
 	if err := validateSSHDuration("connect_timeout", cfg.ConnectTimeout); err != nil {
@@ -367,6 +398,11 @@ func (cfg SSHTransportConfig) Validate() error {
 	}
 	if err := validateSSHDuration("command_timeout", cfg.CommandTimeout); err != nil {
 		return err
+	}
+	for index := range cfg.JumpHosts {
+		if err := validateSSHEndpointConfig(fmt.Sprintf("ssh jump_hosts[%d]", index), cfg.jumpHostEndpoint(index), true); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -500,18 +536,79 @@ func sshCommandError(command string, stderr string, err error) error {
 }
 
 func (t SSHTransport) sshClientConfig() (*ssh.ClientConfig, error) {
-	signer, err := t.identitySigner()
+	return sshClientConfigForEndpoint(t.Config.targetEndpoint())
+}
+
+type sshEndpointConfig struct {
+	Host           string
+	Port           int
+	User           string
+	IdentityFile   string
+	IdentityEnv    string
+	KnownHostsFile string
+	HostKeyPolicy  string
+	PinnedHostKey  string
+}
+
+func connectSSHEndpoint(ctx context.Context, endpoint sshEndpointConfig, dial func(context.Context, string, string) (net.Conn, error)) (*ssh.Client, error) {
+	clientConfig, err := sshClientConfigForEndpoint(endpoint)
 	if err != nil {
 		return nil, err
 	}
 
-	hostKeyCallback, err := t.hostKeyCallback()
+	address := sshAddress(endpoint)
+	conn, err := dial(ctx, "tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("ssh connect to %s: %w", address, err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+		defer conn.SetDeadline(time.Time{})
+	}
+
+	sshConn, channels, requests, err := ssh.NewClientConn(conn, address, clientConfig)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ssh handshake with %s: %w", address, err)
+	}
+
+	return ssh.NewClient(sshConn, channels, requests), nil
+}
+
+func dialSSHClient(ctx context.Context, client *ssh.Client, network string, address string) (net.Conn, error) {
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, err := client.Dial(network, address)
+		done <- dialResult{conn: conn, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		return result.conn, result.err
+	case <-ctx.Done():
+		_ = client.Close()
+		return nil, ctx.Err()
+	}
+}
+
+func sshClientConfigForEndpoint(endpoint sshEndpointConfig) (*ssh.ClientConfig, error) {
+	signer, err := identitySignerForEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	hostKeyCallback, err := hostKeyCallbackForEndpoint(endpoint)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ssh.ClientConfig{
-		User: t.Config.User,
+		User: endpoint.User,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
@@ -520,19 +617,27 @@ func (t SSHTransport) sshClientConfig() (*ssh.ClientConfig, error) {
 }
 
 func (t SSHTransport) identitySigner() (ssh.Signer, error) {
+	return identitySignerForEndpoint(t.Config.targetEndpoint())
+}
+
+func identitySignerForEndpoint(endpoint sshEndpointConfig) (ssh.Signer, error) {
 	var key []byte
 	var err error
 
 	switch {
-	case t.Config.IdentityFile != "":
-		key, err = os.ReadFile(t.Config.IdentityFile)
+	case endpoint.IdentityFile != "":
+		identityFile, expandErr := expandSSHLocalPath(endpoint.IdentityFile)
+		if expandErr != nil {
+			return nil, fmt.Errorf("expand ssh identity_file: %w", expandErr)
+		}
+		key, err = os.ReadFile(identityFile)
 		if err != nil {
 			return nil, fmt.Errorf("read ssh identity_file: %w", err)
 		}
-	case t.Config.IdentityEnv != "":
-		value := os.Getenv(t.Config.IdentityEnv)
+	case endpoint.IdentityEnv != "":
+		value := os.Getenv(endpoint.IdentityEnv)
 		if value == "" {
-			return nil, fmt.Errorf("ssh identity_env %s is empty or unset", t.Config.IdentityEnv)
+			return nil, fmt.Errorf("ssh identity_env %s is empty or unset", endpoint.IdentityEnv)
 		}
 		key = []byte(value)
 	default:
@@ -547,9 +652,13 @@ func (t SSHTransport) identitySigner() (ssh.Signer, error) {
 }
 
 func (t SSHTransport) hostKeyCallback() (ssh.HostKeyCallback, error) {
-	switch t.hostKeyPolicy() {
+	return hostKeyCallbackForEndpoint(t.Config.targetEndpoint())
+}
+
+func hostKeyCallbackForEndpoint(endpoint sshEndpointConfig) (ssh.HostKeyCallback, error) {
+	switch sshHostKeyPolicy(endpoint) {
 	case SSHHostKeyPolicyPinned:
-		key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(t.Config.PinnedHostKey))
+		key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(endpoint.PinnedHostKey))
 		if err != nil {
 			return nil, fmt.Errorf("parse ssh pinned_host_key: %w", err)
 		}
@@ -557,10 +666,44 @@ func (t SSHTransport) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	case SSHHostKeyPolicyInsecureIgnore:
 		return ssh.InsecureIgnoreHostKey(), nil
 	case SSHHostKeyPolicyKnownHosts:
-		return nil, fmt.Errorf("ssh known_hosts host-key verification is not implemented yet")
+		knownHostsFile, err := expandSSHLocalPath(endpoint.KnownHostsFile)
+		if err != nil {
+			return nil, fmt.Errorf("expand ssh known_hosts_file: %w", err)
+		}
+		callback, err := knownhosts.New(knownHostsFile)
+		if err != nil {
+			return nil, fmt.Errorf("load ssh known_hosts_file: %w", err)
+		}
+		return callback, nil
 	default:
-		return nil, fmt.Errorf("unsupported ssh host_key_policy %q", t.Config.HostKeyPolicy)
+		return nil, fmt.Errorf("unsupported ssh host_key_policy %q", endpoint.HostKeyPolicy)
 	}
+}
+
+func expandSSHLocalPath(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+
+	if value == "~" || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve current user home directory: %w", err)
+		}
+		if value == "~" {
+			value = home
+		} else {
+			value = filepath.Join(home, value[2:])
+		}
+	} else if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("~user expansion is not supported for ssh local paths")
+	}
+
+	expanded := os.ExpandEnv(value)
+	if expanded == "" {
+		return "", nil
+	}
+	return filepath.Clean(expanded), nil
 }
 
 func (t SSHTransport) connectContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
@@ -578,42 +721,115 @@ func (t SSHTransport) connectContext(ctx context.Context) (context.Context, cont
 }
 
 func (t SSHTransport) address() string {
-	return net.JoinHostPort(t.Config.Host, strconv.Itoa(t.port()))
+	return sshAddress(t.Config.targetEndpoint())
 }
 
 func (t SSHTransport) port() int {
-	if t.Config.Port == 0 {
-		return defaultSSHPort
-	}
-	return t.Config.Port
+	return sshPort(t.Config.Port)
 }
 
 func (t SSHTransport) hostKeyPolicy() string {
-	if t.Config.HostKeyPolicy == "" {
-		return SSHHostKeyPolicyKnownHosts
-	}
-	return t.Config.HostKeyPolicy
+	return sshHostKeyPolicy(t.Config.targetEndpoint())
 }
 
 func (cfg SSHTransportConfig) validateHostKeyPolicy() error {
-	policy := cfg.HostKeyPolicy
-	if policy == "" {
-		policy = SSHHostKeyPolicyKnownHosts
-	}
+	return validateSSHHostKeyPolicy("ssh", cfg.targetEndpoint())
+}
 
-	switch policy {
+func (cfg SSHTransportConfig) targetEndpoint() sshEndpointConfig {
+	return sshEndpointConfig{
+		Host:           cfg.Host,
+		Port:           cfg.Port,
+		User:           cfg.User,
+		IdentityFile:   cfg.IdentityFile,
+		IdentityEnv:    cfg.IdentityEnv,
+		KnownHostsFile: cfg.KnownHostsFile,
+		HostKeyPolicy:  cfg.HostKeyPolicy,
+		PinnedHostKey:  cfg.PinnedHostKey,
+	}
+}
+
+func (cfg SSHTransportConfig) jumpHostEndpoint(index int) sshEndpointConfig {
+	jumpHost := cfg.JumpHosts[index]
+	identityFile := jumpHost.IdentityFile
+	identityEnv := jumpHost.IdentityEnv
+	if identityFile == "" && identityEnv == "" {
+		identityFile = cfg.IdentityFile
+		identityEnv = cfg.IdentityEnv
+	}
+	knownHostsFile := jumpHost.KnownHostsFile
+	if knownHostsFile == "" {
+		knownHostsFile = cfg.KnownHostsFile
+	}
+	return sshEndpointConfig{
+		Host:           jumpHost.Host,
+		Port:           jumpHost.Port,
+		User:           jumpHost.User,
+		IdentityFile:   identityFile,
+		IdentityEnv:    identityEnv,
+		KnownHostsFile: knownHostsFile,
+		HostKeyPolicy:  jumpHost.HostKeyPolicy,
+		PinnedHostKey:  jumpHost.PinnedHostKey,
+	}
+}
+
+func validateSSHEndpointConfig(prefix string, endpoint sshEndpointConfig, requireIdentity bool) error {
+	if endpoint.Host == "" {
+		return fmt.Errorf("%s host is required", prefix)
+	}
+	if endpoint.User == "" {
+		return fmt.Errorf("%s user is required", prefix)
+	}
+	if endpoint.Port < 0 || endpoint.Port > 65535 {
+		return fmt.Errorf("%s port must be between 1 and 65535", prefix)
+	}
+	if requireIdentity && endpoint.IdentityFile == "" && endpoint.IdentityEnv == "" {
+		return fmt.Errorf("%s identity_file or identity_env is required", prefix)
+	}
+	if endpoint.IdentityFile != "" && endpoint.IdentityEnv != "" {
+		return fmt.Errorf("%s identity_file and identity_env are mutually exclusive", prefix)
+	}
+	if err := validateSSHHostKeyPolicy(prefix, endpoint); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSSHHostKeyPolicy(prefix string, endpoint sshEndpointConfig) error {
+	switch sshHostKeyPolicy(endpoint) {
 	case SSHHostKeyPolicyKnownHosts:
+		if endpoint.KnownHostsFile == "" {
+			return fmt.Errorf("%s known_hosts_file is required when host_key_policy is known_hosts", prefix)
+		}
 		return nil
 	case SSHHostKeyPolicyPinned:
-		if cfg.PinnedHostKey == "" {
-			return fmt.Errorf("ssh pinned_host_key is required when host_key_policy is pinned")
+		if endpoint.PinnedHostKey == "" {
+			return fmt.Errorf("%s pinned_host_key is required when host_key_policy is pinned", prefix)
 		}
 		return nil
 	case SSHHostKeyPolicyInsecureIgnore:
 		return nil
 	default:
-		return fmt.Errorf("unsupported ssh host_key_policy %q", cfg.HostKeyPolicy)
+		return fmt.Errorf("unsupported %s host_key_policy %q", prefix, endpoint.HostKeyPolicy)
 	}
+}
+
+func sshAddress(endpoint sshEndpointConfig) string {
+	return net.JoinHostPort(endpoint.Host, strconv.Itoa(sshPort(endpoint.Port)))
+}
+
+func sshPort(port int) int {
+	if port == 0 {
+		return defaultSSHPort
+	}
+	return port
+}
+
+func sshHostKeyPolicy(endpoint sshEndpointConfig) string {
+	if endpoint.HostKeyPolicy == "" {
+		return SSHHostKeyPolicyKnownHosts
+	}
+	return endpoint.HostKeyPolicy
 }
 
 func validateSSHDuration(name string, value string) error {

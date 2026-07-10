@@ -95,7 +95,16 @@ func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
 						"user": "researcher",
 						"identity_file": "/home/researcher/.ssh/id_ed25519",
 						"host_key_policy": "pinned",
-						"pinned_host_key": "ssh-ed25519 AAAATESTKEY"
+						"pinned_host_key": "ssh-ed25519 AAAATESTKEY",
+						"jump_hosts": [
+							{
+								"host": "gateway.example.edu",
+								"port": "22",
+								"user": "researcher",
+								"host_key_policy": "pinned",
+								"pinned_host_key": "ssh-ed25519 AAAAGATEWAY"
+							}
+						]
 					}
 				}
 			],
@@ -124,6 +133,12 @@ func TestLoadControllerConfigSupportsSSHTransportSettings(t *testing.T) {
 	}
 	if transport.Config.IdentityFile != "/home/researcher/.ssh/id_ed25519" {
 		t.Fatalf("identity file = %q, want configured path", transport.Config.IdentityFile)
+	}
+	if len(transport.Config.JumpHosts) != 1 {
+		t.Fatalf("jump host count = %d, want 1", len(transport.Config.JumpHosts))
+	}
+	if transport.Config.JumpHosts[0].Host != "gateway.example.edu" {
+		t.Fatalf("jump host = %q, want gateway.example.edu", transport.Config.JumpHosts[0].Host)
 	}
 }
 

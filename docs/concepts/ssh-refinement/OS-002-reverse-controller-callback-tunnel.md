@@ -1,6 +1,6 @@
 # OS-002: Reverse Controller Callback Tunnel
 
-Status: Proposed
+Status: Complete
 Scope: GOET controller execution environment and SSH transport
 
 ## Purpose
@@ -14,8 +14,14 @@ POST work claims, completions, failures, and logs back to the controller API.
 ## Requirements
 
 - Add a controller-managed reverse tunnel over an SSH transport.
+- Use one shared controller-owned tunnel per configured callback tunnel, not one
+  tunnel per worker or one tunnel per worker callback.
 - Forward a remote bind address and port to the local controller host and port.
-- Produce or validate the `controller_url` workers should use.
+- Bind the remote listener on the configured SSH hop. For the LandCore HPCC
+  target this is expected to be the gateway reachable as `hpcc.msu.edu`.
+- Produce or validate the `controller_url` workers should use. Workers should
+  receive only an HTTP callback URL; they should not own SSH credentials,
+  gateway topology, or tunnel setup.
 - Keep tunnel lifecycle tied to the controller process or execution environment.
 - Fail preflight if the remote tunnel cannot be established.
 - Fail preflight if the remote callback URL is not reachable from the HPCC side.
@@ -25,14 +31,17 @@ POST work claims, completions, failures, and logs back to the controller API.
 
 ```json
 {
-  "callback_tunnel": {
-    "type": "ssh_reverse",
-    "transport": "login",
-    "remote_bind_host": "127.0.0.1",
-    "remote_bind_port": 18080,
-    "local_host": "127.0.0.1",
-    "local_port": 8080,
-    "worker_controller_url": "http://127.0.0.1:18080"
+  "execution_environment": {
+    "callback_tunnel": {
+      "type": "ssh_reverse",
+      "transport": "login",
+      "bind_hop": "jump_hosts[0]",
+      "remote_bind_host": "0.0.0.0",
+      "remote_bind_port": 18080,
+      "local_host": "127.0.0.1",
+      "local_port": 8080,
+      "worker_controller_url": "http://hpcc.msu.edu:18080"
+    }
   }
 }
 ```
@@ -44,14 +53,19 @@ side.
 ## Implementation Notes
 
 - Use SSH reverse forwarding primitives rather than invoking `ssh -R`.
+- `bind_hop` selects which SSH client owns the reverse listener. For an
+  `SSHTransport` with `jump_hosts`, `jump_hosts[0]` means the first gateway
+  client. If omitted, the final target client owns the bind.
 - The tunnel needs to accept remote connections and proxy bytes to the local
   controller.
 - The controller should close the listener when shutting down.
 - Preflight should check the tunnel from the remote side with a small HTTP GET
   to `/status`.
-- A stronger HPCC preflight should submit a tiny Slurm job that curls the
-  worker-facing controller URL, because login/dev-node reachability may not
-  prove compute-node reachability.
+- For Slurm-backed environments, preflight should submit a tiny `sbatch --wait`
+  job that uses `curl` to request the worker-facing `/status` URL, because
+  login/dev-node reachability may not prove compute-node reachability.
+- The Slurm compute-node check may report a missing `curl` command as an
+  actionable environment preflight failure.
 
 ## Validation
 
@@ -72,6 +86,8 @@ side.
   no site-approved bind address is available.
 - The controller URL written into worker config still points at worker-local
   `localhost` incorrectly.
+- The implementation requires workers to establish SSH sessions or hold SSH
+  credentials.
 
 ## Completion Criteria
 

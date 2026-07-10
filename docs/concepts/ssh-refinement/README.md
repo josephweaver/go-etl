@@ -1,6 +1,6 @@
 # SSH Refinement
 
-Status: Proposed
+Status: Implemented
 
 ## Purpose
 
@@ -39,19 +39,19 @@ The immediate driver is the LandCore OS-007 one-tile HPCC preflight:
 
 ## Current State
 
-`cmd/controller/ssh_transport.go` can connect directly to one SSH host, execute
-commands, transfer files with SFTP, list remote paths, run basic filesystem
-commands, reconnect after session failures, and verify a pinned host key.
+`cmd/controller/ssh_transport.go` can connect directly to one SSH host or to a
+final SSH target through explicit `jump_hosts`, execute commands, transfer files
+with SFTP, list remote paths, run basic filesystem commands, reconnect after
+session failures, and verify each hop with either a pinned key or a configured
+`known_hosts_file`. Local SSH credential paths can use `~`, `$VAR`, or
+`${VAR}` expansion. The execution environment can also establish a
+controller-owned SSH reverse callback tunnel on the final target or a selected
+jump host, then proxy worker HTTP callbacks to the local controller.
 
 Current gaps:
 
-- no ProxyJump or jump-host chain support;
-- no managed reverse tunnel for controller callback traffic;
-- `known_hosts` policy is declared but not implemented;
-- `identity_file` paths are read literally, so `~/.ssh/...` is not expanded by
-  GOET;
-- controller configs cannot currently express a callback URL that is proven
-  reachable from a remote worker context.
+- Slurm compute-node callback preflight currently depends on `curl` being
+  available in the Slurm job environment.
 
 ## Target State
 
@@ -72,12 +72,6 @@ templates continue to use placeholders.
 
 ## Open Design Questions
 
-- Should jump hosts be configured explicitly in GOET JSON, loaded from OpenSSH
-  config, or both?
-- Should reverse tunnels bind only to loopback on the remote host by default,
-  requiring an explicit setting for wider bind addresses?
-- Should tunnel lifecycle be owned by the controller execution environment or by
-  a separate controller startup component?
 - How should the controller prove callback reachability from an actual Slurm
   worker node rather than only from the login/dev node?
 

@@ -338,6 +338,9 @@ func buildControllerServer(
 	controller.maxRequestBytes = httpSettings.MaxRequestBytes
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
+		if executionEnvironment != nil {
+			_ = executionEnvironment.Close()
+		}
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
@@ -345,6 +348,9 @@ func buildControllerServer(
 		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
 	}
 	if err := controller.EvaluateWorkerCapacity(context.Background(), now().UTC()); err != nil {
+		if executionEnvironment != nil {
+			_ = executionEnvironment.Close()
+		}
 		if releaseDatabaseOwnership != nil {
 			_ = releaseDatabaseOwnership()
 		}
@@ -370,6 +376,11 @@ func buildControllerServer(
 	registerControllerRoutes(mux, controller)
 
 	return server, func() error {
+		if executionEnvironment != nil {
+			if err := executionEnvironment.Close(); err != nil {
+				return err
+			}
+		}
 		if releaseDatabaseOwnership != nil {
 			if err := releaseDatabaseOwnership(); err != nil {
 				return err

@@ -7,19 +7,21 @@ import (
 )
 
 type ExecutionEnvironment struct {
-	Config     ExecutionEnvironmentConfig
-	Transports []Transport
-	Dialect    ShellDialect
-	Scheduler  Scheduler
-	Runtime    Runtime
+	Config         ExecutionEnvironmentConfig
+	Transports     []Transport
+	Dialect        ShellDialect
+	Scheduler      Scheduler
+	Runtime        Runtime
+	CallbackTunnel *SSHReverseCallbackTunnel
 }
 
 type ExecutionEnvironmentConfig struct {
-	Name       string                     `json:"name"`
-	Transports []ExecutionComponentConfig `json:"transports"`
-	Dialect    ExecutionComponentConfig   `json:"dialect"`
-	Scheduler  ExecutionComponentConfig   `json:"scheduler"`
-	Runtime    ExecutionComponentConfig   `json:"runtime"`
+	Name           string                     `json:"name"`
+	Transports     []ExecutionComponentConfig `json:"transports"`
+	Dialect        ExecutionComponentConfig   `json:"dialect"`
+	Scheduler      ExecutionComponentConfig   `json:"scheduler"`
+	Runtime        ExecutionComponentConfig   `json:"runtime"`
+	CallbackTunnel CallbackTunnelConfig       `json:"callback_tunnel,omitempty"`
 }
 
 type ExecutionComponentConfig struct {
@@ -35,7 +37,8 @@ func (cfg ExecutionEnvironmentConfig) IsZero() bool {
 		len(cfg.Transports) == 0 &&
 		cfg.Dialect.Type == "" &&
 		cfg.Scheduler.Type == "" &&
-		cfg.Runtime.Type == ""
+		cfg.Runtime.Type == "" &&
+		cfg.CallbackTunnel.IsZero()
 }
 
 func (cfg ExecutionEnvironmentConfig) Validate() error {
@@ -57,6 +60,9 @@ func (cfg ExecutionEnvironmentConfig) Validate() error {
 		return err
 	}
 	if err := cfg.Runtime.validate("runtime"); err != nil {
+		return err
+	}
+	if err := cfg.CallbackTunnel.Validate(); err != nil {
 		return err
 	}
 	return nil
@@ -91,19 +97,30 @@ func NewExecutionEnvironment(cfg ExecutionEnvironmentConfig) (ExecutionEnvironme
 		return ExecutionEnvironment{}, err
 	}
 
+	callbackTunnel, err := newCallbackTunnelFromConfig(cfg.CallbackTunnel, cfg.Transports, transports, scheduler, runtime)
+	if err != nil {
+		return ExecutionEnvironment{}, err
+	}
+
 	return ExecutionEnvironment{
-		Config:     cfg,
-		Transports: transports,
-		Dialect:    dialect,
-		Scheduler:  scheduler,
-		Runtime:    runtime,
+		Config:         cfg,
+		Transports:     transports,
+		Dialect:        dialect,
+		Scheduler:      scheduler,
+		Runtime:        runtime,
+		CallbackTunnel: callbackTunnel,
 	}, nil
 }
 
-func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
+func (e *ExecutionEnvironment) Prepare(ctx context.Context) error {
 	for index, transport := range e.Transports {
 		if err := prepareIfSupported(ctx, transport); err != nil {
 			return fmt.Errorf("prepare transport[%d]: %w", index, err)
+		}
+	}
+	if e.CallbackTunnel != nil {
+		if err := e.CallbackTunnel.Prepare(ctx); err != nil {
+			return fmt.Errorf("prepare callback tunnel: %w", err)
 		}
 	}
 	if err := prepareIfSupported(ctx, e.Scheduler); err != nil {
@@ -121,10 +138,32 @@ func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
 	return nil
 }
 
+func (e *ExecutionEnvironment) Close() error {
+	var closeErr error
+	if e.CallbackTunnel != nil {
+		if err := e.CallbackTunnel.Close(); err != nil {
+			closeErr = err
+		}
+	}
+	for index := len(e.Transports) - 1; index >= 0; index-- {
+		closer, ok := e.Transports[index].(interface{ Close() error })
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
 func (e ExecutionEnvironment) Preflight(ctx context.Context) []PreflightIssue {
 	var issues []PreflightIssue
 	for index, transport := range e.Transports {
 		issues = append(issues, componentPreflightIssues(ctx, fmt.Sprintf("transport[%d]", index), transport)...)
+	}
+	if e.CallbackTunnel != nil {
+		issues = append(issues, componentPreflightIssues(ctx, "callback_tunnel", e.CallbackTunnel)...)
 	}
 	issues = append(issues, componentPreflightIssues(ctx, "scheduler", e.Scheduler)...)
 	issues = append(issues, componentPreflightIssues(ctx, "runtime", e.Runtime)...)
@@ -218,6 +257,10 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 	if err != nil {
 		return SSHTransportConfig{}, err
 	}
+	jumpHosts, err := sshJumpHostConfigsFromSettings(settings)
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
 	cfg := SSHTransportConfig{
 		Host:           host,
 		User:           user,
@@ -228,6 +271,7 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 		PinnedHostKey:  pinnedHostKey,
 		ConnectTimeout: connectTimeout,
 		CommandTimeout: commandTimeout,
+		JumpHosts:      jumpHosts,
 	}
 	port, err := settings.String("port")
 	if err != nil {
@@ -244,6 +288,66 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 		return SSHTransportConfig{}, err
 	}
 	return cfg, nil
+}
+
+func sshJumpHostConfigsFromSettings(settings ExecutionComponentSettings) ([]SSHJumpHostConfig, error) {
+	jumpHostSettings, err := settings.ObjectList("jump_hosts")
+	if err != nil {
+		return nil, err
+	}
+	jumpHosts := make([]SSHJumpHostConfig, 0, len(jumpHostSettings))
+	for index, item := range jumpHostSettings {
+		host, err := item.String("host")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		user, err := item.String("user")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		identityFile, err := item.String("identity_file")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		identityEnv, err := item.String("identity_env")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		knownHostsFile, err := item.String("known_hosts_file")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		hostKeyPolicy, err := item.String("host_key_policy")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		pinnedHostKey, err := item.String("pinned_host_key")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		jumpHost := SSHJumpHostConfig{
+			Host:           host,
+			User:           user,
+			IdentityFile:   identityFile,
+			IdentityEnv:    identityEnv,
+			KnownHostsFile: knownHostsFile,
+			HostKeyPolicy:  hostKeyPolicy,
+			PinnedHostKey:  pinnedHostKey,
+		}
+		port, err := item.String("port")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		if port != "" {
+			parsed, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, fmt.Errorf("jump_hosts[%d]: ssh transport setting port must be an integer: %w", index, err)
+			}
+			jumpHost.Port = parsed
+		}
+		jumpHosts = append(jumpHosts, jumpHost)
+	}
+	return jumpHosts, nil
 }
 
 func newShellDialectFromConfig(cfg ExecutionComponentConfig) (ShellDialect, error) {
@@ -391,6 +495,38 @@ func (settings ExecutionComponentSettings) StringMap(name string) (map[string]st
 		result[key] = text
 	}
 	return result, nil
+}
+
+func (settings ExecutionComponentSettings) ObjectList(name string) ([]ExecutionComponentSettings, error) {
+	if len(settings) == 0 {
+		return nil, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	switch typed := value.(type) {
+	case []ExecutionComponentSettings:
+		return typed, nil
+	case []map[string]any:
+		result := make([]ExecutionComponentSettings, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, ExecutionComponentSettings(item))
+		}
+		return result, nil
+	case []any:
+		result := make([]ExecutionComponentSettings, 0, len(typed))
+		for index, item := range typed {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("setting %s[%d] must be an object", name, index)
+			}
+			result = append(result, ExecutionComponentSettings(object))
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("setting %s must be a list of objects", name)
+	}
 }
 
 func (settings ExecutionComponentSettings) Int64(name string) (int64, error) {

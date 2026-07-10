@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type testSSHServer struct {
@@ -141,15 +144,20 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig, remoteRoot string, execCounts *sync.Map) {
 	t.Helper()
 
-	_, channels, requests, err := ssh.NewServerConn(conn, config)
+	serverConn, channels, requests, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		t.Logf("test SSH handshake error: %v", err)
 		return
 	}
-	go ssh.DiscardRequests(requests)
+	go handleTestSSHGlobalRequests(t, serverConn, requests)
 
 	for newChannel := range channels {
-		if newChannel.ChannelType() != "session" {
+		switch newChannel.ChannelType() {
+		case "session":
+		case "direct-tcpip":
+			handleTestSSHDirectTCPIP(t, newChannel)
+			continue
+		default:
 			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported channel type")
 			continue
 		}
@@ -162,6 +170,175 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 
 		go handleTestSSHSession(t, channel, requests, remoteRoot, execCounts)
 	}
+}
+
+type testSSHTCPIPForwardPayload struct {
+	BindAddress string
+	BindPort    uint32
+}
+
+type testSSHForwardedTCPIPPayload struct {
+	ConnectedAddress string
+	ConnectedPort    uint32
+	OriginatorHost   string
+	OriginatorPort   uint32
+}
+
+func handleTestSSHGlobalRequests(t *testing.T, serverConn *ssh.ServerConn, requests <-chan *ssh.Request) {
+	t.Helper()
+
+	var listenersMu sync.Mutex
+	listeners := map[string]net.Listener{}
+	defer func() {
+		listenersMu.Lock()
+		defer listenersMu.Unlock()
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+
+	for request := range requests {
+		switch request.Type {
+		case "tcpip-forward":
+			var payload testSSHTCPIPForwardPayload
+			if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			address := net.JoinHostPort(payload.BindAddress, strconv.Itoa(int(payload.BindPort)))
+			listener, err := net.Listen("tcp", address)
+			if err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			listenersMu.Lock()
+			listeners[address] = listener
+			listenersMu.Unlock()
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+			go serveTestSSHRemoteForward(t, serverConn, listener, payload.BindAddress, payload.BindPort)
+		case "cancel-tcpip-forward":
+			var payload testSSHTCPIPForwardPayload
+			if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			address := net.JoinHostPort(payload.BindAddress, strconv.Itoa(int(payload.BindPort)))
+			listenersMu.Lock()
+			listener := listeners[address]
+			delete(listeners, address)
+			listenersMu.Unlock()
+			if listener != nil {
+				_ = listener.Close()
+			}
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+		default:
+			if request.WantReply {
+				_ = request.Reply(false, nil)
+			}
+		}
+	}
+}
+
+func serveTestSSHRemoteForward(t *testing.T, serverConn *ssh.ServerConn, listener net.Listener, bindAddress string, bindPort uint32) {
+	t.Helper()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go handleTestSSHRemoteForwardConn(t, serverConn, conn, bindAddress, bindPort)
+	}
+}
+
+func handleTestSSHRemoteForwardConn(t *testing.T, serverConn *ssh.ServerConn, conn net.Conn, bindAddress string, bindPort uint32) {
+	t.Helper()
+
+	originHost, originPortText, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH remote forward origin parse error: %v", err)
+		return
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH remote forward origin port parse error: %v", err)
+		return
+	}
+
+	channel, requests, err := serverConn.OpenChannel("forwarded-tcpip", ssh.Marshal(testSSHForwardedTCPIPPayload{
+		ConnectedAddress: bindAddress,
+		ConnectedPort:    bindPort,
+		OriginatorHost:   originHost,
+		OriginatorPort:   uint32(originPort),
+	}))
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH forwarded-tcpip open error: %v", err)
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	proxyTestSSHDirectTCPIP(channel, conn)
+}
+
+type testSSHDirectTCPIPPayload struct {
+	DestinationHost string
+	DestinationPort uint32
+	OriginatorHost  string
+	OriginatorPort  uint32
+}
+
+func handleTestSSHDirectTCPIP(t *testing.T, newChannel ssh.NewChannel) {
+	t.Helper()
+
+	var payload testSSHDirectTCPIPPayload
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &payload); err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, "invalid direct-tcpip payload")
+		return
+	}
+
+	targetAddress := net.JoinHostPort(payload.DestinationHost, strconv.Itoa(int(payload.DestinationPort)))
+	targetConn, err := net.Dial("tcp", targetAddress)
+	if err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		_ = targetConn.Close()
+		t.Logf("test SSH accept direct-tcpip channel error: %v", err)
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	go proxyTestSSHDirectTCPIP(channel, targetConn)
+}
+
+func proxyTestSSHDirectTCPIP(channel ssh.Channel, targetConn net.Conn) {
+	var once sync.Once
+	closeBoth := func() {
+		_ = channel.Close()
+		_ = targetConn.Close()
+	}
+	go func() {
+		_, _ = io.Copy(channel, targetConn)
+		once.Do(closeBoth)
+	}()
+	go func() {
+		_, _ = io.Copy(targetConn, channel)
+		once.Do(closeBoth)
+	}()
 }
 
 func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request, remoteRoot string, execCounts *sync.Map) {
@@ -422,10 +599,11 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 		{
 			name: "valid minimal identity file known hosts",
 			cfg: SSHTransportConfig{
-				Host:          "hpcc.example.edu",
-				User:          "researcher",
-				IdentityFile:  "~/.ssh/id_ed25519",
-				HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+				Host:           "hpcc.example.edu",
+				User:           "researcher",
+				IdentityFile:   "~/.ssh/id_ed25519",
+				HostKeyPolicy:  SSHHostKeyPolicyKnownHosts,
+				KnownHostsFile: "~/.ssh/known_hosts",
 			},
 		},
 		{
@@ -436,6 +614,22 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				IdentityEnv:   "GOETL_SSH_KEY",
 				HostKeyPolicy: SSHHostKeyPolicyPinned,
 				PinnedHostKey: "ssh-ed25519 AAAATESTKEY",
+			},
+		},
+		{
+			name: "valid jump host inherits target identity",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
 			},
 		},
 		{
@@ -493,11 +687,22 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			wantErr: "pinned_host_key is required",
 		},
 		{
+			name: "known hosts policy without known hosts file",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityFile:  "~/.ssh/id_ed25519",
+				HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+			},
+			wantErr: "known_hosts_file is required",
+		},
+		{
 			name: "invalid connect timeout",
 			cfg: SSHTransportConfig{
 				Host:           "hpcc.example.edu",
 				User:           "researcher",
 				IdentityFile:   "~/.ssh/id_ed25519",
+				KnownHostsFile: "~/.ssh/known_hosts",
 				ConnectTimeout: "five seconds",
 			},
 			wantErr: "connect_timeout must be a Go duration",
@@ -508,6 +713,7 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				Host:           "hpcc.example.edu",
 				User:           "researcher",
 				IdentityFile:   "~/.ssh/id_ed25519",
+				KnownHostsFile: "~/.ssh/known_hosts",
 				CommandTimeout: "-1s",
 			},
 			wantErr: "command_timeout must be greater than zero",
@@ -532,6 +738,56 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			},
 			wantErr: "port must be between 1 and 65535",
 		},
+		{
+			name: "jump host missing host",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
+			},
+			wantErr: "jump_hosts[0] host is required",
+		},
+		{
+			name: "jump host both identity sources set",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					IdentityFile:  "~/.ssh/id_gateway",
+					IdentityEnv:   "GOETL_SSH_GATEWAY_KEY",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
+			},
+			wantErr: "jump_hosts[0] identity_file and identity_env are mutually exclusive",
+		},
+		{
+			name: "jump host known hosts inherits target file",
+			cfg: SSHTransportConfig{
+				Host:           "dev.example.edu",
+				User:           "researcher",
+				IdentityEnv:    "GOETL_SSH_KEY",
+				HostKeyPolicy:  SSHHostKeyPolicyKnownHosts,
+				KnownHostsFile: "~/.ssh/known_hosts",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+				}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -551,6 +807,34 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestExpandSSHLocalPath(t *testing.T) {
+	t.Setenv("GOETL_TEST_SSH_DIR", filepath.Join(t.TempDir(), "ssh"))
+
+	expanded, err := expandSSHLocalPath("$GOETL_TEST_SSH_DIR/id_ed25519")
+	if err != nil {
+		t.Fatalf("expand env path: %v", err)
+	}
+	if expanded != filepath.Join(os.Getenv("GOETL_TEST_SSH_DIR"), "id_ed25519") {
+		t.Fatalf("expanded = %q, want env-expanded path", expanded)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home dir: %v", err)
+	}
+	expanded, err = expandSSHLocalPath("~/known_hosts")
+	if err != nil {
+		t.Fatalf("expand home path: %v", err)
+	}
+	if expanded != filepath.Join(home, "known_hosts") {
+		t.Fatalf("expanded = %q, want home-expanded path", expanded)
+	}
+
+	if _, err := expandSSHLocalPath("~other/.ssh/id_ed25519"); err == nil {
+		t.Fatal("expected ~user expansion error")
 	}
 }
 
@@ -669,6 +953,423 @@ func TestSSHTransportConnectUsesIdentityFile(t *testing.T) {
 	}
 	if err := transport.Close(); err != nil {
 		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectExpandsIdentityFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	sshDir := t.TempDir()
+	t.Setenv("GOETL_TEST_SSH_DIR", sshDir)
+	keyFile := filepath.Join(sshDir, "id_ed25519")
+	if err := os.WriteFile(keyFile, []byte(clientIdentity.privatePEM), 0600); err != nil {
+		t.Fatalf("write test identity file: %v", err)
+	}
+
+	cfg := testSSHTransportConfig(t, server.address, "", SSHHostKeyPolicyPinned, hostSigner.PublicKey())
+	cfg.IdentityEnv = ""
+	cfg.IdentityFile = "$GOETL_TEST_SSH_DIR/id_ed25519"
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectAcceptsKnownHostsFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, server.address, hostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsKnownHostsMismatch(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	wrongHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_KNOWN_HOSTS_MISMATCH"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, server.address, wrongHostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected known_hosts mismatch error")
+	}
+	if !strings.Contains(err.Error(), "knownhosts") && !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want known_hosts handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectAcceptsHashedKnownHostsFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_HASHED_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, true, server.address, hostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectThroughJumpHostInheritsKnownHostsFile(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_JUMP_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, gateway.address, gatewayHostSigner.PublicKey(), final.address, finalHostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyKnownHosts, nil),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect through jump host: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportExecAndCopyThroughJumpHostUseFinalTarget(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_JUMP_EXEC_COPY"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect through jump host: %v", err)
+	}
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "stdout-ok")
+	if err != nil {
+		t.Fatalf("exec through jump host: %v", err)
+	}
+	if string(output) != "stdout from ssh\n" {
+		t.Fatalf("output = %q, want final target stdout", string(output))
+	}
+	if got := testSSHExecCount(gateway, "'stdout-ok'"); got != 0 {
+		t.Fatalf("gateway exec count = %d, want 0", got)
+	}
+	if got := testSSHExecCount(final, "'stdout-ok'"); got != 1 {
+		t.Fatalf("final exec count = %d, want 1", got)
+	}
+
+	localPath := writeTestLocalFile(t, "jump-copy-source.txt", "copied through jump\n")
+	if err := transport.Copy(context.Background(), localPath, "through-jump/output.txt"); err != nil {
+		t.Fatalf("copy through jump host: %v", err)
+	}
+	if got := readTestRemoteFile(t, final, "through-jump/output.txt"); got != "copied through jump\n" {
+		t.Fatalf("final remote content = %q, want copied content", got)
+	}
+	gatewayPath := filepath.Join(gateway.remoteRoot, "through-jump", "output.txt")
+	if _, err := os.Stat(gatewayPath); !os.IsNotExist(err) {
+		t.Fatalf("gateway file exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsWrongJumpHostKey(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	wrongGatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_JUMP_HOST"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, wrongGatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected jump host-key mismatch error")
+	}
+	if !strings.Contains(err.Error(), "jump_hosts[0]") || !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want jump host handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsWrongFinalHostKeyThroughJumpHost(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	wrongFinalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_FINAL_HOST"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, wrongFinalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected final host-key mismatch error")
+	}
+	for _, want := range []string{"target", "jump_hosts[0]", "handshake"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want context %q", err, want)
+		}
+	}
+}
+
+func TestSSHTransportConnectReportsFinalConnectionFailureThroughJumpHost(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	finalAddress := unusedTestTCPAddress(t)
+
+	envName := "GOETL_TEST_SSH_KEY_FINAL_CONNECT_FAIL"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, finalAddress, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected final connection failure")
+	}
+	for _, want := range []string{"target", "jump_hosts[0]", finalAddress} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want context %q", err, want)
+		}
+	}
+}
+
+func TestSSHReverseCallbackTunnelBindsJumpHostAndProxiesToLocalController(t *testing.T) {
+	var statusRequests int64
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt64(&statusRequests, 1)
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer controller.Close()
+	localHost, localPort := splitTestHTTPServerAddress(t, controller.URL)
+
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           localHost,
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+
+	if err := tunnel.Prepare(context.Background()); err != nil {
+		t.Fatalf("prepare reverse callback tunnel: %v", err)
+	}
+	defer tunnel.Close()
+	defer transport.Close()
+
+	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort))
+	if err != nil {
+		t.Fatalf("GET through reverse callback tunnel: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s, want 200 OK", response.Status)
+	}
+	if got := atomic.LoadInt64(&statusRequests); got != 1 {
+		t.Fatalf("status request count = %d, want 1", got)
+	}
+
+	if err := tunnel.Prepare(context.Background()); err != nil {
+		t.Fatalf("second prepare should reuse reverse callback tunnel: %v", err)
+	}
+}
+
+func TestSSHReverseCallbackTunnelPreflightReportsUnreachableLocalController(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL_PREFLIGHT"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	localPort := unusedTestTCPPort(t)
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           "127.0.0.1",
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+	defer tunnel.Close()
+	defer transport.Close()
+
+	issues := tunnel.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+	if issues[0].Code != "callback_tunnel_unreachable" {
+		t.Fatalf("issue code = %q, want callback_tunnel_unreachable", issues[0].Code)
+	}
+	if issues[0].Severity != PreflightSeverityError {
+		t.Fatalf("severity = %q, want error", issues[0].Severity)
+	}
+}
+
+func TestExecutionEnvironmentCloseStopsSSHReverseCallbackTunnel(t *testing.T) {
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer controller.Close()
+	localHost, localPort := splitTestHTTPServerAddress(t, controller.URL)
+
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL_CLOSE"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           localHost,
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+	env := ExecutionEnvironment{
+		Transports:     []Transport{transport},
+		CallbackTunnel: tunnel,
+	}
+
+	if err := env.Prepare(context.Background()); err != nil {
+		t.Fatalf("prepare environment with reverse callback tunnel: %v", err)
+	}
+	if _, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort)); err != nil {
+		t.Fatalf("GET before close: %v", err)
+	}
+
+	if err := env.Close(); err != nil {
+		t.Fatalf("close execution environment: %v", err)
+	}
+
+	client := http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("GET after close unexpectedly succeeded with %s", resp.Status)
 	}
 }
 
@@ -830,6 +1531,23 @@ func TestSSHTransportCopyWritesFileContent(t *testing.T) {
 	got := readTestRemoteFile(t, server, "remote/output.txt")
 	if got != "copied content\n" {
 		t.Fatalf("remote content = %q, want copied content", got)
+	}
+}
+
+func TestSSHTransportCopyDoesNotExpandRemotePath(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_LITERAL_REMOTE_HOME")
+	defer transport.Close()
+
+	localPath := writeTestLocalFile(t, "copy-literal-home-source.txt", "literal remote home marker\n")
+	if err := transport.Copy(context.Background(), localPath, "~/output.txt"); err != nil {
+		t.Fatalf("copy with literal remote home path: %v", err)
+	}
+
+	if got := readTestRemoteFile(t, server, "~/output.txt"); got != "literal remote home marker\n" {
+		t.Fatalf("remote content = %q, want literal remote home content", got)
+	}
+	if _, err := os.Stat(filepath.Join(server.remoteRoot, "output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("remote root output exists or unexpected stat error: %v", err)
 	}
 }
 
@@ -1273,4 +1991,105 @@ func testSSHTransportConfig(t *testing.T, address string, identityEnv string, ho
 		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
 	}
 	return cfg
+}
+
+func testSSHJumpHostConfig(t *testing.T, address string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHJumpHostConfig {
+	t.Helper()
+
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split test SSH address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test SSH port: %v", err)
+	}
+
+	cfg := SSHJumpHostConfig{
+		Host:          host,
+		Port:          port,
+		User:          "test-user",
+		HostKeyPolicy: hostKeyPolicy,
+	}
+	if pinnedHostKey != nil {
+		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
+	}
+	return cfg
+}
+
+func writeTestKnownHostsFile(t *testing.T, hashHostnames bool, entries ...any) string {
+	t.Helper()
+
+	if len(entries)%2 != 0 {
+		t.Fatalf("known_hosts entries must be address/key pairs")
+	}
+
+	var builder strings.Builder
+	for index := 0; index < len(entries); index += 2 {
+		address, ok := entries[index].(string)
+		if !ok {
+			t.Fatalf("known_hosts entry %d address has type %T, want string", index/2, entries[index])
+		}
+		key, ok := entries[index+1].(ssh.PublicKey)
+		if !ok {
+			t.Fatalf("known_hosts entry %d key has type %T, want ssh.PublicKey", index/2, entries[index+1])
+		}
+
+		hostname := knownhosts.Normalize(address)
+		if hashHostnames {
+			hostname = knownhosts.HashHostname(hostname)
+		}
+		builder.WriteString(knownhosts.Line([]string{hostname}, key))
+		builder.WriteByte('\n')
+	}
+
+	knownHostsFile := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHostsFile, []byte(builder.String()), 0600); err != nil {
+		t.Fatalf("write test known_hosts file: %v", err)
+	}
+	return knownHostsFile
+}
+
+func unusedTestTCPAddress(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for unused address: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close unused address listener: %v", err)
+	}
+	return address
+}
+
+func unusedTestTCPPort(t *testing.T) int {
+	t.Helper()
+
+	address := unusedTestTCPAddress(t)
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split unused address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse unused port: %v", err)
+	}
+	return port
+}
+
+func splitTestHTTPServerAddress(t *testing.T, rawURL string) (string, int) {
+	t.Helper()
+
+	withoutScheme := strings.TrimPrefix(rawURL, "http://")
+	host, portText, err := net.SplitHostPort(withoutScheme)
+	if err != nil {
+		t.Fatalf("split test HTTP server URL %q: %v", rawURL, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test HTTP server port: %v", err)
+	}
+	return host, port
 }

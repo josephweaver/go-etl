@@ -10,6 +10,7 @@ import (
 type fakeSlurmConnector struct {
 	copiedLocalPath  string
 	copiedRemotePath string
+	copiedContent    []byte
 	execArgs         []string
 	output           []byte
 }
@@ -17,6 +18,10 @@ type fakeSlurmConnector struct {
 func (c *fakeSlurmConnector) Copy(ctx context.Context, localPath string, remotePath string) error {
 	c.copiedLocalPath = localPath
 	c.copiedRemotePath = remotePath
+	data, err := os.ReadFile(localPath)
+	if err == nil {
+		c.copiedContent = data
+	}
 	return nil
 }
 
@@ -89,5 +94,40 @@ func TestSlurmSchedulerExecuteRejectsMissingConnector(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestSSHReverseCallbackTunnelSlurmPreflightSubmitsWaitScript(t *testing.T) {
+	connector := &fakeSlurmConnector{output: []byte("Submitted batch job 77\n")}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			WorkerControllerURL: "http://hpcc.example.edu:18080",
+		},
+		scheduler:                SlurmScheduler{Transport: connector},
+		slurmPreflightScriptPath: "/data/goetl/scripts/callback-tunnel-preflight.slurm",
+	}
+
+	if err := tunnel.checkSlurmWorkerControllerURL(context.Background()); err != nil {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+
+	if connector.copiedRemotePath != "/data/goetl/scripts/callback-tunnel-preflight.slurm" {
+		t.Fatalf("remote script path = %q", connector.copiedRemotePath)
+	}
+	if !stringSlicesEqual(connector.execArgs, []string{"sbatch", "--wait", "/data/goetl/scripts/callback-tunnel-preflight.slurm"}) {
+		t.Fatalf("exec args = %#v, want sbatch --wait", connector.execArgs)
+	}
+	script := string(connector.copiedContent)
+	for _, want := range []string{
+		"#SBATCH --job-name=goetl-callback-preflight",
+		"curl --fail --silent --show-error --max-time 10",
+		"'http://hpcc.example.edu:18080/status'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+	if _, err := os.Stat(connector.copiedLocalPath); !os.IsNotExist(err) {
+		t.Fatalf("temp preflight script still exists or stat failed unexpectedly: %v", err)
 	}
 }
