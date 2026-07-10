@@ -212,6 +212,15 @@ func TestNewExecutionEnvironmentSupportsSSHTransport(t *testing.T) {
 				"identity_file":   "/home/researcher/.ssh/id_ed25519",
 				"host_key_policy": "pinned",
 				"pinned_host_key": "ssh-ed25519 AAAATESTKEY",
+				"jump_hosts": []any{
+					map[string]any{
+						"host":            "gateway.example.edu",
+						"port":            "22",
+						"user":            "researcher",
+						"host_key_policy": "pinned",
+						"pinned_host_key": "ssh-ed25519 AAAAGATEWAY",
+					},
+				},
 			},
 		}},
 		Dialect:   ExecutionComponentConfig{Type: "bash"},
@@ -231,6 +240,12 @@ func TestNewExecutionEnvironmentSupportsSSHTransport(t *testing.T) {
 	}
 	if transport.Config.Port != 2222 {
 		t.Fatalf("ssh port = %d, want 2222", transport.Config.Port)
+	}
+	if len(transport.Config.JumpHosts) != 1 {
+		t.Fatalf("jump host count = %d, want 1", len(transport.Config.JumpHosts))
+	}
+	if transport.Config.JumpHosts[0].Host != "gateway.example.edu" {
+		t.Fatalf("jump host = %q, want gateway.example.edu", transport.Config.JumpHosts[0].Host)
 	}
 }
 

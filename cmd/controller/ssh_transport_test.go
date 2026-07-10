@@ -149,7 +149,12 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 	go ssh.DiscardRequests(requests)
 
 	for newChannel := range channels {
-		if newChannel.ChannelType() != "session" {
+		switch newChannel.ChannelType() {
+		case "session":
+		case "direct-tcpip":
+			handleTestSSHDirectTCPIP(t, newChannel)
+			continue
+		default:
 			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported channel type")
 			continue
 		}
@@ -162,6 +167,55 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 
 		go handleTestSSHSession(t, channel, requests, remoteRoot, execCounts)
 	}
+}
+
+type testSSHDirectTCPIPPayload struct {
+	DestinationHost string
+	DestinationPort uint32
+	OriginatorHost  string
+	OriginatorPort  uint32
+}
+
+func handleTestSSHDirectTCPIP(t *testing.T, newChannel ssh.NewChannel) {
+	t.Helper()
+
+	var payload testSSHDirectTCPIPPayload
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &payload); err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, "invalid direct-tcpip payload")
+		return
+	}
+
+	targetAddress := net.JoinHostPort(payload.DestinationHost, strconv.Itoa(int(payload.DestinationPort)))
+	targetConn, err := net.Dial("tcp", targetAddress)
+	if err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		_ = targetConn.Close()
+		t.Logf("test SSH accept direct-tcpip channel error: %v", err)
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	go proxyTestSSHDirectTCPIP(channel, targetConn)
+}
+
+func proxyTestSSHDirectTCPIP(channel ssh.Channel, targetConn net.Conn) {
+	var once sync.Once
+	closeBoth := func() {
+		_ = channel.Close()
+		_ = targetConn.Close()
+	}
+	go func() {
+		_, _ = io.Copy(channel, targetConn)
+		once.Do(closeBoth)
+	}()
+	go func() {
+		_, _ = io.Copy(targetConn, channel)
+		once.Do(closeBoth)
+	}()
 }
 
 func handleTestSSHSession(t *testing.T, channel ssh.Channel, requests <-chan *ssh.Request, remoteRoot string, execCounts *sync.Map) {
@@ -439,6 +493,22 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid jump host inherits target identity",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
+			},
+		},
+		{
 			name: "missing host",
 			cfg: SSHTransportConfig{
 				User:         "researcher",
@@ -531,6 +601,41 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				IdentityFile: "~/.ssh/id_ed25519",
 			},
 			wantErr: "port must be between 1 and 65535",
+		},
+		{
+			name: "jump host missing host",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
+			},
+			wantErr: "jump_hosts[0] host is required",
+		},
+		{
+			name: "jump host both identity sources set",
+			cfg: SSHTransportConfig{
+				Host:          "dev.example.edu",
+				User:          "researcher",
+				IdentityEnv:   "GOETL_SSH_KEY",
+				HostKeyPolicy: SSHHostKeyPolicyPinned,
+				PinnedHostKey: "ssh-ed25519 AAAATARGET",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					IdentityFile:  "~/.ssh/id_gateway",
+					IdentityEnv:   "GOETL_SSH_GATEWAY_KEY",
+					HostKeyPolicy: SSHHostKeyPolicyPinned,
+					PinnedHostKey: "ssh-ed25519 AAAAGATEWAY",
+				}},
+			},
+			wantErr: "jump_hosts[0] identity_file and identity_env are mutually exclusive",
 		},
 	}
 
@@ -669,6 +774,134 @@ func TestSSHTransportConnectUsesIdentityFile(t *testing.T) {
 	}
 	if err := transport.Close(); err != nil {
 		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportExecAndCopyThroughJumpHostUseFinalTarget(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_JUMP_EXEC_COPY"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect through jump host: %v", err)
+	}
+	defer transport.Close()
+
+	output, err := transport.Exec(context.Background(), "stdout-ok")
+	if err != nil {
+		t.Fatalf("exec through jump host: %v", err)
+	}
+	if string(output) != "stdout from ssh\n" {
+		t.Fatalf("output = %q, want final target stdout", string(output))
+	}
+	if got := testSSHExecCount(gateway, "'stdout-ok'"); got != 0 {
+		t.Fatalf("gateway exec count = %d, want 0", got)
+	}
+	if got := testSSHExecCount(final, "'stdout-ok'"); got != 1 {
+		t.Fatalf("final exec count = %d, want 1", got)
+	}
+
+	localPath := writeTestLocalFile(t, "jump-copy-source.txt", "copied through jump\n")
+	if err := transport.Copy(context.Background(), localPath, "through-jump/output.txt"); err != nil {
+		t.Fatalf("copy through jump host: %v", err)
+	}
+	if got := readTestRemoteFile(t, final, "through-jump/output.txt"); got != "copied through jump\n" {
+		t.Fatalf("final remote content = %q, want copied content", got)
+	}
+	gatewayPath := filepath.Join(gateway.remoteRoot, "through-jump", "output.txt")
+	if _, err := os.Stat(gatewayPath); !os.IsNotExist(err) {
+		t.Fatalf("gateway file exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsWrongJumpHostKey(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	wrongGatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_JUMP_HOST"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, wrongGatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected jump host-key mismatch error")
+	}
+	if !strings.Contains(err.Error(), "jump_hosts[0]") || !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want jump host handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsWrongFinalHostKeyThroughJumpHost(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	wrongFinalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_WRONG_FINAL_HOST"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, wrongFinalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected final host-key mismatch error")
+	}
+	for _, want := range []string{"target", "jump_hosts[0]", "handshake"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want context %q", err, want)
+		}
+	}
+}
+
+func TestSSHTransportConnectReportsFinalConnectionFailureThroughJumpHost(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	finalAddress := unusedTestTCPAddress(t)
+
+	envName := "GOETL_TEST_SSH_KEY_FINAL_CONNECT_FAIL"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	cfg := testSSHTransportConfig(t, finalAddress, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected final connection failure")
+	}
+	for _, want := range []string{"target", "jump_hosts[0]", finalAddress} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want context %q", err, want)
+		}
 	}
 }
 
@@ -1273,4 +1506,42 @@ func testSSHTransportConfig(t *testing.T, address string, identityEnv string, ho
 		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
 	}
 	return cfg
+}
+
+func testSSHJumpHostConfig(t *testing.T, address string, hostKeyPolicy string, pinnedHostKey ssh.PublicKey) SSHJumpHostConfig {
+	t.Helper()
+
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split test SSH address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test SSH port: %v", err)
+	}
+
+	cfg := SSHJumpHostConfig{
+		Host:          host,
+		Port:          port,
+		User:          "test-user",
+		HostKeyPolicy: hostKeyPolicy,
+	}
+	if pinnedHostKey != nil {
+		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
+	}
+	return cfg
+}
+
+func unusedTestTCPAddress(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for unused address: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close unused address listener: %v", err)
+	}
+	return address
 }

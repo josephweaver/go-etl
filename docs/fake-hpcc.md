@@ -36,8 +36,12 @@ work, but it is not yet the default fake-HPCC run path.
 The current SSH transport supports:
 
 - loading validated SSH transport config from execution-environment settings
+- connecting to the final target host through explicit `jump_hosts`, without
+  invoking the external `ssh` command
 - key-based authentication from an identity file or identity environment variable
+- inherited target identity or hop-specific identity settings for each jump host
 - pinned host-key verification or explicit development-only insecure host-key mode
+- independent host-key verification for the gateway and final target
 - reconnecting after a closed idle connection before an operation starts
 - remote command execution
 - SFTP copy through a temporary remote path before promotion
@@ -57,7 +61,16 @@ component shaped like:
     "user": "goetl",
     "identity_file": "/home/goetl/.ssh/id_ed25519",
     "host_key_policy": "pinned",
-    "pinned_host_key": "ssh-ed25519 AAAA..."
+    "pinned_host_key": "ssh-ed25519 AAAA...",
+    "jump_hosts": [
+      {
+        "host": "fake-hpcc-gateway",
+        "port": "22",
+        "user": "goetl",
+        "host_key_policy": "pinned",
+        "pinned_host_key": "ssh-ed25519 AAAA..."
+      }
+    ]
   }
 }
 ```
@@ -66,7 +79,9 @@ This transport object owns only connection and file/command transport details.
 Scheduler settings such as Slurm job names, partitions, or script paths belong
 to the scheduler component. Runtime settings such as worker artifact paths,
 worker config paths, Singularity image paths, and bind mounts belong to the
-runtime component.
+runtime component. When `jump_hosts` is present, the gateway is used only for
+SSH tunnel traffic; GOET commands, SFTP operations, runtime preparation, and
+Slurm submission run on the final target host.
 
 Do not commit real hostnames, usernames, private key paths, known-hosts data, or
 site-specific cluster values. Fake-HPCC examples should use generic names such

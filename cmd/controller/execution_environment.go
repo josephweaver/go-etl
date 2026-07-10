@@ -218,6 +218,10 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 	if err != nil {
 		return SSHTransportConfig{}, err
 	}
+	jumpHosts, err := sshJumpHostConfigsFromSettings(settings)
+	if err != nil {
+		return SSHTransportConfig{}, err
+	}
 	cfg := SSHTransportConfig{
 		Host:           host,
 		User:           user,
@@ -228,6 +232,7 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 		PinnedHostKey:  pinnedHostKey,
 		ConnectTimeout: connectTimeout,
 		CommandTimeout: commandTimeout,
+		JumpHosts:      jumpHosts,
 	}
 	port, err := settings.String("port")
 	if err != nil {
@@ -244,6 +249,66 @@ func sshTransportConfigFromSettings(settings ExecutionComponentSettings) (SSHTra
 		return SSHTransportConfig{}, err
 	}
 	return cfg, nil
+}
+
+func sshJumpHostConfigsFromSettings(settings ExecutionComponentSettings) ([]SSHJumpHostConfig, error) {
+	jumpHostSettings, err := settings.ObjectList("jump_hosts")
+	if err != nil {
+		return nil, err
+	}
+	jumpHosts := make([]SSHJumpHostConfig, 0, len(jumpHostSettings))
+	for index, item := range jumpHostSettings {
+		host, err := item.String("host")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		user, err := item.String("user")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		identityFile, err := item.String("identity_file")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		identityEnv, err := item.String("identity_env")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		knownHostsFile, err := item.String("known_hosts_file")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		hostKeyPolicy, err := item.String("host_key_policy")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		pinnedHostKey, err := item.String("pinned_host_key")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		jumpHost := SSHJumpHostConfig{
+			Host:           host,
+			User:           user,
+			IdentityFile:   identityFile,
+			IdentityEnv:    identityEnv,
+			KnownHostsFile: knownHostsFile,
+			HostKeyPolicy:  hostKeyPolicy,
+			PinnedHostKey:  pinnedHostKey,
+		}
+		port, err := item.String("port")
+		if err != nil {
+			return nil, fmt.Errorf("jump_hosts[%d]: %w", index, err)
+		}
+		if port != "" {
+			parsed, err := strconv.Atoi(port)
+			if err != nil {
+				return nil, fmt.Errorf("jump_hosts[%d]: ssh transport setting port must be an integer: %w", index, err)
+			}
+			jumpHost.Port = parsed
+		}
+		jumpHosts = append(jumpHosts, jumpHost)
+	}
+	return jumpHosts, nil
 }
 
 func newShellDialectFromConfig(cfg ExecutionComponentConfig) (ShellDialect, error) {
@@ -391,6 +456,38 @@ func (settings ExecutionComponentSettings) StringMap(name string) (map[string]st
 		result[key] = text
 	}
 	return result, nil
+}
+
+func (settings ExecutionComponentSettings) ObjectList(name string) ([]ExecutionComponentSettings, error) {
+	if len(settings) == 0 {
+		return nil, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	switch typed := value.(type) {
+	case []ExecutionComponentSettings:
+		return typed, nil
+	case []map[string]any:
+		result := make([]ExecutionComponentSettings, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, ExecutionComponentSettings(item))
+		}
+		return result, nil
+	case []any:
+		result := make([]ExecutionComponentSettings, 0, len(typed))
+		for index, item := range typed {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("setting %s[%d] must be an object", name, index)
+			}
+			result = append(result, ExecutionComponentSettings(object))
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("setting %s must be a list of objects", name)
+	}
 }
 
 func (settings ExecutionComponentSettings) Int64(name string) (int64, error) {

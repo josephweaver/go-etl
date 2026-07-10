@@ -1,6 +1,6 @@
 # OS-001: SSH ProxyJump Transport
 
-Status: Proposed
+Status: Complete
 Scope: GOET controller SSH transport
 
 ## Purpose
