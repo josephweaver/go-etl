@@ -519,7 +519,7 @@ than the preferred laptop callback topology.
 | `OS-004-cli-controller-credential-loading.md` | Implemented | GPT-5.4-mini | Mostly client configuration, safe token loading, and request migration. |
 | `OS-005-worker-control-plane-credential-bootstrap.md` | Implemented | GPT-5.5 high reasoning | Crosses controller/runtime/HPCC secret boundaries. |
 | `OS-006-worker-controller-http-client-migration.md` | Implemented | GPT-5.4-mini | Mechanical migration once shared client and bootstrap contract exist. |
-| `OS-007-laptop-test-https-ingress.md` | Proposed | GPT-5.4-mini | Deployment scripts/runbook with a narrow test-only boundary. |
+| `OS-007-laptop-test-https-ingress.md` | Implemented | GPT-5.4-mini | Deployment scripts/runbook with a narrow test-only boundary. |
 | `OS-008-dedicated-server-https-deployment.md` | Proposed | GPT-5.4-mini | Provider-neutral service and reverse-proxy baseline. |
 | `OS-009-network-security-and-external-smoke.md` | Proposed | GPT-5.5 high reasoning | End-to-end negative authorization and remote callback evidence. |
 | `OS-010-concept-closure-and-doc-sync.md` | Proposed | GPT-5.3-Codex-Spark | Tracker, state, runbook, and compatibility documentation. |

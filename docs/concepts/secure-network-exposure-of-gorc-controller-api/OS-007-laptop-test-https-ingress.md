@@ -1,6 +1,6 @@
 # OS-007: Laptop Test HTTPS Ingress
 
-Status: Proposed  
+Status: Implemented
 Minimum recommended model: GPT-5.4-mini  
 Reference: EC-2 / operational slice / scripts(2)+config+doc
 
@@ -43,6 +43,25 @@ The first runbook should support one concrete managed ingress. Prefer a tool tha
 
 Tailscale Funnel is a suitable first documented option where available. A
 Cloudflare Tunnel-style connector is an acceptable alternative.
+
+## Implementation State
+
+Implemented a test-only laptop HTTPS ingress runbook and helper artifacts:
+
+- `docs/deployment/laptop-test-controller-ingress.md` documents the loopback
+  controller listener, Tailscale Funnel managed-ingress path, validation steps,
+  worker configuration timing, expected laptop availability failures, cleanup, and
+  direct dynamic-DNS fallback checklist.
+- `scripts/network/validate-controller-ingress.ps1` validates the public HTTPS
+  endpoint, public `/healthz`, unauthenticated protected-route rejection, client
+  token access to `/status`, client rejection from `/work/next`, and optional
+  worker-token behavior.
+- `scripts/network/render-controller-url-override.ps1` validates an HTTPS
+  controller URL and writes or prints an uncommitted local controller JSON
+  fragment for `controller_config.controller_url`.
+- `docs/deployment/laptop-test-controller.example.json` provides a placeholder
+  bearer-authenticated laptop-test controller config shape with matching worker
+  runtime `controller_url` and `controller_token_file` settings.
 
 ## Dynamic IP Decision
 
