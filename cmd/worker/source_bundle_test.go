@@ -59,6 +59,48 @@ func TestStageWorkItemSourceBundleSuccess(t *testing.T) {
 	assertFileContents(t, filepath.Join(staging.SourceDir, ".goet", "source-manifest.json"), "{}\n")
 }
 
+func TestStageWorkItemSourceBundleUsesControllerClientAuth(t *testing.T) {
+	const sentinel = "goetl-worker-controller-token-sentinel-006"
+	zipData := mustZipData(t, zipTestEntry{name: "main.py", body: "print('ok')\n"})
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization") == "Bearer "+sentinel
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	tokenFile := filepath.Join(root, "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	cfg := Config{
+		LogDir:              filepath.Join(root, "logs"),
+		TmpDir:              filepath.Join(root, "tmp"),
+		DataDir:             filepath.Join(root, "data"),
+		ControllerURL:       server.URL,
+		ControllerTokenFile: tokenFile,
+	}
+	for _, dir := range []string{cfg.LogDir, cfg.TmpDir, cfg.DataDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("create directory %s: %v", dir, err)
+		}
+	}
+	controller, err := NewWorkerControllerClient(cfg)
+	if err != nil {
+		t.Fatalf("NewWorkerControllerClient() error = %v", err)
+	}
+
+	worker := Worker{Config: cfg, Controller: controller}
+	if _, err := worker.stageWorkItemSourceBundle(baseSourceBundleTestItem()); err != nil {
+		t.Fatalf("stage source bundle: %v", err)
+	}
+	if !sawAuth {
+		t.Fatal("expected source bundle request to include bearer token")
+	}
+}
+
 func TestStageWorkItemSourceBundleRejectsMissingInputs(t *testing.T) {
 	tests := []struct {
 		name string

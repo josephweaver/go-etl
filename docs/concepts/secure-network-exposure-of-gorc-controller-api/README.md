@@ -1,8 +1,8 @@
 # Secure Network Exposure of the GORC Controller API
 
-Status: Proposed  
+Status: Implemented through OS-009; closure pending laptop-profile evidence decision
 Cadence: CSxIx  
-Revision: 2026-07-10 laptop-test and dedicated-server deployment split
+Revision: 2026-07-10 OS-010 documentation sync
 
 > Repository naming note: the product is referred to here as **GORC**, while current
 > executable names, module paths, environment variables, and JSON API versions may
@@ -49,34 +49,30 @@ controller API.
 
 ## Current State
 
-The repository already has most of the transport-neutral structure needed:
+The secure controller API path is implemented and externally smoke-tested:
 
-- the controller uses Go `net/http`;
-- listen host, listen port, advertised URL, timeouts, request size, and header size
-  are startup settings;
-- the default controller binds to `localhost:8080`;
-- clients accept a controller URL and use HTTP;
-- workers receive `controller_url` in generated worker configuration;
-- the controller can generate worker configuration for local, Docker, SSH, Slurm,
-  and Singularity-backed execution environments;
-- the current HTTP routes include workflow admission, work claiming, work
-  completion/failure, status, logs, source bundles, health, and shutdown;
-- SSH reverse callback tunneling is implemented and can remain available during
-  migration.
+- the controller has explicit bearer authentication and per-route role
+  authorization for `client`, `worker`, and `admin`;
+- disabled authentication is rejected unless both the listener and advertised URL
+  are loopback;
+- external plain HTTP advertised URLs require an explicit unsafe-test override;
+- CLI and worker callers use the shared controller HTTP client, bearer injection,
+  bounded errors, and same-origin redirect policy;
+- CLI client credentials load from a token file or environment, never a raw token
+  argument;
+- generated worker config carries `controller_token_file`, not token material;
+- deployment docs distinguish loopback controller listen address, external
+  `controller_url`, and TLS ingress;
+- a dedicated-server HTTPS smoke verified public `80`/`443`, private `8080`,
+  public `/healthz`, authenticated `/status`, and HTTP-to-HTTPS redirect
+  behavior;
+- a real HPCC Slurm/Singularity worker was scheduled from the dedicated server,
+  claimed work through the public HTTPS endpoint, wrote output on HPCC storage,
+  and reported completion.
 
-Important gaps:
-
-- controller routes do not yet have a complete authentication and authorization
-  boundary;
-- `/shutdown` and other control-plane routes must not be exposed merely because
-  they validate an HTTP method;
-- worker callback code uses package-level `http.Get` and `http.Post`, so there is
-  no shared place to add credentials, redirect policy, or safe HTTP behavior;
-- worker configuration contains a URL but no control-plane credential source;
-- the controller has no startup interlock preventing an unauthenticated non-loopback
-  exposure;
-- deployment documentation does not yet separate internal listen address,
-  externally advertised URL, TLS ingress, and temporary laptop exposure.
+The laptop-hosted temporary HTTPS profile is documented but not separately
+verified. See `issues.md` for the closure decision on whether the dedicated
+server plus HPCC smoke supersedes that laptop-specific evidence requirement.
 
 ## Strategic Decisions
 
@@ -124,7 +120,7 @@ The first secure network boundary should use role-scoped bearer credentials:
 |---|---|---|
 | `client` | CLI or trusted automation | Submit workflows/raw work; read status, logs, and permitted source artifacts |
 | `worker` | GORC worker runtime | Claim work; report completion/failure; send worker observations; obtain worker-required controller artifacts |
-| `admin` | Operator | Administrative operations, especially shutdown; may be treated as a superset where explicitly documented |
+| `admin` | Operator | Administrative operations, especially shutdown; phase 1 treats admin as a reviewed superset where the route policy table lists it |
 
 `/healthz` may remain unauthenticated, but it must disclose only minimal liveness
 information.
@@ -284,44 +280,77 @@ Rules:
 
 ## Candidate Authentication Configuration
 
-The exact JSON placement should follow the repository's canonical configuration
-direction. A top-level object is shown because `execution_environment` already
-uses a structured top-level contract and credential sources are not ordinary
-workflow variables.
+Controller API authentication is a structured typed variable, not a raw-token
+top-level JSON field. The controller resolves it from:
+
+```text
+controller_config.authentication
+```
+
+The safe local default belongs in `cmd/controller/defaults.json`:
 
 ```json
 {
-  "api_version": "goet/v1alpha1",
-  "kind": "Controller",
-  "variables": [
-    {
-      "name": {
-        "namespace": "controller_config",
-        "key": "controller_url"
-      },
-      "type": "string",
-      "expression": "https://controller.example.org"
+  "name": {"namespace": "controller_config", "key": "authentication"},
+  "type": "object",
+  "expression": {
+    "mode": {"type": "string", "expression": "disabled"},
+    "credentials": {"type": "list", "expression": []}
+  }
+}
+```
+
+The explicit test-only advertised-HTTP override also belongs in
+`cmd/controller/defaults.json` and defaults to `false`:
+
+```json
+{
+  "name": {
+    "namespace": "controller_config",
+    "key": "controller_insecure_external_http_allowed"
+  },
+  "type": "bool",
+  "expression": false
+}
+```
+
+A bearer controller configuration supplies an overriding typed variable:
+
+```json
+{
+  "name": {"namespace": "controller_config", "key": "authentication"},
+  "type": "object",
+  "expression": {
+    "mode": {"type": "string", "expression": "bearer"},
+    "credentials": {
+      "type": "list",
+      "expression": [
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "primary-client"},
+            "role": {"type": "string", "expression": "client"},
+            "token_env": {"type": "string", "expression": "GOET_CONTROLLER_CLIENT_TOKEN"}
+          }
+        },
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "hpcc-workers"},
+            "role": {"type": "string", "expression": "worker"},
+            "token_env": {"type": "string", "expression": "GOET_CONTROLLER_WORKER_TOKEN"}
+          }
+        },
+        {
+          "type": "object",
+          "expression": {
+            "id": {"type": "string", "expression": "operator"},
+            "role": {"type": "string", "expression": "admin"},
+            "token_file": {"type": "path", "expression": "/etc/goet/secrets/controller-admin-token"}
+          }
+        }
+      ]
     }
-  ],
-  "authentication": {
-    "mode": "bearer",
-    "credentials": [
-      {
-        "id": "primary-client",
-        "role": "client",
-        "token_env": "GOET_CONTROLLER_CLIENT_TOKEN"
-      },
-      {
-        "id": "hpcc-workers",
-        "role": "worker",
-        "token_env": "GOET_CONTROLLER_WORKER_TOKEN"
-      },
-      {
-        "id": "operator",
-        "role": "admin",
-        "token_file": "/etc/goet/secrets/controller-admin-token"
-      }
-    ]
   }
 }
 ```
@@ -333,11 +362,24 @@ Requirements:
 - empty tokens are rejected;
 - duplicate token material across roles is rejected;
 - raw token values are never rendered;
+- unknown authentication fields are rejected;
 - configured tokens are transformed into constant-time comparison material in
   memory;
-- authentication-disabled mode is rejected for non-loopback listeners;
-- external advertised HTTP URLs require an explicit test-only insecure override;
+- authentication-disabled mode is rejected unless both the listener and
+  advertised `controller_url` host are loopback;
+- plain external advertised HTTP URLs require
+  `controller_config.controller_insecure_external_http_allowed = true`;
 - HTTPS is required for laptop external testing and production.
+
+Loopback classification is deterministic and does not perform DNS lookup:
+
+- listen hosts `localhost`, `127.0.0.0/8`, and `::1` are loopback;
+- listen hosts `0.0.0.0`, `::`, any non-loopback IP literal, and any hostname
+  other than `localhost` are non-loopback;
+- advertised `http://localhost`, `http://127.x.x.x`, and `http://[::1]` URLs are
+  local HTTP URLs;
+- advertised `http://` URLs with any other host require the explicit insecure
+  override.
 
 ## Candidate Worker Configuration
 
@@ -363,22 +405,77 @@ not required to establish the HTTP contract.
 
 ## Route Authorization Policy
 
-The implementation must inventory actual route callers before finalizing the
-table. The initial policy is:
+Every registered route and method must have an explicit policy. The OS-001 route
+contract is the implemented route policy:
 
-| Route family | Initial role |
-|---|---|
-| `GET /healthz` | public |
-| workflow/raw-work admission | `client` or `admin` |
-| submission status and logs | `client` or `admin` |
-| controller status | `client` or `admin` |
-| work claim/complete/fail | `worker` or `admin` |
-| worker observations | `worker` or `admin` |
-| worker-required source bundles | `worker` or `admin`; add `client` only if current CLI behavior requires it |
-| shutdown | `admin` only |
+| Method | Route | Access |
+|---|---|---|
+| `GET` | `/healthz` | public |
+| `POST` | `/workflow` | `client`, `admin` |
+| `GET` | `/workflow-runs/{run}/source-bundle.zip` | `client`, `worker`, `admin` |
+| `GET` | `/submissions/{id}/status` | `client`, `admin` |
+| `GET` | `/submissions/{id}/logs` | `client`, `admin` |
+| `POST` | `/work` | `client`, `admin` |
+| `GET` | `/work/next` | `worker`, `admin` |
+| `POST` | `/work/complete` | `worker`, `admin` |
+| `POST` | `/work/fail` | `worker`, `admin` |
+| `GET` | `/status` | `client`, `admin` |
+| `GET` | `/observations/logs` | `client`, `admin` |
+| `POST` | `/shutdown` | `admin` |
 
 Existing callback preflight should use the minimal public `/healthz` endpoint rather
 than relying on authenticated `/status`.
+
+## Verified Evidence
+
+Evidence is recorded in `docs/TEST_AND_SMOKE_STATUS.md` with concrete commands
+and results.
+
+- Automated route-role and controller HTTP client tests pass.
+- A production-like dedicated VM profile served the controller through trusted
+  HTTPS ingress while keeping the application listener private on loopback.
+- Public HTTPS `/healthz`, unauthenticated protected-route rejection,
+  authenticated `/status`, and HTTP-to-HTTPS redirect checks passed.
+- An external worker process completed a callback smoke through the HTTPS
+  endpoint.
+- A worker SIF was built from `containers/goetl-worker`, verified with
+  SingularityCE, staged for HPCC use, and then used by an actual HPCC Slurm job.
+- The dedicated VM scheduled a real HPCC Slurm/Singularity worker through SSH
+  transport. The worker claimed `os009-hpcc-worker-001`, wrote the expected
+  output, and reported completion through HTTPS.
+- A local-controller `ssh_reverse` smoke used an HPCC dev-node process launched
+  by `remote_process` and completed a two-item demo workflow through the reverse
+  callback path.
+- A local-controller `ssh_reverse` plus dev-node relay smoke completed the same
+  two-item demo workflow through real HPCC Slurm/Singularity workers. The worker
+  used a bearer token file and explicitly opted into
+  `controller_insecure_external_http_allowed` for the relay URL.
+- The OS-009 sentinel was absent from controlled logs, generated config, output,
+  controller state, and HPCC runtime files outside the intended credential file.
+
+## Deviations And Limitations
+
+- The verified external production-like profile used a temporary wildcard-DNS
+  hostname rather than an owned stable DNS name. The dedicated-server runbook
+  remains provider-neutral and expects stable DNS for production.
+- The laptop-hosted temporary HTTPS profile is documented but was not separately
+  smoke-tested. See `issues.md`.
+- Local-controller HPCC orchestration is viable on the execution side when the
+  laptop has SSH access to an HPCC dev node with Slurm and Singularity, but the
+  worker callback still requires a worker-safe public `controller_url`; laptop
+  LAN addresses are not sufficient.
+- Local/no-domain `ssh_reverse` is verified for short HPCC dev-node worker
+  smokes through `remote_process` and for real HPCC Slurm/Singularity workers
+  when a controller-managed dev-node relay exposes a worker-visible callback URL.
+  Direct non-loopback SSH reverse binds remain site-policy dependent.
+- Phase 1 uses role-scoped bearer tokens, not OAuth/OIDC or a general identity
+  provider.
+- Credential rotation requires a controlled restart and token-file replacement.
+- A running controller session has one advertised `controller_url`; moving from
+  one public URL to another happens between runs by regenerating client and
+  worker configuration.
+- Dynamic public-IP discovery and DNS updates remain operator/deployment
+  concerns, not controller behavior.
 
 ## HTTP Client Policy
 
@@ -420,9 +517,15 @@ HTTPS controller API:
   - workflow admission
 ```
 
-The reverse callback tunnel remains available as a compatibility fallback until
-the HTTPS path is proven. It should eventually be documented as optional rather
-than the preferred laptop callback topology.
+The reverse callback tunnel remains available as an optional compatibility path,
+especially for sites where an HTTPS controller endpoint is not yet reachable.
+It is no longer the preferred worker callback topology for this concept. The
+verified external path is:
+
+```text
+Controller -> SSH transport -> Slurm/Singularity worker startup
+Worker     -> HTTPS API     -> claim and report work
+```
 
 ## Goals
 
@@ -463,16 +566,16 @@ than the preferred laptop callback topology.
 
 | Slice | Status | Minimum recommended model | Reason |
 |---|---|---|---|
-| `OS-001-controller-api-auth-contract.md` | Proposed | GPT-5.5 high reasoning | Security contract, startup interlocks, and route-role semantics are long-lived. |
-| `OS-002-controller-route-authorization-middleware.md` | Proposed | GPT-5.5 high reasoning | A route omission would expose the control plane. |
-| `OS-003-shared-controller-http-client.md` | Proposed | GPT-5.4-mini | Narrow reusable HTTP abstraction after policy is fixed. |
-| `OS-004-cli-controller-credential-loading.md` | Proposed | GPT-5.4-mini | Mostly client configuration, safe token loading, and request migration. |
-| `OS-005-worker-control-plane-credential-bootstrap.md` | Proposed | GPT-5.5 high reasoning | Crosses controller/runtime/HPCC secret boundaries. |
-| `OS-006-worker-controller-http-client-migration.md` | Proposed | GPT-5.4-mini | Mechanical migration once shared client and bootstrap contract exist. |
-| `OS-007-laptop-test-https-ingress.md` | Proposed | GPT-5.4-mini | Deployment scripts/runbook with a narrow test-only boundary. |
-| `OS-008-dedicated-server-https-deployment.md` | Proposed | GPT-5.4-mini | Provider-neutral service and reverse-proxy baseline. |
-| `OS-009-network-security-and-external-smoke.md` | Proposed | GPT-5.5 high reasoning | End-to-end negative authorization and remote callback evidence. |
-| `OS-010-concept-closure-and-doc-sync.md` | Proposed | GPT-5.3-Codex-Spark | Tracker, state, runbook, and compatibility documentation. |
+| `OS-001-controller-api-auth-contract.md` | Implemented | GPT-5.5 high reasoning | Security contract, startup interlocks, and route-role semantics are long-lived. |
+| `OS-002-controller-route-authorization-middleware.md` | Implemented | GPT-5.5 high reasoning | A route omission would expose the control plane. |
+| `OS-003-shared-controller-http-client.md` | Implemented | GPT-5.4-mini | Narrow reusable HTTP abstraction after policy is fixed. |
+| `OS-004-cli-controller-credential-loading.md` | Implemented | GPT-5.4-mini | Mostly client configuration, safe token loading, and request migration. |
+| `OS-005-worker-control-plane-credential-bootstrap.md` | Implemented | GPT-5.5 high reasoning | Crosses controller/runtime/HPCC secret boundaries. |
+| `OS-006-worker-controller-http-client-migration.md` | Implemented | GPT-5.4-mini | Mechanical migration once shared client and bootstrap contract exist. |
+| `OS-007-laptop-test-https-ingress.md` | Implemented | GPT-5.4-mini | Deployment scripts/runbook with a narrow test-only boundary. |
+| `OS-008-dedicated-server-https-deployment.md` | Implemented | GPT-5.4-mini | Provider-neutral service and reverse-proxy baseline. |
+| `OS-009-network-security-and-external-smoke.md` | Implemented | GPT-5.5 high reasoning | End-to-end negative authorization and remote callback evidence. |
+| `OS-010-concept-closure-and-doc-sync.md` | In Progress | GPT-5.3-Codex-Spark | Tracker, state, runbook, and compatibility documentation; laptop-profile evidence decision remains open. |
 
 ## Suggested Implementation Order
 
@@ -538,7 +641,7 @@ credential propagation, retry/idempotency issue, or deployment assumption that
 cannot be proven, stop and append it to:
 
 ```text
-docs/concepts/secure-network-exposure-of-controller-api/issues.md
+docs/concepts/secure-network-exposure-of-gorc-controller-api/issues.md
 ```
 
 Do not silently:

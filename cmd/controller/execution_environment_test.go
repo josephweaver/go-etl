@@ -92,6 +92,53 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsWorkerRuntimeControllerTokenFile(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-direct",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root":                  "/tmp/goetl",
+			"controller_url":        "https://controller.example.org",
+			"controller_token_file": "/tmp/goetl/secrets/controller-worker-token",
+			"controller_insecure_external_http_allowed": true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runtime, ok := env.Runtime.(WorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
+	}
+	if runtime.ControllerTokenFile != "/tmp/goetl/secrets/controller-worker-token" {
+		t.Fatalf("controller token file = %q", runtime.ControllerTokenFile)
+	}
+	if !runtime.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
+	}
+}
+
+func TestNewExecutionEnvironmentRejectsNonBooleanWorkerRuntimeInsecureHTTPSetting(t *testing.T) {
+	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-direct",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"controller_insecure_external_http_allowed": "true",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "controller_insecure_external_http_allowed must be a boolean") {
+		t.Fatalf("error = %v, want boolean setting error", err)
+	}
+}
+
 func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "local-direct",
@@ -126,6 +173,29 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsRemoteProcess(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "ssh-remote-process",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "remote_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root": "/tmp/goetl",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	scheduler, ok := env.Scheduler.(RemoteProcessScheduler)
+	if !ok {
+		t.Fatalf("scheduler type = %T, want RemoteProcessScheduler", env.Scheduler)
+	}
+	if scheduler.Transport == nil {
+		t.Fatal("remote process scheduler transport is nil")
+	}
+}
+
 func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "local-singularity",
@@ -140,7 +210,6 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 				"image_path":                  "/tmp/goetl/images/goetl-worker.sif",
 				"container_worker_executable": "/goetl/goetl-worker",
 				"singularity_executable":      "singularity",
-				"bind":                        "/tmp/goetl:/data/goetl",
 			},
 		},
 	})
@@ -157,6 +226,25 @@ func TestNewExecutionEnvironmentSupportsSingularityWorkerRuntime(t *testing.T) {
 	}
 	if runtime.ImagePath != "/tmp/goetl/images/goetl-worker.sif" {
 		t.Fatalf("image path = %q, want configured image path", runtime.ImagePath)
+	}
+	script, err := runtime.WorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/tmp/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/tmp/goetl/config/worker.json",
+		LogDir:           "/tmp/goetl/logs",
+	})
+	if err != nil {
+		t.Fatalf("worker script: %v", err)
+	}
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/tmp/goetl:/tmp/goetl",
+		"/tmp/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
 	}
 }
 
@@ -494,6 +582,21 @@ func (r preflightRuntime) Preflight(ctx context.Context) []PreflightIssue {
 	return r.issues
 }
 
+type contextAwarePreflightRuntime struct {
+	transport Transport
+	dialect   ShellDialect
+}
+
+func (r *contextAwarePreflightRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
+	return nil
+}
+
+func (r *contextAwarePreflightRuntime) RuntimePreflight(ctx context.Context, transport Transport, dialect ShellDialect) []PreflightIssue {
+	r.transport = transport
+	r.dialect = dialect
+	return []PreflightIssue{{Severity: PreflightSeverityWarning, Code: "checked_with_context"}}
+}
+
 func TestExecutionEnvironmentPreflightNoComponentsReturnsNoIssues(t *testing.T) {
 	env := ExecutionEnvironment{
 		Transports: []Transport{LocalTransport{}},
@@ -555,6 +658,30 @@ func TestExecutionEnvironmentPreflightAggregatesMultipleComponents(t *testing.T)
 	}
 	if issues[3].Component != "runtime" {
 		t.Fatalf("component[3] = %q, want runtime", issues[3].Component)
+	}
+}
+
+func TestExecutionEnvironmentPreflightPassesPrimaryTransportAndDialectToRuntime(t *testing.T) {
+	transport := LocalTransport{}
+	runtime := &contextAwarePreflightRuntime{}
+	env := ExecutionEnvironment{
+		Transports: []Transport{transport},
+		Dialect:    BashShellPlatform{},
+		Runtime:    runtime,
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+	if issues[0].Component != "runtime" {
+		t.Fatalf("component = %q, want runtime", issues[0].Component)
+	}
+	if _, ok := runtime.transport.(LocalTransport); !ok {
+		t.Fatalf("runtime transport = %T, want LocalTransport", runtime.transport)
+	}
+	if _, ok := runtime.dialect.(BashShellPlatform); !ok {
+		t.Fatalf("runtime dialect = %T, want BashShellPlatform", runtime.dialect)
 	}
 }
 

@@ -72,6 +72,18 @@ goet submit \
 ```bash
 goet submit \
   --controller-url http://localhost:8080 \
+  --controller-token-file ./controller-token \
+  --project project.json \
+  --workflow workflow.json
+```
+
+For a controller published through HTTPS ingress, keep the controller process
+loopback-bound and pass the advertised HTTPS URL to the client:
+
+```bash
+goet submit \
+  --controller-url https://controller.example.org \
+  --controller-token-file ./controller-client-token \
   --project project.json \
   --workflow workflow.json
 ```
@@ -79,6 +91,18 @@ goet submit \
 ```bash
 goet status <submission_id>
 ```
+
+Remote or authenticated controllers can also read the client token from
+`GOET_CONTROLLER_TOKEN_FILE` or `GOET_CONTROLLER_TOKEN`. Prefer token files for
+shared machines; GOET intentionally does not provide a raw `--controller-token`
+argument.
+
+For local/no-domain HPCC orchestration, the controller can use SSH for command
+execution and Slurm submission while workers call back through an `ssh_reverse`
+callback tunnel. If the SSH server only exposes reverse forwards on loopback,
+use the documented dev-node relay mode and the explicit worker
+`controller_insecure_external_http_allowed` setting; see
+[`docs/RUNTIME_RUNBOOK.md`](docs/RUNTIME_RUNBOOK.md).
 
 ```bash
 goet submit \

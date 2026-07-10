@@ -13,7 +13,13 @@ func main() {
 		return
 	}
 
-	worker := Worker{Config: cfg}
+	controller, err := NewWorkerControllerClient(cfg)
+	if err != nil {
+		fmt.Println("invalid controller client:", err)
+		return
+	}
+
+	worker := Worker{Config: cfg, Controller: controller}
 
 	if err := worker.Validate(); err != nil {
 		fmt.Println("invalid worker:", err)
@@ -36,8 +42,13 @@ func workerConfigPath(args []string) string {
 }
 
 func runWorkerLoop(worker Worker) error {
+	controller, err := worker.controllerClient()
+	if err != nil {
+		return fmt.Errorf("controller client: %w", err)
+	}
+
 	for {
-		item, hasWork, err := fetchWorkItem(worker.Config.ControllerURL)
+		item, hasWork, err := controller.FetchWorkItem()
 		if err != nil {
 			return fmt.Errorf("fetch work item: %w", err)
 		}
@@ -50,13 +61,13 @@ func runWorkerLoop(worker Worker) error {
 		startedAt := time.Now().UTC()
 		evidence, err := worker.Run(item)
 		if err != nil {
-			if reportErr := reportWorkFailed(worker.Config.ControllerURL, item, err); reportErr != nil {
+			if reportErr := controller.ReportWorkFailed(item, err); reportErr != nil {
 				return fmt.Errorf("run work item: %v; report failure: %w", err, reportErr)
 			}
 			return err
 		}
 
-		if err := reportWorkComplete(worker.Config.ControllerURL, item, startedAt, evidence); err != nil {
+		if err := controller.ReportWorkComplete(item, startedAt, evidence); err != nil {
 			return fmt.Errorf("report completion: %w", err)
 		}
 	}

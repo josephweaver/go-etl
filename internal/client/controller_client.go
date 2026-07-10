@@ -1,10 +1,11 @@
 package client
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"goetl/internal/controllerhttp"
 	"goetl/internal/model"
 	"goetl/internal/reposource"
 	"goetl/internal/variable"
@@ -37,9 +39,10 @@ type SourceDocumentReference struct {
 }
 
 type ControllerClient struct {
-	httpClient *http.Client
-	resolver   variable.Resolver
-	starter    ControllerStarter
+	httpClient    *http.Client
+	resolver      variable.Resolver
+	starter       ControllerStarter
+	tokenProvider controllerhttp.TokenProvider
 }
 
 type ControllerStarter interface {
@@ -56,9 +59,14 @@ type SubmissionLogsFilters struct {
 
 type SubmissionLogsResponse struct {
 	SubmissionID string                 `json:"submission_id"`
-	Entries      []model.LogObservation  `json:"entries"`
+	Entries      []model.LogObservation `json:"entries"`
 	Tail         int                    `json:"tail"`
 	Truncated    bool                   `json:"truncated"`
+}
+
+type ControllerClientOptions struct {
+	Starter       ControllerStarter
+	TokenProvider controllerhttp.TokenProvider
 }
 
 func NewControllerClient(httpClient *http.Client, resolver variable.Resolver) ControllerClient {
@@ -66,14 +74,19 @@ func NewControllerClient(httpClient *http.Client, resolver variable.Resolver) Co
 }
 
 func NewControllerClientWithStarter(httpClient *http.Client, resolver variable.Resolver, starter ControllerStarter) ControllerClient {
+	return NewControllerClientWithOptions(httpClient, resolver, ControllerClientOptions{Starter: starter})
+}
+
+func NewControllerClientWithOptions(httpClient *http.Client, resolver variable.Resolver, options ControllerClientOptions) ControllerClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
 	return ControllerClient{
-		httpClient: httpClient,
-		resolver:   resolver,
-		starter:    starter,
+		httpClient:    httpClient,
+		resolver:      resolver,
+		starter:       options.Starter,
+		tokenProvider: options.TokenProvider,
 	}
 }
 
@@ -110,21 +123,23 @@ func (c ControllerClient) submitWorkflowPayload(submission any) (model.Submissio
 		return model.SubmissionAcknowledgement{}, err
 	}
 
-	body, err := json.Marshal(submission)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("encode workflow run submission: %w", err)
-	}
+	return c.SubmitWorkflowPayloadAcknowledgement(controllerURL, submission)
+}
 
-	url := strings.TrimRight(controllerURL, "/") + "/workflow"
-	response, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
+func (c ControllerClient) SubmitWorkflowPayloadAcknowledgement(controllerURL string, payload any) (model.SubmissionAcknowledgement, error) {
+	httpClient, err := c.protectedControllerHTTPClient(controllerURL)
 	if err != nil {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: %w", err)
+		return model.SubmissionAcknowledgement{}, err
+	}
+	request, err := httpClient.NewJSONRequest(context.Background(), http.MethodPost, "/workflow", payload)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, wrapControllerRequestError("submit workflow", err)
+	}
+	response, err := httpClient.Do(request, http.StatusAccepted)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, wrapControllerRequestError("submit workflow", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusAccepted {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
-	}
 
 	var acknowledgement model.SubmissionAcknowledgement
 	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
@@ -191,7 +206,7 @@ func (c ControllerClient) EnsureController(controllerURL string) error {
 		return nil
 	}
 
-	if c.starter == nil {
+	if c.starter == nil || !localAutoStartControllerURL(controllerURL) {
 		return c.CheckController(controllerURL)
 	}
 
@@ -203,18 +218,19 @@ func (c ControllerClient) EnsureController(controllerURL string) error {
 }
 
 func (c ControllerClient) CheckController(controllerURL string) error {
-	url := strings.TrimRight(controllerURL, "/") + "/status"
-	response, err := c.httpClient.Get(url)
+	httpClient, err := c.controllerHTTPClient(controllerURL)
 	if err != nil {
-		return fmt.Errorf("check controller: %w", err)
+		return err
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("check controller: unexpected status %d", response.StatusCode)
+	request, err := httpClient.NewPublicRequest(context.Background(), http.MethodGet, "/healthz", nil)
+	if err != nil {
+		return wrapControllerRequestError("check controller", err)
 	}
-
-	return nil
+	response, err := httpClient.Do(request, http.StatusNoContent)
+	if err != nil {
+		return wrapControllerRequestError("check controller", err)
+	}
+	return response.Body.Close()
 }
 
 func (c ControllerClient) WaitForController(controllerURL string, maxChecks int) error {
@@ -280,16 +296,19 @@ func (c ControllerClient) ShutdownWhenIdle(maxChecks int) (model.ControllerStatu
 }
 
 func (c ControllerClient) Status(controllerURL string) (model.ControllerStatus, error) {
-	url := strings.TrimRight(controllerURL, "/") + "/status"
-	response, err := c.httpClient.Get(url)
+	httpClient, err := c.protectedControllerHTTPClient(controllerURL)
 	if err != nil {
-		return model.ControllerStatus{}, fmt.Errorf("get controller status: %w", err)
+		return model.ControllerStatus{}, err
+	}
+	request, err := httpClient.NewRequest(context.Background(), http.MethodGet, "/status", nil)
+	if err != nil {
+		return model.ControllerStatus{}, wrapControllerRequestError("get controller status", err)
+	}
+	response, err := httpClient.Do(request, http.StatusOK)
+	if err != nil {
+		return model.ControllerStatus{}, wrapControllerRequestError("get controller status", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return model.ControllerStatus{}, fmt.Errorf("get controller status: unexpected status %d", response.StatusCode)
-	}
 
 	var status model.ControllerStatus
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
@@ -340,44 +359,29 @@ func (c ControllerClient) submissionLogs(controllerURL, submissionID string, fil
 		query.Set("attempt-id", filters.AttemptID)
 	}
 
-	endpoint := strings.TrimRight(controllerURL, "/") + "/submissions/" + url.PathEscape(submissionID) + "/logs"
-	if len(query) != 0 {
-		endpoint += "?" + query.Encode()
+	httpClient, err := c.protectedControllerHTTPClient(controllerURL)
+	if err != nil {
+		return SubmissionLogsResponse{}, err
 	}
-
-	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	path, err := controllerhttp.PathJoin("/submissions", submissionID, "logs")
 	if err != nil {
 		return SubmissionLogsResponse{}, fmt.Errorf("create submission logs request: %w", err)
 	}
-	response, err := c.httpClient.Do(request)
+	request, err := httpClient.NewRequestWithQuery(context.Background(), http.MethodGet, path, query, nil)
 	if err != nil {
-		return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: %w", err)
+		return SubmissionLogsResponse{}, wrapControllerRequestError("get submission logs", err)
+	}
+	response, err := httpClient.Do(request, http.StatusOK)
+	if err != nil {
+		if statusBody, ok := controllerStatusError(err, http.StatusNotFound); ok {
+			if statusBody != "" {
+				return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found: %s", submissionID, statusBody)
+			}
+			return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found", submissionID)
+		}
+		return SubmissionLogsResponse{}, wrapControllerRequestError("get submission logs", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode == http.StatusNotFound {
-		message, readErr := io.ReadAll(response.Body)
-		if readErr != nil {
-			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: 404 not found")
-		}
-		body := strings.TrimSpace(string(message))
-		if body != "" {
-			return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found: %s", submissionID, body)
-		}
-		return SubmissionLogsResponse{}, fmt.Errorf("submission %q not found", submissionID)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		message, readErr := io.ReadAll(response.Body)
-		if readErr != nil {
-			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d", response.StatusCode)
-		}
-		body := strings.TrimSpace(string(message))
-		if body != "" {
-			return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d: %s", response.StatusCode, body)
-		}
-		return SubmissionLogsResponse{}, fmt.Errorf("get submission logs: unexpected status %d", response.StatusCode)
-	}
 
 	var responseBody SubmissionLogsResponse
 	if err := json.NewDecoder(response.Body).Decode(&responseBody); err != nil {
@@ -433,41 +437,29 @@ func (c ControllerClient) submissionStatus(controllerURL string, submissionID st
 		return model.SubmissionStatus{}, fmt.Errorf("submission_id is required")
 	}
 
-	endpoint := strings.TrimRight(controllerURL, "/") + "/submissions/" + url.PathEscape(submissionID) + "/status"
-	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	httpClient, err := c.protectedControllerHTTPClient(controllerURL)
+	if err != nil {
+		return model.SubmissionStatus{}, err
+	}
+	path, err := controllerhttp.PathJoin("/submissions", submissionID, "status")
 	if err != nil {
 		return model.SubmissionStatus{}, fmt.Errorf("create submission status request: %w", err)
 	}
-
-	response, err := c.httpClient.Do(request)
+	request, err := httpClient.NewRequest(context.Background(), http.MethodGet, path, nil)
 	if err != nil {
-		return model.SubmissionStatus{}, fmt.Errorf("get submission status: %w", err)
+		return model.SubmissionStatus{}, wrapControllerRequestError("get submission status", err)
+	}
+	response, err := httpClient.Do(request, http.StatusOK)
+	if err != nil {
+		if statusBody, ok := controllerStatusError(err, http.StatusNotFound); ok {
+			if statusBody != "" {
+				return model.SubmissionStatus{}, fmt.Errorf("submission %q not found: %s", submissionID, statusBody)
+			}
+			return model.SubmissionStatus{}, fmt.Errorf("submission %q not found", submissionID)
+		}
+		return model.SubmissionStatus{}, wrapControllerRequestError("get submission status", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode == http.StatusNotFound {
-		message, readErr := io.ReadAll(response.Body)
-		if readErr != nil {
-			return model.SubmissionStatus{}, fmt.Errorf("get submission status: 404 not found")
-		}
-		body := strings.TrimSpace(string(message))
-		if body != "" {
-			return model.SubmissionStatus{}, fmt.Errorf("submission %q not found: %s", submissionID, body)
-		}
-		return model.SubmissionStatus{}, fmt.Errorf("submission %q not found", submissionID)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		message, readErr := io.ReadAll(response.Body)
-		if readErr != nil {
-			return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d", response.StatusCode)
-		}
-		body := strings.TrimSpace(string(message))
-		if body != "" {
-			return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d: %s", response.StatusCode, body)
-		}
-		return model.SubmissionStatus{}, fmt.Errorf("get submission status: unexpected status %d", response.StatusCode)
-	}
 
 	var status model.SubmissionStatus
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
@@ -478,23 +470,19 @@ func (c ControllerClient) submissionStatus(controllerURL string, submissionID st
 }
 
 func (c ControllerClient) Shutdown(controllerURL string) error {
-	url := strings.TrimRight(controllerURL, "/") + "/shutdown"
-	request, err := http.NewRequest(http.MethodPost, url, nil)
+	httpClient, err := c.protectedControllerHTTPClient(controllerURL)
 	if err != nil {
-		return fmt.Errorf("create shutdown request: %w", err)
+		return err
 	}
-
-	response, err := c.httpClient.Do(request)
+	request, err := httpClient.NewRequest(context.Background(), http.MethodPost, "/shutdown", nil)
 	if err != nil {
-		return fmt.Errorf("shutdown controller: %w", err)
+		return wrapControllerRequestError("shutdown controller", err)
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("shutdown controller: unexpected status %d", response.StatusCode)
+	response, err := httpClient.Do(request, http.StatusNoContent)
+	if err != nil {
+		return wrapControllerRequestError("shutdown controller", err)
 	}
-
-	return nil
+	return response.Body.Close()
 }
 
 func (c ControllerClient) controllerURL() (string, error) {
@@ -546,4 +534,70 @@ func (c ControllerClient) statusPollInterval() (time.Duration, error) {
 	}
 
 	return duration, nil
+}
+
+func (c ControllerClient) controllerHTTPClient(controllerURL string) (controllerhttp.Client, error) {
+	client, err := controllerhttp.New(controllerhttp.Config{
+		BaseURL: controllerURL,
+		HTTP:    c.httpClient,
+		Token:   c.tokenProvider,
+		Caller:  "goetl-cli/1",
+	})
+	if err != nil {
+		return controllerhttp.Client{}, err
+	}
+	return client, nil
+}
+
+func (c ControllerClient) protectedControllerHTTPClient(controllerURL string) (controllerhttp.Client, error) {
+	if c.tokenProvider == nil {
+		return controllerhttp.Client{}, missingControllerTokenError()
+	}
+	return c.controllerHTTPClient(controllerURL)
+}
+
+func missingControllerTokenError() error {
+	return fmt.Errorf("missing controller token: configure --controller-token-file, %s, or %s", ControllerTokenFileEnv, ControllerTokenEnv)
+}
+
+func wrapControllerRequestError(operation string, err error) error {
+	var statusErr controllerhttp.StatusError
+	if errors.As(err, &statusErr) {
+		switch statusErr.StatusCode {
+		case http.StatusUnauthorized:
+			return fmt.Errorf("%s: missing or invalid controller token", operation)
+		case http.StatusForbidden:
+			return fmt.Errorf("%s: controller token has insufficient role", operation)
+		}
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "certificate") || strings.Contains(text, "tls"):
+		return fmt.Errorf("%s: TLS trust failure: %w", operation, err)
+	case strings.Contains(text, "connection refused") || strings.Contains(text, "no such host") || strings.Contains(text, "connect:"):
+		return fmt.Errorf("%s: unreachable controller endpoint: %w", operation, err)
+	default:
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+}
+
+func controllerStatusError(err error, statusCode int) (string, bool) {
+	var statusErr controllerhttp.StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != statusCode {
+		return "", false
+	}
+	return statusErr.Body, true
+}
+
+func localAutoStartControllerURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

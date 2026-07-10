@@ -12,7 +12,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -22,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"goetl/internal/controllerauth"
 	fp "goetl/internal/fingerprint"
 	"goetl/internal/ledger"
 	"goetl/internal/model"
@@ -63,6 +66,9 @@ type Controller struct {
 	logRootPath         string
 	logReadDefaultTail  int
 	logReadMaxTail      int
+	authMode            controllerauth.Mode
+	authStore           controllerauth.Store
+	authPolicy          controllerauth.Policy
 }
 
 type WorkflowSubmission struct {
@@ -153,6 +159,12 @@ type controllerHTTPSettings struct {
 	ShutdownTimeoutMillis   int
 	MaxRequestBytes         int
 	MaxHeaderBytes          int
+}
+
+type controllerAuthSettings struct {
+	Mode   controllerauth.Mode
+	Store  controllerauth.Store
+	Policy controllerauth.Policy
 }
 
 func newController() *Controller {
@@ -259,6 +271,15 @@ func buildControllerServer(
 	}
 	config := sources.Controller
 
+	httpSettings, err := resolveControllerHTTPSettings(resolver)
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller http failed: %w", err)
+	}
+	authSettings, err := resolveControllerAuthSettings(resolver, httpSettings, controllerauth.CredentialSources{LookupEnv: lookupEnv})
+	if err != nil {
+		return nil, nil, fmt.Errorf("controller auth failed: %w", err)
+	}
+
 	workflowStore, databasePath, err := initWorkflowExecutionStore(context.Background(), resolver)
 	if err != nil {
 		return nil, nil, fmt.Errorf("controller database failed: %w", err)
@@ -292,15 +313,6 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller policy failed: %w", err)
 	}
-	httpSettings, err := resolveControllerHTTPSettings(resolver)
-	if err != nil {
-		if releaseDatabaseOwnership != nil {
-			_ = releaseDatabaseOwnership()
-		}
-		workflowStore.Close()
-		return nil, nil, fmt.Errorf("controller http failed: %w", err)
-	}
-
 	executionEnvironment, err := initConfiguredExecutionEnvironment(config)
 	if err != nil {
 		if releaseDatabaseOwnership != nil {
@@ -372,8 +384,12 @@ func buildControllerServer(
 	controller.logRootPath = policy.LogRootPath
 	controller.logReadDefaultTail = policy.LogReadDefaultTailLines
 	controller.logReadMaxTail = policy.LogReadMaxTailLines
+	controller.authMode = authSettings.Mode
+	controller.authStore = authSettings.Store
+	controller.authPolicy = authSettings.Policy
 
 	registerControllerRoutes(mux, controller)
+	server.Handler = controller.authorizeControllerRoutes(mux)
 
 	return server, func() error {
 		if executionEnvironment != nil {
@@ -841,6 +857,102 @@ func resolveControllerHTTPSettings(resolver variable.Resolver) (controllerHTTPSe
 	}
 
 	return settings, nil
+}
+
+func resolveControllerAuthSettings(resolver variable.Resolver, httpSettings controllerHTTPSettings, sources controllerauth.CredentialSources) (controllerAuthSettings, error) {
+	authValue, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: "authentication"}})
+	if err != nil {
+		return controllerAuthSettings{}, fmt.Errorf("controller startup auth: resolve authentication: %w", err)
+	}
+	authConfig, err := controllerauth.ConfigFromResolved(authValue)
+	if err != nil {
+		return controllerAuthSettings{}, fmt.Errorf("controller startup auth: %w", err)
+	}
+	insecureExternalHTTP, err := resolveBoolPolicy(resolver, "controller_insecure_external_http_allowed", "controller startup auth")
+	if err != nil {
+		return controllerAuthSettings{}, err
+	}
+	if err := validateControllerAuthStartup(authConfig, httpSettings, insecureExternalHTTP); err != nil {
+		return controllerAuthSettings{}, err
+	}
+	store, err := controllerauth.LoadCredentials(authConfig, sources)
+	if err != nil {
+		return controllerAuthSettings{}, fmt.Errorf("controller startup auth: %w", err)
+	}
+	return controllerAuthSettings{
+		Mode:   authConfig.Mode,
+		Store:  store,
+		Policy: controllerauth.ControllerPolicy(),
+	}, nil
+}
+
+func validateControllerAuthStartup(authConfig controllerauth.Config, httpSettings controllerHTTPSettings, insecureExternalHTTP bool) error {
+	if err := validateControllerAdvertisedURL(httpSettings.AdvertisedURL, insecureExternalHTTP); err != nil {
+		return fmt.Errorf("controller startup auth: %w", err)
+	}
+	if authConfig.Mode == controllerauth.ModeDisabled && !isLoopbackHost(httpSettings.ListenHost) {
+		return fmt.Errorf("controller startup auth: disabled authentication requires loopback listen host, got %q", httpSettings.ListenHost)
+	}
+	if authConfig.Mode == controllerauth.ModeDisabled {
+		advertisedLoopback, err := isLoopbackAdvertisedURL(httpSettings.AdvertisedURL)
+		if err != nil {
+			return fmt.Errorf("controller startup auth: %w", err)
+		}
+		if !advertisedLoopback {
+			return fmt.Errorf("controller startup auth: disabled authentication requires loopback controller_url, got %q", httpSettings.AdvertisedURL)
+		}
+	}
+	return nil
+}
+
+func validateControllerAdvertisedURL(rawURL string, insecureExternalHTTP bool) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("controller_url is invalid: %w", err)
+	}
+	if parsed.Scheme == "" {
+		return fmt.Errorf("controller_url requires a scheme")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("controller_url requires a host")
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(parsed.Hostname()) || insecureExternalHTTP {
+			return nil
+		}
+		return fmt.Errorf("external http controller_url %q requires controller_insecure_external_http_allowed", rawURL)
+	default:
+		return fmt.Errorf("controller_url scheme %q is unsupported", parsed.Scheme)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4[0] == 127
+	}
+	return ip.Equal(net.IPv6loopback)
+}
+
+func isLoopbackAdvertisedURL(rawURL string) (bool, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false, fmt.Errorf("controller_url is invalid: %w", err)
+	}
+	if parsed.Host == "" {
+		return false, fmt.Errorf("controller_url requires a host")
+	}
+	return isLoopbackHost(parsed.Hostname()), nil
 }
 
 func resolvePositiveIntPolicy(resolver variable.Resolver, key string, consumer string) (int, error) {

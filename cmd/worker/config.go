@@ -3,23 +3,28 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
-	LogDir                     string            `json:"log_dir"`
-	TmpDir                     string            `json:"tmp_dir"`
-	DataDir                    string            `json:"data_dir"`
-	ControllerURL              string            `json:"controller_url"`
-	PythonExecutable           string            `json:"python_executable,omitempty"`
-	SevenZipExecutable         string            `json:"seven_zip_executable,omitempty"`
-	RcloneExecutable           string            `json:"rclone_executable,omitempty"`
-	RcloneConfigPath           string            `json:"rclone_config_path,omitempty"`
-	EnableGDriveRcloneProvider bool              `json:"enable_gdrive_rclone_provider,omitempty"`
-	AssetCacheDir              string            `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes              int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots          map[string]string `json:"data_location_roots,omitempty"`
+	LogDir                                string            `json:"log_dir"`
+	TmpDir                                string            `json:"tmp_dir"`
+	DataDir                               string            `json:"data_dir"`
+	ControllerURL                         string            `json:"controller_url"`
+	ControllerTokenFile                   string            `json:"controller_token_file,omitempty"`
+	ControllerInsecureExternalHTTPAllowed bool              `json:"controller_insecure_external_http_allowed,omitempty"`
+	PythonExecutable                      string            `json:"python_executable,omitempty"`
+	SevenZipExecutable                    string            `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable                      string            `json:"rclone_executable,omitempty"`
+	RcloneConfigPath                      string            `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider            bool              `json:"enable_gdrive_rclone_provider,omitempty"`
+	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -45,6 +50,9 @@ func (c *Config) resolveRelativePaths(root string) {
 	c.LogDir = resolveRelativePath(root, c.LogDir)
 	c.TmpDir = resolveRelativePath(root, c.TmpDir)
 	c.DataDir = resolveRelativePath(root, c.DataDir)
+	if c.ControllerTokenFile != "" {
+		c.ControllerTokenFile = resolveRelativePath(root, c.ControllerTokenFile)
+	}
 	if c.AssetCacheDir != "" {
 		c.AssetCacheDir = resolveRelativePath(root, c.AssetCacheDir)
 	}
@@ -90,12 +98,45 @@ func (c Config) Validate() error {
 	if c.ControllerURL == "" {
 		return fmt.Errorf("controller url is required")
 	}
+	requiresToken, err := controllerURLRequiresTokenFile(c.ControllerURL)
+	if err != nil {
+		return err
+	}
+	if requiresToken && c.ControllerTokenFile == "" {
+		return fmt.Errorf("controller token file is required for controller url %s", c.ControllerURL)
+	}
 
 	if c.MaxAssetBytes < 0 {
 		return fmt.Errorf("max asset bytes must be non-negative")
 	}
 
 	return nil
+}
+
+func controllerURLRequiresTokenFile(raw string) (bool, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false, fmt.Errorf("controller url is invalid: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return false, fmt.Errorf("controller url requires a scheme and host")
+	}
+	switch parsed.Scheme {
+	case "https":
+		return true, nil
+	case "http":
+		return !isLoopbackHost(parsed.Hostname()), nil
+	default:
+		return false, fmt.Errorf("controller url scheme %q is unsupported", parsed.Scheme)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c Config) effectiveAssetCacheDir() string {

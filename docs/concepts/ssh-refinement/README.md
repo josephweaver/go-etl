@@ -48,17 +48,40 @@ session failures, and verify each hop with either a pinned key or a configured
 controller-owned SSH reverse callback tunnel on the final target or a selected
 jump host, then proxy worker HTTP callbacks to the local controller.
 
+The secure network exposure concept proved the preferred production callback
+shape: SSH remains the execution transport for remote command execution, file
+copy, runtime preparation, and Slurm submission, while workers use the advertised
+HTTPS `controller_url` to claim and report work. Reverse callback tunneling
+remains supported as optional compatibility behavior for sites where a direct
+HTTPS controller endpoint is not available or not yet approved. Callback tunnel
+preflight now checks public `/healthz` rather than protected `/status`.
+
+The local/no-domain `ssh_reverse` path has also been smoke-tested with an HPCC
+dev-node worker process launched by `RemoteProcessScheduler`. A second smoke
+used real HPCC Slurm/Singularity workers through a controller-managed dev-node
+relay that forwarded from a worker-visible port to the loopback reverse
+listener. Together these prove local client -> local controller -> SSH execution
+-> HPCC worker -> reverse callback -> local controller for both dev-node and
+relay-backed Slurm execution.
+
 Current gaps:
 
 - Slurm compute-node callback preflight currently depends on `curl` being
   available in the Slurm job environment.
+- Site SSH policy may force reverse-forward listeners to loopback even when a
+  non-loopback bind is requested. In that case use the callback relay fields to
+  expose a worker-visible dev/login-node port, or use another callback path.
+- The laptop-hosted temporary HTTPS profile has not been separately smoke-tested;
+  the verified external callback evidence is the dedicated-server HTTPS plus real
+  HPCC Slurm/Singularity worker path.
 
 ## Target State
 
 The controller can prepare and submit Slurm workers on a dev/login node reached
 through one or more SSH jump hosts, while preserving host-key checks for each
-hop. If the controller runs on the user's laptop, the controller can establish a
-reverse tunnel and expose a worker-safe `controller_url` through that tunnel.
+hop. The preferred worker-safe `controller_url` is an HTTPS URL served by a
+laptop-test ingress or dedicated server ingress. If that is not available, a
+controller-owned reverse tunnel can still expose a compatibility callback URL.
 
 Rendered local configs can use normal operator-friendly SSH paths and either a
 pinned key or local `known_hosts` file for host-key verification. Committed
@@ -81,6 +104,8 @@ templates continue to use placeholders.
   without invoking the external `ssh` command.
 - A laptop-hosted controller can expose a worker callback URL through an
   explicitly configured reverse tunnel when the site permits it.
+- A dedicated-server controller can use SSH to schedule Slurm/Singularity workers
+  while those workers call back over HTTPS.
 - SSH identity paths and host-key verification behave predictably in rendered
   local configs.
 - Preflight diagnostics identify unsupported gateway/tunnel topologies before a

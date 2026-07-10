@@ -1,0 +1,104 @@
+{
+  "api_version": "goet/v1alpha1",
+  "kind": "Controller",
+  "variables": [
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "controller_listen_host"
+      },
+      "type": "string",
+      "expression": "127.0.0.1"
+    },
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "controller_listen_port"
+      },
+      "type": "int",
+      "expression": 8080
+    },
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "controller_url"
+      },
+      "type": "string",
+      "expression": "https://replace-with-temporary-ingress.example"
+    },
+    {
+      "name": {
+        "namespace": "controller_config",
+        "key": "authentication"
+      },
+      "type": "object",
+      "expression": {
+        "mode": {
+          "type": "string",
+          "expression": "bearer"
+        },
+        "credentials": {
+          "type": "list",
+          "expression": [
+            {
+              "type": "object",
+              "expression": {
+                "id": {
+                  "type": "string",
+                  "expression": "laptop-test-client"
+                },
+                "role": {
+                  "type": "string",
+                  "expression": "client"
+                },
+                "token_file": {
+                  "type": "path",
+                  "expression": ".run/secrets/controller-client-token"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "expression": {
+                "id": {
+                  "type": "string",
+                  "expression": "laptop-test-worker"
+                },
+                "role": {
+                  "type": "string",
+                  "expression": "worker"
+                },
+                "token_file": {
+                  "type": "path",
+                  "expression": ".run/secrets/controller-worker-token"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "execution_environment": {
+    "name": "laptop-test-placeholder",
+    "transports": [
+      {
+        "type": "local"
+      }
+    ],
+    "dialect": {
+      "type": "bash"
+    },
+    "scheduler": {
+      "type": "direct_process"
+    },
+    "runtime": {
+      "type": "worker",
+      "settings": {
+        "root": ".run/laptop-test-worker",
+        "controller_url": "https://replace-with-temporary-ingress.example",
+        "controller_token_file": ".run/secrets/controller-worker-token"
+      }
+    }
+  }
+}

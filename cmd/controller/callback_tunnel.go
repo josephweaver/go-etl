@@ -25,6 +25,9 @@ type CallbackTunnelConfig struct {
 	BindHop             string `json:"bind_hop,omitempty"`
 	RemoteBindHost      string `json:"remote_bind_host,omitempty"`
 	RemoteBindPort      int    `json:"remote_bind_port,omitempty"`
+	RelayBindHost       string `json:"relay_bind_host,omitempty"`
+	RelayBindPort       int    `json:"relay_bind_port,omitempty"`
+	RelayScriptPath     string `json:"relay_script_path,omitempty"`
 	LocalHost           string `json:"local_host,omitempty"`
 	LocalPort           int    `json:"local_port,omitempty"`
 	WorkerControllerURL string `json:"worker_controller_url,omitempty"`
@@ -39,6 +42,7 @@ type SSHReverseCallbackTunnel struct {
 	mu       sync.Mutex
 	listener net.Listener
 	done     chan struct{}
+	relayPID string
 }
 
 func (cfg CallbackTunnelConfig) IsZero() bool {
@@ -47,6 +51,9 @@ func (cfg CallbackTunnelConfig) IsZero() bool {
 		cfg.BindHop == "" &&
 		cfg.RemoteBindHost == "" &&
 		cfg.RemoteBindPort == 0 &&
+		cfg.RelayBindHost == "" &&
+		cfg.RelayBindPort == 0 &&
+		cfg.RelayScriptPath == "" &&
 		cfg.LocalHost == "" &&
 		cfg.LocalPort == 0 &&
 		cfg.WorkerControllerURL == ""
@@ -68,6 +75,14 @@ func (cfg CallbackTunnelConfig) Validate() error {
 	if cfg.RemoteBindPort <= 0 || cfg.RemoteBindPort > 65535 {
 		return fmt.Errorf("callback_tunnel remote_bind_port must be between 1 and 65535")
 	}
+	if cfg.RelayBindHost != "" || cfg.RelayBindPort != 0 || cfg.RelayScriptPath != "" {
+		if cfg.RelayBindHost == "" {
+			return fmt.Errorf("callback_tunnel relay_bind_host is required when relay is configured")
+		}
+		if cfg.RelayBindPort <= 0 || cfg.RelayBindPort > 65535 {
+			return fmt.Errorf("callback_tunnel relay_bind_port must be between 1 and 65535")
+		}
+	}
 	if cfg.LocalHost == "" {
 		return fmt.Errorf("callback_tunnel local_host is required")
 	}
@@ -81,7 +96,7 @@ func (cfg CallbackTunnelConfig) Validate() error {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("callback_tunnel worker_controller_url must be an absolute URL")
 	}
-	if strings.ContainsAny(cfg.RemoteBindHost+cfg.LocalHost+cfg.WorkerControllerURL, "\r\n") {
+	if strings.ContainsAny(cfg.RemoteBindHost+cfg.RelayBindHost+cfg.RelayScriptPath+cfg.LocalHost+cfg.WorkerControllerURL, "\r\n") {
 		return fmt.Errorf("callback_tunnel values must not contain newlines")
 	}
 	if err := validateCallbackTunnelBindHop(cfg.BindHop); err != nil {
@@ -150,6 +165,10 @@ func (t *SSHReverseCallbackTunnel) Start(ctx context.Context) error {
 	t.mu.Unlock()
 
 	go t.serve(listener, done)
+	if err := t.startRemoteRelay(ctx); err != nil {
+		_ = t.Close()
+		return err
+	}
 	return nil
 }
 
@@ -157,18 +176,29 @@ func (t *SSHReverseCallbackTunnel) Close() error {
 	t.mu.Lock()
 	listener := t.listener
 	done := t.done
+	relayPID := t.relayPID
 	t.listener = nil
 	t.done = nil
+	t.relayPID = ""
 	t.mu.Unlock()
 
+	var closeErr error
+	if relayPID != "" && t.transport != nil {
+		if _, err := t.transport.Exec(context.Background(), "sh", "-c", "kill "+relayPID+" >/dev/null 2>&1 || true"); err != nil {
+			closeErr = err
+		}
+	}
 	if listener == nil {
-		return nil
+		return closeErr
 	}
 	err := listener.Close()
+	if err != nil && closeErr == nil {
+		closeErr = err
+	}
 	if done != nil {
 		<-done
 	}
-	return err
+	return closeErr
 }
 
 func (t *SSHReverseCallbackTunnel) Preflight(ctx context.Context) []PreflightIssue {
@@ -223,14 +253,61 @@ func (t *SSHReverseCallbackTunnel) proxy(remoteConn net.Conn) {
 	proxyBidirectional(remoteConn, localConn)
 }
 
+func (t *SSHReverseCallbackTunnel) startRemoteRelay(ctx context.Context) error {
+	if t.Config.RelayBindHost == "" && t.Config.RelayBindPort == 0 && t.Config.RelayScriptPath == "" {
+		return nil
+	}
+	if t.transport == nil {
+		return fmt.Errorf("callback_tunnel relay requires ssh transport")
+	}
+	scriptPath := t.Config.RelayScriptPath
+	if scriptPath == "" {
+		scriptPath = fmt.Sprintf("/tmp/goetl-callback-relay-%d.py", t.Config.RelayBindPort)
+	}
+	logPath := strings.TrimSuffix(scriptPath, ".py") + ".log"
+
+	localScriptPath, err := writeCallbackRelayTempScript()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(localScriptPath)
+	if err := t.transport.Copy(ctx, localScriptPath, scriptPath); err != nil {
+		return fmt.Errorf("copy callback relay script: %w", err)
+	}
+	if _, err := t.transport.Exec(ctx, "chmod", "0700", scriptPath); err != nil {
+		return fmt.Errorf("chmod callback relay script: %w", err)
+	}
+
+	command := "nohup python3 " + shellQuote(scriptPath) +
+		" " + shellQuote(t.Config.RelayBindHost) +
+		" " + strconv.Itoa(t.Config.RelayBindPort) +
+		" " + shellQuote(t.Config.RemoteBindHost) +
+		" " + strconv.Itoa(t.Config.RemoteBindPort) +
+		" > " + shellQuote(logPath) +
+		" 2>&1 < /dev/null & echo $!"
+	output, err := t.transport.Exec(ctx, "sh", "-c", command)
+	if err != nil {
+		return fmt.Errorf("start callback relay: %w", err)
+	}
+	pid := strings.TrimSpace(string(output))
+	if !isDecimalPID(pid) {
+		return fmt.Errorf("start callback relay: invalid pid %q", pid)
+	}
+
+	t.mu.Lock()
+	t.relayPID = pid
+	t.mu.Unlock()
+	return nil
+}
+
 func (t *SSHReverseCallbackTunnel) checkWorkerControllerURL(ctx context.Context) error {
-	statusURL, err := url.JoinPath(t.Config.WorkerControllerURL, "status")
+	healthURL, err := url.JoinPath(t.Config.WorkerControllerURL, "healthz")
 	if err != nil {
 		return err
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, statusURL, nil)
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		return err
 	}
@@ -240,7 +317,7 @@ func (t *SSHReverseCallbackTunnel) checkWorkerControllerURL(ctx context.Context)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("GET %s returned %s", statusURL, resp.Status)
+		return fmt.Errorf("GET %s returned %s", healthURL, resp.Status)
 	}
 	return nil
 }
@@ -257,11 +334,11 @@ func (t *SSHReverseCallbackTunnel) checkSlurmWorkerControllerURL(ctx context.Con
 	if remoteScriptPath == "" {
 		remoteScriptPath = "/tmp/goetl-callback-preflight.slurm"
 	}
-	statusURL, err := url.JoinPath(t.Config.WorkerControllerURL, "status")
+	healthURL, err := url.JoinPath(t.Config.WorkerControllerURL, "healthz")
 	if err != nil {
 		return err
 	}
-	script := callbackTunnelSlurmPreflightScript(statusURL)
+	script := callbackTunnelSlurmPreflightScript(healthURL)
 	localScriptPath, err := writeCallbackTunnelTempScript(script)
 	if err != nil {
 		return err
@@ -396,6 +473,86 @@ func writeCallbackTunnelTempScript(script string) (string, error) {
 	}
 	return localPath, nil
 }
+
+func writeCallbackRelayTempScript() (string, error) {
+	file, err := os.CreateTemp("", "goetl-callback-relay-*.py")
+	if err != nil {
+		return "", fmt.Errorf("create callback relay script: %w", err)
+	}
+	localPath := file.Name()
+	if _, err := file.WriteString(callbackRelayScript); err != nil {
+		file.Close()
+		os.Remove(localPath)
+		return "", fmt.Errorf("write callback relay script: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(localPath)
+		return "", fmt.Errorf("close callback relay script: %w", err)
+	}
+	return localPath, nil
+}
+
+func isDecimalPID(pid string) bool {
+	if pid == "" {
+		return false
+	}
+	for _, r := range pid {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+const callbackRelayScript = `#!/usr/bin/env python3
+import select
+import socket
+import sys
+import threading
+
+bind_host = sys.argv[1]
+bind_port = int(sys.argv[2])
+target_host = sys.argv[3]
+target_port = int(sys.argv[4])
+
+def close_quietly(sock):
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+def proxy(client):
+    upstream = None
+    try:
+        upstream = socket.create_connection((target_host, target_port), timeout=10)
+        sockets = [client, upstream]
+        while True:
+            readable, _, _ = select.select(sockets, [], [], 60)
+            for sock in readable:
+                data = sock.recv(65536)
+                if not data:
+                    return
+                if sock is client:
+                    upstream.sendall(data)
+                else:
+                    client.sendall(data)
+    except OSError:
+        return
+    finally:
+        close_quietly(client)
+        if upstream is not None:
+            close_quietly(upstream)
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind((bind_host, bind_port))
+server.listen(64)
+
+while True:
+    client, _ = server.accept()
+    thread = threading.Thread(target=proxy, args=(client,), daemon=True)
+    thread.start()
+`
 
 func proxyBidirectional(left net.Conn, right net.Conn) {
 	var once sync.Once

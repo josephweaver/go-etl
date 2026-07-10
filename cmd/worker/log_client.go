@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"goetl/internal/model"
 )
@@ -24,6 +22,7 @@ func (e LogDeliveryError) Unwrap() error {
 
 type LogClient struct {
 	ControllerURL string
+	Controller    WorkerControllerClient
 }
 
 func (c LogClient) SendLogObservation(observation model.LogObservation) error {
@@ -31,23 +30,28 @@ func (c LogClient) SendLogObservation(observation model.LogObservation) error {
 		return &LogDeliveryError{Err: fmt.Errorf("invalid log observation: %w", err)}
 	}
 
-	url := logObservationsURL(c.ControllerURL)
-	body, err := json.Marshal(observation)
+	controller, err := c.controllerClient()
 	if err != nil {
-		return &LogDeliveryError{Err: fmt.Errorf("encode log observation: %w", err)}
+		return &LogDeliveryError{Err: err}
 	}
-
-	response, err := http.Post(url, "application/json", bytes.NewReader(body))
+	request, err := controller.newJSONRequest(context.Background(), http.MethodPost, "/observations/logs", observation)
 	if err != nil {
-		return &LogDeliveryError{Err: fmt.Errorf("post log observation to %s: %w", url, err)}
+		return &LogDeliveryError{Err: fmt.Errorf("create log observation request: %w", err)}
+	}
+	response, err := controller.client.Do(request, http.StatusOK, http.StatusCreated, http.StatusAccepted, http.StatusNoContent)
+	if err != nil {
+		return &LogDeliveryError{Err: fmt.Errorf("post log observation: %w", err)}
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &LogDeliveryError{Err: fmt.Errorf("post log observation to %s: unexpected status %s", url, response.Status)}
-	}
-
 	return nil
+}
+
+func (c LogClient) controllerClient() (WorkerControllerClient, error) {
+	if c.Controller.Initialized() {
+		return c.Controller, nil
+	}
+	return newUnauthenticatedWorkerControllerClient(c.ControllerURL)
 }
 
 func (c LogClient) SendLogObservationWithFallback(observation model.LogObservation, fallbackLogDir string) error {
@@ -61,8 +65,4 @@ func (c LogClient) SendLogObservationWithFallback(observation model.LogObservati
 	}
 
 	return err
-}
-
-func logObservationsURL(controllerURL string) string {
-	return strings.TrimRight(controllerURL, "/") + "/observations/logs"
 }

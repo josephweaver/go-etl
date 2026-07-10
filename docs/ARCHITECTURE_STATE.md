@@ -1,6 +1,6 @@
 # Architecture State
 
-Last updated: 2026-07-07
+Last updated: 2026-07-10
 
 This file preserves the moved architecture and runtime-structure sections from the pre-split root state file. Workflow-execution persistence details now live in [concepts/workflow-execution-persistence/STATE.md](concepts/workflow-execution-persistence/STATE.md).
 
@@ -118,6 +118,7 @@ cmd/
     ssh_transport.go
     ssh_transport_test.go
     ssh_transport_integration_test.go
+    remote_process_scheduler.go
     slurm_scheduler.go
     slurm_scheduler_test.go
     slurm_worker_script.go
@@ -185,6 +186,7 @@ back to process-local state.
 Current endpoints:
 
 ```text
+GET  /healthz       minimal public liveness
 GET  /work/next      assign the next pending item, or return 204
 POST /work/complete  mark an assigned item complete
 POST /work/fail      record failure for an assigned item
@@ -192,9 +194,20 @@ POST /work           submit one raw work item
 POST /workflow       submit source references for project and workflow JSON; success returns 202 with submission acknowledgement JSON
 GET  /workflow-runs/{run_id}/source-bundle.zip  return admitted staged source files as a zip bundle
 GET  /submissions/{submission_id}/status  return per-submission execution status
+GET  /submissions/{submission_id}/logs  return bounded submission logs
+GET  /observations/logs  return controller observation log data
 POST /shutdown       ask the controller process to shut down
 GET  /status         return queue counts
 ```
+
+When controller API authentication is disabled, startup is allowed only for
+loopback listener and loopback advertised `controller_url` combinations. External
+controller URLs use bearer authentication. Route authorization is explicit:
+`/healthz` is public; client routes include workflow/raw-work submission, status,
+logs, and source-bundle reads; worker routes include work claim, completion,
+failure, source-bundle reads, and log observation delivery; admin can use the
+reviewed administrative superset, including shutdown. The controller verifies
+authorization itself even when deployed behind HTTPS ingress.
 
 Completed and failed items move through persisted running, completed, and failed
 work records.
@@ -304,7 +317,21 @@ When `execution_environment` is present, the controller builds an `ExecutionEnvi
 - `Scheduler` submits prepared jobs.
 - `Runtime` prepares the worker process environment that the scheduler will start.
 
-The current concrete implementations are `DockerContainerTransport`, `SSHTransport`, `BashShellPlatform`, `SlurmScheduler`, and `WorkerRuntime`.
+The current concrete implementations are `DockerContainerTransport`,
+`SSHTransport`, `BashShellPlatform`, `SlurmScheduler`, `RemoteProcessScheduler`,
+`WorkerRuntime`, and `SingularityWorkerRuntime`. The secure external callback
+profile uses SSH as the execution transport for remote command/copy/Slurm
+submission while workers call back to the controller over the advertised HTTPS
+API. The SSH reverse callback tunnel remains available as local/no-domain
+compatibility behavior. `RemoteProcessScheduler` can start a short-lived worker
+process on an SSH target for smoke tests where a loopback-only reverse tunnel is
+usable from the dev/login node. For Slurm workers at sites that force reverse
+SSH listeners to loopback, the callback tunnel can also start a dev-node relay
+that binds a worker-visible port and forwards to the loopback reverse listener.
+Workers using that relay must opt into
+`controller_insecure_external_http_allowed` in generated worker config because
+their controller URL is plain HTTP on a non-loopback host, protected by the SSH
+reverse tunnel, relay locality, and worker bearer token rather than by HTTPS.
 
 `POST /work` is useful for internal testing and local administration, but it is not the intended customer-facing submission boundary. The target submission boundary is workflow submission. The controller will eventually compile submitted workflows into concrete work items.
 
@@ -388,14 +415,18 @@ The matching Go model is:
 
 ```go
 type Config struct {
-	LogDir        string `json:"log_dir"`
-	TmpDir        string `json:"tmp_dir"`
-	DataDir       string `json:"data_dir"`
-	ControllerURL string `json:"controller_url"`
+	LogDir              string `json:"log_dir"`
+	TmpDir              string `json:"tmp_dir"`
+	DataDir             string `json:"data_dir"`
+	ControllerURL       string `json:"controller_url"`
+	ControllerTokenFile string `json:"controller_token_file,omitempty"`
 }
 ```
 
-The local paths are relative to the directory where the worker is run.
+The local paths are relative to the directory where the worker is run. For HTTPS
+or other non-loopback controller URLs, worker startup requires
+`controller_token_file`; generated worker JSON contains only that file path, not
+the token material.
 
 ## Shared Models
 

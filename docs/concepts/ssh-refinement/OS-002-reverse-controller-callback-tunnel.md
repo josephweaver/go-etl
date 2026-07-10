@@ -17,8 +17,8 @@ POST work claims, completions, failures, and logs back to the controller API.
 - Use one shared controller-owned tunnel per configured callback tunnel, not one
   tunnel per worker or one tunnel per worker callback.
 - Forward a remote bind address and port to the local controller host and port.
-- Bind the remote listener on the configured SSH hop. For the LandCore HPCC
-  target this is expected to be the gateway reachable as `hpcc.msu.edu`.
+- Bind the remote listener on the configured SSH hop. For a gateway-based HPCC
+  target this may be the configured gateway host.
 - Produce or validate the `controller_url` workers should use. Workers should
   receive only an HTTP callback URL; they should not own SSH credentials,
   gateway topology, or tunnel setup.
@@ -38,17 +38,21 @@ POST work claims, completions, failures, and logs back to the controller API.
       "bind_hop": "jump_hosts[0]",
       "remote_bind_host": "0.0.0.0",
       "remote_bind_port": 18080,
+      "relay_bind_host": "0.0.0.0",
+      "relay_bind_port": 19080,
       "local_host": "127.0.0.1",
       "local_port": 8080,
-      "worker_controller_url": "http://hpcc.msu.edu:18080"
+      "worker_controller_url": "http://hpcc.example.edu:19080"
     }
   }
 }
 ```
 
-If compute nodes cannot reach the remote bind host, the rendered config must use
-a site-approved bind address or the run must move the controller to the HPCC dev
-side.
+If site SSH policy forces the reverse-forward listener to loopback, the optional
+relay fields let the controller start a small dev/login-node relay that binds a
+worker-visible address and forwards to the loopback reverse listener. The worker
+runtime must then use the relay URL as `controller_url` and explicitly enable
+`controller_insecure_external_http_allowed`.
 
 ## Implementation Notes
 
@@ -58,11 +62,14 @@ side.
   client. If omitted, the final target client owns the bind.
 - The tunnel needs to accept remote connections and proxy bytes to the local
   controller.
+- When relay settings are present, the controller copies and starts the relay on
+  the SSH target, validates the relay process ID, and stops that process during
+  callback tunnel close.
 - The controller should close the listener when shutting down.
 - Preflight should check the tunnel from the remote side with a small HTTP GET
-  to `/status`.
+  to public `/healthz`.
 - For Slurm-backed environments, preflight should submit a tiny `sbatch --wait`
-  job that uses `curl` to request the worker-facing `/status` URL, because
+  job that uses `curl` to request the worker-facing `/healthz` URL, because
   login/dev-node reachability may not prove compute-node reachability.
 - The Slurm compute-node check may report a missing `curl` command as an
   actionable environment preflight failure.

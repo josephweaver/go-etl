@@ -55,7 +55,10 @@ func executeCommand(command cliCommand, httpClient *http.Client) error {
 	}
 
 	starter := client.NewLocalControllerStarter(resolver)
-	controllerClient := client.NewControllerClientWithStarter(httpClient, resolver, starter)
+	controllerClient, err := controllerClientForCommand(command, httpClient, resolver, starter)
+	if err != nil {
+		return err
+	}
 
 	if err := controllerClient.SubmitWorkflowRunFile(command.WorkflowRunPath); err != nil {
 		return fmt.Errorf("submit workflow: %w", err)
@@ -70,18 +73,34 @@ func executeCommand(command cliCommand, httpClient *http.Client) error {
 	return nil
 }
 
+func controllerClientForCommand(command cliCommand, httpClient *http.Client, resolver variable.Resolver, starter client.ControllerStarter) (client.ControllerClient, error) {
+	tokenProvider, err := client.LoadControllerTokenProvider(client.ControllerCredentialConfig{
+		TokenFile: command.ControllerTokenFile,
+	})
+	if err != nil {
+		return client.ControllerClient{}, err
+	}
+	return client.NewControllerClientWithOptions(httpClient, resolver, client.ControllerClientOptions{
+		Starter:       starter,
+		TokenProvider: tokenProvider,
+	}), nil
+}
+
 func submitCommand(command cliCommand, httpClient *http.Client) error {
 	controllerURL, resolver, starter, err := submitControllerRuntime(command)
 	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
 
-	controllerClient := client.NewControllerClientWithStarter(httpClient, resolver, starter)
+	controllerClient, err := controllerClientForCommand(command, httpClient, resolver, starter)
+	if err != nil {
+		return fmt.Errorf("goet submit: %w", err)
+	}
 	payload, err := submitPayload(command)
 	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
-	acknowledgement, err := submitPayloadAcknowledgement(httpClient, controllerClient, controllerURL, payload)
+	acknowledgement, err := submitPayloadAcknowledgement(controllerClient, controllerURL, payload)
 	if err != nil {
 		return fmt.Errorf("goet submit: %w", err)
 	}
@@ -107,7 +126,10 @@ func statusCommand(command cliCommand, httpClient *http.Client) error {
 		return fmt.Errorf("goet status: %w", err)
 	}
 
-	controllerClient := client.NewControllerClient(httpClient, resolver)
+	controllerClient, err := controllerClientForCommand(command, httpClient, resolver, nil)
+	if err != nil {
+		return fmt.Errorf("goet status: %w", err)
+	}
 	status, err := controllerClient.SubmissionStatus(command.SubmissionID)
 	if err != nil {
 		return fmt.Errorf("goet status: %w", err)
@@ -132,7 +154,10 @@ func logsCommand(command cliCommand, httpClient *http.Client) error {
 		return fmt.Errorf("goet logs: %w", err)
 	}
 
-	controllerClient := client.NewControllerClient(httpClient, resolver)
+	controllerClient, err := controllerClientForCommand(command, httpClient, resolver, nil)
+	if err != nil {
+		return fmt.Errorf("goet logs: %w", err)
+	}
 	logs, err := controllerClient.SubmissionLogs(command.SubmissionID, client.SubmissionLogsFilters{
 		Tail:      command.Tail,
 		TailSet:   command.TailSet,
@@ -171,22 +196,23 @@ const (
 const defaultControllerURL = "http://localhost:8080"
 
 type cliCommand struct {
-	Kind            commandKind
-	WorkflowRunPath string
-	ControllerPath  string
-	ControllerURL   string
-	Repository      string
-	Ref             string
-	ProjectPath     string
-	WorkflowPath    string
-	SubmissionID    string
-	Tail            int
-	TailSet         bool
-	Level           string
-	Stream          string
-	AttemptID       string
-	Wait            bool
-	JSON            bool
+	Kind                commandKind
+	WorkflowRunPath     string
+	ControllerPath      string
+	ControllerURL       string
+	ControllerTokenFile string
+	Repository          string
+	Ref                 string
+	ProjectPath         string
+	WorkflowPath        string
+	SubmissionID        string
+	Tail                int
+	TailSet             bool
+	Level               string
+	Stream              string
+	AttemptID           string
+	Wait                bool
+	JSON                bool
 }
 
 func parseCommand(args []string) (cliCommand, error) {
@@ -216,6 +242,7 @@ func parseSubmitCommand(args []string) (cliCommand, error) {
 	command := cliCommand{Kind: commandSubmit}
 	flags.StringVar(&command.ControllerPath, "controller", "", "controller configuration path")
 	flags.StringVar(&command.ControllerURL, "controller-url", "", "controller URL")
+	flags.StringVar(&command.ControllerTokenFile, "controller-token-file", "", "controller token file path")
 	flags.StringVar(&command.Repository, "repo", "", "source repository identity")
 	flags.StringVar(&command.Repository, "repository", "", "source repository identity")
 	flags.StringVar(&command.Ref, "ref", "", "source repository ref")
@@ -390,34 +417,11 @@ func submitControllerRuntime(command cliCommand) (string, variable.Resolver, cli
 	return controllerURL, resolver, starter, nil
 }
 
-func submitPayloadAcknowledgement(httpClient *http.Client, controllerClient client.ControllerClient, controllerURL string, payload any) (model.SubmissionAcknowledgement, error) {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
+func submitPayloadAcknowledgement(controllerClient client.ControllerClient, controllerURL string, payload any) (model.SubmissionAcknowledgement, error) {
 	if err := controllerClient.EnsureController(controllerURL); err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("encode workflow submission: %w", err)
-	}
-	url := strings.TrimRight(controllerURL, "/") + "/workflow"
-	response, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: %w", err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusAccepted {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("submit workflow: unexpected status %d", response.StatusCode)
-	}
-
-	var acknowledgement model.SubmissionAcknowledgement
-	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
-		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode submission acknowledgement: %w", err)
-	}
-	return acknowledgement, nil
+	return controllerClient.SubmitWorkflowPayloadAcknowledgement(controllerURL, payload)
 }
 
 func remoteControllerVariables(controllerURL string) []variable.Variable {
@@ -451,6 +455,7 @@ func parseStatusCommand(args []string) (cliCommand, error) {
 		ControllerURL: defaultControllerURL,
 	}
 	flags.StringVar(&command.ControllerURL, "controller-url", defaultControllerURL, "controller URL")
+	flags.StringVar(&command.ControllerTokenFile, "controller-token-file", "", "controller token file path")
 	flags.BoolVar(&command.JSON, "json", false, "write JSON output")
 
 	flagArgs, positionals := splitFlagArgs(args)
@@ -478,6 +483,7 @@ func parseLogsCommand(args []string) (cliCommand, error) {
 	}
 	var tailValue string
 	flags.StringVar(&command.ControllerURL, "controller-url", defaultControllerURL, "controller URL")
+	flags.StringVar(&command.ControllerTokenFile, "controller-token-file", "", "controller token file path")
 	flags.StringVar(&tailValue, "tail", "", "limit results to this many lines")
 	flags.StringVar(&command.Level, "level", "", "minimum level filter")
 	flags.StringVar(&command.Stream, "stream", "", "stream filter")
@@ -517,6 +523,14 @@ func splitFlagArgs(args []string) ([]string, []string) {
 		if arg == "--controller-url" || strings.HasPrefix(arg, "--controller-url=") {
 			flagArgs = append(flagArgs, arg)
 			if arg == "--controller-url" && index+1 < len(args) {
+				index++
+				flagArgs = append(flagArgs, args[index])
+			}
+			continue
+		}
+		if arg == "--controller-token-file" || strings.HasPrefix(arg, "--controller-token-file=") {
+			flagArgs = append(flagArgs, arg)
+			if arg == "--controller-token-file" && index+1 < len(args) {
 				index++
 				flagArgs = append(flagArgs, args[index])
 			}

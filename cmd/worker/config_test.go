@@ -15,6 +15,8 @@ func TestLoadConfig(t *testing.T) {
 		"tmp_dir": "tmp",
 		"data_dir": "data",
 		"controller_url": "https://controller.local",
+		"controller_token_file": "secrets/controller-worker-token",
+		"controller_insecure_external_http_allowed": true,
 		"python_executable": "python3",
 		"seven_zip_executable": "tools/7z",
 		"rclone_executable": "tools/rclone",
@@ -50,6 +52,14 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.ControllerURL != "https://controller.local" {
 		t.Fatalf("unexpected controller url: %q", config.ControllerURL)
+	}
+
+	if config.ControllerTokenFile != filepath.Join(root, "secrets", "controller-worker-token") {
+		t.Fatalf("unexpected controller token file: %q", config.ControllerTokenFile)
+	}
+
+	if !config.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
 	}
 
 	if config.PythonExecutable != "python3" {
@@ -127,10 +137,11 @@ func TestLoadConfigRejectsInvalidConfig(t *testing.T) {
 
 func TestConfigValidate(t *testing.T) {
 	valid := Config{
-		LogDir:        "logs",
-		TmpDir:        "tmp",
-		DataDir:       "data",
-		ControllerURL: "https://controller.local",
+		LogDir:              "logs",
+		TmpDir:              "tmp",
+		DataDir:             "data",
+		ControllerURL:       "https://controller.local",
+		ControllerTokenFile: "secrets/controller-worker-token",
 	}
 
 	tests := []struct {
@@ -151,8 +162,14 @@ func TestConfigValidate(t *testing.T) {
 		{name: "missing controller url", config: Config{
 			LogDir: "logs", TmpDir: "tmp", DataDir: "data",
 		}, wantErr: true},
+		{name: "external controller url without token file", config: Config{
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "https://controller.local",
+		}, wantErr: true},
+		{name: "loopback controller url without token file", config: Config{
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "http://localhost:8080",
+		}},
 		{name: "negative max asset bytes", config: Config{
-			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "url", MaxAssetBytes: -1,
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "http://localhost:8080", MaxAssetBytes: -1,
 		}, wantErr: true},
 	}
 

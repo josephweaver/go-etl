@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"goetl/internal/controllerauth"
 	"goetl/internal/ledger"
 	"goetl/internal/variable"
 )
@@ -269,6 +270,8 @@ func TestLoadDefaultsDocument(t *testing.T) {
 	expectedKeys := []string{
 		"controller_listen_host",
 		"controller_listen_port",
+		"authentication",
+		"controller_insecure_external_http_allowed",
 		"controller_root_dir",
 		"controller_repo_cache_path",
 		"controller_temp_path",
@@ -314,6 +317,38 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		if !actualKeys[key] {
 			t.Errorf("checked-in defaults missing controller_config.%s", key)
 		}
+	}
+
+	defaultScope, err := variable.NewScope(document.Variables...)
+	if err != nil {
+		t.Fatalf("build checked-in defaults scope: %v", err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(defaultScope), variable.ResolverConfig{})
+
+	authValue, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: "authentication"}})
+	if err != nil {
+		t.Fatalf("resolve authentication default: %v", err)
+	}
+	authConfig, err := controllerauth.ConfigFromResolved(authValue)
+	if err != nil {
+		t.Fatalf("decode authentication default: %v", err)
+	}
+	if authConfig.Mode != controllerauth.ModeDisabled {
+		t.Fatalf("authentication mode = %q, want %q", authConfig.Mode, controllerauth.ModeDisabled)
+	}
+	if len(authConfig.Credentials) != 0 {
+		t.Fatalf("authentication credential count = %d, want 0", len(authConfig.Credentials))
+	}
+
+	insecureHTTP, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: "controller_insecure_external_http_allowed"}})
+	if err != nil {
+		t.Fatalf("resolve controller_insecure_external_http_allowed default: %v", err)
+	}
+	if insecureHTTP.Type != variable.TypeBool {
+		t.Fatalf("controller_insecure_external_http_allowed type = %s, want bool", insecureHTTP.Type)
+	}
+	if got, ok := insecureHTTP.Value.(bool); !ok || got {
+		t.Fatalf("controller_insecure_external_http_allowed = %#v, want false", insecureHTTP.Value)
 	}
 }
 

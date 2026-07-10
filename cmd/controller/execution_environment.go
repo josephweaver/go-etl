@@ -166,12 +166,40 @@ func (e ExecutionEnvironment) Preflight(ctx context.Context) []PreflightIssue {
 		issues = append(issues, componentPreflightIssues(ctx, "callback_tunnel", e.CallbackTunnel)...)
 	}
 	issues = append(issues, componentPreflightIssues(ctx, "scheduler", e.Scheduler)...)
-	issues = append(issues, componentPreflightIssues(ctx, "runtime", e.Runtime)...)
+	issues = append(issues, runtimePreflightIssues(ctx, "runtime", e.Runtime, e.primaryTransport(), e.Dialect)...)
 	return issues
+}
+
+func (e ExecutionEnvironment) primaryTransport() Transport {
+	if len(e.Transports) == 0 {
+		return nil
+	}
+	return e.Transports[0]
 }
 
 func componentPreflightIssues(ctx context.Context, componentName string, component any) []PreflightIssue {
 	issues := preflightIfSupported(ctx, component)
+	for index := range issues {
+		if issues[index].Component == "" {
+			issues[index].Component = componentName
+		}
+	}
+	return issues
+}
+
+type RuntimePreflightComponent interface {
+	RuntimePreflight(ctx context.Context, transport Transport, dialect ShellDialect) []PreflightIssue
+}
+
+func runtimePreflightIssues(ctx context.Context, componentName string, runtime Runtime, transport Transport, dialect ShellDialect) []PreflightIssue {
+	if runtime == nil {
+		return nil
+	}
+	component, ok := runtime.(RuntimePreflightComponent)
+	if !ok {
+		return componentPreflightIssues(ctx, componentName, runtime)
+	}
+	issues := component.RuntimePreflight(ctx, transport, dialect)
 	for index := range issues {
 		if issues[index].Component == "" {
 			issues[index].Component = componentName
@@ -363,6 +391,8 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 	switch cfg.Type {
 	case "direct_process":
 		return DirectProcessScheduler{}, nil
+	case "remote_process":
+		return RemoteProcessScheduler{Transport: transport}, nil
 	case "slurm":
 		return SlurmScheduler{Transport: transport}, nil
 	default:
@@ -416,6 +446,14 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	controllerTokenFile, err := settings.String("controller_token_file")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	controllerInsecureExternalHTTPAllowed, err := settings.Bool("controller_insecure_external_http_allowed")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	localWorkerArtifact, err := settings.String("local_worker_artifact")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -441,14 +479,16 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		return WorkerRuntime{}, err
 	}
 	return WorkerRuntime{
-		Root:                root,
-		ControllerURL:       controllerURL,
-		LocalWorkerArtifact: localWorkerArtifact,
-		DataDir:             dataDir,
-		AssetCacheDir:       assetCacheDir,
-		PythonExecutable:    pythonExecutable,
-		MaxAssetBytes:       maxAssetBytes,
-		DataLocationRoots:   roots,
+		Root:                                  root,
+		ControllerURL:                         controllerURL,
+		ControllerTokenFile:                   controllerTokenFile,
+		ControllerInsecureExternalHTTPAllowed: controllerInsecureExternalHTTPAllowed,
+		LocalWorkerArtifact:                   localWorkerArtifact,
+		DataDir:                               dataDir,
+		AssetCacheDir:                         assetCacheDir,
+		PythonExecutable:                      pythonExecutable,
+		MaxAssetBytes:                         maxAssetBytes,
+		DataLocationRoots:                     roots,
 	}, nil
 }
 
@@ -551,4 +591,19 @@ func (settings ExecutionComponentSettings) Int64(name string) (int64, error) {
 	default:
 		return 0, fmt.Errorf("setting %s must be an integer", name)
 	}
+}
+
+func (settings ExecutionComponentSettings) Bool(name string) (bool, error) {
+	if len(settings) == 0 {
+		return false, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return false, nil
+	}
+	typed, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("setting %s must be a boolean", name)
+	}
+	return typed, nil
 }

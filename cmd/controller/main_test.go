@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"goetl/internal/controllerauth"
 	"goetl/internal/ledger"
 	"goetl/internal/model"
 	"goetl/internal/persistence"
@@ -77,7 +78,7 @@ func TestBuildControllerServerFailsClosedBeforeBind(t *testing.T) {
 	dir := t.TempDir()
 	_, _, _ = writeControllerStartupFiles(t, dir)
 	badControllerPath := filepath.Join(dir, "bad-controller.json")
-	if err := os.WriteFile(badControllerPath, []byte(`{"api_version":"goet/v1alpha1","kind":"Controller","variables":[{"name":{"namespace":"controller_config","key":"main_database_driver"},"type":"string","expression":"bad"}]}`), 0600); err != nil {
+	if err := os.WriteFile(badControllerPath, []byte(`{"api_version":"goet/v1alpha1","kind":"Controller","variables":[{"name":{"namespace":"controller_config","key":"main_database_driver"},"type":"string","expression":"bad"},{"name":{"namespace":"controller_config","key":"controller_url"},"type":"string","expression":"http://localhost:9091"}]}`), 0600); err != nil {
 		t.Fatalf("write bad controller config: %v", err)
 	}
 
@@ -100,6 +101,192 @@ func TestBuildControllerServerFailsClosedBeforeBind(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "controller-startup.sqlite")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected database file created for failing startup: %v", err)
+	}
+}
+
+func TestBuildControllerServerRejectsDisabledAuthOnNonLoopbackBeforeDatabase(t *testing.T) {
+	dir := t.TempDir()
+	controllerPath, defaultDBPath, _ := writeControllerStartupFiles(t, dir)
+
+	server, release, err := buildControllerServer(
+		[]string{"controller", "--config", controllerPath, "--override", `{"name":{"namespace":"override","key":"controller_listen_host"},"type":"string","expression":"0.0.0.0"}`},
+		func() (string, error) { return filepath.Join(dir, "controller-binary"), nil },
+		func(string) (string, bool) { return "", false },
+		func() (string, error) { return dir, nil },
+		func() int { return 1234 },
+		func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) },
+		func(int) string { return "cafebabe" },
+		func() string { return "test-version" },
+	)
+	if err == nil || !strings.Contains(err.Error(), "controller auth failed") || !strings.Contains(err.Error(), "disabled authentication requires loopback") {
+		t.Fatalf("error = %v, want disabled-auth non-loopback failure", err)
+	}
+	if server != nil || release != nil {
+		t.Fatalf("server = %#v release = %T, want nils on startup failure", server, release)
+	}
+	if _, err := os.Stat(defaultDBPath); !os.IsNotExist(err) {
+		t.Fatalf("unexpected database file created for failing auth startup: %v", err)
+	}
+}
+
+func TestResolveControllerAuthSettings(t *testing.T) {
+	tests := []struct {
+		name          string
+		auth          variable.TypedExpression
+		httpSettings  controllerHTTPSettings
+		insecureHTTP  bool
+		env           map[string]string
+		wantPrincipal string
+		wantRole      string
+		wantError     string
+	}{
+		{
+			name:         "disabled loopback local http",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "http://localhost:8080"},
+		},
+		{
+			name:         "disabled non loopback listener",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "0.0.0.0", AdvertisedURL: "http://localhost:8080"},
+			wantError:    "disabled authentication requires loopback",
+		},
+		{
+			name:         "external http advertised url",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "http://controller.example:8080"},
+			wantError:    "external http controller_url",
+		},
+		{
+			name:          "external http advertised url with explicit override",
+			auth:          bearerAuthExpression("primary-client", "client", "GOET_CONTROLLER_CLIENT_TOKEN"),
+			httpSettings:  controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "http://controller.example:8080"},
+			insecureHTTP:  true,
+			env:           map[string]string{"GOET_CONTROLLER_CLIENT_TOKEN": "client-secret"},
+			wantPrincipal: "primary-client",
+			wantRole:      "client",
+		},
+		{
+			name:         "disabled external https advertised url",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "https://controller.example"},
+			wantError:    "disabled authentication requires loopback controller_url",
+		},
+		{
+			name: "bearer loads environment credential",
+			auth: bearerAuthExpression("primary-client", "client", "GOET_CONTROLLER_CLIENT_TOKEN"),
+			httpSettings: controllerHTTPSettings{
+				ListenHost:    "0.0.0.0",
+				AdvertisedURL: "https://controller.example",
+			},
+			env:           map[string]string{"GOET_CONTROLLER_CLIENT_TOKEN": "client-secret"},
+			wantPrincipal: "primary-client",
+			wantRole:      "client",
+		},
+		{
+			name:         "advertised url missing scheme",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "controller.example"},
+			wantError:    "controller_url requires a scheme",
+		},
+		{
+			name:         "advertised url unsupported scheme",
+			auth:         disabledAuthExpression(),
+			httpSettings: controllerHTTPSettings{ListenHost: "localhost", AdvertisedURL: "ftp://controller.example"},
+			wantError:    "scheme \"ftp\" is unsupported",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+				testStartupVariable(variable.NamespaceControllerConfig, "authentication", tt.auth.Type, tt.auth.Expression),
+				testStartupVariable(variable.NamespaceControllerConfig, "controller_insecure_external_http_allowed", variable.TypeBool, tt.insecureHTTP),
+			)), variable.ResolverConfig{})
+			settings, err := resolveControllerAuthSettings(resolver, tt.httpSettings, controllerauthTestSources(tt.env))
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("resolveControllerAuthSettings() error = %v, want containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveControllerAuthSettings() error = %v", err)
+			}
+			if tt.wantPrincipal != "" {
+				principal, ok := settings.Store.MatchBearer("client-secret")
+				if !ok {
+					t.Fatal("loaded credential did not match token")
+				}
+				if principal.ID != tt.wantPrincipal || string(principal.Role) != tt.wantRole {
+					t.Fatalf("principal = %+v, want %s/%s", principal, tt.wantPrincipal, tt.wantRole)
+				}
+			}
+			if settings.Policy.Authorize(http.MethodGet, "/healthz", "") != controllerauth.DecisionPublic {
+				t.Fatal("auth settings did not include controller route policy")
+			}
+		})
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{host: "localhost", want: true},
+		{host: "127.0.0.1", want: true},
+		{host: "127.99.0.1", want: true},
+		{host: "::1", want: true},
+		{host: "0.0.0.0", want: false},
+		{host: "::", want: false},
+		{host: "controller.example", want: false},
+	}
+	for _, tt := range tests {
+		if got := isLoopbackHost(tt.host); got != tt.want {
+			t.Fatalf("isLoopbackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
+	}
+}
+
+func disabledAuthExpression() variable.TypedExpression {
+	return variable.TypedExpression{
+		Type: variable.TypeObject,
+		Expression: map[string]variable.TypedExpression{
+			"mode":        {Type: variable.TypeString, Expression: "disabled"},
+			"credentials": {Type: variable.TypeList, Expression: []variable.TypedExpression{}},
+		},
+	}
+}
+
+func bearerAuthExpression(id string, role string, tokenEnv string) variable.TypedExpression {
+	return variable.TypedExpression{
+		Type: variable.TypeObject,
+		Expression: map[string]variable.TypedExpression{
+			"mode": {Type: variable.TypeString, Expression: "bearer"},
+			"credentials": {
+				Type: variable.TypeList,
+				Expression: []variable.TypedExpression{
+					{
+						Type: variable.TypeObject,
+						Expression: map[string]variable.TypedExpression{
+							"id":        {Type: variable.TypeString, Expression: id},
+							"role":      {Type: variable.TypeString, Expression: role},
+							"token_env": {Type: variable.TypeString, Expression: tokenEnv},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func controllerauthTestSources(env map[string]string) controllerauth.CredentialSources {
+	return controllerauth.CredentialSources{
+		LookupEnv: func(key string) (string, bool) {
+			value, ok := env[key]
+			return value, ok
+		},
 	}
 }
 
@@ -224,6 +411,8 @@ func writeControllerStartupFiles(t *testing.T, dir string) (string, string, stri
   "variables": [
     {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
     {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 9091},
+    {"name": {"namespace": "controller_config", "key": "authentication"}, "type": "object", "expression": {"mode": {"type": "string", "expression": "disabled"}, "credentials": {"type": "list", "expression": []}}},
+    {"name": {"namespace": "controller_config", "key": "controller_insecure_external_http_allowed"}, "type": "bool", "expression": false},
     {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
     {"name": {"namespace": "controller_config", "key": "controller_repo_cache_path"}, "type": "path", "expression": "${controller_root_dir}/repo_cache"},
     {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},

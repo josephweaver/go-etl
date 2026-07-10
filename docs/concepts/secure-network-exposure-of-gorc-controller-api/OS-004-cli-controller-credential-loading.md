@@ -1,6 +1,6 @@
 # OS-004: CLI Controller Credential Loading
 
-Status: Proposed  
+Status: Implemented
 Minimum recommended model: GPT-5.4-mini  
 Reference: EC-3 / operational slice / files(4)+tests+doc
 

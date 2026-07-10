@@ -1,6 +1,6 @@
 # State Index
 
-Last updated: 2026-07-07
+Last updated: 2026-07-10
 
 This index replaces the long-form root `PROJECT_STATE.md`. The exact pre-split file is archived at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](history/PROJECT_STATE_2026-07-07_pre-split.md).
 
@@ -25,6 +25,7 @@ This index replaces the long-form root `PROJECT_STATE.md`. The exact pre-split f
 - [`concepts/workflow-execution-persistence/STATE.md`](concepts/workflow-execution-persistence/STATE.md): moved workflow execution persistence and cutover state.
 - [`concepts/operational-observability/STATE.md`](concepts/operational-observability/STATE.md): log model, ingestion, filesystem sinks, read API, CLI logs, and Python subprocess log emission state.
 - [`concepts/source-control-resolution-and-cache/STATE.md`](concepts/source-control-resolution-and-cache/STATE.md): repository-source, source-reference admission, cache, and restart verification state.
+- [`concepts/secure-network-exposure-of-gorc-controller-api/README.md`](concepts/secure-network-exposure-of-gorc-controller-api/README.md): controller API authentication, route authorization, HTTPS client behavior, deployment profiles, and verified dedicated-server/HPCC external callback evidence.
 
 ## Pre-Split Section Homes
 

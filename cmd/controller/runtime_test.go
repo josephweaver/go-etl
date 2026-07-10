@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -104,11 +105,13 @@ func TestWorkerRuntimePrepareCreatesLocalDirectoriesWithoutShellMkdir(t *testing
 func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	transport := &recordingTransport{}
 	runtime := WorkerRuntime{
-		Root:             "/data/goetl-test",
-		ControllerURL:    "http://host.docker.internal:8080",
-		AssetCacheDir:    "/data/goetl-test/cache/assets",
-		PythonExecutable: "python3",
-		MaxAssetBytes:    20000000000,
+		Root:                                  "/data/goetl-test",
+		ControllerURL:                         "http://host.docker.internal:8080",
+		ControllerTokenFile:                   "/data/goetl-test/secrets/controller-worker-token",
+		ControllerInsecureExternalHTTPAllowed: true,
+		AssetCacheDir:                         "/data/goetl-test/cache/assets",
+		PythonExecutable:                      "python3",
+		MaxAssetBytes:                         20000000000,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
 			"published_data": "/data/goetl-test/published",
@@ -133,6 +136,12 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	if cfg.ControllerURL != "http://host.docker.internal:8080" {
 		t.Fatalf("controller url = %q, want configured URL", cfg.ControllerURL)
 	}
+	if cfg.ControllerTokenFile != "/data/goetl-test/secrets/controller-worker-token" {
+		t.Fatalf("controller token file = %q, want configured token file", cfg.ControllerTokenFile)
+	}
+	if !cfg.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
+	}
 	if cfg.LogDir != "/data/goetl-test/logs" || cfg.TmpDir != "/data/goetl-test/tmp" || cfg.DataDir != "/data/goetl-test/data" {
 		t.Fatalf("unexpected runtime dirs: %+v", cfg)
 	}
@@ -154,11 +163,64 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	}
 }
 
+func TestWorkerRuntimePrepareRequiresControllerTokenFileForExternalControllerURL(t *testing.T) {
+	runtime := WorkerRuntime{
+		Root:          "/data/goetl-test",
+		ControllerURL: "https://controller.example.org",
+	}
+
+	err := runtime.Prepare(context.Background(), &recordingTransport{}, BashShellPlatform{})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "worker controller token file is required") {
+		t.Fatalf("error = %v, want missing token file", err)
+	}
+}
+
+func TestWorkerRuntimePrepareWritesWorkerConfigWithoutTokenMaterial(t *testing.T) {
+	sentinel := "goetl-worker-controller-token-sentinel-005-do-not-serialize"
+	root := filepath.Join(t.TempDir(), "runtime")
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	runtime := WorkerRuntime{
+		Root:                filepath.ToSlash(root),
+		ControllerURL:       "https://controller.example.org",
+		ControllerTokenFile: filepath.ToSlash(tokenFile),
+	}
+
+	if err := runtime.Prepare(context.Background(), LocalTransport{}, BashShellPlatform{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "config", "worker.json"))
+	if err != nil {
+		t.Fatalf("read worker config: %v", err)
+	}
+	if strings.Contains(string(data), sentinel) {
+		t.Fatalf("worker config contains token sentinel")
+	}
+
+	var cfg WorkerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("decode worker config: %v", err)
+	}
+	if cfg.ControllerTokenFile != tokenFile {
+		t.Fatalf("controller token file = %q, want %q", cfg.ControllerTokenFile, tokenFile)
+	}
+}
+
 func TestWorkerRuntimePrepareWritesAbsoluteLocalWorkerConfigPaths(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "runtime")
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte("local-token"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
 	runtime := WorkerRuntime{
-		Root:          filepath.ToSlash(root),
-		ControllerURL: "http://localhost:8080",
+		Root:                filepath.ToSlash(root),
+		ControllerURL:       "https://controller.example.org",
+		ControllerTokenFile: filepath.ToSlash(tokenFile),
 		DataLocationRoots: map[string]string{
 			"fixture_data": filepath.ToSlash(filepath.Join(root, "fixtures")),
 		},
@@ -181,11 +243,74 @@ func TestWorkerRuntimePrepareWritesAbsoluteLocalWorkerConfigPaths(t *testing.T) 
 		"log_dir":                   cfg.LogDir,
 		"tmp_dir":                   cfg.TmpDir,
 		"data_dir":                  cfg.DataDir,
+		"controller_token_file":     cfg.ControllerTokenFile,
 		"data_location_roots.value": cfg.DataLocationRoots["fixture_data"],
 	} {
 		if !filepath.IsAbs(path) {
 			t.Fatalf("%s = %q, want absolute path", name, path)
 		}
+	}
+}
+
+func TestWorkerRuntimePreflightAllowsLoopbackWithoutTokenFile(t *testing.T) {
+	issues := (WorkerRuntime{
+		ControllerURL: "http://localhost:8080",
+	}).RuntimePreflight(context.Background(), LocalTransport{}, BashShellPlatform{})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
+	}
+}
+
+func TestWorkerRuntimePreflightRejectsUnusableLocalControllerTokenFiles(t *testing.T) {
+	root := t.TempDir()
+	emptyTokenFile := filepath.Join(root, "empty-token")
+	if err := os.WriteFile(emptyTokenFile, nil, 0o600); err != nil {
+		t.Fatalf("write empty token file: %v", err)
+	}
+	oversizedTokenFile := filepath.Join(root, "oversized-token")
+	if err := os.WriteFile(oversizedTokenFile, []byte(strings.Repeat("x", maxWorkerControllerTokenBytes+1)), 0o600); err != nil {
+		t.Fatalf("write oversized token file: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		tokenFile string
+	}{
+		{name: "missing", tokenFile: filepath.Join(root, "missing-token")},
+		{name: "empty", tokenFile: emptyTokenFile},
+		{name: "oversized", tokenFile: oversizedTokenFile},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issues := (WorkerRuntime{
+				ControllerURL:       "https://controller.example.org",
+				ControllerTokenFile: filepath.ToSlash(test.tokenFile),
+			}).RuntimePreflight(context.Background(), LocalTransport{}, BashShellPlatform{})
+			if len(issues) != 1 {
+				t.Fatalf("issue count = %d, want 1", len(issues))
+			}
+			if issues[0].Severity != PreflightSeverityError {
+				t.Fatalf("severity = %q, want error", issues[0].Severity)
+			}
+			if strings.Contains(issues[0].Message, "goetl-worker-controller-token-sentinel") {
+				t.Fatalf("issue message contains token sentinel")
+			}
+		})
+	}
+}
+
+func TestWorkerRuntimePreflightAcceptsRestrictiveLocalControllerTokenFile(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte("goetl-worker-token"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	issues := (WorkerRuntime{
+		ControllerURL:       "https://controller.example.org",
+		ControllerTokenFile: filepath.ToSlash(tokenFile),
+	}).RuntimePreflight(context.Background(), LocalTransport{}, BashShellPlatform{})
+	if len(issues) != 0 {
+		t.Fatalf("issues = %#v, want none", issues)
 	}
 }
 
@@ -278,8 +403,9 @@ func TestWorkerRuntimePrepareIntegration(t *testing.T) {
 	}
 
 	runtime := WorkerRuntime{
-		Root:          "/data/goetl-test-runtime",
-		ControllerURL: "http://host.docker.internal:8080",
+		Root:                "/data/goetl-test-runtime",
+		ControllerURL:       "http://host.docker.internal:8080",
+		ControllerTokenFile: "/data/goetl-test-runtime/secrets/controller-worker-token",
 	}
 	transport := DockerContainerTransport{Container: "slurmctld"}
 	if err := runtime.Prepare(ctx, transport, BashShellPlatform{}); err != nil {
@@ -314,6 +440,7 @@ func TestWorkerRuntimePrepareUploadsArtifactIntegration(t *testing.T) {
 	runtime := WorkerRuntime{
 		Root:                "/data/goetl-test-artifact",
 		ControllerURL:       "http://host.docker.internal:8080",
+		ControllerTokenFile: "/data/goetl-test-artifact/secrets/controller-worker-token",
 		LocalWorkerArtifact: localPath,
 	}
 	transport := DockerContainerTransport{Container: "slurmctld"}
@@ -361,6 +488,37 @@ func TestSingularityWorkerRuntimeWorkerScript(t *testing.T) {
 	}
 	if cfg.WorkerConfigPath != "/data/goetl/config/worker.json" {
 		t.Fatalf("worker config path = %q, want original config path", cfg.WorkerConfigPath)
+	}
+}
+
+func TestSingularityWorkerRuntimeWorkerScriptBindsRuntimeRootByDefault(t *testing.T) {
+	runtime := SingularityWorkerRuntime{
+		WorkerRuntime: WorkerRuntime{
+			Root: "/data/goetl",
+		},
+		ImagePath:                 "/data/goetl/images/goetl-worker.sif",
+		ContainerWorkerExecutable: "/goetl/goetl-worker",
+	}
+
+	cfg, err := runtime.WorkerScript(SlurmWorkerScriptConfig{
+		JobName:          "goetl-worker",
+		WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+		WorkerConfigPath: "/data/goetl/config/worker.json",
+		LogDir:           "/data/goetl/logs",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantArgs := []string{
+		"exec",
+		"--bind",
+		"/data/goetl:/data/goetl",
+		"/data/goetl/images/goetl-worker.sif",
+		"/goetl/goetl-worker",
+	}
+	if !stringSlicesEqual(cfg.WorkerArgs, wantArgs) {
+		t.Fatalf("worker args = %#v, want %#v", cfg.WorkerArgs, wantArgs)
 	}
 }
 

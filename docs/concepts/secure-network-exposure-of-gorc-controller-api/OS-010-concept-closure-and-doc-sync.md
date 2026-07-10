@@ -1,6 +1,6 @@
 # OS-010: Concept Closure and Documentation Sync
 
-Status: Proposed  
+Status: In Progress
 Minimum recommended model: GPT-5.3-Codex-Spark  
 Reference: EC-2 / operational slice / docs only
 
@@ -106,3 +106,11 @@ Stop and append to `issues.md` if:
 - laptop external smoke did not actually run;
 - production-like ingress did not keep the internal listener private;
 - documentation would need to claim a security property that was not tested.
+
+## Implementation State
+
+OS-010 documentation sync is partially applied. Closure is not complete because
+the laptop-hosted temporary HTTPS smoke profile was documented but not separately
+run. The dedicated-server HTTPS profile and real HPCC Slurm/Singularity callback
+smoke are verified in `docs/TEST_AND_SMOKE_STATUS.md`; the laptop-profile
+evidence decision is recorded in `issues.md`.
