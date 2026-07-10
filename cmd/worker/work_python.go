@@ -440,7 +440,11 @@ func (w Worker) emitPythonSubprocessLogLinesFromPath(
 	}
 	defer file.Close()
 
-	client := LogClient{ControllerURL: w.Config.ControllerURL}
+	controller, err := w.controllerClient()
+	if err != nil {
+		return fmt.Errorf("controller client: %w", err)
+	}
+	client := LogClient{Controller: controller}
 	scanner := bufio.NewScanner(file)
 	var observedErr error
 

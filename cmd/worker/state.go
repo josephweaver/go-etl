@@ -1,15 +1,19 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
+	"goetl/internal/controllerhttp"
 	"goetl/internal/model"
 )
 
@@ -26,24 +30,103 @@ type WorkEvidence struct {
 	PostStateJSON   string
 }
 
-func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
-	url := strings.TrimRight(controllerURL, "/") + "/work/complete"
+const maxWorkerControllerTokenBytes = 32 * 1024
 
-	body, err := json.Marshal(workCompletion(item, startedAt, evidence))
+type WorkerControllerClient struct {
+	client        controllerhttp.Client
+	authenticated bool
+	initialized   bool
+}
+
+func NewWorkerControllerClient(cfg Config) (WorkerControllerClient, error) {
+	requiresToken, err := controllerURLRequiresTokenFile(cfg.ControllerURL)
 	if err != nil {
-		return fmt.Errorf("encode work completion: %w", err)
+		return WorkerControllerClient{}, err
 	}
-
-	response, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if requiresToken && cfg.ControllerTokenFile == "" {
+		return WorkerControllerClient{}, fmt.Errorf("controller token file is required for controller url %s", cfg.ControllerURL)
+	}
+	tokenProvider, authenticated, err := loadWorkerControllerTokenProvider(cfg.ControllerTokenFile)
 	if err != nil {
-		return fmt.Errorf("post work completion to %s: %w", url, err)
+		return WorkerControllerClient{}, err
+	}
+	client, err := controllerhttp.New(controllerhttp.Config{
+		BaseURL: cfg.ControllerURL,
+		Token:   tokenProvider,
+		Caller:  "goetl-worker/1",
+	})
+	if err != nil {
+		return WorkerControllerClient{}, err
+	}
+	return WorkerControllerClient{client: client, authenticated: authenticated, initialized: true}, nil
+}
+
+func (c WorkerControllerClient) Initialized() bool {
+	return c.initialized
+}
+
+func loadWorkerControllerTokenProvider(path string) (controllerhttp.TokenProvider, bool, error) {
+	if path == "" {
+		return nil, false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("controller token file %q stat failed: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("controller token file %q must be a regular file", path)
+	}
+	if info.Size() == 0 {
+		return nil, false, fmt.Errorf("controller token file %q is empty", path)
+	}
+	if info.Size() > maxWorkerControllerTokenBytes {
+		return nil, false, fmt.Errorf("controller token file %q exceeds %d bytes", path, maxWorkerControllerTokenBytes)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return nil, false, fmt.Errorf("controller token file %q permissions must not grant group or other access", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("controller token file %q read failed: %w", path, err)
+	}
+	token, err := controllerhttp.NewSensitiveToken(trimOneTrailingLineEnding(string(data)))
+	if err != nil {
+		return nil, false, fmt.Errorf("controller token file %q: %w", path, err)
+	}
+	return controllerhttp.NewStaticTokenProvider(token), true, nil
+}
+
+func trimOneTrailingLineEnding(value string) string {
+	if strings.HasSuffix(value, "\r\n") {
+		return strings.TrimSuffix(value, "\r\n")
+	}
+	if strings.HasSuffix(value, "\n") {
+		return strings.TrimSuffix(value, "\n")
+	}
+	if strings.HasSuffix(value, "\r") {
+		return strings.TrimSuffix(value, "\r")
+	}
+	return value
+}
+
+func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
+	client, err := newUnauthenticatedWorkerControllerClient(controllerURL)
+	if err != nil {
+		return err
+	}
+	return client.ReportWorkComplete(item, startedAt, evidence)
+}
+
+func (c WorkerControllerClient) ReportWorkComplete(item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
+	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/complete", workCompletion(item, startedAt, evidence))
+	if err != nil {
+		return fmt.Errorf("create work completion request: %w", err)
+	}
+	response, err := c.client.Do(request, http.StatusNoContent)
+	if err != nil {
+		return fmt.Errorf("post work completion: %w", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("post work completion to %s: unexpected status %s", url, response.Status)
-	}
-
 	return nil
 }
 
@@ -128,56 +211,119 @@ func randomHex(byteCount int) string {
 }
 
 func reportWorkFailed(controllerURL string, item model.WorkItem, workErr error) error {
-	url := strings.TrimRight(controllerURL, "/") + "/work/fail"
+	client, err := newUnauthenticatedWorkerControllerClient(controllerURL)
+	if err != nil {
+		return err
+	}
+	return client.ReportWorkFailed(item, workErr)
+}
 
-	body, err := json.Marshal(model.WorkFailure{
+func (c WorkerControllerClient) ReportWorkFailed(item model.WorkItem, workErr error) error {
+	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/fail", model.WorkFailure{
 		ID:        item.ID,
 		AttemptID: item.AttemptID,
 		FailedAt:  time.Now().UTC().Format(time.RFC3339),
 		Error:     workErr.Error(),
 	})
 	if err != nil {
-		return fmt.Errorf("encode work failure: %w", err)
+		return fmt.Errorf("create work failure request: %w", err)
 	}
-
-	response, err := http.Post(url, "application/json", bytes.NewReader(body))
+	response, err := c.client.Do(request, http.StatusNoContent)
 	if err != nil {
-		return fmt.Errorf("post work failure to %s: %w", url, err)
+		return fmt.Errorf("post work failure: %w", err)
 	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("post work failure to %s: unexpected status %s", url, response.Status)
-	}
-
 	return nil
 }
 
 func fetchWorkItem(controllerURL string) (model.WorkItem, bool, error) {
-	url := strings.TrimRight(controllerURL, "/") + "/work/next"
-
-	response, err := http.Get(url)
+	client, err := newUnauthenticatedWorkerControllerClient(controllerURL)
 	if err != nil {
-		return model.WorkItem{}, false, fmt.Errorf("get work item from %s: %w", url, err)
+		return model.WorkItem{}, false, err
+	}
+	return client.FetchWorkItem()
+}
+
+func (c WorkerControllerClient) FetchWorkItem() (model.WorkItem, bool, error) {
+	request, err := c.newRequest(context.Background(), http.MethodGet, "/work/next", nil)
+	if err != nil {
+		return model.WorkItem{}, false, fmt.Errorf("create work claim request: %w", err)
+	}
+	response, err := c.client.Do(request, http.StatusOK, http.StatusNoContent)
+	if err != nil {
+		return model.WorkItem{}, false, fmt.Errorf("get work item: %w", err)
 	}
 	defer response.Body.Close()
-
 	if response.StatusCode == http.StatusNoContent {
 		return model.WorkItem{}, false, nil
 	}
 
-	if response.StatusCode != http.StatusOK {
-		return model.WorkItem{}, false, fmt.Errorf("get work item from %s: unexpected status %s", url, response.Status)
-	}
-
 	var item model.WorkItem
 	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
-		return model.WorkItem{}, false, fmt.Errorf("decode work item from %s: %w", url, err)
+		return model.WorkItem{}, false, fmt.Errorf("decode work item: %w", err)
 	}
 
 	if err := item.Validate(); err != nil {
-		return model.WorkItem{}, false, fmt.Errorf("validate work item from %s: %w", url, err)
+		return model.WorkItem{}, false, fmt.Errorf("validate work item: %w", err)
 	}
 
 	return item, true, nil
+}
+
+func (c WorkerControllerClient) SourceBundle(runID string) ([]byte, error) {
+	requestPath, err := controllerhttp.PathJoin("/workflow-runs", runID, "source-bundle.zip")
+	if err != nil {
+		return nil, fmt.Errorf("source bundle path: %w", err)
+	}
+	request, err := c.newRequest(context.Background(), http.MethodGet, requestPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create source bundle request: %w", err)
+	}
+	response, err := c.client.Do(request, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("get source bundle: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read source bundle: %w", err)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("read source bundle: empty body")
+	}
+	return body, nil
+}
+
+func (c WorkerControllerClient) newRequest(ctx context.Context, method string, path string, body io.Reader) (*http.Request, error) {
+	if c.authenticated {
+		return c.client.NewRequest(ctx, method, path, body)
+	}
+	return c.client.NewPublicRequest(ctx, method, path, body)
+}
+
+func (c WorkerControllerClient) newJSONRequest(ctx context.Context, method string, path string, value any) (*http.Request, error) {
+	if c.authenticated {
+		return c.client.NewJSONRequest(ctx, method, path, value)
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encode controller request body: %w", err)
+	}
+	request, err := c.client.NewPublicRequest(ctx, method, path, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	return request, nil
+}
+
+func newUnauthenticatedWorkerControllerClient(controllerURL string) (WorkerControllerClient, error) {
+	client, err := controllerhttp.New(controllerhttp.Config{
+		BaseURL: controllerURL,
+		Caller:  "goetl-worker/1",
+	})
+	if err != nil {
+		return WorkerControllerClient{}, err
+	}
+	return WorkerControllerClient{client: client, initialized: true}, nil
 }

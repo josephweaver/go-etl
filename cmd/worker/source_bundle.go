@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -40,30 +38,18 @@ func (w Worker) stageWorkItemSourceBundle(item model.WorkItem) (WorkStaging, err
 		return WorkStaging{}, fmt.Errorf("work item source run id is required")
 	}
 
-	sourceURL := strings.TrimRight(w.Config.ControllerURL, "/") +
-		"/workflow-runs/" + url.PathEscape(item.Source.RunID) + "/source-bundle.zip"
-
-	response, err := http.Get(sourceURL)
+	controller, err := w.controllerClient()
 	if err != nil {
-		return WorkStaging{}, fmt.Errorf("get source bundle from %s: %w", sourceURL, err)
+		return WorkStaging{}, fmt.Errorf("controller client: %w", err)
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return WorkStaging{}, fmt.Errorf("get source bundle from %s: unexpected status %s", sourceURL, response.Status)
-	}
-
-	body, err := io.ReadAll(response.Body)
+	body, err := controller.SourceBundle(item.Source.RunID)
 	if err != nil {
-		return WorkStaging{}, fmt.Errorf("read source bundle from %s: %w", sourceURL, err)
-	}
-	if len(body) == 0 {
-		return WorkStaging{}, fmt.Errorf("read source bundle from %s: empty body", sourceURL)
+		return WorkStaging{}, err
 	}
 
 	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
-		return WorkStaging{}, fmt.Errorf("decode source bundle from %s: %w", sourceURL, err)
+		return WorkStaging{}, fmt.Errorf("decode source bundle: %w", err)
 	}
 
 	staging := WorkStaging{

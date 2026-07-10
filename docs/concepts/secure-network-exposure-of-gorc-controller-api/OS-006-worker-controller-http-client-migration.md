@@ -1,6 +1,6 @@
 # OS-006: Worker Controller HTTP Client Migration
 
-Status: Proposed  
+Status: Implemented
 Minimum recommended model: GPT-5.4-mini  
 Reference: EC-3 / operational slice / files(4)+tests+doc
 
@@ -40,6 +40,25 @@ All controller requests share:
 - redirect policy;
 - safe errors;
 - caller user-agent.
+
+## Implementation State
+
+Implemented worker controller HTTP migration:
+
+- worker startup constructs one `WorkerControllerClient` from worker config;
+- the worker token file is loaded once into an OS-003 `controllerhttp` token
+  provider;
+- work claim, completion, failure, source-bundle download, and log-observation
+  requests use the shared controller client;
+- loopback development calls may still run without a token when the controller
+  permits unauthenticated local mode;
+- focused tests cover bearer header injection from the token file, token-file
+  one-time loading, safe error text that does not include the token sentinel,
+  HTTPS request-path coverage, authenticated source-bundle fetches, and
+  authenticated log-observation delivery.
+
+The remaining package-level `http.Get` in `cmd/worker` belongs to external
+data-asset materialization, not controller communication.
 
 ## Requirements
 

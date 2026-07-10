@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"testing"
 	"strings"
+	"testing"
 
 	"goetl/internal/model"
 )
@@ -31,6 +31,36 @@ func TestSendLogObservation(t *testing.T) {
 	err := client.SendLogObservation(validLogObservation(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendLogObservationUsesControllerClientAuth(t *testing.T) {
+	const sentinel = "goetl-worker-controller-token-sentinel-006"
+	var sawAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization") == "Bearer "+sentinel
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+	controller, err := NewWorkerControllerClient(Config{
+		ControllerURL:       server.URL,
+		ControllerTokenFile: tokenFile,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerControllerClient() error = %v", err)
+	}
+
+	client := LogClient{Controller: controller}
+	if err := client.SendLogObservation(validLogObservation(t)); err != nil {
+		t.Fatalf("SendLogObservation() error = %v", err)
+	}
+	if !sawAuth {
+		t.Fatal("expected log observation request to include bearer token")
 	}
 }
 

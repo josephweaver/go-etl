@@ -1,13 +1,18 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"goetl/internal/controllerhttp"
 	"goetl/internal/model"
 )
 
@@ -248,5 +253,135 @@ func TestFetchWorkItemReturnsNoWork(t *testing.T) {
 
 	if hasWork {
 		t.Fatalf("unexpected work item: %+v", item)
+	}
+}
+
+func TestWorkerControllerClientUsesTokenFileForWorkRequests(t *testing.T) {
+	const sentinel = "goetl-worker-controller-token-sentinel-006"
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte(sentinel+"\n"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	var sawClaimAuth bool
+	var sawCompleteAuth bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/work/next":
+			sawClaimAuth = r.Header.Get("Authorization") == "Bearer "+sentinel
+			_ = json.NewEncoder(w).Encode(model.WorkItem{
+				ID:             "test-001",
+				Type:           model.WorkItemTypeWriteDemoOutput,
+				OutputFilename: "result.txt",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/work/complete":
+			sawCompleteAuth = r.Header.Get("Authorization") == "Bearer "+sentinel
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewWorkerControllerClient(Config{
+		ControllerURL:       server.URL,
+		ControllerTokenFile: tokenFile,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerControllerClient() error = %v", err)
+	}
+	if err := os.Remove(tokenFile); err != nil {
+		t.Fatalf("remove token file after client creation: %v", err)
+	}
+
+	item, hasWork, err := client.FetchWorkItem()
+	if err != nil {
+		t.Fatalf("FetchWorkItem() error = %v", err)
+	}
+	if !hasWork {
+		t.Fatal("expected work item")
+	}
+	if err := client.ReportWorkComplete(item, time.Now().UTC(), WorkEvidence{}); err != nil {
+		t.Fatalf("ReportWorkComplete() error = %v", err)
+	}
+	if !sawClaimAuth || !sawCompleteAuth {
+		t.Fatalf("authorization headers claim=%v complete=%v, want both true", sawClaimAuth, sawCompleteAuth)
+	}
+}
+
+func TestWorkerControllerClientRejectsMissingExternalTokenFile(t *testing.T) {
+	_, err := NewWorkerControllerClient(Config{ControllerURL: "https://controller.example.org"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "controller token file is required") {
+		t.Fatalf("error = %v, want missing token file", err)
+	}
+}
+
+func TestWorkerControllerClientErrorsDoNotExposeToken(t *testing.T) {
+	const sentinel = "goetl-worker-controller-token-sentinel-006"
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client, err := NewWorkerControllerClient(Config{
+		ControllerURL:       server.URL,
+		ControllerTokenFile: tokenFile,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerControllerClient() error = %v", err)
+	}
+
+	_, _, err = client.FetchWorkItem()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("error leaked token sentinel: %v", err)
+	}
+}
+
+func TestWorkerControllerClientSupportsHTTPS(t *testing.T) {
+	const sentinel = "goetl-worker-controller-token-sentinel-006"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+sentinel {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(model.WorkItem{
+			ID:             "test-001",
+			Type:           model.WorkItemTypeWriteDemoOutput,
+			OutputFilename: "result.txt",
+		})
+	}))
+	defer server.Close()
+
+	token, err := controllerhttp.NewSensitiveToken(sentinel)
+	if err != nil {
+		t.Fatalf("NewSensitiveToken() error = %v", err)
+	}
+	baseClient, err := controllerhttp.New(controllerhttp.Config{
+		BaseURL: server.URL,
+		HTTP: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		}}},
+		Token:  controllerhttp.NewStaticTokenProvider(token),
+		Caller: "goetl-worker/1",
+	})
+	if err != nil {
+		t.Fatalf("controllerhttp.New() error = %v", err)
+	}
+
+	client := WorkerControllerClient{client: baseClient, authenticated: true, initialized: true}
+	if _, hasWork, err := client.FetchWorkItem(); err != nil {
+		t.Fatalf("FetchWorkItem() error = %v", err)
+	} else if !hasWork {
+		t.Fatal("expected work item")
 	}
 }

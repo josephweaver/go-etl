@@ -10,7 +10,8 @@ import (
 import "goetl/internal/model"
 
 type Worker struct {
-	Config Config
+	Config     Config
+	Controller WorkerControllerClient
 }
 
 func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {
@@ -38,6 +39,13 @@ func (w Worker) Validate() error {
 	}
 
 	return nil
+}
+
+func (w Worker) controllerClient() (WorkerControllerClient, error) {
+	if w.Controller.Initialized() {
+		return w.Controller, nil
+	}
+	return NewWorkerControllerClient(w.Config)
 }
 
 func (w Worker) log(message string) error {
