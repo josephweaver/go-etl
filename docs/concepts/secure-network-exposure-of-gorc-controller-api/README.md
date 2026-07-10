@@ -513,8 +513,8 @@ than the preferred laptop callback topology.
 
 | Slice | Status | Minimum recommended model | Reason |
 |---|---|---|---|
-| `OS-001-controller-api-auth-contract.md` | Proposed | GPT-5.5 high reasoning | Security contract, startup interlocks, and route-role semantics are long-lived. |
-| `OS-002-controller-route-authorization-middleware.md` | Proposed | GPT-5.5 high reasoning | A route omission would expose the control plane. |
+| `OS-001-controller-api-auth-contract.md` | Implemented | GPT-5.5 high reasoning | Security contract, startup interlocks, and route-role semantics are long-lived. |
+| `OS-002-controller-route-authorization-middleware.md` | Implemented | GPT-5.5 high reasoning | A route omission would expose the control plane. |
 | `OS-003-shared-controller-http-client.md` | Proposed | GPT-5.4-mini | Narrow reusable HTTP abstraction after policy is fixed. |
 | `OS-004-cli-controller-credential-loading.md` | Proposed | GPT-5.4-mini | Mostly client configuration, safe token loading, and request migration. |
 | `OS-005-worker-control-plane-credential-bootstrap.md` | Proposed | GPT-5.5 high reasoning | Crosses controller/runtime/HPCC secret boundaries. |

@@ -8,9 +8,19 @@ import (
 type Decision string
 
 const (
-	DecisionAllowed Decision = "allowed"
-	DecisionPublic  Decision = "public"
-	DecisionDenied  Decision = "denied"
+	DecisionAllowed          Decision = "allowed"
+	DecisionPublic           Decision = "public"
+	DecisionDenied           Decision = "denied"
+	DecisionMethodNotAllowed Decision = "method_not_allowed"
+	DecisionNotFound         Decision = "not_found"
+)
+
+type RouteClass string
+
+const (
+	RouteUnknown   RouteClass = "unknown"
+	RoutePublic    RouteClass = "public"
+	RouteProtected RouteClass = "protected"
 )
 
 type Policy struct {
@@ -48,12 +58,14 @@ func ControllerPolicy() Policy {
 }
 
 func (p Policy) Authorize(method string, path string, role Role) Decision {
+	matchedPath := false
 	for _, rule := range p.rules {
 		if !rule.route.match(path) {
 			continue
 		}
+		matchedPath = true
 		if method != rule.method {
-			return DecisionDenied
+			continue
 		}
 		if rule.public {
 			return DecisionPublic
@@ -65,7 +77,24 @@ func (p Policy) Authorize(method string, path string, role Role) Decision {
 		}
 		return DecisionDenied
 	}
-	return DecisionDenied
+	if matchedPath {
+		return DecisionMethodNotAllowed
+	}
+	return DecisionNotFound
+}
+
+func (p Policy) Classify(path string) RouteClass {
+	class := RouteUnknown
+	for _, rule := range p.rules {
+		if !rule.route.match(path) {
+			continue
+		}
+		if rule.public {
+			return RoutePublic
+		}
+		class = RouteProtected
+	}
+	return class
 }
 
 func publicExact(method string, path string) routeRule {

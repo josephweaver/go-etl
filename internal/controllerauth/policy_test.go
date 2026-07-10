@@ -155,18 +155,18 @@ func TestControllerPolicyAuthorize(t *testing.T) {
 			want:   DecisionAllowed,
 		},
 		{
-			name:   "unknown route denied",
+			name:   "unknown route not found",
 			method: http.MethodGet,
 			path:   "/unknown",
 			role:   RoleAdmin,
-			want:   DecisionDenied,
+			want:   DecisionNotFound,
 		},
 		{
-			name:   "wrong method denied",
+			name:   "wrong method not allowed",
 			method: http.MethodPost,
 			path:   "/status",
 			role:   RoleAdmin,
-			want:   DecisionDenied,
+			want:   DecisionMethodNotAllowed,
 		},
 		{
 			name:   "unknown role denied",
@@ -176,39 +176,39 @@ func TestControllerPolicyAuthorize(t *testing.T) {
 			want:   DecisionDenied,
 		},
 		{
-			name:   "public route wrong method denied",
+			name:   "public route wrong method not allowed",
 			method: http.MethodPost,
 			path:   "/healthz",
 			role:   RoleAdmin,
-			want:   DecisionDenied,
+			want:   DecisionMethodNotAllowed,
 		},
 		{
-			name:   "family route requires id",
+			name:   "family route without id not found",
 			method: http.MethodGet,
 			path:   "/submissions//status",
 			role:   RoleClient,
-			want:   DecisionDenied,
+			want:   DecisionNotFound,
 		},
 		{
-			name:   "family route rejects nested id",
+			name:   "family route nested id not found",
 			method: http.MethodGet,
 			path:   "/submissions/a/b/status",
 			role:   RoleClient,
-			want:   DecisionDenied,
+			want:   DecisionNotFound,
 		},
 		{
-			name:   "source bundle family requires run id",
+			name:   "source bundle family without run id not found",
 			method: http.MethodGet,
 			path:   "/workflow-runs//source-bundle.zip",
 			role:   RoleWorker,
-			want:   DecisionDenied,
+			want:   DecisionNotFound,
 		},
 		{
-			name:   "source bundle family rejects nested run id",
+			name:   "source bundle family nested run id not found",
 			method: http.MethodGet,
 			path:   "/workflow-runs/a/b/source-bundle.zip",
 			role:   RoleWorker,
-			want:   DecisionDenied,
+			want:   DecisionNotFound,
 		},
 	}
 
@@ -217,6 +217,55 @@ func TestControllerPolicyAuthorize(t *testing.T) {
 			got := policy.Authorize(tt.method, tt.path, tt.role)
 			if got != tt.want {
 				t.Fatalf("Authorize(%q, %q, %q) = %q, want %q", tt.method, tt.path, tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestControllerPolicyClassify(t *testing.T) {
+	policy := ControllerPolicy()
+
+	tests := []struct {
+		name string
+		path string
+		want RouteClass
+	}{
+		{
+			name: "health is public",
+			path: "/healthz",
+			want: RoutePublic,
+		},
+		{
+			name: "status is protected",
+			path: "/status",
+			want: RouteProtected,
+		},
+		{
+			name: "submission status is protected",
+			path: "/submissions/submission-1/status",
+			want: RouteProtected,
+		},
+		{
+			name: "unknown path is unknown",
+			path: "/unknown",
+			want: RouteUnknown,
+		},
+		{
+			name: "empty family id is unknown",
+			path: "/submissions//status",
+			want: RouteUnknown,
+		},
+		{
+			name: "nested family id is unknown",
+			path: "/submissions/a/b/status",
+			want: RouteUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := policy.Classify(tt.path); got != tt.want {
+				t.Fatalf("Classify(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}

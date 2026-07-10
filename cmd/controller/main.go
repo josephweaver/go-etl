@@ -66,6 +66,7 @@ type Controller struct {
 	logRootPath         string
 	logReadDefaultTail  int
 	logReadMaxTail      int
+	authMode            controllerauth.Mode
 	authStore           controllerauth.Store
 	authPolicy          controllerauth.Policy
 }
@@ -161,6 +162,7 @@ type controllerHTTPSettings struct {
 }
 
 type controllerAuthSettings struct {
+	Mode   controllerauth.Mode
 	Store  controllerauth.Store
 	Policy controllerauth.Policy
 }
@@ -382,10 +384,12 @@ func buildControllerServer(
 	controller.logRootPath = policy.LogRootPath
 	controller.logReadDefaultTail = policy.LogReadDefaultTailLines
 	controller.logReadMaxTail = policy.LogReadMaxTailLines
+	controller.authMode = authSettings.Mode
 	controller.authStore = authSettings.Store
 	controller.authPolicy = authSettings.Policy
 
 	registerControllerRoutes(mux, controller)
+	server.Handler = controller.authorizeControllerRoutes(mux)
 
 	return server, func() error {
 		if executionEnvironment != nil {
@@ -876,6 +880,7 @@ func resolveControllerAuthSettings(resolver variable.Resolver, httpSettings cont
 		return controllerAuthSettings{}, fmt.Errorf("controller startup auth: %w", err)
 	}
 	return controllerAuthSettings{
+		Mode:   authConfig.Mode,
 		Store:  store,
 		Policy: controllerauth.ControllerPolicy(),
 	}, nil

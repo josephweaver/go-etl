@@ -1,8 +1,8 @@
 # OS-002: Controller Route Authorization Middleware
 
-Status: Proposed  
+Status: Implemented  
 Minimum recommended model: GPT-5.5 with high reasoning  
-Reference: EC-3 / operational slice / files(4)+tests+doc
+Reference: EC-3 / slice / files(4)+tests+doc
 
 ## Objective
 
@@ -39,30 +39,51 @@ Expected status semantics:
 405 Method Not Allowed authenticated caller used unsupported method
 ```
 
-The final 404/405 ordering may follow the standard mux behavior, but it must not
-accidentally disclose protected data.
+The middleware classifies the request path before authentication:
+
+- unknown paths return `404` without requiring credentials;
+- known protected paths with missing, malformed, or invalid credentials return
+  `401`;
+- known protected paths with valid credentials and the wrong role return `403`;
+- known protected paths with a supported role but unsupported method return
+  `405`.
+
+Authentication-disabled development mode bypasses route authentication and role
+authorization for every route. OS-001 startup interlocks are the security boundary
+for that mode: both the listen host and advertised controller URL must be
+loopback.
 
 ## Requirements
 
 - Add middleware around the controller mux or route registration.
 - Do not duplicate bearer parsing in individual handlers.
 - Parse only the standard `Authorization: Bearer <token>` form.
-- Reject multiple authorization values.
+- Accept exactly one `Authorization` header value.
+- Compare the bearer scheme case-sensitively; only `Bearer` is valid.
+- Require exactly one ASCII space after `Bearer`.
+- Treat the token as the remaining value after that one space.
+- Reject bearer tokens that are empty, contain spaces or tabs, or contain commas.
+- Reject multiple authorization values, including comma-combined values.
 - Reject empty bearer values.
 - Do not echo authorization input.
 - Use OS-001 constant-time credential matching.
-- Attach the authenticated principal/role to request context.
+- Attach the authenticated `controllerauth.Principal` to request context through
+  a typed accessor. Public requests and authentication-disabled requests have no
+  principal.
 - Require the explicit route-role policy before calling a handler.
 - Set `Cache-Control: no-store` on authentication failures.
 - Use a generic response body for `401` and `403`.
 - Do not log raw authorization headers.
 - Preserve request-size limits and existing server timeouts.
 - Keep `/healthz` minimal and public.
-- Change SSH callback preflight from `/status` to `/healthz` unless it deliberately
-  supplies worker authentication.
 - Require `admin` for `/shutdown`.
 - Ensure an admin is not accidentally accepted everywhere unless the OS-001 policy
   explicitly defines admin as a reviewed superset.
+- Match policy against `r.URL.Path` without decoding escaped slashes.
+- Family routes require exactly one non-empty path segment between the route
+  prefix and suffix.
+- Encoded slashes, empty segments, extra segments, trailing slashes, and path
+  cleaning variants must not match protected family routes.
 
 ## Required Context
 
@@ -71,17 +92,12 @@ Read first:
 - implemented OS-001 files;
 - `cmd/controller/main.go`;
 - `cmd/controller/main_test.go`;
-- `cmd/controller/ssh_callback_tunnel.go` or the current callback-tunnel/preflight
-  implementation;
-- `docs/concepts/ssh-refinement/OS-002-reverse-controller-callback-tunnel.md`;
 - current controller route caller tests.
 
 ## Allowed Production Files
 
 - `cmd/controller/auth_middleware.go`
 - `cmd/controller/main.go`
-- current SSH callback/preflight file only to change liveness checks from
-  `/status` to `/healthz`
 - `internal/controllerauth/*` only for small contract corrections discovered while
   wiring the middleware
 - this concept README only for tracker/status updates
@@ -90,7 +106,6 @@ Read first:
 
 - `cmd/controller/auth_middleware_test.go`
 - `cmd/controller/main_test.go`
-- current callback-tunnel/preflight tests
 - `internal/controllerauth/*_test.go` only for contract corrections
 
 ## Out of Scope
@@ -113,7 +128,7 @@ Read first:
 - A worker cannot submit workflows or shut down the controller.
 - A client cannot claim or complete worker assignments.
 - `/healthz` works without authentication and returns only minimal liveness.
-- `/status` is no longer used as an unauthenticated reachability probe.
+- `/status` rejects missing credentials with `401`.
 - Existing authorized handler behavior and response payloads remain unchanged.
 - Authorization headers and token sentinels are absent from logs and errors.
 - Recovery-mode behavior remains intact after authentication.
@@ -143,8 +158,11 @@ Include:
 - worker token;
 - admin token;
 - duplicate header;
+- comma-combined header;
 - unknown path;
-- wrong method.
+- wrong method;
+- doubled slash, trailing slash, encoded slash, and extra segment on a family
+  route.
 
 ## Stop Conditions
 
