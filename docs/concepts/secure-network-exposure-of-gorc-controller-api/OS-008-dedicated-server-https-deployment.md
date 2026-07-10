@@ -1,7 +1,7 @@
 # OS-008: Dedicated Server HTTPS Deployment
 
-Status: Proposed  
-Minimum recommended model: GPT-5.4-mini  
+Status: Implemented
+Minimum recommended model: GPT-5.4-mini
 Reference: EC-3 / operational slice / deploy(3)+smoke+doc
 
 ## Objective
@@ -95,11 +95,32 @@ Document:
 - `deploy/systemd/goet-controller.service.example`
 - `deploy/systemd/goet-controller.env.example`
 - `docs/deployment/dedicated-controller-server.md`
-- `scripts/network/smoke-controller-endpoint`
+- `scripts/network/smoke-controller-endpoint.ps1`
 - this concept README only for tracker/status updates
 
 Do not place a real domain, token, private path, or cloud project ID in committed
 examples.
+
+## Implementation State
+
+Implemented artifacts:
+
+- `deploy/caddy/Caddyfile.example` documents the first HTTPS ingress example with
+  Caddy-managed HTTPS, HTTP-to-HTTPS redirect behavior, a loopback reverse proxy,
+  a 16 MiB request body limit, a 1 MiB request header limit, and no access-log
+  configuration that would capture authorization headers.
+- `deploy/systemd/goet-controller.service.example` documents a dedicated
+  unprivileged controller service with an explicit working directory, loopback
+  shutdown through authenticated `/shutdown`, restart behavior, read-only
+  `/etc/goet`, and writable persistence/log paths.
+- `deploy/systemd/goet-controller.env.example` documents the service config path
+  and admin token-file path used by the graceful stop example.
+- `docs/deployment/dedicated-controller-server.md` provides the provider-neutral
+  install, configuration, smoke, logging, backup, restore, restart, credential
+  rotation, rollback, laptop migration, and optional Google Compute Engine notes.
+- `scripts/network/smoke-controller-endpoint.ps1` validates public HTTPS
+  `/healthz`, protected `/status` authentication, optional HTTP-to-HTTPS redirect,
+  and optional local loopback protected-route behavior without printing tokens.
 
 ## Example Caddy Shape
 

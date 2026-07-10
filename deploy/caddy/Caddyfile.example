@@ -1,0 +1,31 @@
+{
+	# Keep Caddy's admin API local. Disable it entirely if your operations model
+	# does not use caddy reload.
+	admin localhost:2019
+
+	# Match the controller's default controller_max_header_bytes.
+	servers {
+		max_header_size 1MB
+	}
+}
+
+# Replace controller.example.org with the stable DNS name for this deployment.
+controller.example.org {
+	# Match the controller's configured controller_max_request_bytes.
+	request_body {
+		max_size 16MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	# Caddy automatically redirects HTTP to HTTPS for this site and manages
+	# certificates using persistent Caddy data storage.
+	reverse_proxy 127.0.0.1:8080
+
+	# Access logs are intentionally not enabled here. If you enable them, do not
+	# include request headers, especially Authorization.
+}

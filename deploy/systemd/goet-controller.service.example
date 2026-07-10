@@ -1,0 +1,33 @@
+[Unit]
+Description=GOET controller
+Documentation=docs/deployment/dedicated-controller-server.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=goet
+Group=goet
+WorkingDirectory=/opt/goet
+EnvironmentFile=/etc/goet/goet-controller.env
+ExecStart=/usr/local/bin/goet-controller --config ${GOET_CONTROLLER_CONFIG}
+
+# Graceful phase-1 stop path. The shell reads the admin token file and supplies
+# the curl Authorization header through stdin config so the token is not visible
+# as a curl command-line argument.
+ExecStop=/bin/sh -c 'printf "header = \"Authorization: Bearer %%s\"\n" "$$(cat "$GOET_CONTROLLER_ADMIN_TOKEN_FILE")" | /usr/bin/curl -fsS -K - -X POST http://127.0.0.1:8080/shutdown'
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadOnlyPaths=/etc/goet
+ReadWritePaths=/var/lib/goet /var/log/goet
+
+[Install]
+WantedBy=multi-user.target
