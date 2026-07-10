@@ -72,6 +72,7 @@ goet submit \
 ```bash
 goet submit \
   --controller-url http://localhost:8080 \
+  --controller-token-file ./controller-token \
   --project project.json \
   --workflow workflow.json
 ```
@@ -79,6 +80,11 @@ goet submit \
 ```bash
 goet status <submission_id>
 ```
+
+Remote or authenticated controllers can also read the client token from
+`GOET_CONTROLLER_TOKEN_FILE` or `GOET_CONTROLLER_TOKEN`. Prefer token files for
+shared machines; GOET intentionally does not provide a raw `--controller-token`
+argument.
 
 ```bash
 goet submit \

@@ -14,6 +14,13 @@ import (
 	"goetl/internal/model"
 )
 
+func TestMain(m *testing.M) {
+	if err := os.Setenv(client.ControllerTokenEnv, "client-secret"); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 func TestDemoWorkflowRunPath(t *testing.T) {
 	want := filepath.Join("..", "go-etl-demo-project", "submissions", "demo-workflow-run.json")
 	if got := demoWorkflowRunPath([]string{"demo-client"}); got != want {
@@ -59,14 +66,15 @@ func TestParseSubmitCommand(t *testing.T) {
 		},
 		{
 			name: "controller URL with accepted deferred flags",
-			args: []string{"goet", "submit", "--controller-url", "http://controller:8080", "--project", "project.json", "--workflow", "workflow.json", "--wait", "--json"},
+			args: []string{"goet", "submit", "--controller-url", "http://controller:8080", "--controller-token-file", "token.txt", "--project", "project.json", "--workflow", "workflow.json", "--wait", "--json"},
 			want: cliCommand{
-				Kind:          commandSubmit,
-				ControllerURL: "http://controller:8080",
-				ProjectPath:   "project.json",
-				WorkflowPath:  "workflow.json",
-				Wait:          true,
-				JSON:          true,
+				Kind:                commandSubmit,
+				ControllerURL:       "http://controller:8080",
+				ControllerTokenFile: "token.txt",
+				ProjectPath:         "project.json",
+				WorkflowPath:        "workflow.json",
+				Wait:                true,
+				JSON:                true,
 			},
 		},
 		{
@@ -132,6 +140,11 @@ func TestParseSubmitCommandValidation(t *testing.T) {
 			args:    []string{"goet", "submit", "--controller", "controller.json", "--ref", "main", "--project", "project.json", "--workflow", "workflow.json"},
 			wantErr: "--ref requires --repo",
 		},
+		{
+			name:    "rejects raw controller token flag",
+			args:    []string{"goet", "submit", "--controller-url", "http://controller:8080", "--controller-token", "secret", "--project", "project.json", "--workflow", "workflow.json"},
+			wantErr: "flag provided but not defined: -controller-token",
+		},
 	}
 
 	for _, test := range tests {
@@ -164,17 +177,18 @@ func TestParseLogsCommand(t *testing.T) {
 		},
 		{
 			name: "controller URL with filters and JSON",
-			args: []string{"goet", "logs", "sub_1234", "--controller-url", "http://controller:8080", "--tail", "50", "--level", "warn", "--stream", "stderr", "--attempt-id", "att_42", "--json"},
+			args: []string{"goet", "logs", "sub_1234", "--controller-url", "http://controller:8080", "--controller-token-file", "token.txt", "--tail", "50", "--level", "warn", "--stream", "stderr", "--attempt-id", "att_42", "--json"},
 			want: cliCommand{
-				Kind:          commandLogs,
-				ControllerURL: "http://controller:8080",
-				SubmissionID:  "sub_1234",
-				Tail:          50,
-				TailSet:       true,
-				Level:         "warn",
-				Stream:        "stderr",
-				AttemptID:     "att_42",
-				JSON:          true,
+				Kind:                commandLogs,
+				ControllerURL:       "http://controller:8080",
+				ControllerTokenFile: "token.txt",
+				SubmissionID:        "sub_1234",
+				Tail:                50,
+				TailSet:             true,
+				Level:               "warn",
+				Stream:              "stderr",
+				AttemptID:           "att_42",
+				JSON:                true,
 			},
 		},
 	}
@@ -245,14 +259,16 @@ func TestParseLogsCommandValidation(t *testing.T) {
 
 func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	var received inlineSubmitPayload
+	var authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if r.Method != http.MethodPost {
 				t.Fatalf("method = %s, want POST", r.Method)
 			}
+			authorization = r.Header.Get("Authorization")
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode workflow submission: %v", err)
 			}
@@ -271,6 +287,7 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
+	tokenPath := writeMainTestFile(t, dir, "controller-token", "file-secret\n")
 	projectPath := writeMainTestFile(t, dir, "project.json", `{"id":"go-etl-demo"}`)
 	workflowPath := writeMainTestFile(t, dir, "workflow.json", `{
 		"workflow": {
@@ -287,13 +304,17 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	}`)
 
 	err := executeCommand(cliCommand{
-		Kind:          commandSubmit,
-		ControllerURL: server.URL,
-		ProjectPath:   projectPath,
-		WorkflowPath:  workflowPath,
+		Kind:                commandSubmit,
+		ControllerURL:       server.URL,
+		ControllerTokenFile: tokenPath,
+		ProjectPath:         projectPath,
+		WorkflowPath:        workflowPath,
 	}, server.Client())
 	if err != nil {
 		t.Fatalf("executeCommand() error = %v", err)
+	}
+	if authorization != "Bearer file-secret" {
+		t.Fatalf("Authorization = %q, want bearer token from file", authorization)
 	}
 
 	var receivedWorkflow client.WorkflowSubmission
@@ -319,8 +340,8 @@ func TestExecuteSubmitCommandPostsInlineSourceManifestFiles(t *testing.T) {
 	var received inlineSubmitPayload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode workflow submission: %v", err)
@@ -388,8 +409,8 @@ func TestExecuteSubmitCommandPostsRepositoryReferences(t *testing.T) {
 	var received client.WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode workflow run submission: %v", err)
@@ -439,8 +460,8 @@ func TestExecuteSubmitCommandWaitsForCompletedSubmission(t *testing.T) {
 	statusChecks := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode workflow submission: %v", err)
@@ -529,8 +550,8 @@ func TestExecuteSubmitCommandReturnsErrorForFailedSubmission(t *testing.T) {
 	statusChecks := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			w.WriteHeader(http.StatusAccepted)
 			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
@@ -593,8 +614,8 @@ func TestExecuteSubmitCommandReturnsErrorForFailedSubmission(t *testing.T) {
 func TestExecuteSubmitCommandReturnsErrorForStatusCommunicationFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			w.WriteHeader(http.StatusAccepted)
 			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
@@ -893,12 +914,13 @@ func TestParseStatusCommand(t *testing.T) {
 		},
 		{
 			name: "explicit controller URL and JSON after submission ID",
-			args: []string{"goet", "status", "sub_1234", "--controller-url", "http://controller:8080", "--json"},
+			args: []string{"goet", "status", "sub_1234", "--controller-url", "http://controller:8080", "--controller-token-file", "token.txt", "--json"},
 			want: cliCommand{
-				Kind:          commandStatus,
-				ControllerURL: "http://controller:8080",
-				SubmissionID:  "sub_1234",
-				JSON:          true,
+				Kind:                commandStatus,
+				ControllerURL:       "http://controller:8080",
+				ControllerTokenFile: "token.txt",
+				SubmissionID:        "sub_1234",
+				JSON:                true,
 			},
 		},
 		{

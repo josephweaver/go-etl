@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"goetl/internal/controllerhttp"
 	"goetl/internal/model"
 	"goetl/internal/reposource"
 	"goetl/internal/variable"
@@ -19,8 +20,8 @@ import (
 func TestControllerClientSubmitWorkflow(t *testing.T) {
 	var received WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
-			w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -40,7 +41,7 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	err := client.SubmitWorkflow(WorkflowSubmission{
 		Workflow: workflow.Workflow{
 			ID: "cdl",
@@ -91,8 +92,8 @@ func TestControllerClientSubmitWorkflow(t *testing.T) {
 func TestControllerClientSubmitWorkflowAcknowledgement(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			writeTestSubmissionAcknowledgement(t, w)
 		default:
@@ -101,7 +102,7 @@ func TestControllerClientSubmitWorkflowAcknowledgement(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	acknowledgement, err := client.SubmitWorkflowAcknowledgement(WorkflowSubmission{})
 	if err != nil {
 		t.Fatalf("SubmitWorkflowAcknowledgement() error = %v", err)
@@ -144,7 +145,7 @@ func TestControllerClientSubmissionStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	status, err := client.SubmissionStatus("sub_1234")
 	if err != nil {
 		t.Fatalf("SubmissionStatus() error = %v", err)
@@ -201,7 +202,7 @@ func TestControllerClientSubmissionLogs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	got, err := client.SubmissionLogs("sub_1234", SubmissionLogsFilters{
 		Tail:      20,
 		TailSet:   true,
@@ -230,7 +231,7 @@ func TestControllerClientSubmissionLogsRejectsInvalidSubmissionID(t *testing.T) 
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	_, err := client.SubmissionLogs(" ", SubmissionLogsFilters{})
 	if err == nil {
 		t.Fatal("SubmissionLogs() error = nil, want error")
@@ -241,7 +242,7 @@ func TestControllerClientSubmissionLogsRejectsInvalidSubmissionID(t *testing.T) 
 }
 
 func TestControllerClientSubmissionLogsRejectsInvalidTail(t *testing.T) {
-	client := NewControllerClient(nil, testResolver(t, "http://example:8080"))
+	client := testControllerClient(t, nil, testResolver(t, "http://example:8080"))
 	_, err := client.SubmissionLogs("sub_1234", SubmissionLogsFilters{
 		TailSet: true,
 		Tail:    0,
@@ -265,7 +266,7 @@ func TestControllerClientSubmissionLogsReturnsUsefulErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	_, err := client.SubmissionLogs("missing-submission", SubmissionLogsFilters{})
 	if err == nil {
 		t.Fatal("SubmissionLogs() error = nil, want error")
@@ -286,7 +287,7 @@ func TestControllerClientSubmissionStatusReturnsUsefulErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	_, err := client.SubmissionStatus("missing-submission")
 	if err == nil {
 		t.Fatal("SubmissionStatus() error = nil, want error")
@@ -295,7 +296,7 @@ func TestControllerClientSubmissionStatusReturnsUsefulErrors(t *testing.T) {
 		t.Fatalf("SubmissionStatus() error = %q, want unknown submission message", err.Error())
 	}
 
-	failingClient := NewControllerClient(&http.Client{
+	failingClient := testControllerClient(t, &http.Client{
 		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("controller unavailable")
 		}),
@@ -341,7 +342,7 @@ func TestControllerClientWaitForSubmissionCompletesAfterPolling(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	client := testControllerClient(t, server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
 	status, err := client.WaitForSubmission("sub_1234")
 	if err != nil {
 		t.Fatalf("WaitForSubmission() error = %v", err)
@@ -383,7 +384,7 @@ func TestControllerClientWaitForSubmissionReturnsFailedStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	client := testControllerClient(t, server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
 	status, err := client.WaitForSubmission("sub_1234")
 	if err == nil {
 		t.Fatal("WaitForSubmission() error = nil, want error")
@@ -418,7 +419,7 @@ func TestControllerClientWaitForSubmissionUsesDefaultPollIntervalWhenUnset(t *te
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	status, err := client.WaitForSubmission("sub_1234")
 	if err != nil {
 		t.Fatalf("WaitForSubmission() error = %v", err)
@@ -440,7 +441,7 @@ func TestControllerClientWaitForSubmissionReturnsUsefulErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	_, err := client.WaitForSubmission("sub_1234")
 	if err == nil {
 		t.Fatal("WaitForSubmission() error = nil, want error")
@@ -453,8 +454,8 @@ func TestControllerClientWaitForSubmissionReturnsUsefulErrors(t *testing.T) {
 func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 	var received WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
-			w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -474,7 +475,7 @@ func TestControllerClientSubmitWorkflowRun(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	err := client.SubmitWorkflowRun(WorkflowRunSubmission{
 		Project: SourceDocumentReference{
 			Repository: "local:demo",
@@ -628,8 +629,8 @@ func TestControllerClientSubmitWorkflowRunFile(t *testing.T) {
 	var received WorkflowRunSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
@@ -641,7 +642,7 @@ func TestControllerClientSubmitWorkflowRunFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	err := client.SubmitWorkflowRunFile(demoProjectPath("submissions", "demo-workflow-run.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -656,8 +657,8 @@ func TestControllerClientSubmitWorkflowFile(t *testing.T) {
 	var received WorkflowSubmission
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
-			w.WriteHeader(http.StatusOK)
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 				t.Fatalf("decode request: %v", err)
@@ -669,7 +670,7 @@ func TestControllerClientSubmitWorkflowFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 	err := client.SubmitWorkflowFile(demoProjectPath("workflows", "demo-workflow.json"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -686,7 +687,7 @@ func demoProjectPath(parts ...string) string {
 }
 
 func TestControllerClientRejectsMissingControllerURL(t *testing.T) {
-	client := NewControllerClient(nil, variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
+	client := testControllerClient(t, nil, variable.NewResolver(variable.NewSet(), variable.ResolverConfig{}))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -697,7 +698,7 @@ func TestControllerClientRejectsMissingControllerURL(t *testing.T) {
 func TestControllerClientChecksControllerBeforeSubmit(t *testing.T) {
 	submitted := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
+		if r.URL.Path == "/healthz" {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -710,7 +711,7 @@ func TestControllerClientChecksControllerBeforeSubmit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -728,13 +729,13 @@ func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 	starter := &testControllerStarter{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/status":
+		case "/healthz":
 			statusChecks++
 			if statusChecks < 3 {
 				http.Error(w, "not ready", http.StatusServiceUnavailable)
 				return
 			}
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 		case "/workflow":
 			submitted = true
 			writeTestSubmissionAcknowledgement(t, w)
@@ -744,7 +745,7 @@ func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
+	client := testControllerClientWithStarter(t, server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err != nil {
@@ -767,7 +768,7 @@ func TestControllerClientStartsControllerWhenUnavailable(t *testing.T) {
 func TestControllerClientRejectsControllerStartupTimeout(t *testing.T) {
 	starter := &testControllerStarter{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
+		if r.URL.Path == "/healthz" {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -778,7 +779,7 @@ func TestControllerClientRejectsControllerStartupTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClientWithStarter(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
+	client := testControllerClientWithStarter(t, server.Client(), testResolverWithPollInterval(t, server.URL, "0s"), starter)
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -792,8 +793,8 @@ func TestControllerClientRejectsControllerStartupTimeout(t *testing.T) {
 
 func TestControllerClientRejectsFailedSubmission(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/status" {
-			w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -801,7 +802,7 @@ func TestControllerClientRejectsFailedSubmission(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 
 	err := client.SubmitWorkflow(WorkflowSubmission{})
 	if err == nil {
@@ -829,7 +830,7 @@ func TestControllerClientShutdownWhenIdle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 
 	status, err := client.ShutdownWhenIdle(1)
 	if err != nil {
@@ -863,7 +864,7 @@ func TestControllerClientDoesNotShutdownWhenBusy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolver(t, server.URL))
+	client := testControllerClient(t, server.Client(), testResolver(t, server.URL))
 
 	_, err := client.ShutdownWhenIdle(1)
 	if err == nil {
@@ -898,7 +899,7 @@ func TestControllerClientUsesStatusPollInterval(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewControllerClient(server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
+	client := testControllerClient(t, server.Client(), testResolverWithPollInterval(t, server.URL, "0s"))
 
 	status, err := client.ShutdownWhenIdle(2)
 	if err != nil {
@@ -938,6 +939,30 @@ func writeTestSubmissionAcknowledgement(t *testing.T, w http.ResponseWriter) {
 	}); err != nil {
 		t.Fatalf("encode submission acknowledgement: %v", err)
 	}
+}
+
+func testControllerClient(t *testing.T, httpClient *http.Client, resolver variable.Resolver) ControllerClient {
+	t.Helper()
+	return NewControllerClientWithOptions(httpClient, resolver, ControllerClientOptions{
+		TokenProvider: testTokenProvider(t),
+	})
+}
+
+func testControllerClientWithStarter(t *testing.T, httpClient *http.Client, resolver variable.Resolver, starter ControllerStarter) ControllerClient {
+	t.Helper()
+	return NewControllerClientWithOptions(httpClient, resolver, ControllerClientOptions{
+		Starter:       starter,
+		TokenProvider: testTokenProvider(t),
+	})
+}
+
+func testTokenProvider(t *testing.T) controllerhttp.TokenProvider {
+	t.Helper()
+	token, err := controllerhttp.NewSensitiveToken("client-secret")
+	if err != nil {
+		t.Fatalf("NewSensitiveToken() error = %v", err)
+	}
+	return controllerhttp.NewStaticTokenProvider(token)
 }
 
 func testResolver(t *testing.T, controllerURL string) variable.Resolver {
