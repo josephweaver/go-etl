@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -141,12 +143,12 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, clientPublicKey ssh
 func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConfig, remoteRoot string, execCounts *sync.Map) {
 	t.Helper()
 
-	_, channels, requests, err := ssh.NewServerConn(conn, config)
+	serverConn, channels, requests, err := ssh.NewServerConn(conn, config)
 	if err != nil {
 		t.Logf("test SSH handshake error: %v", err)
 		return
 	}
-	go ssh.DiscardRequests(requests)
+	go handleTestSSHGlobalRequests(t, serverConn, requests)
 
 	for newChannel := range channels {
 		switch newChannel.ChannelType() {
@@ -167,6 +169,126 @@ func handleTestSSHConnection(t *testing.T, conn net.Conn, config *ssh.ServerConf
 
 		go handleTestSSHSession(t, channel, requests, remoteRoot, execCounts)
 	}
+}
+
+type testSSHTCPIPForwardPayload struct {
+	BindAddress string
+	BindPort    uint32
+}
+
+type testSSHForwardedTCPIPPayload struct {
+	ConnectedAddress string
+	ConnectedPort    uint32
+	OriginatorHost   string
+	OriginatorPort   uint32
+}
+
+func handleTestSSHGlobalRequests(t *testing.T, serverConn *ssh.ServerConn, requests <-chan *ssh.Request) {
+	t.Helper()
+
+	var listenersMu sync.Mutex
+	listeners := map[string]net.Listener{}
+	defer func() {
+		listenersMu.Lock()
+		defer listenersMu.Unlock()
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+	}()
+
+	for request := range requests {
+		switch request.Type {
+		case "tcpip-forward":
+			var payload testSSHTCPIPForwardPayload
+			if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			address := net.JoinHostPort(payload.BindAddress, strconv.Itoa(int(payload.BindPort)))
+			listener, err := net.Listen("tcp", address)
+			if err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			listenersMu.Lock()
+			listeners[address] = listener
+			listenersMu.Unlock()
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+			go serveTestSSHRemoteForward(t, serverConn, listener, payload.BindAddress, payload.BindPort)
+		case "cancel-tcpip-forward":
+			var payload testSSHTCPIPForwardPayload
+			if err := ssh.Unmarshal(request.Payload, &payload); err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			address := net.JoinHostPort(payload.BindAddress, strconv.Itoa(int(payload.BindPort)))
+			listenersMu.Lock()
+			listener := listeners[address]
+			delete(listeners, address)
+			listenersMu.Unlock()
+			if listener != nil {
+				_ = listener.Close()
+			}
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+		default:
+			if request.WantReply {
+				_ = request.Reply(false, nil)
+			}
+		}
+	}
+}
+
+func serveTestSSHRemoteForward(t *testing.T, serverConn *ssh.ServerConn, listener net.Listener, bindAddress string, bindPort uint32) {
+	t.Helper()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go handleTestSSHRemoteForwardConn(t, serverConn, conn, bindAddress, bindPort)
+	}
+}
+
+func handleTestSSHRemoteForwardConn(t *testing.T, serverConn *ssh.ServerConn, conn net.Conn, bindAddress string, bindPort uint32) {
+	t.Helper()
+
+	originHost, originPortText, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH remote forward origin parse error: %v", err)
+		return
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH remote forward origin port parse error: %v", err)
+		return
+	}
+
+	channel, requests, err := serverConn.OpenChannel("forwarded-tcpip", ssh.Marshal(testSSHForwardedTCPIPPayload{
+		ConnectedAddress: bindAddress,
+		ConnectedPort:    bindPort,
+		OriginatorHost:   originHost,
+		OriginatorPort:   uint32(originPort),
+	}))
+	if err != nil {
+		_ = conn.Close()
+		t.Logf("test SSH forwarded-tcpip open error: %v", err)
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	proxyTestSSHDirectTCPIP(channel, conn)
 }
 
 type testSSHDirectTCPIPPayload struct {
@@ -905,6 +1027,179 @@ func TestSSHTransportConnectReportsFinalConnectionFailureThroughJumpHost(t *test
 	}
 }
 
+func TestSSHReverseCallbackTunnelBindsJumpHostAndProxiesToLocalController(t *testing.T) {
+	var statusRequests int64
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt64(&statusRequests, 1)
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer controller.Close()
+	localHost, localPort := splitTestHTTPServerAddress(t, controller.URL)
+
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           localHost,
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+
+	if err := tunnel.Prepare(context.Background()); err != nil {
+		t.Fatalf("prepare reverse callback tunnel: %v", err)
+	}
+	defer tunnel.Close()
+	defer transport.Close()
+
+	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort))
+	if err != nil {
+		t.Fatalf("GET through reverse callback tunnel: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %s, want 200 OK", response.Status)
+	}
+	if got := atomic.LoadInt64(&statusRequests); got != 1 {
+		t.Fatalf("status request count = %d, want 1", got)
+	}
+
+	if err := tunnel.Prepare(context.Background()); err != nil {
+		t.Fatalf("second prepare should reuse reverse callback tunnel: %v", err)
+	}
+}
+
+func TestSSHReverseCallbackTunnelPreflightReportsUnreachableLocalController(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL_PREFLIGHT"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	localPort := unusedTestTCPPort(t)
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           "127.0.0.1",
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+	defer tunnel.Close()
+	defer transport.Close()
+
+	issues := tunnel.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+	if issues[0].Code != "callback_tunnel_unreachable" {
+		t.Fatalf("issue code = %q, want callback_tunnel_unreachable", issues[0].Code)
+	}
+	if issues[0].Severity != PreflightSeverityError {
+		t.Fatalf("severity = %q, want error", issues[0].Severity)
+	}
+}
+
+func TestExecutionEnvironmentCloseStopsSSHReverseCallbackTunnel(t *testing.T) {
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer controller.Close()
+	localHost, localPort := splitTestHTTPServerAddress(t, controller.URL)
+
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL_CLOSE"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           localHost,
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+	env := ExecutionEnvironment{
+		Transports:     []Transport{transport},
+		CallbackTunnel: tunnel,
+	}
+
+	if err := env.Prepare(context.Background()); err != nil {
+		t.Fatalf("prepare environment with reverse callback tunnel: %v", err)
+	}
+	if _, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort)); err != nil {
+		t.Fatalf("GET before close: %v", err)
+	}
+
+	if err := env.Close(); err != nil {
+		t.Fatalf("close execution environment: %v", err)
+	}
+
+	client := http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/status", remoteBindPort))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("GET after close unexpectedly succeeded with %s", resp.Status)
+	}
+}
+
 func TestSSHTransportConnectHonorsCanceledContext(t *testing.T) {
 	clientIdentity := generateTestSSHIdentity(t)
 	envName := "GOETL_TEST_SSH_KEY_CANCELED"
@@ -1544,4 +1839,34 @@ func unusedTestTCPAddress(t *testing.T) string {
 		t.Fatalf("close unused address listener: %v", err)
 	}
 	return address
+}
+
+func unusedTestTCPPort(t *testing.T) int {
+	t.Helper()
+
+	address := unusedTestTCPAddress(t)
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split unused address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse unused port: %v", err)
+	}
+	return port
+}
+
+func splitTestHTTPServerAddress(t *testing.T, rawURL string) (string, int) {
+	t.Helper()
+
+	withoutScheme := strings.TrimPrefix(rawURL, "http://")
+	host, portText, err := net.SplitHostPort(withoutScheme)
+	if err != nil {
+		t.Fatalf("split test HTTP server URL %q: %v", rawURL, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test HTTP server port: %v", err)
+	}
+	return host, port
 }

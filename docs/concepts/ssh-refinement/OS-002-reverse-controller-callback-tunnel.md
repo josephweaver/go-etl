@@ -1,6 +1,6 @@
 # OS-002: Reverse Controller Callback Tunnel
 
-Status: Approved
+Status: Complete
 Scope: GOET controller execution environment and SSH transport
 
 ## Purpose
@@ -61,12 +61,11 @@ side.
 - The controller should close the listener when shutting down.
 - Preflight should check the tunnel from the remote side with a small HTTP GET
   to `/status`.
-- A stronger HPCC preflight should submit a tiny Slurm job that curls the
-  worker-facing controller URL, because login/dev-node reachability may not
-  prove compute-node reachability.
-- The first implementation may validate gateway-side reachability and leave
-  Slurm compute-node reachability as a follow-up if it would exceed the active
-  HCI budget.
+- For Slurm-backed environments, preflight should submit a tiny `sbatch --wait`
+  job that uses `curl` to request the worker-facing `/status` URL, because
+  login/dev-node reachability may not prove compute-node reachability.
+- The Slurm compute-node check may report a missing `curl` command as an
+  actionable environment preflight failure.
 
 ## Validation
 

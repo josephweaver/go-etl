@@ -47,6 +47,8 @@ The current SSH transport supports:
 - SFTP copy through a temporary remote path before promotion
 - SFTP directory listing
 - narrow filesystem helpers for mkdir, move, remove, chmod, and chown
+- controller-owned SSH reverse callback tunnels that bind on the final target or
+  a selected jump host and proxy worker HTTP callbacks to the local controller
 
 The controller execution-environment config can now select SSH with a transport
 component shaped like:
@@ -82,6 +84,32 @@ worker config paths, Singularity image paths, and bind mounts belong to the
 runtime component. When `jump_hosts` is present, the gateway is used only for
 SSH tunnel traffic; GOET commands, SFTP operations, runtime preparation, and
 Slurm submission run on the final target host.
+
+When workers need to call back to a laptop-hosted controller through a gateway,
+the execution environment can also declare a shared callback tunnel:
+
+```json
+{
+  "callback_tunnel": {
+    "type": "ssh_reverse",
+    "transport": "login",
+    "bind_hop": "jump_hosts[0]",
+    "remote_bind_host": "0.0.0.0",
+    "remote_bind_port": 18080,
+    "local_host": "127.0.0.1",
+    "local_port": 8080,
+    "worker_controller_url": "http://hpcc.example.edu:18080"
+  }
+}
+```
+
+The worker runtime `controller_url` must match `worker_controller_url`. The
+controller owns the SSH tunnel; workers only receive the HTTP callback URL.
+Preflight proves that the gateway-side URL reaches the local controller. When
+the configured scheduler is Slurm, preflight also copies and submits a tiny
+`sbatch --wait` script that uses `curl` to request the worker-facing `/status`
+URL from a Slurm allocation. This proves compute-node callback reachability when
+`curl` is available in the Slurm job environment.
 
 Do not commit real hostnames, usernames, private key paths, known-hosts data, or
 site-specific cluster values. Fake-HPCC examples should use generic names such

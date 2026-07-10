@@ -7,19 +7,21 @@ import (
 )
 
 type ExecutionEnvironment struct {
-	Config     ExecutionEnvironmentConfig
-	Transports []Transport
-	Dialect    ShellDialect
-	Scheduler  Scheduler
-	Runtime    Runtime
+	Config         ExecutionEnvironmentConfig
+	Transports     []Transport
+	Dialect        ShellDialect
+	Scheduler      Scheduler
+	Runtime        Runtime
+	CallbackTunnel *SSHReverseCallbackTunnel
 }
 
 type ExecutionEnvironmentConfig struct {
-	Name       string                     `json:"name"`
-	Transports []ExecutionComponentConfig `json:"transports"`
-	Dialect    ExecutionComponentConfig   `json:"dialect"`
-	Scheduler  ExecutionComponentConfig   `json:"scheduler"`
-	Runtime    ExecutionComponentConfig   `json:"runtime"`
+	Name           string                     `json:"name"`
+	Transports     []ExecutionComponentConfig `json:"transports"`
+	Dialect        ExecutionComponentConfig   `json:"dialect"`
+	Scheduler      ExecutionComponentConfig   `json:"scheduler"`
+	Runtime        ExecutionComponentConfig   `json:"runtime"`
+	CallbackTunnel CallbackTunnelConfig       `json:"callback_tunnel,omitempty"`
 }
 
 type ExecutionComponentConfig struct {
@@ -35,7 +37,8 @@ func (cfg ExecutionEnvironmentConfig) IsZero() bool {
 		len(cfg.Transports) == 0 &&
 		cfg.Dialect.Type == "" &&
 		cfg.Scheduler.Type == "" &&
-		cfg.Runtime.Type == ""
+		cfg.Runtime.Type == "" &&
+		cfg.CallbackTunnel.IsZero()
 }
 
 func (cfg ExecutionEnvironmentConfig) Validate() error {
@@ -57,6 +60,9 @@ func (cfg ExecutionEnvironmentConfig) Validate() error {
 		return err
 	}
 	if err := cfg.Runtime.validate("runtime"); err != nil {
+		return err
+	}
+	if err := cfg.CallbackTunnel.Validate(); err != nil {
 		return err
 	}
 	return nil
@@ -91,19 +97,30 @@ func NewExecutionEnvironment(cfg ExecutionEnvironmentConfig) (ExecutionEnvironme
 		return ExecutionEnvironment{}, err
 	}
 
+	callbackTunnel, err := newCallbackTunnelFromConfig(cfg.CallbackTunnel, cfg.Transports, transports, scheduler, runtime)
+	if err != nil {
+		return ExecutionEnvironment{}, err
+	}
+
 	return ExecutionEnvironment{
-		Config:     cfg,
-		Transports: transports,
-		Dialect:    dialect,
-		Scheduler:  scheduler,
-		Runtime:    runtime,
+		Config:         cfg,
+		Transports:     transports,
+		Dialect:        dialect,
+		Scheduler:      scheduler,
+		Runtime:        runtime,
+		CallbackTunnel: callbackTunnel,
 	}, nil
 }
 
-func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
+func (e *ExecutionEnvironment) Prepare(ctx context.Context) error {
 	for index, transport := range e.Transports {
 		if err := prepareIfSupported(ctx, transport); err != nil {
 			return fmt.Errorf("prepare transport[%d]: %w", index, err)
+		}
+	}
+	if e.CallbackTunnel != nil {
+		if err := e.CallbackTunnel.Prepare(ctx); err != nil {
+			return fmt.Errorf("prepare callback tunnel: %w", err)
 		}
 	}
 	if err := prepareIfSupported(ctx, e.Scheduler); err != nil {
@@ -121,10 +138,32 @@ func (e ExecutionEnvironment) Prepare(ctx context.Context) error {
 	return nil
 }
 
+func (e *ExecutionEnvironment) Close() error {
+	var closeErr error
+	if e.CallbackTunnel != nil {
+		if err := e.CallbackTunnel.Close(); err != nil {
+			closeErr = err
+		}
+	}
+	for index := len(e.Transports) - 1; index >= 0; index-- {
+		closer, ok := e.Transports[index].(interface{ Close() error })
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
 func (e ExecutionEnvironment) Preflight(ctx context.Context) []PreflightIssue {
 	var issues []PreflightIssue
 	for index, transport := range e.Transports {
 		issues = append(issues, componentPreflightIssues(ctx, fmt.Sprintf("transport[%d]", index), transport)...)
+	}
+	if e.CallbackTunnel != nil {
+		issues = append(issues, componentPreflightIssues(ctx, "callback_tunnel", e.CallbackTunnel)...)
 	}
 	issues = append(issues, componentPreflightIssues(ctx, "scheduler", e.Scheduler)...)
 	issues = append(issues, componentPreflightIssues(ctx, "runtime", e.Runtime)...)

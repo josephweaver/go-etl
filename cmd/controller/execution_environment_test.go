@@ -249,6 +249,103 @@ func TestNewExecutionEnvironmentSupportsSSHTransport(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsSSHReverseCallbackTunnel(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name: "ssh-slurm",
+		Transports: []ExecutionComponentConfig{{
+			Name: "login",
+			Type: "ssh",
+			Settings: ExecutionComponentSettings{
+				"host":            "dev.example.edu",
+				"user":            "researcher",
+				"identity_env":    "GOETL_SSH_KEY",
+				"host_key_policy": "pinned",
+				"pinned_host_key": "ssh-ed25519 AAAATARGET",
+				"jump_hosts": []any{
+					map[string]any{
+						"host":            "gateway.example.edu",
+						"user":            "researcher",
+						"host_key_policy": "pinned",
+						"pinned_host_key": "ssh-ed25519 AAAAGATEWAY",
+					},
+				},
+			},
+		}},
+		Dialect:   ExecutionComponentConfig{Type: "bash"},
+		Scheduler: ExecutionComponentConfig{Type: "slurm"},
+		Runtime: ExecutionComponentConfig{
+			Type: "worker",
+			Settings: ExecutionComponentSettings{
+				"root":           "/data/goetl",
+				"controller_url": "http://hpcc.msu.edu:18080",
+			},
+		},
+		CallbackTunnel: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "0.0.0.0",
+			RemoteBindPort:      18080,
+			LocalHost:           "127.0.0.1",
+			LocalPort:           8080,
+			WorkerControllerURL: "http://hpcc.msu.edu:18080",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if env.CallbackTunnel == nil {
+		t.Fatal("expected callback tunnel")
+	}
+	if env.CallbackTunnel.Config.BindHop != "jump_hosts[0]" {
+		t.Fatalf("bind hop = %q, want jump_hosts[0]", env.CallbackTunnel.Config.BindHop)
+	}
+	if env.CallbackTunnel.transport == nil {
+		t.Fatal("expected callback tunnel ssh transport")
+	}
+}
+
+func TestNewExecutionEnvironmentRejectsCallbackTunnelControllerURLMismatch(t *testing.T) {
+	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name: "ssh-slurm",
+		Transports: []ExecutionComponentConfig{{
+			Name: "login",
+			Type: "ssh",
+			Settings: ExecutionComponentSettings{
+				"host":            "dev.example.edu",
+				"user":            "researcher",
+				"identity_env":    "GOETL_SSH_KEY",
+				"host_key_policy": "pinned",
+				"pinned_host_key": "ssh-ed25519 AAAATARGET",
+			},
+		}},
+		Dialect:   ExecutionComponentConfig{Type: "bash"},
+		Scheduler: ExecutionComponentConfig{Type: "slurm"},
+		Runtime: ExecutionComponentConfig{
+			Type: "worker",
+			Settings: ExecutionComponentSettings{
+				"controller_url": "http://hpcc.msu.edu:18080",
+			},
+		},
+		CallbackTunnel: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      18080,
+			LocalHost:           "127.0.0.1",
+			LocalPort:           8080,
+			WorkerControllerURL: "http://different.example:18080",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected callback tunnel URL mismatch")
+	}
+	if !strings.Contains(err.Error(), "must match runtime controller_url") {
+		t.Fatalf("error = %v, want runtime URL mismatch", err)
+	}
+}
+
 func TestNewExecutionEnvironmentRejectsInvalidSSHTransportConfig(t *testing.T) {
 	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "bad-env",
@@ -321,6 +418,46 @@ func TestExecutionEnvironmentPrepareReportsTransportError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "prepare transport[0]") {
 		t.Fatalf("error = %v, want transport context", err)
+	}
+}
+
+type closeTransport struct {
+	prepareTransport
+	closed bool
+	err    error
+}
+
+func (t *closeTransport) Close() error {
+	t.closed = true
+	return t.err
+}
+
+func TestExecutionEnvironmentCloseClosesTransportsInReverseOrder(t *testing.T) {
+	first := &closeTransport{}
+	second := &closeTransport{}
+	env := ExecutionEnvironment{
+		Transports: []Transport{first, second},
+	}
+
+	if err := env.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if !first.closed || !second.closed {
+		t.Fatalf("closed first=%v second=%v, want both closed", first.closed, second.closed)
+	}
+}
+
+func TestExecutionEnvironmentCloseReturnsFirstCloseError(t *testing.T) {
+	env := ExecutionEnvironment{
+		Transports: []Transport{
+			&closeTransport{},
+			&closeTransport{err: fmt.Errorf("close failed")},
+		},
+	}
+
+	err := env.Close()
+	if err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("error = %v, want close failed", err)
 	}
 }
 
