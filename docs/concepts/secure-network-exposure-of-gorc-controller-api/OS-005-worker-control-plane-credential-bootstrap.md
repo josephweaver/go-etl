@@ -1,6 +1,6 @@
 # OS-005: Worker Control-Plane Credential Bootstrap
 
-Status: Proposed  
+Status: Implemented
 Minimum recommended model: GPT-5.5 with high reasoning  
 Reference: EC-4 / operational slice / files(6)+tests+doc
 
@@ -42,6 +42,27 @@ container secret mount resolving to a file
 
 A future keystore provider may materialize the same file or supply an equivalent
 token provider without changing the worker HTTP contract.
+
+## Implementation State
+
+The controller-side worker runtime accepts `runtime.settings.controller_token_file`
+and writes that path to generated worker JSON as `controller_token_file`. The
+controller runtime does not read or serialize the token value.
+
+External worker controller URLs require a token-file path during runtime
+preparation. Loopback HTTP development URLs may omit the token-file path for
+explicit local unauthenticated fixtures.
+
+Execution-environment preflight now passes the primary transport and shell dialect
+to runtimes that need worker-context checks. `WorkerRuntime` uses that path to
+verify configured token files are present, regular, readable, non-empty, below the
+small controller-token limit, and restrictive where file permission bits are
+available.
+
+The worker config loader accepts the same `controller_token_file` field, resolves
+relative paths beside the worker config file, and requires it for HTTPS or
+non-loopback HTTP controller URLs. The worker config loader still does not read
+the token in this slice.
 
 ## Strategic Decision
 

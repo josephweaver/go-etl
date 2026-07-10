@@ -166,12 +166,40 @@ func (e ExecutionEnvironment) Preflight(ctx context.Context) []PreflightIssue {
 		issues = append(issues, componentPreflightIssues(ctx, "callback_tunnel", e.CallbackTunnel)...)
 	}
 	issues = append(issues, componentPreflightIssues(ctx, "scheduler", e.Scheduler)...)
-	issues = append(issues, componentPreflightIssues(ctx, "runtime", e.Runtime)...)
+	issues = append(issues, runtimePreflightIssues(ctx, "runtime", e.Runtime, e.primaryTransport(), e.Dialect)...)
 	return issues
+}
+
+func (e ExecutionEnvironment) primaryTransport() Transport {
+	if len(e.Transports) == 0 {
+		return nil
+	}
+	return e.Transports[0]
 }
 
 func componentPreflightIssues(ctx context.Context, componentName string, component any) []PreflightIssue {
 	issues := preflightIfSupported(ctx, component)
+	for index := range issues {
+		if issues[index].Component == "" {
+			issues[index].Component = componentName
+		}
+	}
+	return issues
+}
+
+type RuntimePreflightComponent interface {
+	RuntimePreflight(ctx context.Context, transport Transport, dialect ShellDialect) []PreflightIssue
+}
+
+func runtimePreflightIssues(ctx context.Context, componentName string, runtime Runtime, transport Transport, dialect ShellDialect) []PreflightIssue {
+	if runtime == nil {
+		return nil
+	}
+	component, ok := runtime.(RuntimePreflightComponent)
+	if !ok {
+		return componentPreflightIssues(ctx, componentName, runtime)
+	}
+	issues := component.RuntimePreflight(ctx, transport, dialect)
 	for index := range issues {
 		if issues[index].Component == "" {
 			issues[index].Component = componentName
@@ -416,6 +444,10 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	controllerTokenFile, err := settings.String("controller_token_file")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	localWorkerArtifact, err := settings.String("local_worker_artifact")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -443,6 +475,7 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	return WorkerRuntime{
 		Root:                root,
 		ControllerURL:       controllerURL,
+		ControllerTokenFile: controllerTokenFile,
 		LocalWorkerArtifact: localWorkerArtifact,
 		DataDir:             dataDir,
 		AssetCacheDir:       assetCacheDir,

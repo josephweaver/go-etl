@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	goruntime "runtime"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +27,7 @@ type WorkerScriptRuntime interface {
 type WorkerRuntime struct {
 	Root                string
 	ControllerURL       string
+	ControllerTokenFile string
 	LocalWorkerArtifact string
 	DataDir             string
 	AssetCacheDir       string
@@ -41,6 +46,9 @@ func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect
 
 	paths, err := r.paths()
 	if err != nil {
+		return err
+	}
+	if err := r.validateControllerTokenFileConfig(); err != nil {
 		return err
 	}
 
@@ -119,14 +127,15 @@ type WorkerRuntimePaths struct {
 }
 
 type WorkerConfig struct {
-	LogDir            string            `json:"log_dir"`
-	TmpDir            string            `json:"tmp_dir"`
-	DataDir           string            `json:"data_dir"`
-	ControllerURL     string            `json:"controller_url"`
-	AssetCacheDir     string            `json:"asset_cache_dir,omitempty"`
-	PythonExecutable  string            `json:"python_executable,omitempty"`
-	MaxAssetBytes     int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots map[string]string `json:"data_location_roots,omitempty"`
+	LogDir              string            `json:"log_dir"`
+	TmpDir              string            `json:"tmp_dir"`
+	DataDir             string            `json:"data_dir"`
+	ControllerURL       string            `json:"controller_url"`
+	ControllerTokenFile string            `json:"controller_token_file,omitempty"`
+	AssetCacheDir       string            `json:"asset_cache_dir,omitempty"`
+	PythonExecutable    string            `json:"python_executable,omitempty"`
+	MaxAssetBytes       int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots   map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
@@ -157,6 +166,9 @@ func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
 }
 
 func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transport, paths WorkerRuntimePaths) error {
+	if err := r.validateControllerTokenFileConfig(); err != nil {
+		return err
+	}
 	if containsNewline(r.AssetCacheDir) {
 		return fmt.Errorf("worker asset cache dir must not contain newlines")
 	}
@@ -166,14 +178,15 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 		}
 	}
 	cfg := WorkerConfig{
-		LogDir:            paths.LogDir,
-		TmpDir:            paths.TmpDir,
-		DataDir:           paths.DataDir,
-		ControllerURL:     r.ControllerURL,
-		AssetCacheDir:     r.AssetCacheDir,
-		PythonExecutable:  r.PythonExecutable,
-		MaxAssetBytes:     r.MaxAssetBytes,
-		DataLocationRoots: r.DataLocationRoots,
+		LogDir:              paths.LogDir,
+		TmpDir:              paths.TmpDir,
+		DataDir:             paths.DataDir,
+		ControllerURL:       r.ControllerURL,
+		ControllerTokenFile: r.ControllerTokenFile,
+		AssetCacheDir:       r.AssetCacheDir,
+		PythonExecutable:    r.PythonExecutable,
+		MaxAssetBytes:       r.MaxAssetBytes,
+		DataLocationRoots:   r.DataLocationRoots,
 	}
 	if _, ok := transport.(LocalTransport); ok {
 		var err error
@@ -221,6 +234,11 @@ func absoluteLocalWorkerConfig(cfg WorkerConfig) (WorkerConfig, error) {
 	if cfg.DataDir, err = absoluteLocalPath(cfg.DataDir); err != nil {
 		return WorkerConfig{}, fmt.Errorf("worker data dir: %w", err)
 	}
+	if cfg.ControllerTokenFile != "" {
+		if cfg.ControllerTokenFile, err = absoluteLocalPath(cfg.ControllerTokenFile); err != nil {
+			return WorkerConfig{}, fmt.Errorf("worker controller token file: %w", err)
+		}
+	}
 	if cfg.AssetCacheDir != "" {
 		if cfg.AssetCacheDir, err = absoluteLocalPath(cfg.AssetCacheDir); err != nil {
 			return WorkerConfig{}, fmt.Errorf("worker asset cache dir: %w", err)
@@ -244,6 +262,159 @@ func absoluteLocalPath(value string) (string, error) {
 		return "", nil
 	}
 	return filepath.Abs(filepath.FromSlash(value))
+}
+
+const maxWorkerControllerTokenBytes = 32 * 1024
+
+func (r WorkerRuntime) validateControllerTokenFileConfig() error {
+	if containsNewline(r.ControllerTokenFile) {
+		return fmt.Errorf("worker controller token file must not contain newlines")
+	}
+	requiresToken, err := controllerURLRequiresWorkerToken(r.ControllerURL)
+	if err != nil {
+		return err
+	}
+	if requiresToken && r.ControllerTokenFile == "" {
+		return fmt.Errorf("worker controller token file is required for controller url %s", r.ControllerURL)
+	}
+	return nil
+}
+
+func (r WorkerRuntime) RuntimePreflight(ctx context.Context, transport Transport, dialect ShellDialect) []PreflightIssue {
+	if err := r.validateControllerTokenFileConfig(); err != nil {
+		return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_required", err.Error(), "Configure runtime.settings.controller_token_file to point at the worker bearer token file.")}
+	}
+	if r.ControllerTokenFile == "" {
+		return nil
+	}
+	if _, ok := transport.(LocalTransport); ok {
+		tokenPath, err := absoluteLocalPath(r.ControllerTokenFile)
+		if err != nil {
+			return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_invalid", err.Error(), "Use a valid local worker token file path.")}
+		}
+		if err := validateLocalWorkerControllerTokenFile(tokenPath); err != nil {
+			return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_unusable", err.Error(), "Provision a non-empty, restrictive worker token file at the configured path.")}
+		}
+		return nil
+	}
+	if transport == nil {
+		return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_unchecked", "runtime transport is required to verify worker controller token file "+r.ControllerTokenFile, "Configure a runtime transport before preflight.")}
+	}
+	if dialect == nil {
+		return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_unchecked", "runtime shell dialect is required to verify worker controller token file "+r.ControllerTokenFile, "Configure a shell dialect before preflight.")}
+	}
+	tokenPath, err := dialect.LocalizePath(r.ControllerTokenFile)
+	if err != nil {
+		return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_invalid", "worker controller token file "+r.ControllerTokenFile+": "+err.Error(), "Use a worker token file path supported by the execution environment.")}
+	}
+	if _, err := transport.Exec(ctx, "sh", "-c", workerControllerTokenFilePreflightScript, "goetl-token-preflight", tokenPath, strconv.FormatInt(maxWorkerControllerTokenBytes, 10)); err != nil {
+		return []PreflightIssue{workerControllerTokenFileIssue("worker_controller_token_file_unusable", "worker controller token file "+r.ControllerTokenFile+" failed preflight: "+err.Error(), "Provision a non-empty, restrictive worker token file readable by the worker account.")}
+	}
+	return nil
+}
+
+func validateLocalWorkerControllerTokenFile(tokenPath string) error {
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		return fmt.Errorf("worker controller token file %s: %w", tokenPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("worker controller token file %s is not a regular file", tokenPath)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("worker controller token file %s is empty", tokenPath)
+	}
+	if info.Size() > maxWorkerControllerTokenBytes {
+		return fmt.Errorf("worker controller token file %s is too large", tokenPath)
+	}
+	file, err := os.Open(tokenPath)
+	if err != nil {
+		return fmt.Errorf("worker controller token file %s is not readable: %w", tokenPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("worker controller token file %s close failed: %w", tokenPath, err)
+	}
+	if goruntime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("worker controller token file %s permissions must not grant group or other access", tokenPath)
+	}
+	return nil
+}
+
+func workerControllerTokenFileIssue(code string, message string, remediation string) PreflightIssue {
+	return PreflightIssue{
+		Type:        "worker_controller_token_file",
+		Severity:    PreflightSeverityError,
+		Code:        code,
+		Message:     message,
+		Remediation: remediation,
+	}
+}
+
+const workerControllerTokenFilePreflightScript = `
+path=$1
+max=$2
+if [ ! -e "$path" ]; then
+  echo "worker controller token file $path does not exist"
+  exit 11
+fi
+if [ ! -f "$path" ]; then
+  echo "worker controller token file $path is not a regular file"
+  exit 12
+fi
+if [ ! -r "$path" ]; then
+  echo "worker controller token file $path is not readable"
+  exit 13
+fi
+size=$(wc -c < "$path") || exit 14
+case "$size" in
+  ""|*[!0-9]*) echo "worker controller token file $path size is unavailable"; exit 14 ;;
+esac
+if [ "$size" -eq 0 ]; then
+  echo "worker controller token file $path is empty"
+  exit 15
+fi
+if [ "$size" -gt "$max" ]; then
+  echo "worker controller token file $path is too large"
+  exit 16
+fi
+if command -v stat >/dev/null 2>&1; then
+  mode=$(stat -c %a "$path" 2>/dev/null || true)
+  if [ -n "$mode" ]; then
+    case "$mode" in
+      *00) ;;
+      *) echo "worker controller token file $path permissions grant group or other access"; exit 17 ;;
+    esac
+  fi
+fi
+`
+
+func controllerURLRequiresWorkerToken(raw string) (bool, error) {
+	if raw == "" {
+		return false, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false, fmt.Errorf("worker controller url is invalid: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return false, fmt.Errorf("worker controller url requires a scheme and host")
+	}
+	switch parsed.Scheme {
+	case "https":
+		return true, nil
+	case "http":
+		return !isWorkerControllerLoopbackHost(parsed.Hostname()), nil
+	default:
+		return false, fmt.Errorf("worker controller url scheme %q is unsupported", parsed.Scheme)
+	}
+}
+
+func isWorkerControllerLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (r WorkerRuntime) uploadWorkerArtifact(ctx context.Context, transport Transport, dialect ShellDialect, paths WorkerRuntimePaths) error {

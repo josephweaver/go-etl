@@ -92,6 +92,31 @@ func TestNewExecutionEnvironmentStoresValidatedConfig(t *testing.T) {
 	}
 }
 
+func TestNewExecutionEnvironmentSupportsWorkerRuntimeControllerTokenFile(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-direct",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root":                  "/tmp/goetl",
+			"controller_url":        "https://controller.example.org",
+			"controller_token_file": "/tmp/goetl/secrets/controller-worker-token",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	runtime, ok := env.Runtime.(WorkerRuntime)
+	if !ok {
+		t.Fatalf("runtime type = %T, want WorkerRuntime", env.Runtime)
+	}
+	if runtime.ControllerTokenFile != "/tmp/goetl/secrets/controller-worker-token" {
+		t.Fatalf("controller token file = %q", runtime.ControllerTokenFile)
+	}
+}
+
 func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
 		Name:       "local-direct",
@@ -494,6 +519,21 @@ func (r preflightRuntime) Preflight(ctx context.Context) []PreflightIssue {
 	return r.issues
 }
 
+type contextAwarePreflightRuntime struct {
+	transport Transport
+	dialect   ShellDialect
+}
+
+func (r *contextAwarePreflightRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
+	return nil
+}
+
+func (r *contextAwarePreflightRuntime) RuntimePreflight(ctx context.Context, transport Transport, dialect ShellDialect) []PreflightIssue {
+	r.transport = transport
+	r.dialect = dialect
+	return []PreflightIssue{{Severity: PreflightSeverityWarning, Code: "checked_with_context"}}
+}
+
 func TestExecutionEnvironmentPreflightNoComponentsReturnsNoIssues(t *testing.T) {
 	env := ExecutionEnvironment{
 		Transports: []Transport{LocalTransport{}},
@@ -555,6 +595,30 @@ func TestExecutionEnvironmentPreflightAggregatesMultipleComponents(t *testing.T)
 	}
 	if issues[3].Component != "runtime" {
 		t.Fatalf("component[3] = %q, want runtime", issues[3].Component)
+	}
+}
+
+func TestExecutionEnvironmentPreflightPassesPrimaryTransportAndDialectToRuntime(t *testing.T) {
+	transport := LocalTransport{}
+	runtime := &contextAwarePreflightRuntime{}
+	env := ExecutionEnvironment{
+		Transports: []Transport{transport},
+		Dialect:    BashShellPlatform{},
+		Runtime:    runtime,
+	}
+
+	issues := env.Preflight(context.Background())
+	if len(issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(issues))
+	}
+	if issues[0].Component != "runtime" {
+		t.Fatalf("component = %q, want runtime", issues[0].Component)
+	}
+	if _, ok := runtime.transport.(LocalTransport); !ok {
+		t.Fatalf("runtime transport = %T, want LocalTransport", runtime.transport)
+	}
+	if _, ok := runtime.dialect.(BashShellPlatform); !ok {
+		t.Fatalf("runtime dialect = %T, want BashShellPlatform", runtime.dialect)
 	}
 }
 
