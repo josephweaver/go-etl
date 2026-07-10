@@ -10,12 +10,14 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 const (
@@ -624,7 +626,11 @@ func identitySignerForEndpoint(endpoint sshEndpointConfig) (ssh.Signer, error) {
 
 	switch {
 	case endpoint.IdentityFile != "":
-		key, err = os.ReadFile(endpoint.IdentityFile)
+		identityFile, expandErr := expandSSHLocalPath(endpoint.IdentityFile)
+		if expandErr != nil {
+			return nil, fmt.Errorf("expand ssh identity_file: %w", expandErr)
+		}
+		key, err = os.ReadFile(identityFile)
 		if err != nil {
 			return nil, fmt.Errorf("read ssh identity_file: %w", err)
 		}
@@ -660,10 +666,44 @@ func hostKeyCallbackForEndpoint(endpoint sshEndpointConfig) (ssh.HostKeyCallback
 	case SSHHostKeyPolicyInsecureIgnore:
 		return ssh.InsecureIgnoreHostKey(), nil
 	case SSHHostKeyPolicyKnownHosts:
-		return nil, fmt.Errorf("ssh known_hosts host-key verification is not implemented yet")
+		knownHostsFile, err := expandSSHLocalPath(endpoint.KnownHostsFile)
+		if err != nil {
+			return nil, fmt.Errorf("expand ssh known_hosts_file: %w", err)
+		}
+		callback, err := knownhosts.New(knownHostsFile)
+		if err != nil {
+			return nil, fmt.Errorf("load ssh known_hosts_file: %w", err)
+		}
+		return callback, nil
 	default:
 		return nil, fmt.Errorf("unsupported ssh host_key_policy %q", endpoint.HostKeyPolicy)
 	}
+}
+
+func expandSSHLocalPath(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+
+	if value == "~" || strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve current user home directory: %w", err)
+		}
+		if value == "~" {
+			value = home
+		} else {
+			value = filepath.Join(home, value[2:])
+		}
+	} else if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("~user expansion is not supported for ssh local paths")
+	}
+
+	expanded := os.ExpandEnv(value)
+	if expanded == "" {
+		return "", nil
+	}
+	return filepath.Clean(expanded), nil
 }
 
 func (t SSHTransport) connectContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
@@ -717,13 +757,17 @@ func (cfg SSHTransportConfig) jumpHostEndpoint(index int) sshEndpointConfig {
 		identityFile = cfg.IdentityFile
 		identityEnv = cfg.IdentityEnv
 	}
+	knownHostsFile := jumpHost.KnownHostsFile
+	if knownHostsFile == "" {
+		knownHostsFile = cfg.KnownHostsFile
+	}
 	return sshEndpointConfig{
 		Host:           jumpHost.Host,
 		Port:           jumpHost.Port,
 		User:           jumpHost.User,
 		IdentityFile:   identityFile,
 		IdentityEnv:    identityEnv,
-		KnownHostsFile: jumpHost.KnownHostsFile,
+		KnownHostsFile: knownHostsFile,
 		HostKeyPolicy:  jumpHost.HostKeyPolicy,
 		PinnedHostKey:  jumpHost.PinnedHostKey,
 	}
@@ -754,6 +798,9 @@ func validateSSHEndpointConfig(prefix string, endpoint sshEndpointConfig, requir
 func validateSSHHostKeyPolicy(prefix string, endpoint sshEndpointConfig) error {
 	switch sshHostKeyPolicy(endpoint) {
 	case SSHHostKeyPolicyKnownHosts:
+		if endpoint.KnownHostsFile == "" {
+			return fmt.Errorf("%s known_hosts_file is required when host_key_policy is known_hosts", prefix)
+		}
 		return nil
 	case SSHHostKeyPolicyPinned:
 		if endpoint.PinnedHostKey == "" {

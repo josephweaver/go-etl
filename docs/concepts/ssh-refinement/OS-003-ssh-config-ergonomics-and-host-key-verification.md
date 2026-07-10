@@ -1,6 +1,6 @@
 # OS-003: SSH Config Ergonomics and Host-Key Verification
 
-Status: Proposed
+Status: Complete
 Scope: GOET SSH configuration and validation
 
 ## Purpose
@@ -18,6 +18,8 @@ hand.
   reading identity or known-host files.
 - Implement `host_key_policy: "known_hosts"` using a configured
   `known_hosts_file`.
+- Require `known_hosts_file` when `host_key_policy` is `known_hosts`, except a
+  jump host may inherit the target transport's `known_hosts_file`.
 - Preserve `host_key_policy: "pinned"` for reproducible rendered configs.
 - Keep `host_key_policy: "insecure_ignore"` available only as explicit local
   bootstrap/debug behavior.
@@ -40,6 +42,8 @@ hand.
 
 - Use a small local path expansion helper for fields that are explicitly local:
   `identity_file` and `known_hosts_file`.
+- Support `$VAR`, `${VAR}`, `~`, and `~/...` for those local paths. Do not
+  support `~otheruser`.
 - Do not expand `root`, `data_dir`, Slurm script paths, worker paths, or any
   other remote filesystem path.
 - Prefer `golang.org/x/crypto/ssh/knownhosts` for known-host checking.

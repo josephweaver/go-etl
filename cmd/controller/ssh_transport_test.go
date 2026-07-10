@@ -26,6 +26,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type testSSHServer struct {
@@ -598,10 +599,11 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 		{
 			name: "valid minimal identity file known hosts",
 			cfg: SSHTransportConfig{
-				Host:          "hpcc.example.edu",
-				User:          "researcher",
-				IdentityFile:  "~/.ssh/id_ed25519",
-				HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+				Host:           "hpcc.example.edu",
+				User:           "researcher",
+				IdentityFile:   "~/.ssh/id_ed25519",
+				HostKeyPolicy:  SSHHostKeyPolicyKnownHosts,
+				KnownHostsFile: "~/.ssh/known_hosts",
 			},
 		},
 		{
@@ -685,11 +687,22 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			wantErr: "pinned_host_key is required",
 		},
 		{
+			name: "known hosts policy without known hosts file",
+			cfg: SSHTransportConfig{
+				Host:          "hpcc.example.edu",
+				User:          "researcher",
+				IdentityFile:  "~/.ssh/id_ed25519",
+				HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+			},
+			wantErr: "known_hosts_file is required",
+		},
+		{
 			name: "invalid connect timeout",
 			cfg: SSHTransportConfig{
 				Host:           "hpcc.example.edu",
 				User:           "researcher",
 				IdentityFile:   "~/.ssh/id_ed25519",
+				KnownHostsFile: "~/.ssh/known_hosts",
 				ConnectTimeout: "five seconds",
 			},
 			wantErr: "connect_timeout must be a Go duration",
@@ -700,6 +713,7 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				Host:           "hpcc.example.edu",
 				User:           "researcher",
 				IdentityFile:   "~/.ssh/id_ed25519",
+				KnownHostsFile: "~/.ssh/known_hosts",
 				CommandTimeout: "-1s",
 			},
 			wantErr: "command_timeout must be greater than zero",
@@ -759,6 +773,21 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 			},
 			wantErr: "jump_hosts[0] identity_file and identity_env are mutually exclusive",
 		},
+		{
+			name: "jump host known hosts inherits target file",
+			cfg: SSHTransportConfig{
+				Host:           "dev.example.edu",
+				User:           "researcher",
+				IdentityEnv:    "GOETL_SSH_KEY",
+				HostKeyPolicy:  SSHHostKeyPolicyKnownHosts,
+				KnownHostsFile: "~/.ssh/known_hosts",
+				JumpHosts: []SSHJumpHostConfig{{
+					Host:          "gateway.example.edu",
+					User:          "researcher",
+					HostKeyPolicy: SSHHostKeyPolicyKnownHosts,
+				}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -778,6 +807,34 @@ func TestSSHTransportConfigValidate(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestExpandSSHLocalPath(t *testing.T) {
+	t.Setenv("GOETL_TEST_SSH_DIR", filepath.Join(t.TempDir(), "ssh"))
+
+	expanded, err := expandSSHLocalPath("$GOETL_TEST_SSH_DIR/id_ed25519")
+	if err != nil {
+		t.Fatalf("expand env path: %v", err)
+	}
+	if expanded != filepath.Join(os.Getenv("GOETL_TEST_SSH_DIR"), "id_ed25519") {
+		t.Fatalf("expanded = %q, want env-expanded path", expanded)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home dir: %v", err)
+	}
+	expanded, err = expandSSHLocalPath("~/known_hosts")
+	if err != nil {
+		t.Fatalf("expand home path: %v", err)
+	}
+	if expanded != filepath.Join(home, "known_hosts") {
+		t.Fatalf("expanded = %q, want home-expanded path", expanded)
+	}
+
+	if _, err := expandSSHLocalPath("~other/.ssh/id_ed25519"); err == nil {
+		t.Fatal("expected ~user expansion error")
 	}
 }
 
@@ -893,6 +950,122 @@ func TestSSHTransportConnectUsesIdentityFile(t *testing.T) {
 
 	if err := transport.Connect(context.Background()); err != nil {
 		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectExpandsIdentityFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	sshDir := t.TempDir()
+	t.Setenv("GOETL_TEST_SSH_DIR", sshDir)
+	keyFile := filepath.Join(sshDir, "id_ed25519")
+	if err := os.WriteFile(keyFile, []byte(clientIdentity.privatePEM), 0600); err != nil {
+		t.Fatalf("write test identity file: %v", err)
+	}
+
+	cfg := testSSHTransportConfig(t, server.address, "", SSHHostKeyPolicyPinned, hostSigner.PublicKey())
+	cfg.IdentityEnv = ""
+	cfg.IdentityFile = "$GOETL_TEST_SSH_DIR/id_ed25519"
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectAcceptsKnownHostsFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, server.address, hostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectRejectsKnownHostsMismatch(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	wrongHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_KNOWN_HOSTS_MISMATCH"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, server.address, wrongHostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	err := transport.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected known_hosts mismatch error")
+	}
+	if !strings.Contains(err.Error(), "knownhosts") && !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("error = %v, want known_hosts handshake context", err)
+	}
+}
+
+func TestSSHTransportConnectAcceptsHashedKnownHostsFile(t *testing.T) {
+	hostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	server := startTestSSHServer(t, hostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_HASHED_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, true, server.address, hostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, server.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect test SSH transport: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close test SSH transport: %v", err)
+	}
+}
+
+func TestSSHTransportConnectThroughJumpHostInheritsKnownHostsFile(t *testing.T) {
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_JUMP_KNOWN_HOSTS"
+	t.Setenv(envName, clientIdentity.privatePEM)
+	knownHostsFile := writeTestKnownHostsFile(t, false, gateway.address, gatewayHostSigner.PublicKey(), final.address, finalHostSigner.PublicKey())
+
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyKnownHosts, nil)
+	cfg.KnownHostsFile = knownHostsFile
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyKnownHosts, nil),
+	}
+	transport := SSHTransport{Config: cfg}
+
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("connect through jump host: %v", err)
 	}
 	if err := transport.Close(); err != nil {
 		t.Fatalf("close test SSH transport: %v", err)
@@ -1361,6 +1534,23 @@ func TestSSHTransportCopyWritesFileContent(t *testing.T) {
 	}
 }
 
+func TestSSHTransportCopyDoesNotExpandRemotePath(t *testing.T) {
+	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_LITERAL_REMOTE_HOME")
+	defer transport.Close()
+
+	localPath := writeTestLocalFile(t, "copy-literal-home-source.txt", "literal remote home marker\n")
+	if err := transport.Copy(context.Background(), localPath, "~/output.txt"); err != nil {
+		t.Fatalf("copy with literal remote home path: %v", err)
+	}
+
+	if got := readTestRemoteFile(t, server, "~/output.txt"); got != "literal remote home marker\n" {
+		t.Fatalf("remote content = %q, want literal remote home content", got)
+	}
+	if _, err := os.Stat(filepath.Join(server.remoteRoot, "output.txt")); !os.IsNotExist(err) {
+		t.Fatalf("remote root output exists or unexpected stat error: %v", err)
+	}
+}
+
 func TestSSHTransportCopyCreatesNestedParentDirectory(t *testing.T) {
 	transport, server := connectTestSSHTransportWithServer(t, "GOETL_TEST_SSH_KEY_COPY_NESTED")
 	defer transport.Close()
@@ -1825,6 +2015,39 @@ func testSSHJumpHostConfig(t *testing.T, address string, hostKeyPolicy string, p
 		cfg.PinnedHostKey = string(ssh.MarshalAuthorizedKey(pinnedHostKey))
 	}
 	return cfg
+}
+
+func writeTestKnownHostsFile(t *testing.T, hashHostnames bool, entries ...any) string {
+	t.Helper()
+
+	if len(entries)%2 != 0 {
+		t.Fatalf("known_hosts entries must be address/key pairs")
+	}
+
+	var builder strings.Builder
+	for index := 0; index < len(entries); index += 2 {
+		address, ok := entries[index].(string)
+		if !ok {
+			t.Fatalf("known_hosts entry %d address has type %T, want string", index/2, entries[index])
+		}
+		key, ok := entries[index+1].(ssh.PublicKey)
+		if !ok {
+			t.Fatalf("known_hosts entry %d key has type %T, want ssh.PublicKey", index/2, entries[index+1])
+		}
+
+		hostname := knownhosts.Normalize(address)
+		if hashHostnames {
+			hostname = knownhosts.HashHostname(hostname)
+		}
+		builder.WriteString(knownhosts.Line([]string{hostname}, key))
+		builder.WriteByte('\n')
+	}
+
+	knownHostsFile := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHostsFile, []byte(builder.String()), 0600); err != nil {
+		t.Fatalf("write test known_hosts file: %v", err)
+	}
+	return knownHostsFile
 }
 
 func unusedTestTCPAddress(t *testing.T) string {

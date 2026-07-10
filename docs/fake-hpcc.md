@@ -39,8 +39,11 @@ The current SSH transport supports:
 - connecting to the final target host through explicit `jump_hosts`, without
   invoking the external `ssh` command
 - key-based authentication from an identity file or identity environment variable
+- local `identity_file` and `known_hosts_file` path expansion for `~`, `$VAR`,
+  and `${VAR}`
 - inherited target identity or hop-specific identity settings for each jump host
-- pinned host-key verification or explicit development-only insecure host-key mode
+- host-key verification through a configured `known_hosts_file`, a pinned host
+  key, or explicit development-only insecure host-key mode
 - independent host-key verification for the gateway and final target
 - reconnecting after a closed idle connection before an operation starts
 - remote command execution
@@ -61,16 +64,15 @@ component shaped like:
     "host": "fake-hpcc-login",
     "port": "22",
     "user": "goetl",
-    "identity_file": "/home/goetl/.ssh/id_ed25519",
-    "host_key_policy": "pinned",
-    "pinned_host_key": "ssh-ed25519 AAAA...",
+    "identity_file": "~/.ssh/id_ed25519",
+    "host_key_policy": "known_hosts",
+    "known_hosts_file": "~/.ssh/known_hosts",
     "jump_hosts": [
       {
         "host": "fake-hpcc-gateway",
         "port": "22",
         "user": "goetl",
-        "host_key_policy": "pinned",
-        "pinned_host_key": "ssh-ed25519 AAAA..."
+        "host_key_policy": "known_hosts"
       }
     ]
   }
@@ -113,7 +115,7 @@ URL from a Slurm allocation. This proves compute-node callback reachability when
 
 Do not commit real hostnames, usernames, private key paths, known-hosts data, or
 site-specific cluster values. Fake-HPCC examples should use generic names such
-as `fake-hpcc-login`, `goetl`, `/data/goetl`, and pinned placeholder host keys.
+as `fake-hpcc-login`, `goetl`, `/data/goetl`, and placeholder host-key settings.
 
 ### Current Verification
 
