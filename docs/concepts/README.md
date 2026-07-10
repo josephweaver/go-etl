@@ -13,6 +13,7 @@ Concept link for its authoritative scope.
 - [Canonical JSON Variable Loading](canonical-json-variable-loading/README.md) - Load controller, project, workflow, and override JSON into implicit typed namespaces using canonical JSON value shapes.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
 - [Geospatial Worker Plugins](geospatial-worker-plugins/README.md) - Add GDAL-backed geospatial operations and fixture smoke coverage for CDL/Yan/Roy-style raster workflows.
+- [SSH Refinement](ssh-refinement/README.md) - Add ProxyJump support, laptop-controller callback tunnels, and safer SSH config ergonomics for real HPCC runs.
 - [Workflow Compilation Resolution](workflow-compilation-resolution/README.md) - Define how workflow submission and ready-step compilation use short-lived resolvers with durable recipes and resolved snapshots.
 - [Workflow Dependency Resolution](workflow-dependency-resolution/README.md) - Resolve dependencies between complete workflows and delay dependent execution until prerequisites succeed.
 - [Workflow Execution Persistence](workflow-execution-persistence/README.md) - Make the database authoritative for workflow runs, steps, work items, attempts, resolver inputs, and outputs across controller restarts.
