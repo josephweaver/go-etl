@@ -97,6 +97,65 @@ func TestSlurmSchedulerExecuteRejectsMissingConnector(t *testing.T) {
 	}
 }
 
+func TestRemoteProcessSchedulerCopiesAndStartsGeneratedScript(t *testing.T) {
+	connector := &fakeSlurmConnector{output: []byte("12345\n")}
+	scheduler := RemoteProcessScheduler{
+		Transport: connector,
+		TempDir:   t.TempDir(),
+	}
+
+	pid, err := scheduler.Execute(context.Background(), JobSpec{
+		RemoteScriptPath: "/data/goetl/scripts/worker.slurm",
+		WorkerScript: SlurmWorkerScriptConfig{
+			JobName:          "goetl-worker",
+			WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+			WorkerConfigPath: "/data/goetl/config/worker.json",
+			LogDir:           "/data/goetl/logs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if pid != "12345" {
+		t.Fatalf("pid = %q, want 12345", pid)
+	}
+	if connector.copiedRemotePath != "/data/goetl/scripts/worker.slurm" {
+		t.Fatalf("remote script path = %q, want configured path", connector.copiedRemotePath)
+	}
+	wantCommand := "mkdir -p '/data/goetl/logs' && nohup bash '/data/goetl/scripts/worker.slurm' > '/data/goetl/logs/remote-process.out' 2> '/data/goetl/logs/remote-process.err' < /dev/null & echo $!"
+	if !stringSlicesEqual(connector.execArgs, []string{"sh", "-c", wantCommand}) {
+		t.Fatalf("exec args = %#v, want remote process command", connector.execArgs)
+	}
+	if !strings.Contains(string(connector.copiedContent), "/data/goetl/artifacts/goetl-worker") {
+		t.Fatalf("copied script missing worker executable:\n%s", connector.copiedContent)
+	}
+	if _, err := os.Stat(connector.copiedLocalPath); !os.IsNotExist(err) {
+		t.Fatalf("temp script still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestRemoteProcessSchedulerRejectsInvalidPID(t *testing.T) {
+	connector := &fakeSlurmConnector{output: []byte("not-a-pid\n")}
+	scheduler := RemoteProcessScheduler{
+		Transport: connector,
+		TempDir:   t.TempDir(),
+	}
+
+	_, err := scheduler.Execute(context.Background(), JobSpec{
+		RemoteScriptPath: "/data/goetl/scripts/worker.slurm",
+		WorkerScript: SlurmWorkerScriptConfig{
+			JobName:          "goetl-worker",
+			WorkerExecutable: "/data/goetl/artifacts/goetl-worker",
+			WorkerConfigPath: "/data/goetl/config/worker.json",
+			LogDir:           "/data/goetl/logs",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid pid") {
+		t.Fatalf("error = %v, want invalid pid", err)
+	}
+}
+
 func TestSSHReverseCallbackTunnelSlurmPreflightSubmitsWaitScript(t *testing.T) {
 	connector := &fakeSlurmConnector{output: []byte("Submitted batch job 77\n")}
 	tunnel := &SSHReverseCallbackTunnel{
@@ -121,7 +180,7 @@ func TestSSHReverseCallbackTunnelSlurmPreflightSubmitsWaitScript(t *testing.T) {
 	for _, want := range []string{
 		"#SBATCH --job-name=goetl-callback-preflight",
 		"curl --fail --silent --show-error --max-time 10",
-		"'http://hpcc.example.edu:18080/status'",
+		"'http://hpcc.example.edu:18080/healthz'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q:\n%s", want, script)

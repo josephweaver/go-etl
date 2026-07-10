@@ -1,10 +1,104 @@
 # Runtime Runbook
 
-Last updated: 2026-07-07
+Last updated: 2026-07-10
 
 This file preserves the moved runtime command and expected-output section from the pre-split root state file.
 
 ## How To Run
+
+## Controller API Exposure Profiles
+
+Local loopback development may run without controller API authentication only
+when both the listener and advertised URL are loopback, for example
+`http://127.0.0.1:8080`. The controller rejects disabled authentication for
+non-loopback listeners or advertised URLs.
+
+Authenticated local development uses the same loopback listener with bearer
+credentials enabled. Clients should pass a token file rather than a raw token
+argument:
+
+```powershell
+go run ./cmd/demo-client submit `
+  --controller-url http://127.0.0.1:8080 `
+  --controller-token-file .run\secrets\controller-client-token `
+  --project project.json `
+  --workflow workflow.json
+```
+
+Laptop-hosted external testing is documented in
+[`deployment/laptop-test-controller-ingress.md`](deployment/laptop-test-controller-ingress.md).
+It is test-only. Capture the temporary HTTPS URL before generating worker config,
+and restart workers with regenerated config if that URL changes.
+
+Server mode is not required for every user. A developer may run the controller on
+their laptop and use SSH as the execution transport for HPCC command execution,
+file copy, and Slurm submission. In that mode, the local client talks to the
+local controller, and the local controller talks to HPCC over SSH. The worker
+callback still needs a URL reachable from HPCC compute nodes; do not use
+`localhost`, `127.0.0.1`, or a laptop LAN address as the worker-facing
+`controller_url`.
+
+For users without a domain, VM, or managed HTTPS tunnel, the `ssh_reverse`
+callback tunnel remains a supported compatibility path. It exposes an
+operator-configured HTTP callback URL on the SSH side and forwards that traffic
+back to the laptop controller over SSH. If the SSH server forces reverse-forward
+listeners to loopback, configure the callback tunnel relay fields so the dev or
+login node runs a worker-visible relay that forwards to the loopback reverse
+listener:
+
+```json
+{
+  "callback_tunnel": {
+    "type": "ssh_reverse",
+    "remote_bind_host": "127.0.0.1",
+    "remote_bind_port": 38281,
+    "relay_bind_host": "0.0.0.0",
+    "relay_bind_port": 39281,
+    "worker_controller_url": "http://<hpcc-dev-node>:39281"
+  },
+  "runtime": {
+    "settings": {
+      "controller_url": "http://<hpcc-dev-node>:39281",
+      "controller_token_file": "<hpcc-runtime-root>/secrets/controller-worker-token",
+      "controller_insecure_external_http_allowed": true
+    }
+  }
+}
+```
+
+The `controller_insecure_external_http_allowed` setting is intentionally
+explicit. Use it only when the plain-HTTP worker URL is protected by the
+controller-owned SSH reverse tunnel plus dev-node relay path and the worker also
+uses a bearer token file. Prefer HTTPS when a stable domain or managed tunnel is
+available. Run the callback preflight before admitting real work.
+
+For short local/no-domain smoke tests, `scheduler.type = "remote_process"` can
+start a worker process on the SSH target instead of submitting to Slurm. This
+works with loopback-only `ssh_reverse` binds because the worker runs on the same
+dev/login node as the reverse listener. Treat that as a smoke-test path, not the
+normal production scheduler.
+
+Dedicated-server deployment is documented in
+[`deployment/dedicated-controller-server.md`](deployment/dedicated-controller-server.md).
+The verified production-like shape is public HTTPS ingress on ports `80`/`443`
+proxying to a controller bound only to `127.0.0.1:8080`. SSH remains the
+execution transport for HPCC command execution, file copy, and Slurm submission;
+workers call back to the controller over HTTPS.
+
+For remote controllers, clients may use:
+
+```powershell
+go run ./cmd/demo-client submit `
+  --controller-url https://controller.example.org `
+  --controller-token-file .run\secrets\controller-client-token `
+  --project project.json `
+  --workflow workflow.json
+```
+
+Credential rotation in phase 1 requires a controlled controller restart and
+worker/client token-file replacement. A controller session has one advertised
+`controller_url`; migrating from one URL to another happens between runs by
+updating controller config, client config, and generated worker config.
 
 Run the local workflow demo from the repository root:
 

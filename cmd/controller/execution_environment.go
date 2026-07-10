@@ -391,6 +391,8 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 	switch cfg.Type {
 	case "direct_process":
 		return DirectProcessScheduler{}, nil
+	case "remote_process":
+		return RemoteProcessScheduler{Transport: transport}, nil
 	case "slurm":
 		return SlurmScheduler{Transport: transport}, nil
 	default:
@@ -448,6 +450,10 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	controllerInsecureExternalHTTPAllowed, err := settings.Bool("controller_insecure_external_http_allowed")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	localWorkerArtifact, err := settings.String("local_worker_artifact")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -473,15 +479,16 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		return WorkerRuntime{}, err
 	}
 	return WorkerRuntime{
-		Root:                root,
-		ControllerURL:       controllerURL,
-		ControllerTokenFile: controllerTokenFile,
-		LocalWorkerArtifact: localWorkerArtifact,
-		DataDir:             dataDir,
-		AssetCacheDir:       assetCacheDir,
-		PythonExecutable:    pythonExecutable,
-		MaxAssetBytes:       maxAssetBytes,
-		DataLocationRoots:   roots,
+		Root:                                  root,
+		ControllerURL:                         controllerURL,
+		ControllerTokenFile:                   controllerTokenFile,
+		ControllerInsecureExternalHTTPAllowed: controllerInsecureExternalHTTPAllowed,
+		LocalWorkerArtifact:                   localWorkerArtifact,
+		DataDir:                               dataDir,
+		AssetCacheDir:                         assetCacheDir,
+		PythonExecutable:                      pythonExecutable,
+		MaxAssetBytes:                         maxAssetBytes,
+		DataLocationRoots:                     roots,
 	}, nil
 }
 
@@ -584,4 +591,19 @@ func (settings ExecutionComponentSettings) Int64(name string) (int64, error) {
 	default:
 		return 0, fmt.Errorf("setting %s must be an integer", name)
 	}
+}
+
+func (settings ExecutionComponentSettings) Bool(name string) (bool, error) {
+	if len(settings) == 0 {
+		return false, nil
+	}
+	value, ok := settings[name]
+	if !ok || value == nil {
+		return false, nil
+	}
+	typed, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("setting %s must be a boolean", name)
+	}
+	return typed, nil
 }

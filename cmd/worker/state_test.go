@@ -319,6 +319,43 @@ func TestWorkerControllerClientRejectsMissingExternalTokenFile(t *testing.T) {
 	}
 }
 
+func TestWorkerControllerClientRejectsExternalHTTPByDefault(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte("worker-token"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	_, err := NewWorkerControllerClient(Config{
+		ControllerURL:       "http://dev-node.example.test:39281",
+		ControllerTokenFile: tokenFile,
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "plain HTTP with a non-loopback host") {
+		t.Fatalf("error = %v, want external HTTP rejection", err)
+	}
+}
+
+func TestWorkerControllerClientAllowsExternalHTTPWhenConfigured(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")
+	if err := os.WriteFile(tokenFile, []byte("worker-token"), 0o600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	client, err := NewWorkerControllerClient(Config{
+		ControllerURL:                         "http://dev-node.example.test:39281",
+		ControllerTokenFile:                   tokenFile,
+		ControllerInsecureExternalHTTPAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWorkerControllerClient() error = %v", err)
+	}
+	if !client.Initialized() {
+		t.Fatal("expected initialized client")
+	}
+}
+
 func TestWorkerControllerClientErrorsDoNotExposeToken(t *testing.T) {
 	const sentinel = "goetl-worker-controller-token-sentinel-006"
 	tokenFile := filepath.Join(t.TempDir(), "controller-worker-token")

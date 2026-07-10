@@ -191,8 +191,8 @@ Do not weaken production code solely to simplify a test.
 Partial OS-009 evidence exists in `docs/TEST_AND_SMOKE_STATUS.md`:
 
 - focused automated route-role and controller HTTP client tests pass;
-- a Google Compute Engine VM at `34.10.225.164` serves the controller through
-  trusted HTTPS at `https://34-10-225-164.sslip.io`;
+- a dedicated Linux VM served the controller through trusted HTTPS at a
+  temporary wildcard-DNS hostname;
 - public TCP `80` and `443` are reachable while `8080` is not reachable
   externally;
 - the controller process listens on `127.0.0.1:8080`;
@@ -201,8 +201,7 @@ Partial OS-009 evidence exists in `docs/TEST_AND_SMOKE_STATUS.md`:
 - an external worker process on the development machine claimed and completed a
   `write_demo_output` item through the VM HTTPS endpoint;
 - a current `goetl-worker.sif` was built from `containers/goetl-worker`, verified
-  with SingularityCE, and staged on the dedicated controller VM at
-  `/opt/gorc/images/goetl-worker.sif`;
+  with SingularityCE, and staged on the dedicated controller VM;
 - the `singularity_worker` runtime now defaults an omitted `bind` setting to
   `<runtime root>:<runtime root>`, keeping generated worker config, token file,
   logs, temp, data, and cache paths under one root mounted into the container;

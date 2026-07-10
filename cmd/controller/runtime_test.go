@@ -105,12 +105,13 @@ func TestWorkerRuntimePrepareCreatesLocalDirectoriesWithoutShellMkdir(t *testing
 func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	transport := &recordingTransport{}
 	runtime := WorkerRuntime{
-		Root:                "/data/goetl-test",
-		ControllerURL:       "http://host.docker.internal:8080",
-		ControllerTokenFile: "/data/goetl-test/secrets/controller-worker-token",
-		AssetCacheDir:       "/data/goetl-test/cache/assets",
-		PythonExecutable:    "python3",
-		MaxAssetBytes:       20000000000,
+		Root:                                  "/data/goetl-test",
+		ControllerURL:                         "http://host.docker.internal:8080",
+		ControllerTokenFile:                   "/data/goetl-test/secrets/controller-worker-token",
+		ControllerInsecureExternalHTTPAllowed: true,
+		AssetCacheDir:                         "/data/goetl-test/cache/assets",
+		PythonExecutable:                      "python3",
+		MaxAssetBytes:                         20000000000,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
 			"published_data": "/data/goetl-test/published",
@@ -137,6 +138,9 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	}
 	if cfg.ControllerTokenFile != "/data/goetl-test/secrets/controller-worker-token" {
 		t.Fatalf("controller token file = %q, want configured token file", cfg.ControllerTokenFile)
+	}
+	if !cfg.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
 	}
 	if cfg.LogDir != "/data/goetl-test/logs" || cfg.TmpDir != "/data/goetl-test/tmp" || cfg.DataDir != "/data/goetl-test/data" {
 		t.Fatalf("unexpected runtime dirs: %+v", cfg)

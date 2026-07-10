@@ -51,9 +51,10 @@ func NewWorkerControllerClient(cfg Config) (WorkerControllerClient, error) {
 		return WorkerControllerClient{}, err
 	}
 	client, err := controllerhttp.New(controllerhttp.Config{
-		BaseURL: cfg.ControllerURL,
-		Token:   tokenProvider,
-		Caller:  "goetl-worker/1",
+		BaseURL:                   cfg.ControllerURL,
+		Token:                     tokenProvider,
+		Caller:                    "goetl-worker/1",
+		AllowInsecureExternalHTTP: cfg.ControllerInsecureExternalHTTPAllowed,
 	})
 	if err != nil {
 		return WorkerControllerClient{}, err

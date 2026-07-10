@@ -57,6 +57,16 @@ func TestNewAllowsHTTPSAndLoopbackHTTP(t *testing.T) {
 	}
 }
 
+func TestNewAllowsExternalHTTPWhenExplicitlyConfigured(t *testing.T) {
+	_, err := New(Config{
+		BaseURL:                   "http://dev-node.example.test:39281",
+		AllowInsecureExternalHTTP: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+}
+
 func TestNewClonesHTTPClientAndAppliesDefaults(t *testing.T) {
 	input := &http.Client{Timeout: 2 * time.Second}
 	client, err := New(Config{BaseURL: "http://localhost:8080", HTTP: input})

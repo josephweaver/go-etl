@@ -16,10 +16,11 @@ import (
 const DefaultTimeout = 30 * time.Second
 
 type Config struct {
-	BaseURL string
-	HTTP    *http.Client
-	Token   TokenProvider
-	Caller  string
+	BaseURL                   string
+	HTTP                      *http.Client
+	Token                     TokenProvider
+	Caller                    string
+	AllowInsecureExternalHTTP bool
 }
 
 type Client struct {
@@ -30,7 +31,7 @@ type Client struct {
 }
 
 func New(config Config) (Client, error) {
-	baseURL, err := parseBaseURL(config.BaseURL)
+	baseURL, err := parseBaseURL(config.BaseURL, config.AllowInsecureExternalHTTP)
 	if err != nil {
 		return Client{}, err
 	}
@@ -139,7 +140,7 @@ func (c Client) requestURL(path string, query url.Values) (*url.URL, error) {
 	return &target, nil
 }
 
-func parseBaseURL(raw string) (*url.URL, error) {
+func parseBaseURL(raw string, allowInsecureExternalHTTP bool) (*url.URL, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, fmt.Errorf("controller base URL is required")
 	}
@@ -165,7 +166,7 @@ func parseBaseURL(raw string) (*url.URL, error) {
 	switch parsed.Scheme {
 	case "https":
 	case "http":
-		if !isLoopbackHost(parsed.Hostname()) {
+		if !allowInsecureExternalHTTP && !isLoopbackHost(parsed.Hostname()) {
 			return nil, fmt.Errorf("controller base URL %q uses plain HTTP with a non-loopback host", raw)
 		}
 	default:

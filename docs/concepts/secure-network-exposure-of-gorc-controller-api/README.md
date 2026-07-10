@@ -1,8 +1,8 @@
 # Secure Network Exposure of the GORC Controller API
 
-Status: Proposed  
+Status: Implemented through OS-009; closure pending laptop-profile evidence decision
 Cadence: CSxIx  
-Revision: 2026-07-10 laptop-test and dedicated-server deployment split
+Revision: 2026-07-10 OS-010 documentation sync
 
 > Repository naming note: the product is referred to here as **GORC**, while current
 > executable names, module paths, environment variables, and JSON API versions may
@@ -49,34 +49,30 @@ controller API.
 
 ## Current State
 
-The repository already has most of the transport-neutral structure needed:
+The secure controller API path is implemented and externally smoke-tested:
 
-- the controller uses Go `net/http`;
-- listen host, listen port, advertised URL, timeouts, request size, and header size
-  are startup settings;
-- the default controller binds to `localhost:8080`;
-- clients accept a controller URL and use HTTP;
-- workers receive `controller_url` in generated worker configuration;
-- the controller can generate worker configuration for local, Docker, SSH, Slurm,
-  and Singularity-backed execution environments;
-- the current HTTP routes include workflow admission, work claiming, work
-  completion/failure, status, logs, source bundles, health, and shutdown;
-- SSH reverse callback tunneling is implemented and can remain available during
-  migration.
+- the controller has explicit bearer authentication and per-route role
+  authorization for `client`, `worker`, and `admin`;
+- disabled authentication is rejected unless both the listener and advertised URL
+  are loopback;
+- external plain HTTP advertised URLs require an explicit unsafe-test override;
+- CLI and worker callers use the shared controller HTTP client, bearer injection,
+  bounded errors, and same-origin redirect policy;
+- CLI client credentials load from a token file or environment, never a raw token
+  argument;
+- generated worker config carries `controller_token_file`, not token material;
+- deployment docs distinguish loopback controller listen address, external
+  `controller_url`, and TLS ingress;
+- a dedicated-server HTTPS smoke verified public `80`/`443`, private `8080`,
+  public `/healthz`, authenticated `/status`, and HTTP-to-HTTPS redirect
+  behavior;
+- a real HPCC Slurm/Singularity worker was scheduled from the dedicated server,
+  claimed work through the public HTTPS endpoint, wrote output on HPCC storage,
+  and reported completion.
 
-Important gaps:
-
-- controller routes do not yet have a complete authentication and authorization
-  boundary;
-- `/shutdown` and other control-plane routes must not be exposed merely because
-  they validate an HTTP method;
-- worker callback code uses package-level `http.Get` and `http.Post`, so there is
-  no shared place to add credentials, redirect policy, or safe HTTP behavior;
-- worker configuration contains a URL but no control-plane credential source;
-- the controller has no startup interlock preventing an unauthenticated non-loopback
-  exposure;
-- deployment documentation does not yet separate internal listen address,
-  externally advertised URL, TLS ingress, and temporary laptop exposure.
+The laptop-hosted temporary HTTPS profile is documented but not separately
+verified. See `issues.md` for the closure decision on whether the dedicated
+server plus HPCC smoke supersedes that laptop-specific evidence requirement.
 
 ## Strategic Decisions
 
@@ -410,7 +406,7 @@ not required to establish the HTTP contract.
 ## Route Authorization Policy
 
 Every registered route and method must have an explicit policy. The OS-001 route
-contract is:
+contract is the implemented route policy:
 
 | Method | Route | Access |
 |---|---|---|
@@ -429,6 +425,57 @@ contract is:
 
 Existing callback preflight should use the minimal public `/healthz` endpoint rather
 than relying on authenticated `/status`.
+
+## Verified Evidence
+
+Evidence is recorded in `docs/TEST_AND_SMOKE_STATUS.md` with concrete commands
+and results.
+
+- Automated route-role and controller HTTP client tests pass.
+- A production-like dedicated VM profile served the controller through trusted
+  HTTPS ingress while keeping the application listener private on loopback.
+- Public HTTPS `/healthz`, unauthenticated protected-route rejection,
+  authenticated `/status`, and HTTP-to-HTTPS redirect checks passed.
+- An external worker process completed a callback smoke through the HTTPS
+  endpoint.
+- A worker SIF was built from `containers/goetl-worker`, verified with
+  SingularityCE, staged for HPCC use, and then used by an actual HPCC Slurm job.
+- The dedicated VM scheduled a real HPCC Slurm/Singularity worker through SSH
+  transport. The worker claimed `os009-hpcc-worker-001`, wrote the expected
+  output, and reported completion through HTTPS.
+- A local-controller `ssh_reverse` smoke used an HPCC dev-node process launched
+  by `remote_process` and completed a two-item demo workflow through the reverse
+  callback path.
+- A local-controller `ssh_reverse` plus dev-node relay smoke completed the same
+  two-item demo workflow through real HPCC Slurm/Singularity workers. The worker
+  used a bearer token file and explicitly opted into
+  `controller_insecure_external_http_allowed` for the relay URL.
+- The OS-009 sentinel was absent from controlled logs, generated config, output,
+  controller state, and HPCC runtime files outside the intended credential file.
+
+## Deviations And Limitations
+
+- The verified external production-like profile used a temporary wildcard-DNS
+  hostname rather than an owned stable DNS name. The dedicated-server runbook
+  remains provider-neutral and expects stable DNS for production.
+- The laptop-hosted temporary HTTPS profile is documented but was not separately
+  smoke-tested. See `issues.md`.
+- Local-controller HPCC orchestration is viable on the execution side when the
+  laptop has SSH access to an HPCC dev node with Slurm and Singularity, but the
+  worker callback still requires a worker-safe public `controller_url`; laptop
+  LAN addresses are not sufficient.
+- Local/no-domain `ssh_reverse` is verified for short HPCC dev-node worker
+  smokes through `remote_process` and for real HPCC Slurm/Singularity workers
+  when a controller-managed dev-node relay exposes a worker-visible callback URL.
+  Direct non-loopback SSH reverse binds remain site-policy dependent.
+- Phase 1 uses role-scoped bearer tokens, not OAuth/OIDC or a general identity
+  provider.
+- Credential rotation requires a controlled restart and token-file replacement.
+- A running controller session has one advertised `controller_url`; moving from
+  one public URL to another happens between runs by regenerating client and
+  worker configuration.
+- Dynamic public-IP discovery and DNS updates remain operator/deployment
+  concerns, not controller behavior.
 
 ## HTTP Client Policy
 
@@ -470,9 +517,15 @@ HTTPS controller API:
   - workflow admission
 ```
 
-The reverse callback tunnel remains available as a compatibility fallback until
-the HTTPS path is proven. It should eventually be documented as optional rather
-than the preferred laptop callback topology.
+The reverse callback tunnel remains available as an optional compatibility path,
+especially for sites where an HTTPS controller endpoint is not yet reachable.
+It is no longer the preferred worker callback topology for this concept. The
+verified external path is:
+
+```text
+Controller -> SSH transport -> Slurm/Singularity worker startup
+Worker     -> HTTPS API     -> claim and report work
+```
 
 ## Goals
 
@@ -522,7 +575,7 @@ than the preferred laptop callback topology.
 | `OS-007-laptop-test-https-ingress.md` | Implemented | GPT-5.4-mini | Deployment scripts/runbook with a narrow test-only boundary. |
 | `OS-008-dedicated-server-https-deployment.md` | Implemented | GPT-5.4-mini | Provider-neutral service and reverse-proxy baseline. |
 | `OS-009-network-security-and-external-smoke.md` | Implemented | GPT-5.5 high reasoning | End-to-end negative authorization and remote callback evidence. |
-| `OS-010-concept-closure-and-doc-sync.md` | Proposed | GPT-5.3-Codex-Spark | Tracker, state, runbook, and compatibility documentation. |
+| `OS-010-concept-closure-and-doc-sync.md` | In Progress | GPT-5.3-Codex-Spark | Tracker, state, runbook, and compatibility documentation; laptop-profile evidence decision remains open. |
 
 ## Suggested Implementation Order
 

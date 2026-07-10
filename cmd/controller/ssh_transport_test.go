@@ -1265,6 +1265,61 @@ func TestSSHReverseCallbackTunnelBindsJumpHostAndProxiesToLocalController(t *tes
 	}
 }
 
+func TestSSHReverseCallbackTunnelPreflightUsesPublicHealthz(t *testing.T) {
+	var healthRequests int64
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			atomic.AddInt64(&healthRequests, 1)
+			_, _ = io.WriteString(w, "ok")
+		case "/status":
+			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controller.Close()
+	localHost, localPort := splitTestHTTPServerAddress(t, controller.URL)
+
+	gatewayHostSigner := generateTestSSHSigner(t)
+	finalHostSigner := generateTestSSHSigner(t)
+	clientIdentity := generateTestSSHIdentity(t)
+	gateway := startTestSSHServer(t, gatewayHostSigner, clientIdentity.signer.PublicKey())
+	final := startTestSSHServer(t, finalHostSigner, clientIdentity.signer.PublicKey())
+
+	envName := "GOETL_TEST_SSH_KEY_REVERSE_TUNNEL_HEALTHZ"
+	t.Setenv(envName, clientIdentity.privatePEM)
+
+	remoteBindPort := unusedTestTCPPort(t)
+	cfg := testSSHTransportConfig(t, final.address, envName, SSHHostKeyPolicyPinned, finalHostSigner.PublicKey())
+	cfg.JumpHosts = []SSHJumpHostConfig{
+		testSSHJumpHostConfig(t, gateway.address, SSHHostKeyPolicyPinned, gatewayHostSigner.PublicKey()),
+	}
+	transport := &SSHTransport{Config: cfg}
+	tunnel := &SSHReverseCallbackTunnel{
+		Config: CallbackTunnelConfig{
+			Type:                "ssh_reverse",
+			Transport:           "login",
+			BindHop:             "jump_hosts[0]",
+			RemoteBindHost:      "127.0.0.1",
+			RemoteBindPort:      remoteBindPort,
+			LocalHost:           localHost,
+			LocalPort:           localPort,
+			WorkerControllerURL: fmt.Sprintf("http://127.0.0.1:%d", remoteBindPort),
+		},
+		transport: transport,
+	}
+	defer tunnel.Close()
+	defer transport.Close()
+
+	if issues := tunnel.Preflight(context.Background()); len(issues) != 0 {
+		t.Fatalf("preflight issues = %+v, want none", issues)
+	}
+	if got := atomic.LoadInt64(&healthRequests); got != 1 {
+		t.Fatalf("healthz request count = %d, want 1", got)
+	}
+}
+
 func TestSSHReverseCallbackTunnelPreflightReportsUnreachableLocalController(t *testing.T) {
 	gatewayHostSigner := generateTestSSHSigner(t)
 	finalHostSigner := generateTestSSHSigner(t)
@@ -1307,6 +1362,73 @@ func TestSSHReverseCallbackTunnelPreflightReportsUnreachableLocalController(t *t
 	}
 	if issues[0].Severity != PreflightSeverityError {
 		t.Fatalf("severity = %q, want error", issues[0].Severity)
+	}
+}
+
+func TestCallbackTunnelConfigValidatesRelaySettings(t *testing.T) {
+	base := CallbackTunnelConfig{
+		Type:                "ssh_reverse",
+		Transport:           "login",
+		RemoteBindHost:      "127.0.0.1",
+		RemoteBindPort:      38280,
+		RelayBindHost:       "0.0.0.0",
+		RelayBindPort:       39280,
+		LocalHost:           "127.0.0.1",
+		LocalPort:           8080,
+		WorkerControllerURL: "http://dev-node.example.edu:39280",
+	}
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	missingHost := base
+	missingHost.RelayBindHost = ""
+	if err := missingHost.Validate(); err == nil || !strings.Contains(err.Error(), "relay_bind_host") {
+		t.Fatalf("missing relay host error = %v, want relay_bind_host", err)
+	}
+
+	badPort := base
+	badPort.RelayBindPort = 70000
+	if err := badPort.Validate(); err == nil || !strings.Contains(err.Error(), "relay_bind_port") {
+		t.Fatalf("bad relay port error = %v, want relay_bind_port", err)
+	}
+}
+
+func TestCallbackRelayScriptIsGeneratedAsPythonProxy(t *testing.T) {
+	path, err := writeCallbackRelayTempScript()
+	if err != nil {
+		t.Fatalf("writeCallbackRelayTempScript() error = %v", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read relay script: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"#!/usr/bin/env python3",
+		"server.bind((bind_host, bind_port))",
+		"socket.create_connection((target_host, target_port)",
+		"threading.Thread(target=proxy",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("relay script missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestIsDecimalPID(t *testing.T) {
+	for _, pid := range []string{"1", "12345"} {
+		if !isDecimalPID(pid) {
+			t.Fatalf("isDecimalPID(%q) = false, want true", pid)
+		}
+	}
+	for _, pid := range []string{"", "12x", "12\n"} {
+		if isDecimalPID(pid) {
+			t.Fatalf("isDecimalPID(%q) = true, want false", pid)
+		}
 	}
 }
 

@@ -6,6 +6,11 @@ This runbook exposes a laptop-hosted GORC controller through a temporary managed
 HTTPS ingress for external client and HPCC worker testing. It is not a production
 deployment pattern.
 
+As of 2026-07-10, this profile is documented but has not been separately recorded
+as a successful smoke run. The verified external callback evidence for the secure
+network exposure concept is the dedicated-server HTTPS profile plus an actual
+HPCC Slurm/Singularity worker callback.
+
 ## Topology
 
 ```text

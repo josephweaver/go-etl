@@ -102,6 +102,7 @@ func TestNewExecutionEnvironmentSupportsWorkerRuntimeControllerTokenFile(t *test
 			"root":                  "/tmp/goetl",
 			"controller_url":        "https://controller.example.org",
 			"controller_token_file": "/tmp/goetl/secrets/controller-worker-token",
+			"controller_insecure_external_http_allowed": true,
 		}},
 	})
 	if err != nil {
@@ -114,6 +115,27 @@ func TestNewExecutionEnvironmentSupportsWorkerRuntimeControllerTokenFile(t *test
 	}
 	if runtime.ControllerTokenFile != "/tmp/goetl/secrets/controller-worker-token" {
 		t.Fatalf("controller token file = %q", runtime.ControllerTokenFile)
+	}
+	if !runtime.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
+	}
+}
+
+func TestNewExecutionEnvironmentRejectsNonBooleanWorkerRuntimeInsecureHTTPSetting(t *testing.T) {
+	_, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "local-direct",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"controller_insecure_external_http_allowed": "true",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "controller_insecure_external_http_allowed must be a boolean") {
+		t.Fatalf("error = %v, want boolean setting error", err)
 	}
 }
 
@@ -148,6 +170,29 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 	if runtime.MaxAssetBytes != 20000000000 {
 		t.Fatalf("max asset bytes = %d, want 20000000000", runtime.MaxAssetBytes)
+	}
+}
+
+func TestNewExecutionEnvironmentSupportsRemoteProcess(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "ssh-remote-process",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler:  ExecutionComponentConfig{Type: "remote_process"},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root": "/tmp/goetl",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	scheduler, ok := env.Scheduler.(RemoteProcessScheduler)
+	if !ok {
+		t.Fatalf("scheduler type = %T, want RemoteProcessScheduler", env.Scheduler)
+	}
+	if scheduler.Transport == nil {
+		t.Fatal("remote process scheduler transport is nil")
 	}
 }
 

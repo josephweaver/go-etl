@@ -25,15 +25,16 @@ type WorkerScriptRuntime interface {
 }
 
 type WorkerRuntime struct {
-	Root                string
-	ControllerURL       string
-	ControllerTokenFile string
-	LocalWorkerArtifact string
-	DataDir             string
-	AssetCacheDir       string
-	PythonExecutable    string
-	MaxAssetBytes       int64
-	DataLocationRoots   map[string]string
+	Root                                  string
+	ControllerURL                         string
+	ControllerTokenFile                   string
+	ControllerInsecureExternalHTTPAllowed bool
+	LocalWorkerArtifact                   string
+	DataDir                               string
+	AssetCacheDir                         string
+	PythonExecutable                      string
+	MaxAssetBytes                         int64
+	DataLocationRoots                     map[string]string
 }
 
 func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
@@ -127,15 +128,16 @@ type WorkerRuntimePaths struct {
 }
 
 type WorkerConfig struct {
-	LogDir              string            `json:"log_dir"`
-	TmpDir              string            `json:"tmp_dir"`
-	DataDir             string            `json:"data_dir"`
-	ControllerURL       string            `json:"controller_url"`
-	ControllerTokenFile string            `json:"controller_token_file,omitempty"`
-	AssetCacheDir       string            `json:"asset_cache_dir,omitempty"`
-	PythonExecutable    string            `json:"python_executable,omitempty"`
-	MaxAssetBytes       int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots   map[string]string `json:"data_location_roots,omitempty"`
+	LogDir                                string            `json:"log_dir"`
+	TmpDir                                string            `json:"tmp_dir"`
+	DataDir                               string            `json:"data_dir"`
+	ControllerURL                         string            `json:"controller_url"`
+	ControllerTokenFile                   string            `json:"controller_token_file,omitempty"`
+	ControllerInsecureExternalHTTPAllowed bool              `json:"controller_insecure_external_http_allowed,omitempty"`
+	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
+	PythonExecutable                      string            `json:"python_executable,omitempty"`
+	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
@@ -178,15 +180,16 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 		}
 	}
 	cfg := WorkerConfig{
-		LogDir:              paths.LogDir,
-		TmpDir:              paths.TmpDir,
-		DataDir:             paths.DataDir,
-		ControllerURL:       r.ControllerURL,
-		ControllerTokenFile: r.ControllerTokenFile,
-		AssetCacheDir:       r.AssetCacheDir,
-		PythonExecutable:    r.PythonExecutable,
-		MaxAssetBytes:       r.MaxAssetBytes,
-		DataLocationRoots:   r.DataLocationRoots,
+		LogDir:                                paths.LogDir,
+		TmpDir:                                paths.TmpDir,
+		DataDir:                               paths.DataDir,
+		ControllerURL:                         r.ControllerURL,
+		ControllerTokenFile:                   r.ControllerTokenFile,
+		ControllerInsecureExternalHTTPAllowed: r.ControllerInsecureExternalHTTPAllowed,
+		AssetCacheDir:                         r.AssetCacheDir,
+		PythonExecutable:                      r.PythonExecutable,
+		MaxAssetBytes:                         r.MaxAssetBytes,
+		DataLocationRoots:                     r.DataLocationRoots,
 	}
 	if _, ok := transport.(LocalTransport); ok {
 		var err error

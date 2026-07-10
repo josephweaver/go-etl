@@ -7,6 +7,13 @@ with stable DNS, public HTTPS ingress, and a private loopback controller listene
 It is intentionally provider-neutral. A Google Compute Engine VM can implement
 this shape, but GORC does not require Google-specific APIs.
 
+This is the verified production-like external callback shape for the secure
+network exposure concept. The first smoke used a temporary wildcard DNS name on a
+dedicated VM, Caddy-managed HTTPS, loopback controller binding, bearer
+authentication, and an actual HPCC Slurm/Singularity worker callback. Provider
+IDs, private hostnames, private paths, and account names are intentionally not
+recorded in this reusable runbook.
+
 ## Topology
 
 ```text

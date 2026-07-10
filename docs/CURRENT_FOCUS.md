@@ -1,11 +1,21 @@
 # Current Focus
 
-Last updated: 2026-07-07
+Last updated: 2026-07-10
 
 This file preserves the moved Current Focus and Likely Next Step state from the pre-split root state file. Concept-specific excerpts are also copied into the relevant docs/concepts/*/STATE.md files.
 
 ## Current Focus
 
+- Secure network exposure of the GORC controller API is implemented through
+  OS-009. The controller now has bearer authentication, explicit route-role
+  authorization, loopback-only disabled-auth startup protection, shared safe
+  controller HTTP clients for CLI and worker callers, worker token-file
+  bootstrap, laptop-test and dedicated-server deployment runbooks, and verified
+  dedicated-server HTTPS evidence. A real HPCC Slurm/Singularity worker was
+  scheduled from the dedicated server, claimed work through the public HTTPS API,
+  wrote output on HPCC storage, and reported completion. OS-010 closure is in
+  progress because the laptop-hosted temporary HTTPS profile remains documented
+  but not separately smoke-tested.
 - Data assets and materialized outputs operational slice `018-data-operator-integration-smoke-and-documentation-sync` is now implemented: workflow compilation, controller claim hydration, worker materialized-input handling, resource admission, and compact evidence are covered by fixture-sized explicit-operator tests. The controller now hydrates claimed compute work that depends on completed `cache_data` items with a `materialized_data_assets` manifest built from completed `goet/materialized-data-assets/v1` outputs. The worker accepts that controller-provided manifest and writes `data-assets.json` for Python argument/env consumption without reacquiring provider data. A new workflow smoke compiles a tiny field/CDL fixture shape into `cache_data -> compute -> commit_data`, proves three inbound fixture assets, one compute artifact, two published outputs, terminal records for all three operator families, provider/source resource serialization, and published-location write serialization. Focused tests cover the workflow smoke, controller cache-data-dependent hydration, worker controller-provided materialized manifests, existing commit hydration, and cache-dependent queueing.
 - Data assets and materialized outputs operational slice `017-commit-data-published-output-work-items` is now implemented: workflow stage compilation turns publish bindings into explicit `commit_data` work items, strips those bindings from the producing compute item, records a `depends_on` edge to the producer, carries a `commit_data` payload with source artifact and publish target facts, and attaches a target-location write mutex resource constraint. The persisted controller path now enqueues ready same-stage dependents after normal producer completion and hydrates claimed `commit_data` work with the completed producer artifact manifest. The worker executes `commit_data` by publishing the selected artifact to a configured named location under a safe relative path, enforcing `fail_if_exists`, verifying target byte count and hash against source evidence when present, and emitting compact `goet/published-data-assets/v1` evidence with source work item, artifact, content type, location, size, and SHA-256. Focused tests cover compile-time planning/dependency/resource constraints, completed-manifest hydration, successful file publication, unsafe path rejection, missing artifact rejection, existing target failure, evidence matching target bytes, and published-location mutex admission. `go test ./...` passes.
 - Data assets and materialized outputs operational slice `016-cache-data-provider-resource-admission-and-transfer-limits` is now implemented: `cache_data` planning derives deterministic provider/source resource constraints for HTTP hosts, gdrive/rclone remotes, local-file roots, and registered-location roots, stores those constraints on the compiled `cache_data` item for existing claim-time persistence, and also includes them in the `cache_data` payload. `transfer_policy.max_concurrent_source_transfers` configures the source capacity, defaulting to a source mutex of 1. The bound data asset and `cache_data` payload now carry a small transfer policy with optional per-transfer `max_bytes_per_second` and provider arg `rclone_bwlimit`; HTTP/local acquisition copy loops can throttle through an injectable sleeper, and the rclone adapter passes `--bwlimit` through structured args without accepting arbitrary flags. Focused tests cover deterministic/sanitized source keys, source mutex admission, source capacity 2 admission, independent-source admission, unconstrained compute scheduling, HTTP throttle behavior, rclone bandwidth args, and invalid transfer policy validation.
@@ -208,4 +218,7 @@ session logs under `epi_ctl/`.
 
 ## Likely Next Step
 
-Wire `internal/clientsetup.SSHSetup` into `cmd/demo-client` behind an explicit setup flag or subcommand so the questionnaire can create local key material and a generated controller config from the demo client. Keep remote `authorized_keys` installation and durable `known_hosts` file management as separate, explicit follow-up slices.
+Resolve the OS-010 closure issue for the laptop-hosted temporary HTTPS profile:
+either run that profile and record evidence, or explicitly decide that the
+verified dedicated-server plus HPCC Slurm/Singularity smoke supersedes the
+laptop-specific evidence requirement for this concept.

@@ -68,7 +68,7 @@ Norton antivirus may briefly lock Go's temporary test executables after tests fi
 
 Recorded on 2026-07-10 against branch
 `concept/secure-network-exposure-gorc-controller-api` at commit
-`d3f7fe16165fefe9166efe73e56efc19feea7c86`.
+`bf67915`.
 
 ### Automated security tests
 
@@ -93,8 +93,8 @@ Evidence added in this slice:
 Target:
 
 ```text
-VM: instance-20260710-150616, project gorc-2026-07, zone us-central1-a
-Temporary DNS: 34-10-225-164.sslip.io -> 34.10.225.164
+Dedicated Linux VM with temporary wildcard DNS
+Temporary DNS: <temporary-controller-host> -> <dedicated-vm-public-ip>
 Ingress: Caddy v2.11.4
 Controller listener: 127.0.0.1:8080
 ```
@@ -102,24 +102,25 @@ Controller listener: 127.0.0.1:8080
 The VM controller was rebuilt from the concept branch and installed at:
 
 ```text
-/opt/gorc/bin/gorc-controller
-/opt/gorc/bin/gorc-worker
+<controller-install-root>/bin/gorc-controller
+<controller-install-root>/bin/gorc-worker
 ```
 
-The controller config used bearer credentials from restrictive token files under
-`/etc/gorc/secrets` and isolated OS-009 state under:
+The controller config used bearer credentials from restrictive service-owned
+token files and isolated OS-009 state under service-owned controller data and
+log roots:
 
 ```text
-/var/lib/gorc/os009/controller
-/var/log/gorc/os009
+<controller-state-root>
+<controller-log-root>
 ```
 
 External endpoint smoke command:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\network\smoke-controller-endpoint.ps1 `
-  -ControllerUrl https://34-10-225-164.sslip.io `
-  -HttpUrl http://34-10-225-164.sslip.io `
+  -ControllerUrl https://<temporary-controller-host> `
+  -HttpUrl http://<temporary-controller-host> `
   -TokenFile .run\os009-secrets\controller-client-token `
   -SkipLocalLoopbackCheck
 ```
@@ -137,9 +138,9 @@ Controller endpoint smoke passed.
 External TCP reachability from the development machine:
 
 ```text
-34.10.225.164:80    open
-34.10.225.164:443   open
-34.10.225.164:8080  closed
+<dedicated-vm-public-ip>:80    open
+<dedicated-vm-public-ip>:443   open
+<dedicated-vm-public-ip>:8080  closed
 ```
 
 VM loopback verification:
@@ -156,7 +157,7 @@ The development machine acted as the external worker host. The worker read its
 token from `.run/os009-secrets/controller-worker-token` and used:
 
 ```text
-https://34-10-225-164.sslip.io
+https://<temporary-controller-host>
 ```
 
 Work item submitted over HTTPS:
@@ -224,10 +225,11 @@ size: 48 MiB
 sha256: 5f32cbe58ca7ed11981a4efdacc17c8d216001d465d4fba6894ede6fe1898e29
 ```
 
-The SIF was staged on the dedicated controller VM for later transfer to HPCC:
+The SIF was staged on the dedicated controller VM for later transfer to the
+execution host:
 
 ```text
-/opt/gorc/images/goetl-worker.sif
+<controller-install-root>/images/goetl-worker.sif
 sha256: 5f32cbe58ca7ed11981a4efdacc17c8d216001d465d4fba6894ede6fe1898e29
 ```
 
@@ -238,19 +240,19 @@ one HPCC runtime root mounted at the same absolute path inside the container.
 
 ### Actual HPCC Slurm worker scheduling smoke
 
-The dedicated VM controller was reconfigured to schedule workers on MSU HPCC
+The dedicated VM controller was reconfigured to schedule workers on an HPCC
 through SSH transport, Slurm, and the staged Singularity worker image. The
-controller service runs as `gorc` and uses service-owned SSH material under
-`/etc/gorc/ssh`.
+controller service uses service-owned SSH material outside user home
+directories.
 
 Runtime paths used by the smoke:
 
 ```text
-HPCC runtime root: /mnt/scratch/weave151/etl/runtime
-Worker image: /mnt/scratch/weave151/etl/runtime/images/goetl-worker.sif
-Worker token file: /mnt/scratch/weave151/etl/runtime/secrets/controller-worker-token
-Generated worker config: /mnt/scratch/weave151/etl/runtime/config/worker.json
-Generated Slurm script: /mnt/scratch/weave151/etl/runtime/scripts/worker.slurm
+HPCC runtime root: <hpcc-runtime-root>
+Worker image: <hpcc-runtime-root>/images/goetl-worker.sif
+Worker token file: <hpcc-runtime-root>/secrets/controller-worker-token
+Generated worker config: <hpcc-runtime-root>/config/worker.json
+Generated Slurm script: <hpcc-runtime-root>/scripts/worker.slurm
 ```
 
 Submitted work item:
@@ -274,25 +276,25 @@ persisted work item completed: os009-hpcc-worker-001 attempt-47ab8d033630ef101bb
 HPCC Slurm evidence:
 
 ```text
-Slurm output: /mnt/scratch/weave151/etl/runtime/logs/goetl-worker-12217152.out
-Slurm error: /mnt/scratch/weave151/etl/runtime/logs/goetl-worker-12217152.err
-Worker log: /mnt/scratch/weave151/etl/runtime/logs/worker.log
+Slurm output: <hpcc-runtime-root>/logs/goetl-worker-<job-id>.out
+Slurm error: <hpcc-runtime-root>/logs/goetl-worker-<job-id>.err
+Worker log: <hpcc-runtime-root>/logs/worker.log
 ```
 
 The generated Slurm script ran:
 
 ```bash
 /usr/bin/singularity exec \
-  --bind /mnt/scratch/weave151/etl/runtime:/mnt/scratch/weave151/etl/runtime \
-  /mnt/scratch/weave151/etl/runtime/images/goetl-worker.sif \
+  --bind <hpcc-runtime-root>:<hpcc-runtime-root> \
+  <hpcc-runtime-root>/images/goetl-worker.sif \
   /goetl/goetl-worker \
-  /mnt/scratch/weave151/etl/runtime/config/worker.json
+  <hpcc-runtime-root>/config/worker.json
 ```
 
 HPCC output evidence:
 
 ```text
-/mnt/scratch/weave151/etl/runtime/data/os009-hpcc-worker-001.txt
+<hpcc-runtime-root>/data/os009-hpcc-worker-001.txt
 completed os009-hpcc-worker-001
 ```
 
@@ -314,18 +316,141 @@ The exact sentinel was absent from:
 
 - `.run/os009-worker`;
 - `.run/os009-deploy`;
-- `/var/log/gorc`;
-- `/var/lib/gorc/os009`;
-- `/etc/gorc/controller.json`;
-- `journalctl -u gorc-controller -u caddy`.
-- `/mnt/scratch/weave151/etl/runtime` on HPCC, excluding the intentional worker
-  token file.
+- service-owned controller logs;
+- service-owned controller OS-009 state;
+- service-owned controller config;
+- `journalctl -u gorc-controller -u caddy`;
+- `<hpcc-runtime-root>` on HPCC, excluding the intentional worker token file.
 
-The exact sentinel is intentionally present only in the local and VM worker token
-fixture files.
+The exact sentinel is intentionally present only in explicitly provisioned
+credential fixture files.
 
 ### Remaining OS-009 evidence gap
 
 The production-like HTTPS VM smoke, external worker callback, and actual
 HPCC/Slurm worker scheduling smoke are complete. No OS-009 external smoke
 evidence gap remains open.
+
+## Local Controller SSH Reverse Callback Evidence
+
+Recorded on 2026-07-10 against branch
+`concept/secure-network-exposure-gorc-controller-api`.
+
+This smoke verified the local/no-domain controller mode that uses SSH reverse
+callback transport instead of public HTTPS. The local controller listened only on
+`127.0.0.1:8080`; an SSH reverse callback listener on an HPCC dev node forwarded
+worker HTTP callbacks back to the laptop controller.
+
+Execution shape:
+
+```text
+local client -> local controller -> SSH transport -> HPCC dev-node process
+HPCC dev-node worker -> ssh_reverse loopback callback -> local controller
+```
+
+The worker was launched through the `remote_process` scheduler, not Slurm. This
+uses an HPCC dev-node process and is therefore suitable only for short smoke
+tests or sites that explicitly permit that process model.
+
+Evidence:
+
+```text
+controller /healthz: 200 OK
+submission: completed
+initial work items: 2
+completed work items: 2
+remote output files: cdl-demo-2024.txt, cdl-demo-2025.txt
+remote process stderr: empty
+```
+
+Output contents:
+
+```text
+completed write-demo-2024
+completed write-demo-2025
+```
+
+The direct non-loopback SSH reverse bind remained unavailable: requesting a
+non-loopback reverse bind on the HPCC dev node still produced a loopback-only
+listener. A dev-node relay was added for the Slurm path below.
+
+### Local Controller SSH Reverse Relay Slurm Evidence
+
+Recorded on 2026-07-10 against branch
+`concept/secure-network-exposure-gorc-controller-api`.
+
+This smoke verified local-controller HPCC orchestration without DNS, a public VM,
+or managed HTTPS ingress. The local controller listened on `127.0.0.1:8080`.
+The controller opened an SSH reverse listener on the HPCC dev node, then started
+a dev-node relay bound to a worker-visible interface. Slurm compute workers used
+the relay URL and the relay forwarded callbacks through the SSH reverse tunnel
+to the laptop controller.
+
+Execution shape:
+
+```text
+local client -> local controller -> SSH transport -> HPCC Slurm
+HPCC compute worker -> dev-node relay -> ssh_reverse loopback listener -> local controller
+```
+
+The worker config generated for this smoke included the explicit opt-in flag:
+
+```json
+{
+  "controller_url": "http://<hpcc-dev-node>:<relay-port>",
+  "controller_token_file": "<hpcc-runtime-root>/secrets/controller-worker-token",
+  "controller_insecure_external_http_allowed": true
+}
+```
+
+The worker SIF was rebuilt from the current source and staged to the HPCC image
+path used by the smoke:
+
+```text
+sha256: f76788783e0d0ea0355cc10f714989ed63744f7e20d6196f4166eace7bda5f72
+```
+
+CLI result:
+
+```text
+Submission: run-c13a4d12909e63a80081fcaeda6df94c
+Workflow: cdl-demo
+Initial work items: 2
+Status: completed
+Known work items: 2
+Queued: 0
+Running: 0
+Completed: 2
+Failed: 0
+Skipped: 0
+Stage 0: completed steps=1 assignable_pending=0 blocked_future=0 active=0 completed=2 failed=0 skipped=0
+```
+
+Controller evidence:
+
+```text
+worker_start_requested start_count=1 reason=active_capacity_below_claimable_work
+worker_start_confirmed_by_claim reservation_id=worker-start-1
+persisted work item completed: write-demo-2024 attempt-29c686cd2d5c0bef303086e2534efb2d
+worker_start_confirmed_by_claim reservation_id=worker-start-2
+persisted work item completed: write-demo-2025 attempt-9581947532efcebcb12b2bbe9010ab11
+```
+
+HPCC evidence:
+
+```text
+Slurm jobs: goetl-worker-12222949, goetl-worker-12222950
+Compute nodes: skl-035, skl-083
+Output files:
+<hpcc-runtime-root>/data/cdl-demo-2024.txt
+<hpcc-runtime-root>/data/cdl-demo-2025.txt
+```
+
+Post-shutdown check: neither the reverse-listener port nor the relay port
+remained listening on the HPCC dev node.
+
+Residual issue: one late extra worker printed a `connection refused` fetch error
+after the workflow had already completed and the controller had shut down. Slurm
+still marked that job `COMPLETED` because the current worker main logs errors
+and returns without a non-zero process exit. Track that as a worker process exit
+semantics follow-up; it did not prevent the workflow from completing.

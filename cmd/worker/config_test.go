@@ -16,6 +16,7 @@ func TestLoadConfig(t *testing.T) {
 		"data_dir": "data",
 		"controller_url": "https://controller.local",
 		"controller_token_file": "secrets/controller-worker-token",
+		"controller_insecure_external_http_allowed": true,
 		"python_executable": "python3",
 		"seven_zip_executable": "tools/7z",
 		"rclone_executable": "tools/rclone",
@@ -55,6 +56,10 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.ControllerTokenFile != filepath.Join(root, "secrets", "controller-worker-token") {
 		t.Fatalf("unexpected controller token file: %q", config.ControllerTokenFile)
+	}
+
+	if !config.ControllerInsecureExternalHTTPAllowed {
+		t.Fatal("expected insecure external HTTP to be allowed")
 	}
 
 	if config.PythonExecutable != "python3" {

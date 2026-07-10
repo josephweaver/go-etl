@@ -11,19 +11,20 @@ import (
 )
 
 type Config struct {
-	LogDir                     string            `json:"log_dir"`
-	TmpDir                     string            `json:"tmp_dir"`
-	DataDir                    string            `json:"data_dir"`
-	ControllerURL              string            `json:"controller_url"`
-	ControllerTokenFile        string            `json:"controller_token_file,omitempty"`
-	PythonExecutable           string            `json:"python_executable,omitempty"`
-	SevenZipExecutable         string            `json:"seven_zip_executable,omitempty"`
-	RcloneExecutable           string            `json:"rclone_executable,omitempty"`
-	RcloneConfigPath           string            `json:"rclone_config_path,omitempty"`
-	EnableGDriveRcloneProvider bool              `json:"enable_gdrive_rclone_provider,omitempty"`
-	AssetCacheDir              string            `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes              int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots          map[string]string `json:"data_location_roots,omitempty"`
+	LogDir                                string            `json:"log_dir"`
+	TmpDir                                string            `json:"tmp_dir"`
+	DataDir                               string            `json:"data_dir"`
+	ControllerURL                         string            `json:"controller_url"`
+	ControllerTokenFile                   string            `json:"controller_token_file,omitempty"`
+	ControllerInsecureExternalHTTPAllowed bool              `json:"controller_insecure_external_http_allowed,omitempty"`
+	PythonExecutable                      string            `json:"python_executable,omitempty"`
+	SevenZipExecutable                    string            `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable                      string            `json:"rclone_executable,omitempty"`
+	RcloneConfigPath                      string            `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider            bool              `json:"enable_gdrive_rclone_provider,omitempty"`
+	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
