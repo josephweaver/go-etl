@@ -114,7 +114,8 @@ admin
 
 ## Strategic Rules
 
-- `disabled` is allowed only when the resolved listen host is loopback.
+- `disabled` is allowed only when the resolved listen host and advertised
+  `controller_url` host are loopback.
 - `bearer` is required for laptop-external and production profiles.
 - A non-loopback listener with disabled authentication fails startup.
 - An externally advertised plain `http://` URL fails startup unless:
@@ -165,7 +166,8 @@ For `controller_config.controller_url`:
 - missing scheme, missing host, and unsupported schemes fail startup validation.
 
 If `controller_config.authentication.mode` is `disabled`,
-`controller_config.controller_listen_host` must classify as loopback.
+`controller_config.controller_listen_host` and the host in
+`controller_config.controller_url` must classify as loopback.
 
 If `controller_config.authentication.mode` is `bearer`, credentials must be
 non-empty and valid.

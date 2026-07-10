@@ -369,7 +369,8 @@ Requirements:
 - unknown authentication fields are rejected;
 - configured tokens are transformed into constant-time comparison material in
   memory;
-- authentication-disabled mode is rejected for non-loopback listeners;
+- authentication-disabled mode is rejected unless both the listener and
+  advertised `controller_url` host are loopback;
 - plain external advertised HTTP URLs require
   `controller_config.controller_insecure_external_http_allowed = true`;
 - HTTPS is required for laptop external testing and production.

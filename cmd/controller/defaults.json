@@ -4,6 +4,8 @@
   "variables": [
     {"name": {"namespace": "controller_config", "key": "controller_listen_host"}, "type": "string", "expression": "localhost"},
     {"name": {"namespace": "controller_config", "key": "controller_listen_port"}, "type": "int", "expression": 8080},
+    {"name": {"namespace": "controller_config", "key": "authentication"}, "type": "object", "expression": {"mode": {"type": "string", "expression": "disabled"}, "credentials": {"type": "list", "expression": []}}},
+    {"name": {"namespace": "controller_config", "key": "controller_insecure_external_http_allowed"}, "type": "bool", "expression": false},
     {"name": {"namespace": "controller_config", "key": "controller_root_dir"}, "type": "path", "expression": "./.run"},
     {"name": {"namespace": "controller_config", "key": "controller_repo_cache_path"}, "type": "path", "expression": "${controller_root_dir}/repo_cache"},
     {"name": {"namespace": "controller_config", "key": "controller_temp_path"}, "type": "path", "expression": "${controller_root_dir}/temp"},
