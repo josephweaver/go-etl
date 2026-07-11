@@ -14,6 +14,8 @@ const (
 	NamespaceWorkflow              Namespace = "workflow"
 	NamespaceOverride              Namespace = "override"
 	NamespaceStep                  Namespace = "step"
+	NamespaceFanOut                Namespace = "fanout"
+	NamespaceAsset                 Namespace = "asset"
 	NamespaceWorkItem              Namespace = "work_item"
 	NamespaceRuntime               Namespace = "runtime"
 
@@ -36,6 +38,8 @@ var Precedence = []Namespace{
 	NamespaceWorkflow,
 	NamespaceOverride,
 	NamespaceStep,
+	NamespaceFanOut,
+	NamespaceAsset,
 	NamespaceWorkItem,
 	NamespaceRuntime,
 }
@@ -53,6 +57,8 @@ func (n Namespace) Valid() bool {
 		NamespaceWorkflow,
 		NamespaceOverride,
 		NamespaceStep,
+		NamespaceFanOut,
+		NamespaceAsset,
 		NamespaceWorkItem,
 		NamespaceRuntime,
 		NamespaceGlobal,

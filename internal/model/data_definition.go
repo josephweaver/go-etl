@@ -139,7 +139,7 @@ func (definition DataInputDefinition) ProviderTemplate(name string, selection []
 	if err := definition.validateFileRoles(); err != nil {
 		return DataProviderTemplate{}, err
 	}
-	effectiveSelection, err := definition.effectiveSelection(selection)
+	effectiveSelection, err := definition.EffectiveSelection(selection)
 	if err != nil {
 		return DataProviderTemplate{}, err
 	}
@@ -266,7 +266,7 @@ func (definition DataInputDefinition) validateFileRoles() error {
 	return nil
 }
 
-func (definition DataInputDefinition) effectiveSelection(selection []string) ([]string, error) {
+func (definition DataInputDefinition) EffectiveSelection(selection []string) ([]string, error) {
 	if len(selection) == 0 {
 		selection = definition.Select
 	}
