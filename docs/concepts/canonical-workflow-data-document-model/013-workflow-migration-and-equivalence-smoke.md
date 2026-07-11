@@ -1,6 +1,6 @@
 # 013 Workflow Migration and Equivalence Smoke
 
-Status: Proposed
+Status: In progress
 
 ## Objective
 
@@ -79,3 +79,8 @@ legacy workflow fixtures
 go test ./...
 # Run repository fixture smoke scripts appropriate to the current platform.
 ```
+
+## Implementation Notes
+
+- 2026-07-11: Repository JSON/YAML fixture search found no checked-in workflow fixture files still using the legacy public wrapper shape.
+- 2026-07-11: `go test ./...` passes after disabling normal stage-compilation discovery of compute-side `data_assets` and `publish` planner parameters.

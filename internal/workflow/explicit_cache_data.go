@@ -89,6 +89,9 @@ func appendExplicitResourceConstraints(explicit []model.WorkItemResourceConstrai
 }
 
 func PlanStageCacheDataWorkItems(result CompileStageResult) (CompileStageResult, error) {
+	if err := ValidateExplicitCacheDataWorkItems(result); err != nil {
+		return CompileStageResult{}, err
+	}
 	if len(result.WorkItems) == 0 {
 		return result, nil
 	}
@@ -123,6 +126,24 @@ func PlanStageCacheDataWorkItems(result CompileStageResult) (CompileStageResult,
 	}
 	planned.WorkItems = append(explicit, planned.WorkItems...)
 	return planned, nil
+}
+
+func ValidateExplicitCacheDataWorkItems(result CompileStageResult) error {
+	seenExplicit := map[string]string{}
+	for _, item := range result.WorkItems {
+		if item.WorkItem.Type != model.WorkItemTypeCacheData {
+			continue
+		}
+		dedupeKey, err := explicitCacheDataDedupeKey(item)
+		if err != nil {
+			return err
+		}
+		if previous, ok := seenExplicit[dedupeKey]; ok {
+			return fmt.Errorf("duplicate explicit cache_data materializer for %s: %s and %s", dedupeKey, previous, item.WorkItem.ID)
+		}
+		seenExplicit[dedupeKey] = item.WorkItem.ID
+	}
+	return nil
 }
 
 func explicitCacheDataDedupeKey(item CompileStageWorkItem) (string, error) {

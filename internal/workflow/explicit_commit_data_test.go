@@ -141,6 +141,13 @@ func TestCanonicalComputeStepRejectsImplicitPublishParameter(t *testing.T) {
 	}
 }
 
+func TestCanonicalComputeStepRejectsImplicitDataAssetsParameter(t *testing.T) {
+	_, err := workflowFromCanonicalComputeParametersForTest(t, `"data_assets": []`)
+	if err == nil || !strings.Contains(err.Error(), `canonical work parameter "data_assets" is not allowed`) {
+		t.Fatalf("WorkflowFromCanonicalDocument() error = %v, want data_assets parameter rejection", err)
+	}
+}
+
 func workflowFromCanonicalExplicitCommitForTest(t *testing.T, outputBody string) (Workflow, error) {
 	t.Helper()
 	source := `{

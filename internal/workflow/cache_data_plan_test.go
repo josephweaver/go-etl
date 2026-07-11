@@ -213,7 +213,7 @@ func TestPlanCommitDataWorkItemsSplitsPublishBindingFromCompute(t *testing.T) {
 	}
 }
 
-func TestCompileWorkflowStagePlansCommitDataAfterCacheData(t *testing.T) {
+func TestCompileWorkflowStageDoesNotPlanLegacyDataOperators(t *testing.T) {
 	resolver := testWorkflowResolver(t, 2024)
 	workflow := Workflow{
 		ID: "cdl",
@@ -248,16 +248,28 @@ func TestCompileWorkflowStagePlansCommitDataAfterCacheData(t *testing.T) {
 		t.Fatalf("CompileWorkflowStage() error = %v", err)
 	}
 
-	if len(cacheDataItems(result)) != 1 {
-		t.Fatalf("cache_data item count = %d, want 1", len(cacheDataItems(result)))
+	if len(result.WorkItems) != 1 {
+		t.Fatalf("work item count = %d, want authored compute item only", len(result.WorkItems))
 	}
-	if len(commitDataItems(result)) != 1 {
-		t.Fatalf("commit_data item count = %d, want 1", len(commitDataItems(result)))
+	if len(cacheDataItems(result)) != 0 {
+		t.Fatalf("cache_data item count = %d, want 0", len(cacheDataItems(result)))
 	}
-	commit := commitDataItems(result)[0]
-	compute := computeDataItems(result)[0]
-	if len(commit.WorkItem.DependsOn) != 1 || commit.WorkItem.DependsOn[0] != compute.WorkItem.ID {
-		t.Fatalf("commit depends_on = %+v, want compute %s", commit.WorkItem.DependsOn, compute.WorkItem.ID)
+	if len(commitDataItems(result)) != 0 {
+		t.Fatalf("commit_data item count = %d, want 0", len(commitDataItems(result)))
+	}
+	computeItems := computeDataItems(result)
+	if len(computeItems) != 1 {
+		t.Fatalf("compute item count = %d, want 1", len(computeItems))
+	}
+	compute := computeItems[0]
+	if _, ok := compute.WorkItem.Parameters["data_assets"]; !ok {
+		t.Fatal("compute item lost legacy data_assets parameter")
+	}
+	if _, ok := compute.WorkItem.Parameters["publish"]; !ok {
+		t.Fatal("compute item lost legacy publish parameter")
+	}
+	if len(compute.WorkItem.DependsOn) != 0 {
+		t.Fatalf("compute depends_on = %+v, want no hidden cache dependency", compute.WorkItem.DependsOn)
 	}
 }
 

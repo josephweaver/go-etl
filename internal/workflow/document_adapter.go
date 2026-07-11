@@ -66,7 +66,7 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
-	if err := rejectCanonicalImplicitPublishParameters(step); err != nil {
+	if err := rejectCanonicalHiddenPlannerParameters(step); err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
 
@@ -252,11 +252,14 @@ func explicitCommitDataFromCanonical(step document.CanonicalWorkflowStep, defini
 	}, nil
 }
 
-func rejectCanonicalImplicitPublishParameters(step document.CanonicalWorkflowStep) error {
+func rejectCanonicalHiddenPlannerParameters(step document.CanonicalWorkflowStep) error {
 	if model.WorkItemType(step.Work.Type) == model.WorkItemTypeCommitData {
 		return nil
 	}
 	for name := range step.Work.Parameters {
+		if name == "data_assets" {
+			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit cache_data step with data.materialize", name)
+		}
 		if name == "publish" || name == "publish_targets" {
 			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit commit_data step with data.outputs", name)
 		}

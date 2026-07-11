@@ -25,7 +25,7 @@ When generating workflow JSON for this plugin, an AI agent must follow these rul
 2. Use only documented input names, output names, parameter names, and option names.
 3. Do not invent defaults. If a default affects scientific or operational meaning, require it to be explicit.
 4. Do not use private absolute paths, controller cache paths, or developer-local paths.
-5. Use materialized data-asset paths such as `${data.<binding>.local_path}` only where the runtime explicitly supports that interpolation.
+5. Use materialized data-asset paths such as `${data.<binding>.path[0]}` only where the runtime explicitly supports that interpolation.
 6. Plugin output paths must be artifact-relative slash paths. Do not use absolute paths, `..`, backslashes, drive letters, or trailing slashes.
 7. Sensitive values must use protected references and explicit materialization. Never place plaintext secrets in workflow JSON.
 8. If the request involves CRS, raster alignment, resampling, nodata handling, polygon inclusion, units, or output explosion risk, do not silently choose semantics. Mark the workflow as blocked until those choices are explicit.
@@ -238,12 +238,12 @@ Request example:
   "operation": "raster_pair_value_counts",
   "inputs": {
     "field_raster": {
-      "path": "${data.yanroy_field.local_path}",
+      "path": "${data.yanroy_field.path[0]}",
       "band": 1,
       "nodata": 0
     },
     "value_raster": {
-      "path": "${data.cdl_year.local_path}",
+      "path": "${data.cdl_year.path[0]}",
       "band": 1,
       "nodata": 0
     }
@@ -335,12 +335,12 @@ Use this section only after the plugin has a first-class work-item type.
                 "operation": "raster_pair_value_counts",
                 "inputs": {
                   "field_raster": {
-                    "path": "${data.yanroy_field.local_path}",
+                    "path": "${data.yanroy_field.path[0]}",
                     "band": 1,
                     "nodata": 0
                   },
                   "value_raster": {
-                    "path": "${data.cdl_year.local_path}",
+                    "path": "${data.cdl_year.path[0]}",
                     "band": 1,
                     "nodata": 0
                   }
@@ -386,7 +386,8 @@ Required Python parameters:
 | ------------------- | ------------------ | --------------------------------------------------------------------- |
 | `python_entrypoint` | `string` or `path` | Wrapper script path inside admitted source                            |
 | `python_args`       | `list`             | Wrapper arguments; may include supported data/artifact interpolations |
-| `data_assets`       | `object`           | Data-asset declarations, if required by workflow layer                |
+
+Data inputs should be declared through workflow `data` sections and explicit `cache_data` steps. Wrapper arguments may reference materialized paths with `${data.<binding>.path[0]}` or named file-role paths such as `${data.<binding>.files.<role>.path}`.
 
 Wrapper output JSON example:
 

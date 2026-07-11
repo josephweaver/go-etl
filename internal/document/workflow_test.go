@@ -2,6 +2,7 @@ package document
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"goetl/internal/variable"
@@ -99,5 +100,25 @@ func TestDecodeCanonicalWorkflowSkipsLegacyWrapper(t *testing.T) {
 	}`), DecodeOptions{Path: "workflow.json"})
 	if !errors.Is(err, ErrNotCanonicalWorkflow) {
 		t.Fatalf("DecodeCanonicalWorkflowSource() error = %v, want ErrNotCanonicalWorkflow", err)
+	}
+}
+
+func TestDecodeCanonicalWorkflowRejectsLegacyWrapperWithMigrationError(t *testing.T) {
+	_, err := DecodeCanonicalWorkflowSource([]byte(`{
+		"api_version": "goet/v1alpha1",
+		"kind": "Workflow",
+		"workflow": {
+			"ID": "legacy",
+			"Steps": []
+		}
+	}`), DecodeOptions{Path: "workflow.json"})
+	if err == nil {
+		t.Fatal("DecodeCanonicalWorkflowSource() expected error")
+	}
+	if errors.Is(err, ErrNotCanonicalWorkflow) {
+		t.Fatalf("DecodeCanonicalWorkflowSource() error = %v, want migration validation error", err)
+	}
+	if !strings.Contains(err.Error(), "legacy workflow wrapper is not supported in canonical Workflow documents") {
+		t.Fatalf("DecodeCanonicalWorkflowSource() error = %v, want migration error", err)
 	}
 }
