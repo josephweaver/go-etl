@@ -125,6 +125,43 @@ func (m *WorkerCapacityManager) Evaluate(
 		return WorkerStartPlan{}, fmt.Errorf("worker launch function is required")
 	}
 
+	demand, err := demandFn(ctx)
+	if err != nil {
+		return WorkerStartPlan{}, err
+	}
+
+	return m.EvaluateDemand(ctx, now, cfg, demand, launchFn)
+}
+
+func (m *WorkerCapacityManager) EvaluateSnapshot(
+	ctx context.Context,
+	now time.Time,
+	cfg WorkerExecutionConfig,
+	snapshot WorkerCapacitySnapshot,
+	launchFn func(context.Context, int) error,
+) (WorkerStartPlan, error) {
+	return m.EvaluateDemand(ctx, now, cfg, WorkerDemand{
+		PendingQueued:      snapshot.PendingQueued,
+		PendingClaimable:   snapshot.PendingClaimable,
+		RunningAttempts:    snapshot.RunningAttempts,
+		LiveWorkerSessions: snapshot.LiveWorkerSessions,
+	}, launchFn)
+}
+
+func (m *WorkerCapacityManager) EvaluateDemand(
+	ctx context.Context,
+	now time.Time,
+	cfg WorkerExecutionConfig,
+	demand WorkerDemand,
+	launchFn func(context.Context, int) error,
+) (WorkerStartPlan, error) {
+	if m == nil {
+		return WorkerStartPlan{}, fmt.Errorf("worker capacity manager is required")
+	}
+	if launchFn == nil {
+		return WorkerStartPlan{}, fmt.Errorf("worker launch function is required")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -132,11 +169,6 @@ func (m *WorkerCapacityManager) Evaluate(
 		cfg.Pattern = workerExecutionPatternOneByOneUntilSaturated
 	}
 	pattern, err := m.patternForConfig(cfg.Pattern)
-	if err != nil {
-		return WorkerStartPlan{}, err
-	}
-
-	demand, err := demandFn(ctx)
 	if err != nil {
 		return WorkerStartPlan{}, err
 	}
@@ -165,6 +197,15 @@ func (m *WorkerCapacityManager) Evaluate(
 		return plan, err
 	}
 	return plan, nil
+}
+
+func (m *WorkerCapacityManager) PruneExpiredInflightStarts(now time.Time, timeout time.Duration) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneExpiredInflightStarts(now, timeout)
 }
 
 func (m *WorkerCapacityManager) patternForConfig(pattern string) (WorkerExecutionPattern, error) {

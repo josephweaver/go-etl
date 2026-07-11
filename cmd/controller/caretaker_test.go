@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"goetl/internal/persistence"
 )
 
 func TestCareTakerSignalDoesNotBlock(t *testing.T) {
@@ -131,6 +135,202 @@ func TestCalculateCareTakerNextWakeBoundsRetryDelay(t *testing.T) {
 	}
 }
 
+func TestCareTakerRecoversExpiredSessionsBeforeCapacityPlan(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	var events []string
+	source := &fakeCareTakerStateSource{
+		snapshot: WorkerCapacitySnapshot{PendingQueued: 1, PendingClaimable: 1},
+		events:   &events,
+	}
+	launcher := &fakeCareTakerLauncher{events: &events}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		DeadAfter: 5 * time.Minute,
+		WorkerExecution: WorkerExecutionConfig{
+			Pattern:              workerExecutionPatternOneByOneUntilSaturated,
+			MaxActiveWorkers:     2,
+			InflightStartTimeout: 5 * time.Minute,
+		},
+	}, source, launcher, NewWorkerCapacityManager(nil), fakeCareTakerClock{now: now})
+
+	if _, err := caretaker.reconcile(context.Background(), now); err != nil {
+		t.Fatalf("reconcile() error = %v", err)
+	}
+	want := []string{"recover", "snapshot", "launch"}
+	if !equalStrings(events, want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
+	}
+	if launcher.calls != 1 || launcher.counts[0] != 1 {
+		t.Fatalf("launcher calls = %d counts=%+v, want one launch", launcher.calls, launcher.counts)
+	}
+}
+
+func TestRecoveredWorkParticipatesInSameCapacityPlan(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recovery: WorkerRecoverySummary{ExpiredSessions: 1, AbandonedAttempts: 1, RequeuedWorkItems: 1},
+		snapshot: WorkerCapacitySnapshot{
+			PendingQueued:    1,
+			PendingClaimable: 1,
+		},
+	}
+	launcher := &fakeCareTakerLauncher{}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		DeadAfter: 5 * time.Minute,
+		WorkerExecution: WorkerExecutionConfig{
+			Pattern:              workerExecutionPatternOneByOneUntilSaturated,
+			MaxActiveWorkers:     2,
+			InflightStartTimeout: 5 * time.Minute,
+		},
+	}, source, launcher, NewWorkerCapacityManager(nil), fakeCareTakerClock{now: now})
+
+	if _, err := caretaker.reconcile(context.Background(), now); err != nil {
+		t.Fatalf("reconcile() error = %v", err)
+	}
+	if launcher.calls != 1 {
+		t.Fatalf("launcher calls = %d, want recovered work to launch in same reconcile", launcher.calls)
+	}
+}
+
+func TestCareTakerPrunesExpiredInflightBeforePlan(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	manager := NewWorkerCapacityManager(nil)
+	manager.reserveInflightStarts(now.Add(-10*time.Minute), 1)
+	source := &fakeCareTakerStateSource{
+		snapshot: WorkerCapacitySnapshot{PendingQueued: 1, PendingClaimable: 1},
+	}
+	launcher := &fakeCareTakerLauncher{}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		DeadAfter: 5 * time.Minute,
+		WorkerExecution: WorkerExecutionConfig{
+			Pattern:              workerExecutionPatternOneByOneUntilSaturated,
+			MaxActiveWorkers:     2,
+			InflightStartTimeout: 5 * time.Minute,
+		},
+		InflightStartTimeout: 5 * time.Minute,
+	}, source, launcher, manager, fakeCareTakerClock{now: now})
+
+	if _, err := caretaker.reconcile(context.Background(), now); err != nil {
+		t.Fatalf("reconcile() error = %v", err)
+	}
+	if launcher.calls != 1 {
+		t.Fatalf("launcher calls = %d, want launch after expired inflight prune", launcher.calls)
+	}
+}
+
+func TestCareTakerLaunchFailureRemovesReservationAndSchedulesRetry(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	manager := NewWorkerCapacityManager(nil)
+	source := &fakeCareTakerStateSource{
+		snapshot: WorkerCapacitySnapshot{PendingQueued: 1, PendingClaimable: 1},
+	}
+	launchErr := errors.New("launch failed")
+	launcher := &fakeCareTakerLauncher{err: launchErr}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		RetryInitial: 30 * time.Second,
+		RetryMaximum: 5 * time.Minute,
+		WorkerExecution: WorkerExecutionConfig{
+			Pattern:              workerExecutionPatternOneByOneUntilSaturated,
+			MaxActiveWorkers:     2,
+			InflightStartTimeout: 5 * time.Minute,
+		},
+	}, source, launcher, manager, fakeCareTakerClock{now: now})
+
+	next, err := caretaker.reconcile(context.Background(), now)
+	if !errors.Is(err, launchErr) {
+		t.Fatalf("reconcile() error = %v, want launch error", err)
+	}
+	if got := len(manager.Snapshot().InflightStarts); got != 0 {
+		t.Fatalf("inflight starts = %d, want removed on launch failure", got)
+	}
+	want := now.Add(30 * time.Second)
+	if !next.At.Equal(want) || next.Reason != "retry" {
+		t.Fatalf("next wake = %+v, want %s retry", next, want)
+	}
+}
+
+func TestControllerRecoverExpiredWorkerSessionsAdapter(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	work := testPersistenceWorkItem("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-11T12:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-expired",
+		SessionID:    "session-expired",
+		RegisteredAt: "2026-07-11T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession() error = %v", err)
+	}
+	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
+		AttemptID:       "attempt-001",
+		WorkerID:        "worker-expired",
+		WorkerSessionID: "session-expired",
+		ExecutorType:    persistence.ExecutorTypeWorker,
+		StartedAt:       "2026-07-11T12:00:01Z",
+	}); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	summary, err := controller.RecoverExpiredWorkerSessions(ctx, time.Date(2026, 7, 11, 12, 6, 0, 0, time.UTC), 5*time.Minute)
+	if err != nil {
+		t.Fatalf("RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	want := WorkerRecoverySummary{ExpiredSessions: 1, AbandonedAttempts: 1, RequeuedWorkItems: 1}
+	if summary != want {
+		t.Fatalf("summary = %+v, want %+v", summary, want)
+	}
+}
+
+func TestControllerWorkerCapacitySnapshotIncludesEarliestHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	work := testPersistenceWorkItem("work-001", run.ID, 0, 0)
+	if err := store.InsertWorkItems(ctx, []persistence.WorkItemRecord{work}); err != nil {
+		t.Fatalf("InsertWorkItems() error = %v", err)
+	}
+	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-11T12:00:00Z"}}); err != nil {
+		t.Fatalf("EnqueueWorkItems() error = %v", err)
+	}
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-a",
+		SessionID:    "session-a",
+		RegisteredAt: "2026-07-11T11:58:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(a) error = %v", err)
+	}
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-b",
+		SessionID:    "session-b",
+		RegisteredAt: "2026-07-11T11:59:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(b) error = %v", err)
+	}
+
+	snapshot, err := controller.WorkerCapacitySnapshot(ctx, time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC), 5*time.Minute)
+	if err != nil {
+		t.Fatalf("WorkerCapacitySnapshot() error = %v", err)
+	}
+	if snapshot.PendingQueued != 1 || snapshot.PendingClaimable != 1 || snapshot.LiveWorkerSessions != 2 {
+		t.Fatalf("snapshot = %+v, want queued/claimable/live 1/1/2", snapshot)
+	}
+	wantHeartbeat := time.Date(2026, 7, 11, 11, 58, 0, 0, time.UTC)
+	if !snapshot.EarliestHeartbeat.Equal(wantHeartbeat) {
+		t.Fatalf("EarliestHeartbeat = %s, want %s", snapshot.EarliestHeartbeat, wantHeartbeat)
+	}
+}
+
 type fakeCareTakerClock struct {
 	now time.Time
 }
@@ -156,5 +356,63 @@ func (t fakeCareTakerTimer) Stop() bool {
 }
 
 func (t fakeCareTakerTimer) Reset(d time.Duration) bool {
+	return true
+}
+
+type fakeCareTakerStateSource struct {
+	recovery WorkerRecoverySummary
+	snapshot WorkerCapacitySnapshot
+	err      error
+	calls    []string
+	events   *[]string
+}
+
+func (s *fakeCareTakerStateSource) RecoverExpiredWorkerSessions(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerRecoverySummary, error) {
+	s.calls = append(s.calls, "recover")
+	if s.events != nil {
+		*s.events = append(*s.events, "recover")
+	}
+	if s.err != nil {
+		return WorkerRecoverySummary{}, s.err
+	}
+	return s.recovery, nil
+}
+
+func (s *fakeCareTakerStateSource) WorkerCapacitySnapshot(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerCapacitySnapshot, error) {
+	s.calls = append(s.calls, "snapshot")
+	if s.events != nil {
+		*s.events = append(*s.events, "snapshot")
+	}
+	if s.err != nil {
+		return WorkerCapacitySnapshot{}, s.err
+	}
+	return s.snapshot, nil
+}
+
+type fakeCareTakerLauncher struct {
+	calls  int
+	counts []int
+	err    error
+	events *[]string
+}
+
+func (l *fakeCareTakerLauncher) StartWorkers(ctx context.Context, count int) error {
+	l.calls++
+	l.counts = append(l.counts, count)
+	if l.events != nil {
+		*l.events = append(*l.events, "launch")
+	}
+	return l.err
+}
+
+func equalStrings(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
 	return true
 }

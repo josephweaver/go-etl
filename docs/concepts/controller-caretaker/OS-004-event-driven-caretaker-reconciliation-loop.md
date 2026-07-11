@@ -11,6 +11,8 @@ Current implementation:
 - Worker registration confirms the oldest inflight worker-start reservation; the legacy claim-confirm path remains temporarily in place until the OS-005 cutover.
 - Worker capacity planning counts live worker sessions plus unexpired inflight starts as observed capacity, so idle live workers satisfy pending work and dead running attempts do not.
 - Controller demand snapshots count live sessions using the heartbeat cutoff before applying the one-by-one capacity policy.
+- `CareTaker.reconcile` now performs the OS-004 order through testable interfaces: recover expired sessions, prune expired inflight starts, load a fresh snapshot, plan/reserve/launch, roll back reservations on launch failure, and schedule retry deadlines.
+- The controller implements the recovery, capacity snapshot, and worker launcher adapter methods used by the CareTaker.
 
 ## Minimum capable model
 

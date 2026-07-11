@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"time"
+
+	"goetl/internal/persistence"
 )
 
 type CareTakerClock interface {
@@ -70,22 +74,47 @@ type CareTakerNextWake struct {
 	Reason string
 }
 
+type CareTakerStateSource interface {
+	RecoverExpiredWorkerSessions(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerRecoverySummary, error)
+	WorkerCapacitySnapshot(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerCapacitySnapshot, error)
+}
+
+type CareTakerWorkerLauncher interface {
+	StartWorkers(ctx context.Context, count int) error
+}
+
 type CareTaker struct {
 	wakeCh chan struct{}
 	clock  CareTakerClock
+	cfg    CareTakerConfig
+	source CareTakerStateSource
+	launch CareTakerWorkerLauncher
+	exec   *WorkerCapacityManager
 
 	mu          sync.Mutex
 	signalCount int
 	lastSignal  string
+	retryDelay  time.Duration
 }
 
 func NewCareTaker(clock CareTakerClock) *CareTaker {
+	return NewConfiguredCareTaker(CareTakerConfig{}, nil, nil, nil, clock)
+}
+
+func NewConfiguredCareTaker(cfg CareTakerConfig, source CareTakerStateSource, launcher CareTakerWorkerLauncher, exec *WorkerCapacityManager, clock CareTakerClock) *CareTaker {
 	if clock == nil {
 		clock = realCareTakerClock{}
+	}
+	if exec == nil {
+		exec = NewWorkerCapacityManager(nil)
 	}
 	return &CareTaker{
 		wakeCh: make(chan struct{}, 1),
 		clock:  clock,
+		cfg:    cfg,
+		source: source,
+		launch: launcher,
+		exec:   exec,
 	}
 }
 
@@ -111,6 +140,107 @@ func (c *CareTaker) signalSnapshot() (int, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.signalCount, c.lastSignal
+}
+
+func (c *CareTaker) reconcile(ctx context.Context, now time.Time) (CareTakerNextWake, error) {
+	if c.source == nil {
+		return CareTakerNextWake{}, nil
+	}
+	if c.launch == nil {
+		return CareTakerNextWake{}, nil
+	}
+	if c.exec == nil {
+		c.exec = NewWorkerCapacityManager(nil)
+	}
+
+	if _, err := c.source.RecoverExpiredWorkerSessions(ctx, now, c.cfg.DeadAfter); err != nil {
+		c.noteReconcileError()
+		return calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, c.exec.Snapshot(), c.retryDelay), err
+	}
+	c.exec.PruneExpiredInflightStarts(now, c.cfg.InflightStartTimeout)
+	snapshot, err := c.source.WorkerCapacitySnapshot(ctx, now, c.cfg.DeadAfter)
+	if err != nil {
+		c.noteReconcileError()
+		return calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, c.exec.Snapshot(), c.retryDelay), err
+	}
+
+	_, err = c.exec.EvaluateSnapshot(ctx, now, c.cfg.WorkerExecution, snapshot, c.launch.StartWorkers)
+	if err != nil {
+		c.noteReconcileError()
+		return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), c.retryDelay), err
+	}
+	c.clearReconcileError()
+	return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), 0), nil
+}
+
+func (c *CareTaker) noteReconcileError() {
+	if c.cfg.RetryInitial <= 0 {
+		c.retryDelay = 0
+		return
+	}
+	if c.retryDelay <= 0 {
+		c.retryDelay = c.cfg.RetryInitial
+		return
+	}
+	c.retryDelay *= 2
+	if c.cfg.RetryMaximum > 0 && c.retryDelay > c.cfg.RetryMaximum {
+		c.retryDelay = c.cfg.RetryMaximum
+	}
+}
+
+func (c *CareTaker) clearReconcileError() {
+	c.retryDelay = 0
+}
+
+func (c *Controller) RecoverExpiredWorkerSessions(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerRecoverySummary, error) {
+	if c.workflowStore == nil {
+		return WorkerRecoverySummary{}, fmt.Errorf("workflow store required")
+	}
+	result, err := c.workflowStore.RecoverExpiredWorkerSessions(ctx, persistence.RecoverExpiredWorkerSessionsRequest{
+		Cutoff:      now.Add(-deadAfter).Format(time.RFC3339Nano),
+		RecoveredAt: now.UTC().Format(time.RFC3339Nano),
+		Reason:      "heartbeat_expired",
+	})
+	if err != nil {
+		return WorkerRecoverySummary{}, err
+	}
+	return WorkerRecoverySummary{
+		ExpiredSessions:   result.ExpiredSessions,
+		AbandonedAttempts: result.AbandonedAttempts,
+		RequeuedWorkItems: result.RequeuedWorkItems,
+	}, nil
+}
+
+func (c *Controller) WorkerCapacitySnapshot(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerCapacitySnapshot, error) {
+	demand, err := c.workerDemand(ctx, now, deadAfter)
+	if err != nil {
+		return WorkerCapacitySnapshot{}, err
+	}
+	live, err := c.workflowStore.ListLiveWorkerSessions(ctx, now.Add(-deadAfter))
+	if err != nil {
+		return WorkerCapacitySnapshot{}, fmt.Errorf("list live worker sessions: %w", err)
+	}
+	var earliest time.Time
+	for _, session := range live {
+		heartbeat, err := time.Parse(time.RFC3339Nano, session.LastHeartbeatAt)
+		if err != nil {
+			return WorkerCapacitySnapshot{}, fmt.Errorf("parse worker session heartbeat %s: %w", session.ID, err)
+		}
+		if earliest.IsZero() || heartbeat.Before(earliest) {
+			earliest = heartbeat
+		}
+	}
+	return WorkerCapacitySnapshot{
+		PendingQueued:      demand.PendingQueued,
+		PendingClaimable:   demand.PendingClaimable,
+		RunningAttempts:    demand.RunningAttempts,
+		LiveWorkerSessions: demand.LiveWorkerSessions,
+		EarliestHeartbeat:  earliest,
+	}, nil
+}
+
+func (c *Controller) StartWorkers(ctx context.Context, count int) error {
+	return c.startWorkers(ctx, c.launchResolver, count)
 }
 
 func calculateCareTakerNextWake(now time.Time, cfg CareTakerConfig, snapshot WorkerCapacitySnapshot, state WorkerExecutionState, retryDelay time.Duration) CareTakerNextWake {
