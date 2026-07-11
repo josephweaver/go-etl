@@ -59,8 +59,6 @@ type Controller struct {
 	logSink             logObservationSink
 	shutdown            func(context.Context) error
 	env                 *ExecutionEnvironment
-	scaler              WorkerScaleState
-	scaleCfg            WorkerScaleConfig
 	recoveryStartedAt   time.Time
 	normalAdmission     bool
 	maxRequestBytes     int
@@ -177,11 +175,6 @@ func newController() *Controller {
 		workerStarter:   LocalWorkerStarter{},
 		workerExecutor:  NewWorkerCapacityManager(nil),
 		normalAdmission: true,
-		scaleCfg: WorkerScaleConfig{
-			MaxCount:                2,
-			CountPerStart:           1,
-			MinElapsedBetweenStarts: 30 * time.Second,
-		},
 	}
 }
 
@@ -2564,26 +2557,6 @@ func workerTargetEnvironment(resolver variable.Resolver) (string, error) {
 	}
 
 	return workerTarget, nil
-}
-
-func workerScaleConfig(resolver variable.Resolver, defaults WorkerScaleConfig) (WorkerScaleConfig, error) {
-	cfg := defaults
-
-	var err error
-	if cfg.MinCount, err = optionalIntVariable(resolver, "worker_min_count", cfg.MinCount); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.MaxCount, err = optionalIntVariable(resolver, "worker_max_count", cfg.MaxCount); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.CountPerStart, err = optionalIntVariable(resolver, "worker_count_per_start", cfg.CountPerStart); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.MinElapsedBetweenStarts, err = optionalDurationVariable(resolver, "worker_min_elapsed_time_between_starts", cfg.MinElapsedBetweenStarts); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-
-	return cfg, nil
 }
 
 func optionalIntVariable(resolver variable.Resolver, name string, fallback int) (int, error) {

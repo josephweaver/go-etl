@@ -4580,7 +4580,6 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
-	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
 	root := setupLocalWorkflowSource(t, controller)
 
 	submitLocalWorkflowYears(t, controller, root, 2024)

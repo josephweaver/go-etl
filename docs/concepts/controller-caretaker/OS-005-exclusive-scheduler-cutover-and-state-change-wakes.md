@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress.
+Implemented.
 
 Current implementation:
 
@@ -15,7 +15,9 @@ Current implementation:
 - Worker lifecycle signaling no longer has a fallback path that directly evaluates capacity when no CareTaker signaler is installed.
 - Sequential workflow stage activation now signals `workflow_stage_activated` after queued work is marked ready instead of directly scheduling workers.
 - The legacy exported `EvaluateWorkerCapacity` controller method is now package-local as `reconcileWorkerCapacity` for focused tests and CareTaker-owned reconciliation work.
+- The obsolete `WorkerScaleState` scaler implementation and tests were removed after the CareTaker cutover eliminated production/test references.
 - `Controller.signalCareTaker` provides the no-fail notification seam for subsequent state-transition cutovers.
+- `go test ./... -count=1` passed on 2026-07-11 after the cutover.
 
 ## Minimum capable model
 

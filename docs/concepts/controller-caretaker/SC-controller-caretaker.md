@@ -54,7 +54,7 @@ The controller needs a durable worker-liveness model and one reconciliation owne
 - `EvaluateWorkerCapacity`;
 - `ConfirmWorkerStartClaimedAndEvaluateAsync`.
 
-`cmd/controller/worker_scaler.go` contains an older start-planning state that should be removed after references are eliminated.
+The older `cmd/controller/worker_scaler.go` start-planning state was removed during the exclusive scheduler cutover after references were eliminated.
 
 The existing launch backend remains useful:
 

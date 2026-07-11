@@ -13,18 +13,26 @@ This package contains an implementation-ready strategic context and one operatio
 - `docs/MODEL_IMPLEMENTATION_PLAN.md`  
   Suggested model choices and decomposition notes.
 
-## Intended first behavior
+## Current behavior
 
-The first worker execution pattern is:
+This concept introduced the original worker capacity manager. It is now superseded by the controller CareTaker for automatic launch ownership.
+
+The current worker execution pattern remains:
 
 ```text
-if active_workers < claimable_pending_work:
+if observed_worker_capacity < desired_worker_capacity:
     start exactly one worker
 else:
     start zero workers
 ```
 
-A newly started worker counts as active capacity until it claims work or its launch reservation expires. This makes slow worker startup naturally dampen launch rate, producing the desired power-curve ramp without requiring a complex scheduler.
+Observed worker capacity is now:
+
+```text
+live worker sessions + unexpired inflight worker-start reservations
+```
+
+Worker registration confirms an inflight start. Claiming work no longer confirms a start. API handlers and startup paths signal the CareTaker after durable state changes; the CareTaker is the exclusive automatic scheduling owner and calls the launch backend during reconciliation.
 
 Set `controller_config.worker_execution_pattern` to `null` when the controller should admit and serve work without scheduling worker processes. The null pattern still evaluates durable demand for observability, but always returns zero worker starts and records no inflight launch reservations.
 

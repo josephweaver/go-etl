@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress.
+Implemented.
 
 Current implementation:
 

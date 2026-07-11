@@ -2,7 +2,9 @@
 
 ## Status
 
-Ready for implementation after review.
+Implemented, then superseded in part by `docs/concepts/controller-caretaker`.
+
+The capacity manager and one-by-one policy remain, but the controller CareTaker now owns automatic worker launch reconciliation. Current observed capacity is live worker sessions plus unexpired inflight starts. Worker registration confirms inflight starts; work claim does not. API handlers signal the CareTaker after durable state changes instead of directly calling the capacity reconciler.
 
 ## Minimum capable model
 
@@ -62,8 +64,6 @@ Prefer to stay within this file budget:
 cmd/controller/main.go
 cmd/controller/worker_execution.go
 cmd/controller/worker_execution_test.go
-cmd/controller/worker_scaler.go
-cmd/controller/worker_scaler_test.go
 cmd/controller/config.go
 cmd/controller/defaults.json
 ```
@@ -74,7 +74,7 @@ Do not modify worker plugins, Python scripts, or workflow compiler internals unl
 
 ## Current implementation notes
 
-The code already contains `WorkerScaleState`, `WorkerScaleConfig`, and `PlanStarts`. It has the right instinct, especially the "waiting for claim" guard, but it is embedded too directly in workflow admission.
+The original code contained `WorkerScaleState`, `WorkerScaleConfig`, and `PlanStarts`. That old scaler was removed during the controller CareTaker cutover.
 
 The controller currently starts workers after initial workflow admission using queued and running counts. This is not enough because work can become queued later when a worker completes and the next stage becomes ready.
 
@@ -116,7 +116,7 @@ type WorkerExecutionPattern interface {
 }
 ```
 
-If you can adapt the existing `WorkerScaleState` cleanly, do that. Do not preserve `StartedWorkers` as a total-ever-started cap unless it is renamed and semantically corrected. For this first pattern, active capacity should be based on running attempts plus unexpired inflight start reservations.
+For the first pattern, the initial active-capacity approximation was running attempts plus unexpired inflight start reservations. The current CareTaker implementation supersedes that approximation with live worker sessions plus unexpired inflight starts.
 
 ## Demand calculation
 
