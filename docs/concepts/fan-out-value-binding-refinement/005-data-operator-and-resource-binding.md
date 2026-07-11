@@ -1,6 +1,6 @@
 # 005 Data-Operator and Resource Binding
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.4, High reasoning  
 Reference: EC-3 / operational slice / files(5)+test
 

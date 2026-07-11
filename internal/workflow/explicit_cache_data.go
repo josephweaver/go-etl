@@ -17,7 +17,7 @@ type ExplicitCacheDataTemplate struct {
 
 func compileExplicitCacheDataWorkItem(
 	resolver variable.Resolver,
-	fanOutValue variable.ResolvedValue,
+	context FanOutItemContext,
 	item *model.WorkItem,
 	template *ExplicitCacheDataTemplate,
 ) ([]model.WorkItemResourceConstraint, error) {
@@ -35,7 +35,7 @@ func compileExplicitCacheDataWorkItem(
 	if !ok {
 		return nil, fmt.Errorf("data input %q is not defined", template.Asset)
 	}
-	instance, err := InstantiateDataAsset(resolver, fanOutValue, template.Asset, definition, template.Selection, template.With)
+	instance, err := instantiateDataAssetWithContext(resolver, context, template.Asset, definition, template.Selection, template.With)
 	if err != nil {
 		return nil, err
 	}

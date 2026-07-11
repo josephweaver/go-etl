@@ -1,6 +1,6 @@
 # Fan-Out Value Binding Refinement
 
-Status: Proposed  
+Status: Implemented
 Cadence: Strategic Concept with ordered Operational Slices  
 Target repository: `josephweaver/go-etl`  
 Reviewed against repository `main`: 2026-07-11  
@@ -77,13 +77,12 @@ The repository already has most of the required primitives:
 - empty fan-out steps already participate in dependency auto-advance;
 - downstream step output ordering follows fan-out generation order.
 
-The current mismatch is at the canonical adapter and fan-out token boundary:
-
-1. `fan_out.as` is parsed but is not yet an authoritative current-item binding.
-2. Canonical `fan_out.id` is adapted as a single accessor rather than a rendered per-item template.
-3. The adapter accepts `${fanout}` and `${fanout.<field>}` but not list indexing such as `${fanout[0]}`.
-4. Low-level ID/output token generation accepts only scalar string/path/integer values.
-5. Canonical work parameters do not yet share one consistent per-item resolution contract with IDs and data-asset bindings.
+The implemented compiler now binds every fan-out item through one
+`FanOutItemContext`, renders canonical `fan_out.id` and optional
+`fan_out.output` as per-item scalar templates, supports alias and generic
+current-item accessors including list indexes, resolves canonical work
+parameters per item while preserving whole-value types, and reuses the same
+current-item context for explicit cache/commit data and resource declarations.
 
 ## Strategic Decision
 

@@ -1,6 +1,6 @@
 # 006 Identity, Collision, and Sensitivity Safety
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.4, Medium reasoning  
 Reference: EC-3 / operational slice / files(3)+test
 

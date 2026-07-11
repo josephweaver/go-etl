@@ -5,25 +5,30 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"goetl/internal/model"
 	"goetl/internal/variable"
 )
 
 type FanOutWorkItemTemplate struct {
-	FanOutExpression    string
-	TokenAccessor       string
-	IDTokenAccessor     string
-	OutputAccessor      string
-	Type                model.WorkItemType
-	IDPrefix            string
-	OutputPrefix        string
-	OutputExtension     string
-	Parameters          model.Parameters
-	ParameterAccessors  map[string]string
-	ResourceConstraints []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
-	ExplicitCacheData   *ExplicitCacheDataTemplate      `json:"explicit_cache_data,omitempty"`
-	ExplicitCommitData  *ExplicitCommitDataTemplate     `json:"explicit_commit_data,omitempty"`
+	FanOutExpression     string
+	FanOutAlias          string
+	IDTemplate           string
+	OutputTemplate       string
+	TokenAccessor        string
+	IDTokenAccessor      string
+	OutputAccessor       string
+	Type                 model.WorkItemType
+	IDPrefix             string
+	OutputPrefix         string
+	OutputExtension      string
+	Parameters           model.Parameters
+	ParameterExpressions map[string]variable.TypedExpression
+	ParameterAccessors   map[string]string
+	ResourceConstraints  []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
+	ExplicitCacheData    *ExplicitCacheDataTemplate      `json:"explicit_cache_data,omitempty"`
+	ExplicitCommitData   *ExplicitCommitDataTemplate     `json:"explicit_commit_data,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -48,7 +53,7 @@ func ResolveResourceConstraints(
 	declarations []ResourceConstraintDeclaration,
 	createdAt string,
 ) ([]model.WorkItemResourceConstraint, error) {
-	constraints, err := resolveResourceConstraintDeclarations(resolver, variable.ResolvedValue{}, workItemID, declarations)
+	constraints, err := resolveResourceConstraintDeclarations(resolver, FanOutItemContext{}, workItemID, declarations)
 	if err != nil {
 		return nil, err
 	}
@@ -107,14 +112,27 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 	}
 
 	items := make([]CompiledFanOutWorkItem, 0, len(values))
+	seenWorkItemIDs := map[string]int{}
+	seenOutputFilenames := map[string]int{}
 	for index, value := range values {
-		idToken, err := fanOutTemplateToken(value, template.TokenAccessor, template.IDTokenAccessor)
+		context := FanOutItemContext{
+			Alias: template.FanOutAlias,
+			Index: index,
+			Value: value,
+		}
+		idToken, err := fanOutIDToken(resolver, context, template)
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d id token: %w", index, err)
 		}
+		if err := validateFanOutRenderedToken(idToken, "id"); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d id token: %w", index, err)
+		}
 
-		outputToken, err := fanOutTemplateToken(value, template.TokenAccessor, template.OutputAccessor)
+		outputToken, err := fanOutOutputToken(resolver, context, template, idToken)
 		if err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d output token: %w", index, err)
+		}
+		if err := validateFanOutRenderedToken(outputToken, "output"); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d output token: %w", index, err)
 		}
 
@@ -124,22 +142,36 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 			OutputFilename: fmt.Sprintf("%s-%s%s", template.OutputPrefix, outputToken, template.OutputExtension),
 			Parameters:     copyParameters(template.Parameters),
 		}
+		if len(template.ParameterExpressions) > 0 && item.Parameters == nil {
+			item.Parameters = model.Parameters{}
+		}
+		if err := bindParameterExpressions(resolver, context, item.Parameters, template.ParameterExpressions); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
+		}
 		if err := bindParameterAccessors(item.Parameters, value, template.ParameterAccessors); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
 		}
-		explicitConstraints, err := compileExplicitCacheDataWorkItem(resolver, value, &item, template.ExplicitCacheData)
+		explicitConstraints, err := compileExplicitCacheDataWorkItem(resolver, context, &item, template.ExplicitCacheData)
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d explicit cache_data: %w", index, err)
 		}
-		explicitCommitConstraints, err := compileExplicitCommitDataWorkItem(resolver, value, idToken, &item, template.ExplicitCommitData)
+		explicitCommitConstraints, err := compileExplicitCommitDataWorkItem(resolver, context, idToken, &item, template.ExplicitCommitData)
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d explicit commit_data: %w", index, err)
 		}
 		if err := item.ValidateForWorkflowCompile(); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
 		}
+		if previous, ok := seenWorkItemIDs[item.ID]; ok {
+			return nil, fmt.Errorf("compile fan-out item %d: duplicate generated work-item id %q also produced by item %d", index, item.ID, previous)
+		}
+		seenWorkItemIDs[item.ID] = index
+		if previous, ok := seenOutputFilenames[item.OutputFilename]; ok {
+			return nil, fmt.Errorf("compile fan-out item %d: duplicate output filename %q also produced by item %d", index, item.OutputFilename, previous)
+		}
+		seenOutputFilenames[item.OutputFilename] = index
 
-		constraints, err := resolveResourceConstraintDeclarations(resolver, value, item.ID, template.ResourceConstraints)
+		constraints, err := resolveResourceConstraintDeclarations(resolver, context, item.ID, template.ResourceConstraints)
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d resource constraints: %w", index, err)
 		}
@@ -231,7 +263,7 @@ func decodeConstraintExpression(name string, data json.RawMessage, defaultType v
 
 func resolveResourceConstraintDeclarations(
 	resolver variable.Resolver,
-	fanOutValue variable.ResolvedValue,
+	context FanOutItemContext,
 	workItemID string,
 	declarations []ResourceConstraintDeclaration,
 ) ([]model.WorkItemResourceConstraint, error) {
@@ -242,19 +274,19 @@ func resolveResourceConstraintDeclarations(
 	constraints := make([]model.WorkItemResourceConstraint, 0, len(declarations))
 	seenResourceKeys := make(map[string]bool, len(declarations))
 	for index, declaration := range declarations {
-		resourceKey, err := resolveConstraintString(resolver, fanOutValue, declaration.ResourceKey, declaration.ResourceKeyAccessor, "resource_key")
+		resourceKey, err := resolveConstraintString(resolver, context, declaration.ResourceKey, declaration.ResourceKeyAccessor, "resource_key")
 		if err != nil {
 			return nil, fmt.Errorf("constraint %d resource_key: %w", index, err)
 		}
-		requestedUnits, err := resolveConstraintInt(resolver, fanOutValue, declaration.RequestedUnits, declaration.RequestedUnitsAccessor, "requested_units")
+		requestedUnits, err := resolveConstraintInt(resolver, context, declaration.RequestedUnits, declaration.RequestedUnitsAccessor, "requested_units")
 		if err != nil {
 			return nil, fmt.Errorf("constraint %d requested_units: %w", index, err)
 		}
-		operator, err := resolveConstraintString(resolver, fanOutValue, declaration.Operator, declaration.OperatorAccessor, "operator")
+		operator, err := resolveConstraintString(resolver, context, declaration.Operator, declaration.OperatorAccessor, "operator")
 		if err != nil {
 			return nil, fmt.Errorf("constraint %d operator: %w", index, err)
 		}
-		targetUnits, err := resolveConstraintInt(resolver, fanOutValue, declaration.TargetUnits, declaration.TargetUnitsAccessor, "target_units")
+		targetUnits, err := resolveConstraintInt(resolver, context, declaration.TargetUnits, declaration.TargetUnitsAccessor, "target_units")
 		if err != nil {
 			return nil, fmt.Errorf("constraint %d target_units: %w", index, err)
 		}
@@ -280,8 +312,13 @@ func resolveResourceConstraintDeclarations(
 	return constraints, nil
 }
 
-func resolveConstraintString(resolver variable.Resolver, fanOutValue variable.ResolvedValue, expression variable.TypedExpression, accessor string, name string) (string, error) {
-	value, err := resolveConstraintValue(resolver, fanOutValue, expression, accessor, name)
+func resolveConstraintString(resolver variable.Resolver, context FanOutItemContext, expression variable.TypedExpression, accessor string, name string) (string, error) {
+	if accessor == "" {
+		if text, ok := expression.Expression.(string); ok && strings.Contains(text, "${") {
+			return renderFanOutTemplate(resolver, context, text, name == "resource_key")
+		}
+	}
+	value, err := resolveConstraintValue(resolver, context, expression, accessor, name)
 	if err != nil {
 		return "", err
 	}
@@ -295,8 +332,8 @@ func resolveConstraintString(resolver variable.Resolver, fanOutValue variable.Re
 	return text, nil
 }
 
-func resolveConstraintInt(resolver variable.Resolver, fanOutValue variable.ResolvedValue, expression variable.TypedExpression, accessor string, name string) (int, error) {
-	value, err := resolveConstraintValue(resolver, fanOutValue, expression, accessor, name)
+func resolveConstraintInt(resolver variable.Resolver, context FanOutItemContext, expression variable.TypedExpression, accessor string, name string) (int, error) {
+	value, err := resolveConstraintValue(resolver, context, expression, accessor, name)
 	if err != nil {
 		return 0, err
 	}
@@ -310,9 +347,9 @@ func resolveConstraintInt(resolver variable.Resolver, fanOutValue variable.Resol
 	return integer, nil
 }
 
-func resolveConstraintValue(resolver variable.Resolver, fanOutValue variable.ResolvedValue, expression variable.TypedExpression, accessor string, name string) (variable.ResolvedValue, error) {
+func resolveConstraintValue(resolver variable.Resolver, context FanOutItemContext, expression variable.TypedExpression, accessor string, name string) (variable.ResolvedValue, error) {
 	if accessor != "" {
-		value, err := variable.ApplyAccessor(fanOutValue, accessor)
+		value, err := variable.ApplyAccessor(context.Value, accessor)
 		if err != nil {
 			return variable.ResolvedValue{}, err
 		}
@@ -320,17 +357,10 @@ func resolveConstraintValue(resolver variable.Resolver, fanOutValue variable.Res
 	}
 
 	if text, ok := expression.Expression.(string); ok && strings.HasPrefix(text, "${") && strings.HasSuffix(text, "}") {
-		referenceText := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "${"), "}"))
-		if strings.HasPrefix(referenceText, string(variable.NamespaceStep)+".") {
-			field := strings.TrimPrefix(referenceText, string(variable.NamespaceStep))
-			return variable.ApplyAccessor(fanOutValue, field)
+		value, whole, err := resolveFanOutWholeReference(resolver, context, text)
+		if err != nil || whole {
+			return value, err
 		}
-
-		reference, err := variable.ParseReference(referenceText)
-		if err != nil {
-			return variable.ResolvedValue{}, err
-		}
-		return resolver.Resolve(reference)
 	}
 
 	return literalConstraintValue(expression, name)
@@ -405,9 +435,175 @@ func copyParameters(parameters model.Parameters) model.Parameters {
 
 	copied := make(model.Parameters, len(parameters))
 	for name, parameter := range parameters {
-		copied[name] = parameter
+		copied[name] = copyParameter(parameter)
 	}
 	return copied
+}
+
+func copyParameter(parameter model.Parameter) model.Parameter {
+	parameter.Value = copyParameterValue(parameter.Value)
+	return parameter
+}
+
+func copyParameterValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		copied := make(map[string]any, len(typed))
+		for key, child := range typed {
+			copied[key] = copyParameterValue(child)
+		}
+		return copied
+	case []any:
+		copied := make([]any, 0, len(typed))
+		for _, child := range typed {
+			copied = append(copied, copyParameterValue(child))
+		}
+		return copied
+	default:
+		return value
+	}
+}
+
+func fanOutIDToken(resolver variable.Resolver, context FanOutItemContext, template FanOutWorkItemTemplate) (string, error) {
+	if template.IDTemplate != "" {
+		return renderFanOutTemplate(resolver, context, template.IDTemplate, true)
+	}
+	return fanOutTemplateToken(context.Value, template.TokenAccessor, template.IDTokenAccessor)
+}
+
+func fanOutOutputToken(resolver variable.Resolver, context FanOutItemContext, template FanOutWorkItemTemplate, idToken string) (string, error) {
+	if template.OutputTemplate != "" {
+		return renderFanOutTemplate(resolver, context, template.OutputTemplate, true)
+	}
+	if template.IDTemplate != "" {
+		return idToken, nil
+	}
+	return fanOutTemplateToken(context.Value, template.TokenAccessor, template.OutputAccessor)
+}
+
+func validateFanOutRenderedToken(token string, name string) error {
+	if token == "" {
+		return fmt.Errorf("%s token is required", name)
+	}
+	if strings.TrimSpace(token) != token {
+		return fmt.Errorf("%s token must not have leading or trailing whitespace", name)
+	}
+	if token == "." || token == ".." {
+		return fmt.Errorf("%s token must not be %q", name, token)
+	}
+	if strings.ContainsAny(token, `/\`) {
+		return fmt.Errorf("%s token must not contain a path separator", name)
+	}
+	for _, char := range token {
+		if unicode.IsControl(char) {
+			return fmt.Errorf("%s token must not contain control characters", name)
+		}
+	}
+	return nil
+}
+
+func bindParameterExpressions(
+	resolver variable.Resolver,
+	context FanOutItemContext,
+	parameters model.Parameters,
+	expressions map[string]variable.TypedExpression,
+) error {
+	if len(expressions) == 0 {
+		return nil
+	}
+	if parameters == nil {
+		return fmt.Errorf("parameter expression target is nil")
+	}
+
+	for name, expression := range expressions {
+		resolved, err := resolveParameterExpression(resolver, context, expression)
+		if err != nil {
+			return fmt.Errorf("parameter %s: %w", name, err)
+		}
+		parameters[name] = parameterFromResolved(resolved)
+	}
+	return nil
+}
+
+func resolveParameterExpression(resolver variable.Resolver, context FanOutItemContext, expression variable.TypedExpression) (variable.ResolvedValue, error) {
+	if text, ok := expression.Expression.(string); ok {
+		if containsDeferredParameterReference(text) {
+			return variable.ResolvedValue{Type: variable.TypeString, Value: text}, nil
+		}
+		if value, whole, err := resolveFanOutWholeReference(resolver, context, text); err != nil || whole {
+			return value, err
+		}
+		if strings.Contains(text, "${") {
+			rendered, err := renderFanOutTemplate(resolver, context, text, false)
+			if err != nil {
+				return variable.ResolvedValue{}, err
+			}
+			return variable.ResolvedValue{Type: variable.TypeString, Value: rendered}, nil
+		}
+		return variable.ResolvedValue{Type: expression.Type, Value: text}, nil
+	}
+
+	switch expression.Type {
+	case variable.TypeObject:
+		children, ok := expression.Expression.(map[string]variable.TypedExpression)
+		if !ok {
+			return variable.ResolvedValue{}, fmt.Errorf("object expression must be a typed-expression map")
+		}
+		fields := make(map[string]variable.ResolvedValue, len(children))
+		for name, child := range children {
+			resolved, err := resolveParameterExpression(resolver, context, child)
+			if err != nil {
+				return variable.ResolvedValue{}, fmt.Errorf("object field %s: %w", name, err)
+			}
+			fields[name] = resolved
+		}
+		return variable.ResolvedObject(fields), nil
+	case variable.TypeList:
+		children, ok := expression.Expression.([]variable.TypedExpression)
+		if !ok {
+			return variable.ResolvedValue{}, fmt.Errorf("list expression must be a typed-expression list")
+		}
+		items := make([]variable.ResolvedValue, 0, len(children))
+		for index, child := range children {
+			resolved, err := resolveParameterExpression(resolver, context, child)
+			if err != nil {
+				return variable.ResolvedValue{}, fmt.Errorf("list item %d: %w", index, err)
+			}
+			items = append(items, resolved)
+		}
+		return variable.ResolvedList(items), nil
+	case variable.TypeInt:
+		integer, ok := expression.Expression.(int)
+		if !ok {
+			return variable.ResolvedValue{}, fmt.Errorf("int expression must be an int or whole-value reference")
+		}
+		return variable.ResolvedValue{Type: variable.TypeInt, Value: integer}, nil
+	case variable.TypeBool:
+		boolean, ok := expression.Expression.(bool)
+		if !ok {
+			return variable.ResolvedValue{}, fmt.Errorf("bool expression must be a bool or whole-value reference")
+		}
+		return variable.ResolvedValue{Type: variable.TypeBool, Value: boolean}, nil
+	case variable.TypeString, variable.TypePath:
+		return variable.ResolvedValue{}, fmt.Errorf("%s expression must be a string", expression.Type)
+	default:
+		return variable.ResolvedValue{}, fmt.Errorf("unsupported parameter expression type %s", expression.Type)
+	}
+}
+
+func containsDeferredParameterReference(text string) bool {
+	return strings.Contains(text, "${"+string(variable.NamespaceData)+".") ||
+		strings.Contains(text, "${"+string(variable.NamespaceRuntime)+".")
+}
+
+func parameterFromResolved(value variable.ResolvedValue) model.Parameter {
+	return model.Parameter{
+		Type:           value.Type.String(),
+		Value:          parameterValueFromResolved(value),
+		Sensitive:      value.Sensitive,
+		RedactionLabel: value.RedactionLabel,
+		ProtectedRef:   value.ProtectedRef,
+	}
 }
 
 func bindParameterAccessors(parameters model.Parameters, value variable.ResolvedValue, accessors map[string]string) error {

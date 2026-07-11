@@ -27,7 +27,18 @@ func InstantiateDataAsset(
 	selection []string,
 	bindings map[string]variable.TypedExpression,
 ) (DataAssetInstance, error) {
-	parameters, err := resolveAssetParameters(resolver, fanOutValue, definition, bindings)
+	return instantiateDataAssetWithContext(resolver, FanOutItemContext{Value: fanOutValue}, definitionName, definition, selection, bindings)
+}
+
+func instantiateDataAssetWithContext(
+	resolver variable.Resolver,
+	context FanOutItemContext,
+	definitionName string,
+	definition model.DataInputDefinition,
+	selection []string,
+	bindings map[string]variable.TypedExpression,
+) (DataAssetInstance, error) {
+	parameters, err := resolveAssetParameters(resolver, context, definition, bindings)
 	if err != nil {
 		return DataAssetInstance{}, err
 	}
@@ -90,7 +101,7 @@ func CanonicalDataAssetInstanceKey(definitionName string, selection []string, as
 
 func resolveAssetParameters(
 	resolver variable.Resolver,
-	fanOutValue variable.ResolvedValue,
+	context FanOutItemContext,
 	definition model.DataInputDefinition,
 	bindings map[string]variable.TypedExpression,
 ) (map[string]any, error) {
@@ -113,7 +124,7 @@ func resolveAssetParameters(
 
 	parameters := make(map[string]any, len(bindings))
 	for _, name := range names {
-		resolved, err := resolveAssetParameterValue(resolver, fanOutValue, bindings[name])
+		resolved, err := resolveAssetParameterValue(resolver, context, bindings[name])
 		if err != nil {
 			return nil, fmt.Errorf("asset parameter %s: %w", name, err)
 		}
@@ -129,33 +140,12 @@ func resolveAssetParameters(
 	return parameters, nil
 }
 
-func resolveAssetParameterValue(resolver variable.Resolver, fanOutValue variable.ResolvedValue, expression variable.TypedExpression) (variable.ResolvedValue, error) {
+func resolveAssetParameterValue(resolver variable.Resolver, context FanOutItemContext, expression variable.TypedExpression) (variable.ResolvedValue, error) {
 	if text, ok := expression.Expression.(string); ok {
 		if referenceText, isReference := wholeReferenceExpressionText(text); isReference {
-			if referenceText == string(variable.NamespaceFanOut) {
-				return fanOutValue, nil
-			}
-			if strings.HasPrefix(referenceText, string(variable.NamespaceFanOut)+".") {
-				accessor := strings.TrimPrefix(referenceText, string(variable.NamespaceFanOut))
-				resolved, err := variable.ApplyAccessor(fanOutValue, accessor)
-				if err != nil {
-					return variable.ResolvedValue{}, err
-				}
-				if resolved.Type != expression.Type {
-					return variable.ResolvedValue{}, fmt.Errorf("reference has type %s, want %s", resolved.Type, expression.Type)
-				}
-				return resolved, nil
-			}
-			reference, err := variable.ParseReference(referenceText)
+			resolved, _, err := context.Resolve(resolver, referenceText)
 			if err != nil {
 				return variable.ResolvedValue{}, err
-			}
-			resolved, err := resolver.Resolve(reference)
-			if err != nil {
-				return variable.ResolvedValue{}, err
-			}
-			if resolved.Type != expression.Type {
-				return variable.ResolvedValue{}, fmt.Errorf("reference has type %s, want %s", resolved.Type, expression.Type)
 			}
 			return resolved, nil
 		}
