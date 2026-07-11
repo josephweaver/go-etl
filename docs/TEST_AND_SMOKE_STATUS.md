@@ -1,6 +1,6 @@
 # Test And Smoke Status
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 This file preserves the moved test coverage and smoke-test status section from the pre-split root state file.
 
@@ -61,8 +61,46 @@ Current coverage includes:
 - Controller completion handling that records full completion metadata when present and still accepts legacy `id`-only completions.
 - Explicit data-operator fixture smoke coverage for `cache_data -> compute -> commit_data`, including materialized input manifest hydration into compute, terminal records for all three operator families, source-transfer resource serialization, and publish-location write serialization.
 - Worker use of controller-provided `materialized_data_assets` manifests without reacquiring provider data.
+- Direct worker development execution for source-free and Python work, including
+  runtime-only config, local source ZIP staging, generated bookkeeping,
+  subprocess environment, logical output, artifact promotion, retained
+  stdout/stderr, failure results, and zero controller HTTP requests.
 
 Norton antivirus may briefly lock Go's temporary test executables after tests finish. If that happens, assertions still report `PASS`, but Go may print a cleanup error. Re-running the command usually succeeds.
+
+## Direct Worker Development Execution Evidence
+
+Recorded on 2026-07-11 on branch
+`concept/gorc-worker-direct-execution`.
+
+Focused command:
+
+```powershell
+go test ./cmd/worker -run 'TestRunDirectPythonTargetFixture' -count=1 -v
+```
+
+Observed result on Windows with Python 3.10.9:
+
+```text
+PASS
+TestRunDirectPythonTargetFixture/sentinel_controller
+TestRunDirectPythonTargetFixture/no_controller_URL
+TestRunDirectPythonTargetFixtureFailure
+```
+
+The fixture builds a source ZIP at test time and invokes `runDirectCommand`.
+Assertions cover generated attempt/source bookkeeping, source extraction,
+required `GOET_*` environment variables, input/output JSON, a promoted file
+artifact, result evidence, stdout/stderr retention, and failed-process
+diagnostics. The sentinel server counts every path and observed zero total HTTP
+requests during successful and failed direct Python execution.
+
+Fixture sources:
+
+```text
+cmd/worker/testdata/direct-python/source/main.py
+cmd/worker/testdata/direct-python/work-item.json
+```
 
 ## Secure Network Exposure OS-009 Evidence
 

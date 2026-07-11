@@ -1,0 +1,17 @@
+{
+  "id": "direct-python-001",
+  "type": "python_script",
+  "output_filename": "direct-python-result.json",
+  "parameters": {
+    "python_entrypoint": {
+      "type": "path",
+      "value": "main.py"
+    },
+    "python_args": {
+      "type": "list",
+      "value": [
+        "fixture-value"
+      ]
+    }
+  }
+}

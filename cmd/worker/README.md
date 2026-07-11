@@ -96,6 +96,13 @@ controller-backed source provider and retains observation delivery.
 Direct mode is intentionally unsuitable for production use or production
 credentials.
 
+The repeatable direct Python integration fixture lives under
+`testdata/direct-python`. Its test builds the source ZIP at runtime and covers
+success, Python-process failure, artifact promotion, generated bookkeeping,
+retained logs, operation evidence, and a sentinel controller observing zero
+requests. See `docs/RUNTIME_RUNBOOK.md` for local, container, Apptainer, and
+allocated-HPCC commands.
+
 ## Invariants
 
 - Controller mode pulls work; direct mode consumes exactly one explicit item.
