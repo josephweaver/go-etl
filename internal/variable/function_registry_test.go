@@ -50,12 +50,12 @@ func TestFunctionRegistryRejectsDuplicateRegistration(t *testing.T) {
 	}
 }
 
-func TestDefaultFunctionRegistryIsEmpty(t *testing.T) {
+func TestDefaultFunctionRegistryIncludesCrossproduct(t *testing.T) {
 	name, err := ParseFunctionName("list.crossproduct")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := DefaultFunctionRegistry().Lookup(name); ok {
-		t.Fatal("DefaultFunctionRegistry() unexpectedly has concrete function")
+	if _, ok := DefaultFunctionRegistry().Lookup(name); !ok {
+		t.Fatal("DefaultFunctionRegistry() missing list.crossproduct")
 	}
 }
