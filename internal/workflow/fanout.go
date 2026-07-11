@@ -23,6 +23,7 @@ type FanOutWorkItemTemplate struct {
 	ParameterAccessors  map[string]string
 	ResourceConstraints []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
 	ExplicitCacheData   *ExplicitCacheDataTemplate      `json:"explicit_cache_data,omitempty"`
+	ExplicitCommitData  *ExplicitCommitDataTemplate     `json:"explicit_commit_data,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -130,6 +131,10 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d explicit cache_data: %w", index, err)
 		}
+		explicitCommitConstraints, err := compileExplicitCommitDataWorkItem(resolver, value, idToken, &item, template.ExplicitCommitData)
+		if err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d explicit commit_data: %w", index, err)
+		}
 		if err := item.ValidateForWorkflowCompile(); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
 		}
@@ -140,6 +145,9 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		}
 		if len(explicitConstraints) > 0 {
 			constraints = appendExplicitResourceConstraints(explicitConstraints, constraints)
+		}
+		if len(explicitCommitConstraints) > 0 {
+			constraints = appendExplicitResourceConstraints(explicitCommitConstraints, constraints)
 		}
 
 		items = append(items, CompiledFanOutWorkItem{

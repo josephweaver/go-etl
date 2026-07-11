@@ -62,6 +62,13 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
+	explicitCommit, err := explicitCommitDataFromCanonical(step, definitions)
+	if err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
+	if err := rejectCanonicalImplicitPublishParameters(step); err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
 
 	return FanOutWorkItemTemplate{
 		FanOutExpression:    step.FanOut.Over,
@@ -74,6 +81,7 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 		ParameterAccessors:  step.Work.ParameterAccessors,
 		ResourceConstraints: constraints,
 		ExplicitCacheData:   explicitCache,
+		ExplicitCommitData:  explicitCommit,
 	}, nil
 }
 
@@ -182,6 +190,90 @@ func explicitCacheDataFromCanonical(step document.CanonicalWorkflowStep, definit
 		Selection:   selection,
 		With:        with,
 	}, nil
+}
+
+func explicitCommitDataFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (*ExplicitCommitDataTemplate, error) {
+	raw, hasOutputs := step.Data["outputs"]
+	if !hasOutputs {
+		if model.WorkItemType(step.Work.Type) == model.WorkItemTypeCommitData {
+			return nil, fmt.Errorf("commit_data step requires data.outputs")
+		}
+		return nil, nil
+	}
+	if model.WorkItemType(step.Work.Type) != model.WorkItemTypeCommitData {
+		return nil, fmt.Errorf("data.outputs requires work.type %q", model.WorkItemTypeCommitData)
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("data.outputs must be an object")
+	}
+	if len(items) != 1 {
+		return nil, fmt.Errorf("data.outputs must contain exactly one output")
+	}
+
+	var alias string
+	var rawBinding any
+	for key, value := range items {
+		alias = key
+		rawBinding = value
+		break
+	}
+	fields, ok := rawBinding.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("data.outputs.%s must be an object", alias)
+	}
+	fromFields, err := requiredCanonicalObjectField(fields, "from", "data.outputs."+alias)
+	if err != nil {
+		return nil, err
+	}
+	fromStep, err := canonicalStringField(fromFields, "step", "data.outputs."+alias+".from")
+	if err != nil {
+		return nil, err
+	}
+	fromArtifact, err := canonicalStringField(fromFields, "artifact", "data.outputs."+alias+".from")
+	if err != nil {
+		return nil, err
+	}
+	target, err := canonicalStringField(fields, "target", "data.outputs."+alias)
+	if err != nil {
+		return nil, err
+	}
+	with, err := canonicalTypedExpressionMap(fields, "with", "data.outputs."+alias)
+	if err != nil {
+		return nil, err
+	}
+	return &ExplicitCommitDataTemplate{
+		Definitions:  definitions,
+		Alias:        alias,
+		Target:       target,
+		FromStep:     fromStep,
+		FromArtifact: fromArtifact,
+		With:         with,
+	}, nil
+}
+
+func rejectCanonicalImplicitPublishParameters(step document.CanonicalWorkflowStep) error {
+	if model.WorkItemType(step.Work.Type) == model.WorkItemTypeCommitData {
+		return nil
+	}
+	for name := range step.Work.Parameters {
+		if name == "publish" || name == "publish_targets" {
+			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit commit_data step with data.outputs", name)
+		}
+	}
+	return nil
+}
+
+func requiredCanonicalObjectField(fields map[string]any, name string, context string) (map[string]any, error) {
+	value, ok := fields[name]
+	if !ok {
+		return nil, fmt.Errorf("%s %s is required", context, name)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s %s must be an object", context, name)
+	}
+	return object, nil
 }
 
 func canonicalStringField(fields map[string]any, name string, context string) (string, error) {
