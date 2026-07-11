@@ -83,7 +83,8 @@ func (c *Controller) activateNextReadyWorkflowStage(ctx context.Context, runID s
 		if err := c.MarkWorkflowStageReady(ctx, runID, nextStageIndex); err != nil {
 			return c.failWorkflowStageActivation(ctx, runID, nextStageIndex, err)
 		}
-		return c.EvaluateWorkerCapacity(ctx, activatedAt)
+		c.signalCareTaker("workflow_stage_activated")
+		return nil
 	}
 }
 

@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -187,15 +185,5 @@ func (c *Controller) decodeWorkerLifecycleRequest(w http.ResponseWriter, r *http
 func (c *Controller) signalWorkerStateChanged(reason string) {
 	if c.workerStateChanged != nil {
 		c.workerStateChanged(reason)
-		return
 	}
-	if !c.asyncWorkerCapacity {
-		return
-	}
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		if err := c.EvaluateWorkerCapacity(context.Background(), time.Now().UTC()); err != nil {
-			fmt.Println("worker capacity evaluation after worker lifecycle change failed:", err)
-		}
-	}()
 }

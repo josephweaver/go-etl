@@ -56,7 +56,6 @@ type Controller struct {
 	workerStarter       WorkerStarter
 	launchResolver      variable.Resolver
 	workerExecutor      *WorkerCapacityManager
-	asyncWorkerCapacity bool
 	logSink             logObservationSink
 	shutdown            func(context.Context) error
 	env                 *ExecutionEnvironment
@@ -352,7 +351,6 @@ func buildControllerServer(
 	}
 	controller.env = executionEnvironment
 	controller.launchResolver = resolver
-	controller.asyncWorkerCapacity = true
 	controller.maxRequestBytes = httpSettings.MaxRequestBytes
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
