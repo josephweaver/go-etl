@@ -46,11 +46,7 @@ func stepFromCanonical(step document.CanonicalWorkflowStep, definitions model.Da
 }
 
 func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (FanOutWorkItemTemplate, error) {
-	idAccessor, err := fanoutAccessorFromExpression(step.FanOut.ID)
-	if err != nil {
-		return FanOutWorkItemTemplate{}, fmt.Errorf("fan_out.id: %w", err)
-	}
-	parameters, err := parametersFromCanonical(step.Work.Parameters)
+	parameters, err := parameterExpressionsFromCanonical(step.Work.Parameters)
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
@@ -71,17 +67,18 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	}
 
 	return FanOutWorkItemTemplate{
-		FanOutExpression:    step.FanOut.Over,
-		IDTokenAccessor:     idAccessor,
-		OutputAccessor:      idAccessor,
-		Type:                model.WorkItemType(step.Work.Type),
-		OutputPrefix:        defaultString(step.Work.OutputPrefix, step.ID),
-		OutputExtension:     defaultString(step.Work.OutputExtension, ".json"),
-		Parameters:          parameters,
-		ParameterAccessors:  step.Work.ParameterAccessors,
-		ResourceConstraints: constraints,
-		ExplicitCacheData:   explicitCache,
-		ExplicitCommitData:  explicitCommit,
+		FanOutExpression:     step.FanOut.Over,
+		FanOutAlias:          step.FanOut.As,
+		IDTemplate:           step.FanOut.ID,
+		OutputTemplate:       step.FanOut.Output,
+		Type:                 model.WorkItemType(step.Work.Type),
+		OutputPrefix:         defaultString(step.Work.OutputPrefix, step.ID),
+		OutputExtension:      defaultString(step.Work.OutputExtension, ".json"),
+		ParameterExpressions: parameters,
+		ParameterAccessors:   step.Work.ParameterAccessors,
+		ResourceConstraints:  constraints,
+		ExplicitCacheData:    explicitCache,
+		ExplicitCommitData:   explicitCommit,
 	}, nil
 }
 
@@ -108,20 +105,17 @@ func fanoutAccessorFromExpression(expression string) (string, error) {
 	return "", fmt.Errorf("must reference fanout or fanout.<field>")
 }
 
-func parametersFromCanonical(values map[string]any) (model.Parameters, error) {
+func parameterExpressionsFromCanonical(values map[string]any) (map[string]variable.TypedExpression, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
-	parameters := make(model.Parameters, len(values))
+	parameters := make(map[string]variable.TypedExpression, len(values))
 	for name, value := range values {
 		typed, err := document.TypedExpressionFromValue(value)
 		if err != nil {
 			return nil, fmt.Errorf("parameter %s: %w", name, err)
 		}
-		parameters[name] = model.Parameter{
-			Type:  typed.Type.String(),
-			Value: typed.Expression,
-		}
+		parameters[name] = typed
 	}
 	return parameters, nil
 }

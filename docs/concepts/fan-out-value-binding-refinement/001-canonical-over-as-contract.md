@@ -1,6 +1,6 @@
 # 001 Canonical `over` / `as` Contract
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.4, Medium reasoning  
 Reference: EC-3 / operational slice / files(3)+test+doc
 

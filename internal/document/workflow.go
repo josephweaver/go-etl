@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"goetl/internal/variable"
 )
@@ -30,9 +31,10 @@ type CanonicalWorkflowStep struct {
 }
 
 type CanonicalFanOut struct {
-	Over string
-	As   string
-	ID   string
+	Over   string
+	As     string
+	ID     string
+	Output string
 }
 
 type CanonicalWork struct {
@@ -233,19 +235,60 @@ func canonicalFanOut(fields map[string]any, context string) (CanonicalFanOut, er
 	if err := rejectGoCasedFields(fields, context); err != nil {
 		return CanonicalFanOut{}, err
 	}
+	if err := rejectUnknownFields(fields, context, "over", "as", "id", "output"); err != nil {
+		return CanonicalFanOut{}, err
+	}
 	over, err := requiredString(fields, "over", context)
 	if err != nil {
 		return CanonicalFanOut{}, err
 	}
-	as, err := requiredString(fields, "as", context)
+	as, err := requiredRawString(fields, "as", context)
 	if err != nil {
 		return CanonicalFanOut{}, err
+	}
+	if !validFanOutAlias(as) {
+		return CanonicalFanOut{}, fmt.Errorf("%s.as must be a valid non-reserved identifier", context)
 	}
 	id, err := requiredString(fields, "id", context)
 	if err != nil {
 		return CanonicalFanOut{}, err
 	}
-	return CanonicalFanOut{Over: over, As: as, ID: id}, nil
+	output, err := optionalString(fields, "output", context)
+	if err != nil {
+		return CanonicalFanOut{}, err
+	}
+	return CanonicalFanOut{Over: over, As: as, ID: id, Output: output}, nil
+}
+
+func validFanOutAlias(alias string) bool {
+	if alias == "" {
+		return false
+	}
+	for index, char := range alias {
+		if index == 0 {
+			if char != '_' && !unicode.IsLetter(char) {
+				return false
+			}
+			continue
+		}
+		if char != '_' && !unicode.IsLetter(char) && !unicode.IsDigit(char) {
+			return false
+		}
+	}
+
+	switch variable.Namespace(alias) {
+	case variable.NamespaceWorkflow,
+		variable.NamespaceOverride,
+		variable.NamespaceStep,
+		variable.NamespaceFanOut,
+		variable.NamespaceAsset,
+		variable.NamespaceData,
+		variable.NamespaceWorkItem,
+		variable.NamespaceRuntime:
+		return false
+	default:
+		return true
+	}
 }
 
 func canonicalWork(fields map[string]any, context string) (CanonicalWork, error) {
@@ -306,6 +349,18 @@ func requiredString(fields map[string]any, name string, context string) (string,
 	text, ok := value.(string)
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("%s %s must be a non-empty string", context, name)
+	}
+	return text, nil
+}
+
+func requiredRawString(fields map[string]any, name string, context string) (string, error) {
+	value, ok := fields[name]
+	if !ok {
+		return "", fmt.Errorf("%s %s is required", context, name)
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s %s must be a string", context, name)
 	}
 	return text, nil
 }
@@ -392,6 +447,19 @@ func rejectGoCasedFields(fields map[string]any, context string) error {
 	for _, name := range goCased {
 		if _, ok := fields[name]; ok {
 			return fmt.Errorf("%s mixes canonical snake_case with Go field %q", context, name)
+		}
+	}
+	return nil
+}
+
+func rejectUnknownFields(fields map[string]any, context string, allowed ...string) error {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allowedSet[name] = struct{}{}
+	}
+	for name := range fields {
+		if _, ok := allowedSet[name]; !ok {
+			return fmt.Errorf("%s has unknown field %q", context, name)
 		}
 	}
 	return nil

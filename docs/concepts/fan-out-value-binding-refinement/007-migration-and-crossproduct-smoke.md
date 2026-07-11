@@ -1,6 +1,6 @@
 # 007 Migration and Crossproduct Smoke
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.3-codex-spark, Medium reasoning  
 Reference: EC-3 / operational slice / fixtures+test+doc
 

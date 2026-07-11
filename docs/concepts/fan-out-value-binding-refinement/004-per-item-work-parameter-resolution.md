@@ -1,6 +1,6 @@
 # 004 Per-Item Work Parameter Resolution
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.4, High reasoning  
 Reference: EC-3 / operational slice / files(4)+test
 

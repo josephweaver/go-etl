@@ -1,6 +1,6 @@
 # 002 Typed Current-Item Binding
 
-Status: Proposed  
+Status: Implemented
 Recommended model: GPT-5.6-Sol, High reasoning  
 Reference: EC-3 / operational slice / files(4)+test
 

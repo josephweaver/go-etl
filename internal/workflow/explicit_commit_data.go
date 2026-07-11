@@ -18,7 +18,7 @@ type ExplicitCommitDataTemplate struct {
 
 func compileExplicitCommitDataWorkItem(
 	resolver variable.Resolver,
-	fanOutValue variable.ResolvedValue,
+	context FanOutItemContext,
 	idToken string,
 	item *model.WorkItem,
 	template *ExplicitCommitDataTemplate,
@@ -38,7 +38,7 @@ func compileExplicitCommitDataWorkItem(
 	if !ok {
 		return nil, fmt.Errorf("data output target %q is not defined", targetName)
 	}
-	parameters, err := resolveOutputParameters(resolver, fanOutValue, definition, template.With)
+	parameters, err := resolveOutputParameters(resolver, context, definition, template.With)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func rejectCommitDataComputeParameters(parameters model.Parameters) error {
 
 func resolveOutputParameters(
 	resolver variable.Resolver,
-	fanOutValue variable.ResolvedValue,
+	context FanOutItemContext,
 	definition model.DataOutputDefinition,
 	bindings map[string]variable.TypedExpression,
 ) (map[string]any, error) {
@@ -113,7 +113,7 @@ func resolveOutputParameters(
 	}
 	parameters := make(map[string]any, len(bindings))
 	for name, binding := range bindings {
-		resolved, err := resolveAssetParameterValue(resolver, fanOutValue, binding)
+		resolved, err := resolveAssetParameterValue(resolver, context, binding)
 		if err != nil {
 			return nil, fmt.Errorf("output parameter %s: %w", name, err)
 		}

@@ -31,6 +31,7 @@ above.
 
 - [Data Assets and Materialized Outputs](data-assets-and-materialized-outputs/README.md) - Phase 1 implements filesystem-backed artifact manifests, provider-backed data bindings, ZIP-selected input assets, fixture rclone acquisition, named-location publication, fake-HPCC smoke evidence, and the CDL/Yan/Roy fixture pipeline.
 - [Execution Observability](execution-observability/README.md) - Collects, routes, streams, and stores execution logs through the controller.
+- [Fan-Out Value Binding Refinement](fan-out-value-binding-refinement/README.md) - Makes canonical fan-out an ordered, type-preserving map over resolved lists, with alias-aware current-item binding, scalar ID/output templates, typed work parameters, and shared data/resource binding semantics.
 - [Controller Startup Resolution](controller-startup-resolution/README.md) - Builds and validates controller startup through the standard typed-variable system and fails before normal API admission when startup requirements are not met.
 - [SSH Transport](ssh-transport/README.md) - Adds remote command execution and file transfer through controller transport implementations.
 - [Sensitive Variable Metadata and Propagation](sensitive-variable-propagation/README.md) - Phase 1 implements sensitivity metadata, protected references, worker-local secret materialization, controlled-output redaction, and the phase-1 boundary between protected references and plaintext execution secrets.
