@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress.
+Implemented.
 
 Current implementation:
 
@@ -13,10 +13,11 @@ Current implementation:
 - `RecoverExpiredWorkerSessions` atomically marks expired active sessions dead, records owned running attempts as abandoned, removes running assignments, and requeues abandoned work items.
 - `StopWorkerSessionAndRecoverWork` atomically marks an active session stopped, records any owned running attempts as abandoned with `worker_stopped`, removes running assignments, and requeues the work items.
 - owner-aware late completion/failure reports for abandoned attempts return assignment ownership lost instead of creating stale terminal rows.
+- deterministic persistence tests cover heartbeat-before-expiry, expiry-before-heartbeat, completion-before-expiry, expiry-before-completion, and stop/terminal ordering.
 
-Remaining OS-003 work:
+Verification:
 
-- remaining deterministic race tests for heartbeat/expiry ordering.
+- `go test ./... -count=1`
 
 ## Minimum capable model
 
@@ -88,8 +89,8 @@ GET /work/next
 Require:
 
 ```text
-X-GORC-Worker-ID
-X-GORC-Worker-Session-ID
+X-Goetl-Worker-Id
+X-Goetl-Worker-Session-Id
 ```
 
 The worker client sets both headers from its registration.
@@ -98,7 +99,7 @@ Missing identity:
 
 ```text
 400 Bad Request
-worker_identity_required
+worker id and worker session id are required
 ```
 
 Unknown, mismatched, stopped, dead, or expired session:

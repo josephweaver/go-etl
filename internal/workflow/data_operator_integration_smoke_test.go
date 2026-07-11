@@ -71,7 +71,7 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 	for i := range cacheItems {
 		claim := claimSmokeWork(t, ctx, store, "attempt-cache-"+string(rune('a'+i)), model.WorkItemTypeCacheData)
 		if i == 0 {
-			if blocked, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-cache-blocked", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:01Z"}); err != nil {
+			if blocked, found, err := store.ClaimNextWork(ctx, smokeWorkerClaimRequest(t, ctx, store, "attempt-cache-blocked", "2026-07-07T00:00:01Z")); err != nil {
 				t.Fatalf("blocked ClaimNextWork() error = %v", err)
 			} else if found {
 				t.Fatalf("blocked ClaimNextWork() = %+v, want no work while source mutex is held", blocked)
@@ -96,7 +96,7 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 		t.Fatalf("EnqueueWorkItems(commit_data) error = %v", err)
 	}
 	firstCommit := claimSmokeWork(t, ctx, store, "attempt-commit-a", model.WorkItemTypeCommitData)
-	if blocked, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-commit-blocked", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:06Z"}); err != nil {
+	if blocked, found, err := store.ClaimNextWork(ctx, smokeWorkerClaimRequest(t, ctx, store, "attempt-commit-blocked", "2026-07-07T00:00:06Z")); err != nil {
 		t.Fatalf("blocked commit ClaimNextWork() error = %v", err)
 	} else if found {
 		t.Fatalf("blocked commit ClaimNextWork() = %+v, want no work while publish mutex is held", blocked)
@@ -359,7 +359,7 @@ func dataOperatorSmokePersistenceRecords(t *testing.T, runID string, compiled Co
 
 func claimSmokeWork(t *testing.T, ctx context.Context, store *persistence.Store, attemptID string, want model.WorkItemType) persistence.ClaimedWorkRecord {
 	t.Helper()
-	claim, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: attemptID, ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:01Z"})
+	claim, found, err := store.ClaimNextWork(ctx, smokeWorkerClaimRequest(t, ctx, store, attemptID, "2026-07-07T00:00:01Z"))
 	if err != nil {
 		t.Fatalf("ClaimNextWork() error = %v", err)
 	}
@@ -374,6 +374,26 @@ func claimSmokeWork(t *testing.T, ctx context.Context, store *persistence.Store,
 		t.Fatalf("claimed type = %s, want %s", item.Type, want)
 	}
 	return claim
+}
+
+func smokeWorkerClaimRequest(t *testing.T, ctx context.Context, store *persistence.Store, attemptID string, startedAt string) persistence.ClaimWorkRequest {
+	t.Helper()
+	workerID := "worker-" + attemptID
+	sessionID := "session-" + attemptID
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     workerID,
+		SessionID:    sessionID,
+		RegisteredAt: "2999-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(%s) error = %v", sessionID, err)
+	}
+	return persistence.ClaimWorkRequest{
+		AttemptID:       attemptID,
+		WorkerID:        workerID,
+		WorkerSessionID: sessionID,
+		ExecutorType:    persistence.ExecutorTypeWorker,
+		StartedAt:       startedAt,
+	}
 }
 
 func completeSmokeAttempt(t *testing.T, ctx context.Context, store *persistence.Store, claim persistence.ClaimedWorkRecord, output any, completedAt string) {

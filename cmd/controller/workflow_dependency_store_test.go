@@ -885,11 +885,7 @@ func TestFreshControllerReconstructsDependencyStateWithoutDependencyStateJSON(t 
 	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-0",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:01Z",
-	}); err != nil || !found {
+	if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-0", "2026-07-03T00:00:01Z")); err != nil || !found {
 		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
 	}
 	resolvedOutput, err := resolvedOutputFromJSON(`{"value":"a"}`)
@@ -1397,11 +1393,7 @@ func completeDependencyWorkItemForTest(t *testing.T, ctx context.Context, store 
 		t.Fatalf("EnqueueWorkItems(%s) error = %v", workItemID, err)
 	}
 	attemptID := "attempt-" + strings.ReplaceAll(workItemID, ":", "-")
-	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    attemptID,
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:01Z",
-	}); err != nil || !found {
+	if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, attemptID, "2026-07-03T00:00:01Z")); err != nil || !found {
 		t.Fatalf("ClaimNextWork(%s) found=%v error=%v, want success", workItemID, found, err)
 	}
 	resolvedOutput, err := resolvedOutputFromJSON(outputJSON)

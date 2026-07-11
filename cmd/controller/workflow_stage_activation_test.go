@@ -555,6 +555,7 @@ func claimNextWorkForActivationTest(t *testing.T, controller *Controller) model.
 	t.Helper()
 
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 	controller.nextWorkHandler(response, request)
 	if response.Code != http.StatusOK {

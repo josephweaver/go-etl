@@ -290,11 +290,7 @@ func TestEvaluateWorkerCapacityDoesNotStartForResourceBlockedQueuedWork(t *testi
 	}); err != nil {
 		t.Fatalf("QueueWorkItems(running) error = %v", err)
 	}
-	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-running",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    queuedAt,
-	}); err != nil || !found {
+	if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-running", queuedAt)); err != nil || !found {
 		t.Fatalf("ClaimNextWork(running) found = %v error = %v, want success", found, err)
 	}
 	if err := store.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
