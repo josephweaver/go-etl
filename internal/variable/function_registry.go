@@ -30,7 +30,10 @@ func NewFunctionRegistry(functions ...ExpressionFunction) (FunctionRegistry, err
 }
 
 func DefaultFunctionRegistry() FunctionRegistry {
-	registry, _ := NewFunctionRegistry(listCrossproductFunction{})
+	registry, _ := NewFunctionRegistry(
+		listCrossproductFunction{},
+		listZipFunction{},
+	)
 	return registry
 }
 

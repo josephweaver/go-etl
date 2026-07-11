@@ -50,12 +50,16 @@ func TestFunctionRegistryRejectsDuplicateRegistration(t *testing.T) {
 	}
 }
 
-func TestDefaultFunctionRegistryIncludesCrossproduct(t *testing.T) {
-	name, err := ParseFunctionName("list.crossproduct")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := DefaultFunctionRegistry().Lookup(name); !ok {
-		t.Fatal("DefaultFunctionRegistry() missing list.crossproduct")
+func TestDefaultFunctionRegistryIncludesImplementedListFunctions(t *testing.T) {
+	for _, text := range []string{"list.crossproduct", "list.zip"} {
+		t.Run(text, func(t *testing.T) {
+			name, err := ParseFunctionName(text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := DefaultFunctionRegistry().Lookup(name); !ok {
+				t.Fatalf("DefaultFunctionRegistry() missing %s", text)
+			}
+		})
 	}
 }
