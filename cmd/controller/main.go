@@ -1816,7 +1816,6 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 	var memberships []compiledStageWorkItemMembership
 	var items []persistence.WorkItemRecord
 	var queued []persistence.QueuedWorkRecord
-	autoAdvanced := false
 	if len(plan.Stages) != 0 {
 		if err := c.CreateWorkflowDependencyPlan(ctx, runRecord.ID, runRecord.WorkflowID, plan.Stages); err != nil {
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow dependency plan: %w", err)
@@ -1856,7 +1855,6 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 			return model.SubmissionAcknowledgement{}, err
 		}
 
-		autoAdvanced = stageCompleted
 		if stageCompleted {
 			if err := c.activateNextReadyWorkflowStage(ctx, runRecord.ID, stageResult.StageIndex, submittedAt); err != nil {
 				return model.SubmissionAcknowledgement{}, err
@@ -1864,11 +1862,7 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 		}
 	}
 
-	if !autoAdvanced {
-		if err := c.EvaluateWorkerCapacity(ctx, submittedAt); err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
-	}
+	c.signalCareTaker("workflow_work_queued")
 
 	return model.SubmissionAcknowledgement{
 		SubmissionID:         runRecord.ID,

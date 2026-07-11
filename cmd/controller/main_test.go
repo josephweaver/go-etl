@@ -3652,6 +3652,9 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if queuedPayload.ID == "" {
 		t.Fatal("queued worker payload id is empty")
 	}
+	if starter.calls != 0 {
+		t.Fatalf("worker starter calls after admission = %d, want no direct launch", starter.calls)
+	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
 	withTestWorkerSessionHeaders(t, controller, nextRequest)
@@ -3666,12 +3669,6 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	}
 	if claimed.ID == "" || claimed.AttemptID == "" {
 		t.Fatalf("claimed work is incomplete: %+v", claimed)
-	}
-	if starter.calls != 1 {
-		t.Fatalf("worker starter calls = %d, want 1", starter.calls)
-	}
-	if starter.targets[0] != "local" {
-		t.Fatalf("worker starter target = %q, want local", starter.targets[0])
 	}
 }
 
@@ -3962,12 +3959,16 @@ func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
 	}
 }
 
-func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testing.T) {
+func TestWorkflowAdmissionSignalsButDoesNotLaunchDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
 
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "project.json"), []byte(`{"id":"demo"}`), 0o600); err != nil {
@@ -4028,11 +4029,11 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
-	if scheduler.calls != 1 {
-		t.Fatalf("scheduler calls = %d, want 1", scheduler.calls)
+	if scheduler.calls != 0 {
+		t.Fatalf("scheduler calls = %d, want no direct launch", scheduler.calls)
 	}
-	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
-		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
 	}
 }
 
@@ -4276,7 +4277,33 @@ const testSlurmWorkerVariables = `
 				}
 			}`
 
-func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
+func TestSubmitWorkflowHandlerSignalsConfiguredWorkerDemand(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	if scheduler.calls != 0 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
+	}
+}
+
+func TestSubmitWorkflowHandlerDoesNotLaunchConfiguredSlurmJobDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
@@ -4289,40 +4316,12 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
-
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
-		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
-	}
-	if scheduler.jobs[0].WorkerScript.WorkerExecutable != "/data/goetl/artifacts/goetl-worker" {
-		t.Fatalf("worker executable = %q, want configured executable", scheduler.jobs[0].WorkerScript.WorkerExecutable)
 	}
 }
 
-func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
-	store := openTestWorkflowExecutionStore(t)
-	defer store.Close()
-	scheduler := &testScheduler{}
-	controller := newControllerWithTestEnvironment(scheduler)
-	controller.workflowStore = store
-	root := setupLocalWorkflowSource(t, controller)
-	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
-
-	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-	if scheduler.calls != 1 {
-		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	if scheduler.jobs[0].WorkerScript.WorkerConfigPath != "/data/goetl/config/worker.json" {
-		t.Fatalf("worker config path = %q, want configured path", scheduler.jobs[0].WorkerScript.WorkerConfigPath)
-	}
-}
-
-func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
+func TestSubmitWorkflowHandlerDoesNotLaunchSingularityWorkerDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
@@ -4342,34 +4341,21 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	script := scheduler.jobs[0].WorkerScript
-	if script.WorkerExecutable != "singularity" {
-		t.Fatalf("worker executable = %q, want singularity", script.WorkerExecutable)
-	}
-	wantArgs := []string{
-		"exec",
-		"--bind",
-		"/data/goetl:/data/goetl",
-		"/data/goetl/images/goetl-worker.sif",
-		"/goetl/goetl-worker",
-	}
-	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
-		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
-	}
-	if script.WorkerConfigPath != "/data/goetl/config/worker.json" {
-		t.Fatalf("worker config path = %q, want original worker config path", script.WorkerConfigPath)
 	}
 }
 
-func TestSubmitWorkflowHandlerStartsOneWorkerForInitialClaimableDemand(t *testing.T) {
+func TestSubmitWorkflowHandlerSignalsInitialClaimableDemand(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
 	root := setupLocalWorkflowSource(t, controller)
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
@@ -4378,8 +4364,11 @@ func TestSubmitWorkflowHandlerStartsOneWorkerForInitialClaimableDemand(t *testin
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
 	}
 }
 
@@ -4418,7 +4407,7 @@ func TestSubmitWorkflowHandlerIgnoresSubmittedWorkerScaleConfig(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
@@ -4460,14 +4449,14 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 	submitLocalWorkflowYears(t, controller, root, 2024)
 	submitLocalWorkflowYears(t, controller, root, 2025)
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls before claim: %d", scheduler.calls)
 	}
 
 	assignNextWork(t, controller)
 	submitLocalWorkflowYears(t, controller, root, 2026)
 
-	if scheduler.calls != 2 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls after claim: %d", scheduler.calls)
 	}
 }
