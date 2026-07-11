@@ -7,12 +7,17 @@ import (
 
 	"goetl/internal/document"
 	"goetl/internal/model"
+	"goetl/internal/variable"
 )
 
 func WorkflowFromCanonicalDocument(doc document.CanonicalWorkflowDocument) (Workflow, error) {
+	definitions, err := document.DataDefinitionsFromValue(doc.Data)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("data: %w", err)
+	}
 	steps := make([]Step, 0, len(doc.Steps))
 	for index, step := range doc.Steps {
-		adapted, err := stepFromCanonical(step)
+		adapted, err := stepFromCanonical(step, definitions)
 		if err != nil {
 			return Workflow{}, fmt.Errorf("step %d (%s): %w", index, step.ID, err)
 		}
@@ -25,8 +30,8 @@ func WorkflowFromCanonicalDocument(doc document.CanonicalWorkflowDocument) (Work
 	}, nil
 }
 
-func stepFromCanonical(step document.CanonicalWorkflowStep) (Step, error) {
-	template, err := workItemTemplateFromCanonical(step)
+func stepFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (Step, error) {
+	template, err := workItemTemplateFromCanonical(step, definitions)
 	if err != nil {
 		return Step{}, err
 	}
@@ -40,7 +45,7 @@ func stepFromCanonical(step document.CanonicalWorkflowStep) (Step, error) {
 	}, nil
 }
 
-func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep) (FanOutWorkItemTemplate, error) {
+func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (FanOutWorkItemTemplate, error) {
 	idAccessor, err := fanoutAccessorFromExpression(step.FanOut.ID)
 	if err != nil {
 		return FanOutWorkItemTemplate{}, fmt.Errorf("fan_out.id: %w", err)
@@ -50,6 +55,10 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep) (FanOutW
 		return FanOutWorkItemTemplate{}, err
 	}
 	constraints, err := resourceConstraintsFromCanonical(step.Work.ResourceConstraints)
+	if err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
+	explicitCache, err := explicitCacheDataFromCanonical(step, definitions)
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
@@ -64,6 +73,7 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep) (FanOutW
 		Parameters:          parameters,
 		ParameterAccessors:  step.Work.ParameterAccessors,
 		ResourceConstraints: constraints,
+		ExplicitCacheData:   explicitCache,
 	}, nil
 }
 
@@ -121,6 +131,109 @@ func resourceConstraintsFromCanonical(values []any) ([]ResourceConstraintDeclara
 		return nil, fmt.Errorf("decode resource_constraints: %w", err)
 	}
 	return constraints, nil
+}
+
+func explicitCacheDataFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (*ExplicitCacheDataTemplate, error) {
+	raw, hasMaterialize := step.Data["materialize"]
+	if !hasMaterialize {
+		if model.WorkItemType(step.Work.Type) == model.WorkItemTypeCacheData {
+			return nil, fmt.Errorf("cache_data step requires data.materialize")
+		}
+		return nil, nil
+	}
+	if model.WorkItemType(step.Work.Type) != model.WorkItemTypeCacheData {
+		return nil, fmt.Errorf("data.materialize requires work.type %q", model.WorkItemTypeCacheData)
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("data.materialize must be an object")
+	}
+	if len(items) != 1 {
+		return nil, fmt.Errorf("data.materialize must contain exactly one alias")
+	}
+
+	var alias string
+	var rawBinding any
+	for key, value := range items {
+		alias = key
+		rawBinding = value
+		break
+	}
+	fields, ok := rawBinding.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("data.materialize.%s must be an object", alias)
+	}
+	assetName, err := canonicalStringField(fields, "asset", "data.materialize."+alias)
+	if err != nil {
+		return nil, err
+	}
+	with, err := canonicalTypedExpressionMap(fields, "with", "data.materialize."+alias)
+	if err != nil {
+		return nil, err
+	}
+	selection, err := canonicalStringListField(fields, "select", "data.materialize."+alias)
+	if err != nil {
+		return nil, err
+	}
+	return &ExplicitCacheDataTemplate{
+		Definitions: definitions,
+		Alias:       alias,
+		Asset:       assetName,
+		Selection:   selection,
+		With:        with,
+	}, nil
+}
+
+func canonicalStringField(fields map[string]any, name string, context string) (string, error) {
+	value, ok := fields[name]
+	if !ok {
+		return "", fmt.Errorf("%s %s is required", context, name)
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("%s %s must be a non-empty string", context, name)
+	}
+	return text, nil
+}
+
+func canonicalTypedExpressionMap(fields map[string]any, name string, context string) (map[string]variable.TypedExpression, error) {
+	value, ok := fields[name]
+	if !ok {
+		return nil, nil
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s %s must be an object", context, name)
+	}
+	result := make(map[string]variable.TypedExpression, len(object))
+	for key, item := range object {
+		expression, err := document.TypedExpressionFromValue(item)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s.%s: %w", context, name, key, err)
+		}
+		result[key] = expression
+	}
+	return result, nil
+}
+
+func canonicalStringListField(fields map[string]any, name string, context string) ([]string, error) {
+	value, ok := fields[name]
+	if !ok {
+		return nil, nil
+	}
+	list, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s %s must be a list", context, name)
+	}
+	values := make([]string, 0, len(list))
+	for index, item := range list {
+		text, ok := item.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("%s %s[%d] must be a non-empty string", context, name, index)
+		}
+		values = append(values, text)
+	}
+	return values, nil
 }
 
 func defaultString(value string, fallback string) string {
