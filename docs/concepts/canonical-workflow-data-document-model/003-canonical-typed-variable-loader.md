@@ -8,7 +8,7 @@ Extract and generalize the current inline-project literal conversion so ordinary
 
 ## Minimum Model
 
-Codex 5.4-mini or stronger, medium-high reasoning. Recursive type conversion is local but touches an important compatibility boundary.
+Primary: `GPT-5.3-codex-spark`, `High` reasoning. First escalation or review: `GPT-5.4-mini`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

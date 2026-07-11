@@ -8,7 +8,7 @@ Prove that a canonical-loader structured function call can produce a list variab
 
 ## Minimum Model
 
-Codex 5.4-mini or stronger, medium-high reasoning. Mostly integration tests, but it spans loader, resolver, fan-out, and data binding.
+Primary: `GPT-5.3-codex-spark`, `High` reasoning. First escalation or review: `GPT-5.4-mini`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

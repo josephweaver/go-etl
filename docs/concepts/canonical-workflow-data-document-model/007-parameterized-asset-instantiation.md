@@ -8,7 +8,7 @@ Instantiate canonical asset definitions after fan-out binding, resolve `asset` p
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. This crosses fan-out, variable scopes, template resolution, and fingerprint identity.
+Primary: `GPT-5.5`, `Extra High` reasoning. First escalation or review: `GPT-5.6-Terra`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

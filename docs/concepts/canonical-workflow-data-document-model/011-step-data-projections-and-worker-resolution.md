@@ -8,7 +8,7 @@ Build an assignment-local `data` namespace containing ordered `path` lists and n
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. Typed list/path behavior, resolver lifecycle, and worker transport must stay consistent.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

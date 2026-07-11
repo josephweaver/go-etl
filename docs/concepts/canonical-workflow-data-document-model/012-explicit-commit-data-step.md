@@ -8,7 +8,7 @@ Add visible canonical `commit_data` workflow steps using `step.data.outputs`, pr
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. Output lineage, artifact identity, overwrite policy, and dependency state must stay correct.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

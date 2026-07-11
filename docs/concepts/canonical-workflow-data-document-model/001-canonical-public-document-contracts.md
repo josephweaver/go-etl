@@ -10,7 +10,7 @@ This slice is documentation plus public decode-model scaffolding only. It fixes 
 
 ## Minimum Model
 
-Codex 5.5 or stronger, high reasoning. This is the contract-setting slice and should receive the strongest review.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

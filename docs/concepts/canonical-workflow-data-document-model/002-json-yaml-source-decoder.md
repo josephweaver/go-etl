@@ -8,7 +8,7 @@ Add one source-decoding boundary that accepts JSON and the agreed strict YAML su
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. Duplicate keys, scalar normalization, and YAML ambiguity require careful parser review.
+Primary: `GPT-5.4`, `High` reasoning. First escalation or review: `GPT-5.6-Luna`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

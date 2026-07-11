@@ -8,7 +8,7 @@ Add stable materialization-scope vocabulary, implement `shared` capability valid
 
 ## Minimum Model
 
-Codex 5.4-mini or stronger, medium-high reasoning. The code is local but error taxonomy and execution-environment assumptions matter.
+Primary: `GPT-5.3-codex-spark`, `High` reasoning. First escalation or review: `GPT-5.4-mini`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

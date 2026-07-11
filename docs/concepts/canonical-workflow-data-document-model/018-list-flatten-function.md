@@ -8,7 +8,7 @@ Add exactly `list.flatten(items)` to flatten one list nesting level.
 
 ## Minimum Model
 
-Codex 5.3-spark or stronger, medium reasoning.
+Primary: `GPT-5.3-codex-spark`, `Medium` reasoning. First escalation or review: `GPT-5.4-mini`, `Light` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

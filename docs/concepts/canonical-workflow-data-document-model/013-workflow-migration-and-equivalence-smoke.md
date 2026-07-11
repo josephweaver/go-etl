@@ -8,7 +8,7 @@ Migrate repository examples and smoke workflows to the canonical JSON/YAML model
 
 ## Minimum Model
 
-Codex 5.5, high reasoning for migration review; Codex 5.4-mini may perform individual fixture conversions after the target is fixed.
+Primary: `GPT-5.4`, `High` reasoning. First escalation or review: `GPT-5.5`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 
