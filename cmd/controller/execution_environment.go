@@ -394,7 +394,11 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 	case "remote_process":
 		return RemoteProcessScheduler{Transport: transport}, nil
 	case "slurm":
-		return SlurmScheduler{Transport: transport}, nil
+		memoryMB, err := cfg.Settings.Int64("memory_mb")
+		if err != nil {
+			return nil, err
+		}
+		return SlurmScheduler{Transport: transport, MemoryMB: memoryMB}, nil
 	default:
 		return nil, fmt.Errorf("unsupported scheduler type %q", cfg.Type)
 	}
@@ -470,6 +474,22 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	sevenZipExecutable, err := settings.String("seven_zip_executable")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	rcloneExecutable, err := settings.String("rclone_executable")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	rcloneConfigPath, err := settings.String("rclone_config_path")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	enableGDriveRcloneProvider, err := settings.Bool("enable_gdrive_rclone_provider")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	maxAssetBytes, err := settings.Int64("max_asset_bytes")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -487,6 +507,10 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		DataDir:                               dataDir,
 		AssetCacheDir:                         assetCacheDir,
 		PythonExecutable:                      pythonExecutable,
+		SevenZipExecutable:                    sevenZipExecutable,
+		RcloneExecutable:                      rcloneExecutable,
+		RcloneConfigPath:                      rcloneConfigPath,
+		EnableGDriveRcloneProvider:            enableGDriveRcloneProvider,
 		MaxAssetBytes:                         maxAssetBytes,
 		DataLocationRoots:                     roots,
 	}, nil

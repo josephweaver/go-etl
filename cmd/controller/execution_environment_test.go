@@ -146,9 +146,13 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
 		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
-			"root":              "/tmp/goetl",
-			"python_executable": "python3",
-			"max_asset_bytes":   float64(20000000000),
+			"root":                          "/tmp/goetl",
+			"python_executable":             "python3",
+			"seven_zip_executable":          "/usr/bin/7z",
+			"rclone_executable":             "/tmp/goetl/bin/rclone",
+			"rclone_config_path":            "/tmp/goetl/secrets/rclone.conf",
+			"enable_gdrive_rclone_provider": true,
+			"max_asset_bytes":               float64(20000000000),
 		}},
 	})
 	if err != nil {
@@ -167,6 +171,18 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 	if runtime.PythonExecutable != "python3" {
 		t.Fatalf("python executable = %q, want python3", runtime.PythonExecutable)
+	}
+	if runtime.SevenZipExecutable != "/usr/bin/7z" {
+		t.Fatalf("seven zip executable = %q, want configured 7z", runtime.SevenZipExecutable)
+	}
+	if runtime.RcloneExecutable != "/tmp/goetl/bin/rclone" {
+		t.Fatalf("rclone executable = %q, want configured rclone", runtime.RcloneExecutable)
+	}
+	if runtime.RcloneConfigPath != "/tmp/goetl/secrets/rclone.conf" {
+		t.Fatalf("rclone config path = %q, want configured rclone config", runtime.RcloneConfigPath)
+	}
+	if !runtime.EnableGDriveRcloneProvider {
+		t.Fatal("expected gdrive rclone provider to be enabled")
 	}
 	if runtime.MaxAssetBytes != 20000000000 {
 		t.Fatalf("max asset bytes = %d, want 20000000000", runtime.MaxAssetBytes)
@@ -193,6 +209,32 @@ func TestNewExecutionEnvironmentSupportsRemoteProcess(t *testing.T) {
 	}
 	if scheduler.Transport == nil {
 		t.Fatal("remote process scheduler transport is nil")
+	}
+}
+
+func TestNewExecutionEnvironmentSupportsSlurmMemory(t *testing.T) {
+	env, err := NewExecutionEnvironment(ExecutionEnvironmentConfig{
+		Name:       "ssh-slurm",
+		Transports: []ExecutionComponentConfig{{Type: "local"}},
+		Dialect:    ExecutionComponentConfig{Type: "bash"},
+		Scheduler: ExecutionComponentConfig{
+			Type:     "slurm",
+			Settings: ExecutionComponentSettings{"memory_mb": float64(8192)},
+		},
+		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
+			"root": "/tmp/goetl",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	scheduler, ok := env.Scheduler.(SlurmScheduler)
+	if !ok {
+		t.Fatalf("scheduler type = %T, want SlurmScheduler", env.Scheduler)
+	}
+	if scheduler.MemoryMB != 8192 {
+		t.Fatalf("memory mb = %d, want 8192", scheduler.MemoryMB)
 	}
 }
 

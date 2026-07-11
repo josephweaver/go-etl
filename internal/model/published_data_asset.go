@@ -140,14 +140,23 @@ func (asset PublishedDataAsset) Validate() error {
 	if err := validateDataName(asset.FromArtifact, "published data asset from_artifact"); err != nil {
 		return err
 	}
-	if asset.StorageScope != DataLocationTypeRegistered {
+	switch asset.StorageScope {
+	case DataLocationTypeRegistered:
+		if err := validateDataName(asset.LocationName, "published data asset location_name"); err != nil {
+			return err
+		}
+		if _, err := ValidateArtifactRelativePath(asset.Path); err != nil {
+			return err
+		}
+	case DataProviderGDriveRclone:
+		if err := validateRcloneRemote(asset.LocationName); err != nil {
+			return fmt.Errorf("published data asset gdrive remote: %w", err)
+		}
+		if _, err := validateDataRelativePath(asset.Path, "published data asset gdrive path"); err != nil {
+			return err
+		}
+	default:
 		return fmt.Errorf("unsupported published data asset storage scope %q", asset.StorageScope)
-	}
-	if err := validateDataName(asset.LocationName, "published data asset location_name"); err != nil {
-		return err
-	}
-	if _, err := ValidateArtifactRelativePath(asset.Path); err != nil {
-		return err
 	}
 	if err := validateOptionalSize("published data asset size_bytes", asset.SizeBytes); err != nil {
 		return err

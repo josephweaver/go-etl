@@ -111,6 +111,10 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 		ControllerInsecureExternalHTTPAllowed: true,
 		AssetCacheDir:                         "/data/goetl-test/cache/assets",
 		PythonExecutable:                      "python3",
+		SevenZipExecutable:                    "/usr/bin/7z",
+		RcloneExecutable:                      "/data/goetl-test/bin/rclone",
+		RcloneConfigPath:                      "/data/goetl-test/secrets/rclone.conf",
+		EnableGDriveRcloneProvider:            true,
 		MaxAssetBytes:                         20000000000,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
@@ -150,6 +154,18 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	}
 	if cfg.PythonExecutable != "python3" {
 		t.Fatalf("python executable = %q, want python3", cfg.PythonExecutable)
+	}
+	if cfg.SevenZipExecutable != "/usr/bin/7z" {
+		t.Fatalf("seven zip executable = %q, want configured 7z", cfg.SevenZipExecutable)
+	}
+	if cfg.RcloneExecutable != "/data/goetl-test/bin/rclone" {
+		t.Fatalf("rclone executable = %q, want configured rclone", cfg.RcloneExecutable)
+	}
+	if cfg.RcloneConfigPath != "/data/goetl-test/secrets/rclone.conf" {
+		t.Fatalf("rclone config path = %q, want configured rclone config", cfg.RcloneConfigPath)
+	}
+	if !cfg.EnableGDriveRcloneProvider {
+		t.Fatal("expected gdrive rclone provider to be enabled")
 	}
 	if cfg.MaxAssetBytes != 20000000000 {
 		t.Fatalf("max asset bytes = %d, want 20000000000", cfg.MaxAssetBytes)

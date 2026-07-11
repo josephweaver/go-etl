@@ -84,6 +84,7 @@ func TestWorkerLaunchConfigResolvesStructuredWorkerConfig(t *testing.T) {
 		testWorkerConfigVariable("scheduler", "slurm", map[string]variable.TypedExpression{
 			"script_path": {Type: variable.TypePath, Expression: "/tmp/goetl-worker.slurm"},
 			"job_name":    {Type: variable.TypeString, Expression: "goetl-worker"},
+			"memory_mb":   {Type: variable.TypeInt, Expression: 8192},
 		}),
 		testWorkerConfigVariable("runtime", "worker", map[string]variable.TypedExpression{
 			"executable":  {Type: variable.TypePath, Expression: "/opt/goetl/worker"},
@@ -101,6 +102,9 @@ func TestWorkerLaunchConfigResolvesStructuredWorkerConfig(t *testing.T) {
 	}
 	if cfg.dockerExecutable != "docker" {
 		t.Fatalf("docker executable = %q, want docker", cfg.dockerExecutable)
+	}
+	if cfg.slurm.MemoryMB != 8192 {
+		t.Fatalf("memory mb = %d, want 8192", cfg.slurm.MemoryMB)
 	}
 	if cfg.slurm.WorkerExecutable != "/opt/goetl/worker" {
 		t.Fatalf("worker executable = %q, want /opt/goetl/worker", cfg.slurm.WorkerExecutable)

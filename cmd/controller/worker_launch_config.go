@@ -1,6 +1,10 @@
 package main
 
-import "goetl/internal/variable"
+import (
+	"fmt"
+
+	"goetl/internal/variable"
+)
 
 type workerLaunchConfigSpec struct {
 	dockerExecutable string
@@ -34,6 +38,10 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 		} else if found {
 			jobName = configured
 		}
+	}
+	memoryMB, err := optionalWorkerConfigInt64(resolver, schedulerSettings, "memory_mb", "worker_slurm_memory_mb")
+	if err != nil {
+		return workerLaunchConfigSpec{}, err
 	}
 
 	workerArgs, ok, err := variable.OptionalObjectFieldStringList(runtimeSettings, "args")
@@ -77,6 +85,7 @@ func workerLaunchConfig(resolver variable.Resolver) (workerLaunchConfigSpec, err
 		scriptPath:       "",
 		slurm: SlurmWorkerScriptConfig{
 			JobName:          jobName,
+			MemoryMB:         memoryMB,
 			WorkerExecutable: "",
 			WorkerArgs:       workerArgs,
 			WorkerConfigPath: "",
@@ -135,6 +144,38 @@ func optionalWorkerConfigSettings(resolver variable.Resolver, name string) (map[
 		return object, err
 	}
 	return settings, nil
+}
+
+func optionalWorkerConfigInt64(resolver variable.Resolver, settings map[string]variable.ResolvedValue, fieldName string, fallbackName string) (int64, error) {
+	if settings != nil {
+		value, ok := settings[fieldName]
+		if ok {
+			if value.Type != variable.TypeInt {
+				return 0, fmt.Errorf("%s has type %s, want int", fieldName, value.Type)
+			}
+			return resolvedInt64Value(value, fieldName)
+		}
+	}
+	if value, found, err := resolver.Optional(fallbackName); err != nil {
+		return 0, err
+	} else if found {
+		return resolvedInt64Value(value, fallbackName)
+	}
+	return 0, nil
+}
+
+func resolvedInt64Value(value variable.ResolvedValue, name string) (int64, error) {
+	if value.Type != variable.TypeInt {
+		return 0, fmt.Errorf("%s has type %s, want int", name, value.Type)
+	}
+	switch integer := value.Value.(type) {
+	case int64:
+		return integer, nil
+	case int:
+		return int64(integer), nil
+	default:
+		return 0, fmt.Errorf("%s is required", name)
+	}
 }
 
 func workerScriptPath(resolver variable.Resolver) (string, error) {

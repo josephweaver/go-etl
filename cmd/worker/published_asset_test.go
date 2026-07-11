@@ -299,6 +299,72 @@ func TestCommitDataPublishesFileArtifactAndEmitsEvidence(t *testing.T) {
 	}
 }
 
+func TestCommitDataPublishesFileArtifactToGDriveRclone(t *testing.T) {
+	worker := newPythonTestWorker(t)
+	remoteRoot := t.TempDir()
+	argsPath := filepath.Join(worker.Config.TmpDir, "rclone-args.jsonl")
+	configureFakeRclone(t, &worker, "", argsPath, filepath.Join(worker.Config.TmpDir, "rclone.conf"))
+	t.Setenv("GOET_FAKE_RCLONE_REMOTE_ROOT", remoteRoot)
+
+	sourcePath := filepath.Join(worker.Config.DataDir, "artifacts", "raw", "compute-001", "reports", "smoke.zip")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0755); err != nil {
+		t.Fatalf("create source parent: %v", err)
+	}
+	content := "zip-bytes"
+	if err := os.WriteFile(sourcePath, []byte(content), 0644); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	sizeBytes := int64(len(content))
+	item := testCommitDataItem("unused.zip", model.ArtifactDescriptor{
+		Name:        "summary",
+		Kind:        model.ArtifactKindFile,
+		Path:        "artifacts/raw/compute-001/reports/smoke.zip",
+		ContentType: "application/zip",
+		SizeBytes:   &sizeBytes,
+		SHA256:      sha256Text(content),
+	})
+	payload := decodeCommitDataParameter(t, item)
+	payload.PublishTarget.Location = model.DataAssetLocation{
+		Type:      model.DataProviderGDriveRclone,
+		Remote:    "gdrive",
+		DrivePath: "Data/ETL/test/goetl-publish-smoke.zip",
+	}
+	item.Parameters["commit_data"] = model.Parameter{Type: "commit_data", Value: payload}
+
+	evidence, err := worker.commitData(newTestOperationContext(t, worker, item))
+	if err != nil {
+		t.Fatalf("commitData() error = %v", err)
+	}
+	if got := readString(t, filepath.Join(remoteRoot, "Data", "ETL", "test", "goetl-publish-smoke.zip")); got != content {
+		t.Fatalf("uploaded file = %q", got)
+	}
+	var manifest model.PublishedDataAssetManifest
+	if err := json.Unmarshal([]byte(evidence.OutputJSON), &manifest); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("published manifest validate: %v", err)
+	}
+	asset := manifest.PublishedAssets[0]
+	if asset.StorageScope != model.DataProviderGDriveRclone || asset.LocationName != "gdrive" || asset.Path != "Data/ETL/test/goetl-publish-smoke.zip" {
+		t.Fatalf("gdrive evidence = %+v", asset)
+	}
+	if asset.SHA256 != sha256Text(content) || asset.SizeBytes == nil || *asset.SizeBytes != sizeBytes {
+		t.Fatalf("published asset evidence = %+v, want source bytes", asset)
+	}
+
+	calls := readFakeRcloneCalls(t, argsPath)
+	if len(calls) != 2 {
+		t.Fatalf("rclone call count = %d, want lsf and copyto", len(calls))
+	}
+	if calls[0][2] != "lsf" || calls[0][3] != "gdrive:Data/ETL/test/goetl-publish-smoke.zip" {
+		t.Fatalf("unexpected lsf args: %#v", calls[0])
+	}
+	if calls[1][2] != "copyto" || calls[1][4] != "gdrive:Data/ETL/test/goetl-publish-smoke.zip" {
+		t.Fatalf("unexpected copyto args: %#v", calls[1])
+	}
+}
+
 func TestCommitDataRejectsMissingArtifactUnsafePathAndExistingTarget(t *testing.T) {
 	worker := newPythonTestWorker(t)
 	publishedRoot := t.TempDir()

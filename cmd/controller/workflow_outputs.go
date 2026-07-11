@@ -64,24 +64,32 @@ func artifactManifestFromOutputJSON(outputJSON string) (model.ArtifactManifest, 
 		return model.ArtifactManifest{}, false, fmt.Errorf("output JSON must contain one JSON document")
 	}
 
+	return artifactManifestFromDecodedOutput(decoded)
+}
+
+func artifactManifestFromDecodedOutput(decoded any) (model.ArtifactManifest, bool, error) {
 	object, ok := decoded.(map[string]any)
 	if !ok {
 		return model.ArtifactManifest{}, false, nil
 	}
 	schema, ok := object["schema"].(string)
-	if !ok || schema != model.ArtifactManifestSchemaV1 {
-		return model.ArtifactManifest{}, false, nil
+	if ok && schema == model.ArtifactManifestSchemaV1 {
+		data, err := json.Marshal(object)
+		if err != nil {
+			return model.ArtifactManifest{}, false, fmt.Errorf("encode artifact manifest candidate: %w", err)
+		}
+		var manifest model.ArtifactManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return model.ArtifactManifest{}, false, fmt.Errorf("decode artifact manifest: %w", err)
+		}
+		return manifest, true, nil
 	}
 
-	data, err := json.Marshal(object)
-	if err != nil {
-		return model.ArtifactManifest{}, false, fmt.Errorf("encode artifact manifest candidate: %w", err)
+	if logicalOutput, ok := object["logical_output"]; ok {
+		return artifactManifestFromDecodedOutput(logicalOutput)
 	}
-	var manifest model.ArtifactManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return model.ArtifactManifest{}, false, fmt.Errorf("decode artifact manifest: %w", err)
-	}
-	return manifest, true, nil
+
+	return model.ArtifactManifest{}, false, nil
 }
 
 func resolvedOutputFromJSON(raw string) (variable.ResolvedValue, error) {

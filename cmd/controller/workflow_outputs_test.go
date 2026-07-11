@@ -29,6 +29,32 @@ func TestValidateArtifactManifestOutputJSONAcceptsRecognizedValidManifest(t *tes
 	}
 }
 
+func TestArtifactManifestFromOutputJSONFindsPythonLogicalOutputManifest(t *testing.T) {
+	output := `{
+		"schema":"goet/python-workitem-output/v1",
+		"work_item_id":"compute-001",
+		"operation":"python_script",
+		"logical_output":{
+			"schema":"goet/artifact-manifest/v1",
+			"work_item_id":"compute-001",
+			"storage_scope":"worker_data",
+			"artifacts":[
+				{"name":"summary","kind":"file","path":"artifacts/raw/compute-001/reports/summary.json"}
+			]
+		}
+	}`
+	manifest, found, err := artifactManifestFromOutputJSON(output)
+	if err != nil {
+		t.Fatalf("artifactManifestFromOutputJSON() error = %v", err)
+	}
+	if !found {
+		t.Fatal("artifact manifest not found")
+	}
+	if manifest.WorkItemID != "compute-001" || len(manifest.Artifacts) != 1 || manifest.Artifacts[0].Name != "summary" {
+		t.Fatalf("manifest = %+v, want nested python logical output manifest", manifest)
+	}
+}
+
 func TestValidateArtifactManifestOutputJSONRejectsRecognizedInvalidManifest(t *testing.T) {
 	output := `{
 		"schema":"goet/artifact-manifest/v1",

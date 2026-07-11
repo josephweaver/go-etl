@@ -35,6 +35,7 @@ func TestSlurmSchedulerExecuteCopiesAndSubmitsGeneratedScript(t *testing.T) {
 	scheduler := SlurmScheduler{
 		Transport: connector,
 		TempDir:   t.TempDir(),
+		MemoryMB:  8192,
 	}
 
 	jobID, err := scheduler.Execute(context.Background(), SlurmExecutionConfig{
@@ -58,6 +59,9 @@ func TestSlurmSchedulerExecuteCopiesAndSubmitsGeneratedScript(t *testing.T) {
 	}
 	if !stringSlicesEqual(connector.execArgs, []string{"sbatch", "/data/goetl/scripts/worker.slurm"}) {
 		t.Fatalf("exec args = %#v, want sbatch command", connector.execArgs)
+	}
+	if !strings.Contains(string(connector.copiedContent), "#SBATCH --mem=8192M") {
+		t.Fatalf("copied script missing memory directive:\n%s", connector.copiedContent)
 	}
 	if _, err := os.Stat(connector.copiedLocalPath); !os.IsNotExist(err) {
 		t.Fatalf("temp script still exists or stat failed unexpectedly: %v", err)

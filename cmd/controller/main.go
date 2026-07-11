@@ -2393,11 +2393,19 @@ func (c *Controller) workerLaunchConfigFromExecutionEnvironment() (workerLaunchC
 		scriptPath: paths.WorkerScriptPath,
 		slurm: SlurmWorkerScriptConfig{
 			JobName:          "goetl-worker",
+			MemoryMB:         executionEnvironmentSchedulerMemoryMB(c.env.Scheduler),
 			WorkerExecutable: paths.WorkerExecutable,
 			WorkerConfigPath: paths.WorkerConfigPath,
 			LogDir:           paths.LogDir,
 		},
 	}, true, nil
+}
+
+func executionEnvironmentSchedulerMemoryMB(scheduler Scheduler) int64 {
+	if slurm, ok := scheduler.(SlurmScheduler); ok {
+		return slurm.MemoryMB
+	}
+	return 0
 }
 
 func workItemsWithRuntimeMetadata(workflowID string, compiledItems []workflow.CompiledWorkItem, codeVersion string) ([]model.WorkItem, error) {

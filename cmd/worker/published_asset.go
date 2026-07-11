@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,25 +46,23 @@ func (w Worker) publishPromotedArtifactsForTargets(targets []model.BoundPublishT
 		if _, ok := seenNames[plan.target.Name]; ok {
 			return nil, fmt.Errorf("duplicate publish target name %q", plan.target.Name)
 		}
-		if _, ok := seenDestinations[plan.finalPath]; ok {
-			return nil, fmt.Errorf("duplicate publish destination path %q", plan.finalPath)
+		if _, ok := seenDestinations[plan.destinationKey]; ok {
+			return nil, fmt.Errorf("duplicate publish destination path %q", plan.destinationKey)
 		}
 		seenNames[plan.target.Name] = struct{}{}
-		seenDestinations[plan.finalPath] = struct{}{}
+		seenDestinations[plan.destinationKey] = struct{}{}
 		plans = append(plans, plan)
 	}
 
 	for _, plan := range plans {
-		if _, err := os.Stat(plan.finalPath); err == nil {
-			return nil, fmt.Errorf("publish destination already exists: %s", plan.finalPath)
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("check publish destination %s: %w", plan.finalPath, err)
+		if err := w.checkPublishDestinationAvailable(plan); err != nil {
+			return nil, err
 		}
 	}
 
 	published := make([]model.PublishedDataAsset, 0, len(plans))
 	for i, plan := range plans {
-		evidence, err := publishArtifactToTemp(plan)
+		evidence, err := w.publishArtifactForPlan(plan)
 		if err != nil {
 			cleanupPublishTemps(plans)
 			return nil, err
@@ -79,6 +78,10 @@ func (w Worker) publishPromotedArtifactsForTargets(targets []model.BoundPublishT
 
 	var completed []publishPlan
 	for _, plan := range plans {
+		if plan.target.Location.Type == model.DataProviderGDriveRclone {
+			completed = append(completed, plan)
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(plan.finalPath), 0755); err != nil {
 			cleanupPublishTemps(plans)
 			rollbackPublishedTargets(completed)
@@ -102,19 +105,28 @@ type publishPlan struct {
 	sourcePath       string
 	finalPath        string
 	tempPath         string
+	destinationKey   string
 	sizeBytes        *int64
 	sha256           string
 }
 
 func (plan publishPlan) evidence() model.PublishedDataAsset {
+	storageScope := plan.target.Location.Type
+	locationName := plan.target.Location.LocationName
+	path := plan.target.Location.Path
+	if plan.target.Location.Type == model.DataProviderGDriveRclone {
+		storageScope = model.DataProviderGDriveRclone
+		locationName = plan.target.Location.Remote
+		path = plan.target.Location.DrivePath
+	}
 	return model.PublishedDataAsset{
 		Name:            plan.target.Name,
 		FromWorkItemID:  plan.sourceWorkItemID,
 		FromArtifact:    plan.target.FromArtifact,
 		ContentType:     plan.source.ContentType,
-		StorageScope:    model.DataLocationTypeRegistered,
-		LocationName:    plan.target.Location.LocationName,
-		Path:            plan.target.Location.Path,
+		StorageScope:    storageScope,
+		LocationName:    locationName,
+		Path:            path,
 		SizeBytes:       plan.sizeBytes,
 		SHA256:          plan.sha256,
 		OverwritePolicy: plan.target.OverwritePolicy,
@@ -251,11 +263,6 @@ func (w Worker) publishPlanForTarget(target model.BoundPublishTarget, artifact m
 		return publishPlan{}, err
 	}
 
-	root, err := w.resolvePublishLocationRoot(target.Location.LocationName)
-	if err != nil {
-		return publishPlan{}, err
-	}
-
 	sourcePath, err := resolveArtifactPathInsideRoot(w.Config.DataDir, artifact.Path, "published artifact source path")
 	if err != nil {
 		return publishPlan{}, err
@@ -274,23 +281,90 @@ func (w Worker) publishPlanForTarget(target model.BoundPublishTarget, artifact m
 		return publishPlan{}, fmt.Errorf("published artifact source is not a directory: %s", artifact.Path)
 	}
 
-	finalPath, err := resolveArtifactPathInsideRoot(root, target.Location.Path, "publish destination path")
-	if err != nil {
-		return publishPlan{}, err
-	}
-	tempRel := filepath.ToSlash(filepath.Join(".tmp-"+randomHex(8), target.Location.Path))
-	tempPath, err := resolveArtifactPathInsideRoot(root, tempRel, "temporary publish destination path")
-	if err != nil {
-		return publishPlan{}, err
-	}
-
-	return publishPlan{
+	plan := publishPlan{
 		target:     target,
 		source:     artifact,
 		sourcePath: sourcePath,
-		finalPath:  finalPath,
-		tempPath:   tempPath,
-	}, nil
+	}
+	switch target.Location.Type {
+	case model.DataProviderRegisteredLocation:
+		root, err := w.resolvePublishLocationRoot(target.Location.LocationName)
+		if err != nil {
+			return publishPlan{}, err
+		}
+		finalPath, err := resolveArtifactPathInsideRoot(root, target.Location.Path, "publish destination path")
+		if err != nil {
+			return publishPlan{}, err
+		}
+		tempRel := filepath.ToSlash(filepath.Join(".tmp-"+randomHex(8), target.Location.Path))
+		tempPath, err := resolveArtifactPathInsideRoot(root, tempRel, "temporary publish destination path")
+		if err != nil {
+			return publishPlan{}, err
+		}
+		plan.finalPath = finalPath
+		plan.tempPath = tempPath
+		plan.destinationKey = target.Location.Type + ":" + target.Location.LocationName + ":" + target.Location.Path
+	case model.DataProviderGDriveRclone:
+		if artifact.Kind != model.ArtifactKindFile {
+			return publishPlan{}, fmt.Errorf("gdrive_rclone publish supports file artifacts only")
+		}
+		if !w.Config.EnableGDriveRcloneProvider {
+			return publishPlan{}, fmt.Errorf("gdrive_rclone provider is disabled")
+		}
+		if strings.TrimSpace(w.Config.RcloneExecutable) == "" {
+			return publishPlan{}, fmt.Errorf("gdrive_rclone publish requires configured rclone_executable")
+		}
+		if target.Location.FileID != "" {
+			return publishPlan{}, fmt.Errorf("gdrive_rclone file_id publish is not implemented; use drive_path")
+		}
+		plan.destinationKey = target.Location.Type + ":" + target.Location.Remote + ":" + target.Location.DrivePath
+	default:
+		return publishPlan{}, fmt.Errorf("unsupported publish target location type %q", target.Location.Type)
+	}
+	return plan, nil
+}
+
+func (w Worker) checkPublishDestinationAvailable(plan publishPlan) error {
+	switch plan.target.Location.Type {
+	case model.DataProviderRegisteredLocation:
+		if _, err := os.Stat(plan.finalPath); err == nil {
+			return fmt.Errorf("publish destination already exists: %s", plan.finalPath)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("check publish destination %s: %w", plan.finalPath, err)
+		}
+		return nil
+	case model.DataProviderGDriveRclone:
+		provider := gdriveRcloneProvider{executable: w.Config.RcloneExecutable, configPath: w.Config.RcloneConfigPath}
+		exists, err := provider.exists(context.Background(), plan.target.Location.Remote, plan.target.Location.DrivePath)
+		if err != nil {
+			return fmt.Errorf("check gdrive_rclone publish destination %s: %w", plan.destinationKey, err)
+		}
+		if exists {
+			return fmt.Errorf("publish destination already exists: %s", plan.destinationKey)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported publish target location type %q", plan.target.Location.Type)
+	}
+}
+
+func (w Worker) publishArtifactForPlan(plan publishPlan) (assetEvidence, error) {
+	switch plan.target.Location.Type {
+	case model.DataProviderRegisteredLocation:
+		return publishArtifactToTemp(plan)
+	case model.DataProviderGDriveRclone:
+		evidence, err := hashFileWithLimit(plan.sourcePath, w.Config.effectiveMaxAssetBytes())
+		if err != nil {
+			return assetEvidence{}, err
+		}
+		provider := gdriveRcloneProvider{executable: w.Config.RcloneExecutable, configPath: w.Config.RcloneConfigPath}
+		if err := provider.uploadFile(context.Background(), plan.sourcePath, plan.target.Location.Remote, plan.target.Location.DrivePath, model.DataAssetTransferPolicy{}); err != nil {
+			return assetEvidence{}, err
+		}
+		return evidence, nil
+	default:
+		return assetEvidence{}, fmt.Errorf("unsupported publish target location type %q", plan.target.Location.Type)
+	}
 }
 
 func verifyPublishedArtifactEvidence(plan publishPlan, evidence assetEvidence) error {
@@ -335,12 +409,18 @@ func publishArtifactToTemp(plan publishPlan) (assetEvidence, error) {
 
 func cleanupPublishTemps(plans []publishPlan) {
 	for _, plan := range plans {
+		if plan.tempPath == "" {
+			continue
+		}
 		_ = os.RemoveAll(artifactTempRoot(plan.tempPath))
 	}
 }
 
 func rollbackPublishedTargets(plans []publishPlan) {
 	for _, plan := range plans {
+		if plan.finalPath == "" {
+			continue
+		}
 		_ = os.RemoveAll(plan.finalPath)
 	}
 }

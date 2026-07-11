@@ -33,6 +33,10 @@ type WorkerRuntime struct {
 	DataDir                               string
 	AssetCacheDir                         string
 	PythonExecutable                      string
+	SevenZipExecutable                    string
+	RcloneExecutable                      string
+	RcloneConfigPath                      string
+	EnableGDriveRcloneProvider            bool
 	MaxAssetBytes                         int64
 	DataLocationRoots                     map[string]string
 }
@@ -136,6 +140,10 @@ type WorkerConfig struct {
 	ControllerInsecureExternalHTTPAllowed bool              `json:"controller_insecure_external_http_allowed,omitempty"`
 	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
 	PythonExecutable                      string            `json:"python_executable,omitempty"`
+	SevenZipExecutable                    string            `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable                      string            `json:"rclone_executable,omitempty"`
+	RcloneConfigPath                      string            `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider            bool              `json:"enable_gdrive_rclone_provider,omitempty"`
 	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
 	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 }
@@ -174,6 +182,15 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 	if containsNewline(r.AssetCacheDir) {
 		return fmt.Errorf("worker asset cache dir must not contain newlines")
 	}
+	if containsNewline(r.SevenZipExecutable) {
+		return fmt.Errorf("worker seven zip executable must not contain newlines")
+	}
+	if containsNewline(r.RcloneExecutable) {
+		return fmt.Errorf("worker rclone executable must not contain newlines")
+	}
+	if containsNewline(r.RcloneConfigPath) {
+		return fmt.Errorf("worker rclone config path must not contain newlines")
+	}
 	for name, root := range r.DataLocationRoots {
 		if containsNewline(name) || containsNewline(root) {
 			return fmt.Errorf("worker data location roots must not contain newlines")
@@ -188,6 +205,10 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 		ControllerInsecureExternalHTTPAllowed: r.ControllerInsecureExternalHTTPAllowed,
 		AssetCacheDir:                         r.AssetCacheDir,
 		PythonExecutable:                      r.PythonExecutable,
+		SevenZipExecutable:                    r.SevenZipExecutable,
+		RcloneExecutable:                      r.RcloneExecutable,
+		RcloneConfigPath:                      r.RcloneConfigPath,
+		EnableGDriveRcloneProvider:            r.EnableGDriveRcloneProvider,
 		MaxAssetBytes:                         r.MaxAssetBytes,
 		DataLocationRoots:                     r.DataLocationRoots,
 	}

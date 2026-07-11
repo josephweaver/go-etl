@@ -345,6 +345,32 @@ func runFakeRclone() int {
 		return 17
 	}
 
+	lsfIndex := -1
+	for i, arg := range args {
+		if arg == "lsf" {
+			lsfIndex = i
+			break
+		}
+	}
+	if lsfIndex >= 0 {
+		if os.Getenv("GOET_FAKE_RCLONE_EXISTS") == "1" {
+			_, _ = fmt.Fprintln(os.Stdout, filepath.Base(args[lsfIndex+1]))
+			return 0
+		}
+		remoteRoot := os.Getenv("GOET_FAKE_RCLONE_REMOTE_ROOT")
+		if remoteRoot != "" {
+			path, ok := fakeRcloneRemoteLocalPath(remoteRoot, args[lsfIndex+1])
+			if !ok {
+				return 2
+			}
+			if _, err := os.Stat(path); err == nil {
+				_, _ = fmt.Fprintln(os.Stdout, filepath.Base(path))
+				return 0
+			}
+		}
+		return 3
+	}
+
 	copyIndex := -1
 	for i, arg := range args {
 		if arg == "copyto" {
@@ -355,8 +381,19 @@ func runFakeRclone() int {
 	if copyIndex < 0 || copyIndex+2 >= len(args) {
 		return 2
 	}
-	source := os.Getenv("GOET_FAKE_RCLONE_SOURCE")
+	source := args[copyIndex+1]
 	destination := args[copyIndex+2]
+	if fakeRcloneLooksRemote(source) {
+		source = os.Getenv("GOET_FAKE_RCLONE_SOURCE")
+	}
+	if fakeRcloneLooksRemote(destination) {
+		remoteRoot := os.Getenv("GOET_FAKE_RCLONE_REMOTE_ROOT")
+		path, ok := fakeRcloneRemoteLocalPath(remoteRoot, destination)
+		if !ok {
+			return 2
+		}
+		destination = path
+	}
 	data, err := os.ReadFile(source)
 	if err != nil {
 		return 2
@@ -368,6 +405,36 @@ func runFakeRclone() int {
 		return 2
 	}
 	return 0
+}
+
+func fakeRcloneRemoteLocalPath(root string, remotePath string) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	if !fakeRcloneLooksRemote(remotePath) {
+		return "", false
+	}
+	parts := strings.SplitN(remotePath, ":", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", false
+	}
+	clean, err := cleanDataRelativePath(parts[1])
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(root, filepath.FromSlash(clean)), true
+}
+
+func fakeRcloneLooksRemote(value string) bool {
+	index := strings.Index(value, ":")
+	if index <= 0 {
+		return false
+	}
+	prefix := value[:index]
+	if len(prefix) == 1 {
+		return false
+	}
+	return !strings.ContainsAny(prefix, `/\`)
 }
 
 func stringPtr(value string) *string {

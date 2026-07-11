@@ -558,8 +558,11 @@ func TestMaterializeDataAssetsSevenZipUsesConfiguredExecutableWithStructuredArgs
 
 	asset := localFileAsset("fixture", "release.7z", model.DataAssetCacheStrategyReference, "", nil)
 	asset.Archive = &model.DataAssetArchive{
-		Type:   model.DataAssetArchiveTypeSevenZip,
-		Select: []model.DataAssetArchiveSelect{{Member: "tiles/tile.hdr", As: "tile.hdr"}},
+		Type: model.DataAssetArchiveTypeSevenZip,
+		Select: []model.DataAssetArchiveSelect{
+			{Member: "tiles/tile", As: "tile"},
+			{Member: "tiles/tile.hdr", As: "tile.hdr"},
+		},
 		Expose: model.DataAssetArchiveExposeSelectedDirectory,
 	}
 
@@ -575,7 +578,7 @@ func TestMaterializeDataAssetsSevenZipUsesConfiguredExecutableWithStructuredArgs
 	if err := json.Unmarshal(data, &args); err != nil {
 		t.Fatalf("decode fake 7z args: %v", err)
 	}
-	if len(args) != 5 || args[0] != "x" || args[1] != "-y" || !strings.HasPrefix(args[2], "-o") || args[4] != "tiles/tile.hdr" {
+	if len(args) != 6 || args[0] != "x" || args[1] != "-y" || !strings.HasPrefix(args[2], "-o") || args[4] != "tiles/tile" || args[5] != "tiles/tile.hdr" {
 		t.Fatalf("unexpected fake 7z args: %#v", args)
 	}
 
@@ -586,6 +589,9 @@ func TestMaterializeDataAssetsSevenZipUsesConfiguredExecutableWithStructuredArgs
 	}
 	if got := readString(t, selectedPath); got != "fake:tiles/tile.hdr" {
 		t.Fatalf("selected output = %q", got)
+	}
+	if got := readString(t, filepath.Join(worker.Config.TmpDir, "work", "data-assets", "input_data", "extracted", "tile")); got != "fake:tiles/tile" {
+		t.Fatalf("selected prefix output = %q", got)
 	}
 }
 
@@ -778,7 +784,7 @@ func runFakeSevenZip() int {
 	if root == "" || sourceIndex < 0 || sourceIndex >= len(args) {
 		return 2
 	}
-	for _, member := range args[sourceIndex+1:] {
+	for _, member := range fakeSevenZipMembers(args[sourceIndex+1:]) {
 		path := filepath.Join(root, filepath.FromSlash(member))
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			return 2
@@ -788,4 +794,25 @@ func runFakeSevenZip() int {
 		}
 	}
 	return 0
+}
+
+func fakeSevenZipMembers(args []string) []string {
+	members := []string{}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-i@") {
+			data, err := os.ReadFile(strings.TrimPrefix(arg, "-i@"))
+			if err != nil {
+				return nil
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					members = append(members, line)
+				}
+			}
+			continue
+		}
+		members = append(members, strings.TrimPrefix(arg, "-i!"))
+	}
+	return members
 }

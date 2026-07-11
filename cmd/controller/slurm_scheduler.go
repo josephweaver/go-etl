@@ -10,6 +10,7 @@ import (
 type SlurmScheduler struct {
 	Transport Transport
 	TempDir   string
+	MemoryMB  int64
 }
 
 type SlurmExecutionConfig struct {
@@ -34,6 +35,9 @@ func (s SlurmScheduler) Execute(ctx context.Context, cfg SlurmExecutionConfig) (
 	}
 	if cfg.RemoteScriptPath == "" {
 		return "", fmt.Errorf("remote slurm script path is required")
+	}
+	if cfg.WorkerScript.MemoryMB == 0 {
+		cfg.WorkerScript.MemoryMB = s.MemoryMB
 	}
 
 	script, err := GenerateSlurmWorkerScript(cfg.WorkerScript)

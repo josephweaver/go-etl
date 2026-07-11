@@ -281,10 +281,19 @@ func CommitDataResourceConstraints(target model.BoundPublishTarget, targetEnviro
 	if strings.TrimSpace(targetEnvironmentID) == "" {
 		return nil, fmt.Errorf("target_environment_id is required")
 	}
+	resourceKey := ""
+	switch target.Location.Type {
+	case model.DataProviderRegisteredLocation:
+		resourceKey = "target:" + sanitizeResourceKeySegment(targetEnvironmentID) + "/published-data-write:" + sanitizeResourceKeySegment(target.Location.LocationName)
+	case model.DataProviderGDriveRclone:
+		resourceKey = "provider:gdrive-rclone:" + sanitizeResourceKeySegment(target.Location.Remote) + "/upload"
+	default:
+		return nil, fmt.Errorf("unsupported commit_data publish target location type %q", target.Location.Type)
+	}
 	return []model.WorkItemResourceConstraint{
 		{
 			ConstraintIndex: 0,
-			ResourceKey:     "target:" + sanitizeResourceKeySegment(targetEnvironmentID) + "/published-data-write:" + sanitizeResourceKeySegment(target.Location.LocationName),
+			ResourceKey:     resourceKey,
 			RequestedUnits:  1,
 			Operator:        model.WorkItemResourceConstraintOperatorLessEq,
 			TargetUnits:     1,

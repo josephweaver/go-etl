@@ -30,6 +30,7 @@ func (failingShellPlatform) LocalizePath(value string) (string, error) {
 func TestGenerateSlurmWorkerScript(t *testing.T) {
 	script, err := GenerateSlurmWorkerScript(SlurmWorkerScriptConfig{
 		JobName:          "goetl-worker",
+		MemoryMB:         8192,
 		WorkerExecutable: "/fake-hpcc/shared/goetl/artifacts/goetl-worker",
 		WorkerConfigPath: "/fake-hpcc/shared/goetl/configs/worker.json",
 		LogDir:           "/fake-hpcc/shared/goetl/logs",
@@ -41,6 +42,7 @@ func TestGenerateSlurmWorkerScript(t *testing.T) {
 	for _, want := range []string{
 		"#!/usr/bin/env bash\n",
 		"#SBATCH --job-name=goetl-worker\n",
+		"#SBATCH --mem=8192M\n",
 		"#SBATCH --output=/fake-hpcc/shared/goetl/logs/%x-%j.out\n",
 		"#SBATCH --error=/fake-hpcc/shared/goetl/logs/%x-%j.err\n",
 		"set -euo pipefail\n",

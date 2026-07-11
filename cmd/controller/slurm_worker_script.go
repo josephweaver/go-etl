@@ -9,6 +9,7 @@ import (
 
 type SlurmWorkerScriptConfig struct {
 	JobName          string
+	MemoryMB         int64
 	WorkerExecutable string
 	WorkerArgs       []string
 	WorkerConfigPath string
@@ -43,6 +44,9 @@ func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	newline := platform.Newline()
 	script.WriteString("#!/usr/bin/env bash" + newline)
 	script.WriteString("#SBATCH --job-name=" + cfg.JobName + newline)
+	if cfg.MemoryMB > 0 {
+		script.WriteString(fmt.Sprintf("#SBATCH --mem=%dM", cfg.MemoryMB) + newline)
+	}
 	script.WriteString("#SBATCH --output=" + logDir + "/%x-%j.out" + newline)
 	script.WriteString("#SBATCH --error=" + logDir + "/%x-%j.err" + newline)
 	script.WriteString("set -euo pipefail" + newline)
@@ -100,6 +104,9 @@ func WriteFakeHPCCWorkerScriptConfig(cfg FakeHPCCWorkerScriptConfig) error {
 func (cfg SlurmWorkerScriptConfig) validate() error {
 	if cfg.JobName == "" {
 		return fmt.Errorf("slurm job name is required")
+	}
+	if cfg.MemoryMB < 0 {
+		return fmt.Errorf("slurm memory mb must not be negative")
 	}
 	if strings.ContainsAny(cfg.JobName, " \t\r\n/") {
 		return fmt.Errorf("slurm job name must not contain whitespace or path separators")

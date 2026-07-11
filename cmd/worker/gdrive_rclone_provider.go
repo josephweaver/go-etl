@@ -75,16 +75,61 @@ func (p gdriveRcloneProvider) copyTo(ctx context.Context, remote string, drivePa
 	return evidence, nil
 }
 
-func (p gdriveRcloneProvider) copyToArgs(remotePath string, destination string, transferPolicy model.DataAssetTransferPolicy) []string {
+func (p gdriveRcloneProvider) uploadFile(ctx context.Context, sourcePath string, remote string, drivePath string, transferPolicy model.DataAssetTransferPolicy) error {
+	if strings.TrimSpace(sourcePath) == "" {
+		return fmt.Errorf("rclone source is required")
+	}
+	if err := transferPolicy.Validate(); err != nil {
+		return err
+	}
+	safePath, err := cleanDataRelativePath(drivePath)
+	if err != nil {
+		return err
+	}
+	remotePath := remote + ":" + safePath
+	args := p.copyToArgs(sourcePath, remotePath, transferPolicy)
+	command := exec.CommandContext(ctx, p.executable, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run rclone copyto: %w: %s", err, p.redactOutput(output))
+	}
+	return nil
+}
+
+func (p gdriveRcloneProvider) exists(ctx context.Context, remote string, drivePath string) (bool, error) {
+	safePath, err := cleanDataRelativePath(drivePath)
+	if err != nil {
+		return false, err
+	}
+	remotePath := remote + ":" + safePath
+	args := p.lsfArgs(remotePath)
+	command := exec.CommandContext(ctx, p.executable, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return false, nil
+	}
+	_ = output
+	return true, nil
+}
+
+func (p gdriveRcloneProvider) copyToArgs(source string, destination string, transferPolicy model.DataAssetTransferPolicy) []string {
 	args := []string{}
 	if strings.TrimSpace(p.configPath) != "" {
 		args = append(args, "--config", p.configPath)
 	}
-	args = append(args, "copyto", remotePath, destination)
+	args = append(args, "copyto", source, destination)
 	if bwlimit := rcloneBwlimit(transferPolicy); bwlimit != "" {
 		args = append(args, "--bwlimit", bwlimit)
 	}
 	return args
+}
+
+func (p gdriveRcloneProvider) lsfArgs(remotePath string) []string {
+	args := []string{}
+	if strings.TrimSpace(p.configPath) != "" {
+		args = append(args, "--config", p.configPath)
+	}
+	return append(args, "lsf", remotePath)
 }
 
 func rcloneBwlimit(transferPolicy model.DataAssetTransferPolicy) string {
