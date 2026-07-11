@@ -555,6 +555,19 @@ The migration should:
 - update current smoke fixtures in one controlled migration slice;
 - reject legacy workflow shapes after migration rather than supporting two permanent public models.
 
+## Implementation Notes
+
+Slice 001 adds decode-only public document contracts in `internal/document`.
+The structs define `api_version`, `kind`, and `id` envelopes for controller,
+project, workflow, and submission override documents, and keep ordinary
+author-authored values under `variables`, `overrides`, `data`, `steps`,
+`work`, and `source_manifest` without exposing `variable.Variable` or
+`TypedExpression` as the public JSON shape.
+
+These contracts are not wired into controller or worker execution yet.
+Runtime parsing still uses the existing implementation until later slices
+normalize and migrate the public workflow boundary.
+
 ## Non-Goals
 
 - Implementing `materialization.scope: worker`.
