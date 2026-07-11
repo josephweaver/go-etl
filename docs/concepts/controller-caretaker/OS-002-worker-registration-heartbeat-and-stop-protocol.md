@@ -13,10 +13,10 @@ Current implementation:
 - registration confirms one inflight worker-start reservation and signals worker state changed after persistence commits;
 - heartbeat updates only active matching sessions and does not signal worker capacity;
 - stop is idempotent for stopped sessions, rejects dead/unknown sessions, and signals after a successful active-to-stopped transition.
+- worker-side lifecycle client methods can register, heartbeat, and stop with typed session state and `ErrWorkerSessionNotActive` conflict handling.
 
 Remaining OS-002 work:
 
-- worker client register/heartbeat/stop methods;
 - worker-side session state and heartbeat supervisor;
 - normal worker startup sequence changes;
 - no-work graceful stop;
