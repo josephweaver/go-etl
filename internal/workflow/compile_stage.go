@@ -80,7 +80,7 @@ func CompileWorkflowStage(resolver variable.Resolver, workflow Workflow, plan Wo
 		}
 	}
 
-	result, err := PlanCacheDataWorkItems(result)
+	result, err := PlanStageCacheDataWorkItems(result)
 	if err != nil {
 		return CompileStageResult{}, err
 	}
