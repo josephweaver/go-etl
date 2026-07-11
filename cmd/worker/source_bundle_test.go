@@ -59,6 +59,33 @@ func TestStageWorkItemSourceBundleSuccess(t *testing.T) {
 	assertFileContents(t, filepath.Join(staging.SourceDir, ".goet", "source-manifest.json"), "{}\n")
 }
 
+func TestStageWorkItemSourceBundleUsesConfiguredProvider(t *testing.T) {
+	zipData := mustZipData(t, zipTestEntry{name: "main.py", body: "print('direct')\n"})
+	provider := &recordingSourceBundleProvider{body: zipData}
+	worker := newSourceBundleTestWorker(t, "http://controller.invalid")
+	worker.SourceBundles = provider
+	item := baseSourceBundleTestItem()
+
+	staging, err := worker.stageWorkItemSourceBundle(item)
+	if err != nil {
+		t.Fatalf("stageWorkItemSourceBundle() error = %v", err)
+	}
+	if provider.calls != 1 || provider.item.ID != item.ID {
+		t.Fatalf("provider calls = %d, item = %+v", provider.calls, provider.item)
+	}
+	assertFileContents(t, filepath.Join(staging.SourceDir, "main.py"), "print('direct')\n")
+}
+
+func TestStageWorkItemSourceBundleRequiresProviderForLocalOnlyWorker(t *testing.T) {
+	worker := newSourceBundleTestWorker(t, "http://controller.invalid")
+	worker.LocalOnly = true
+
+	_, err := worker.stageWorkItemSourceBundle(baseSourceBundleTestItem())
+	if err == nil || !strings.Contains(err.Error(), "provider is required for local-only") {
+		t.Fatalf("stageWorkItemSourceBundle() error = %v, want provider-required error", err)
+	}
+}
+
 func TestStageWorkItemSourceBundleUsesControllerClientAuth(t *testing.T) {
 	const sentinel = "goetl-worker-controller-token-sentinel-006"
 	zipData := mustZipData(t, zipTestEntry{name: "main.py", body: "print('ok')\n"})
@@ -298,6 +325,19 @@ type zipTestEntry struct {
 	body  string
 	mode  os.FileMode
 	isDir bool
+}
+
+type recordingSourceBundleProvider struct {
+	body  []byte
+	err   error
+	item  model.WorkItem
+	calls int
+}
+
+func (p *recordingSourceBundleProvider) SourceBundle(item model.WorkItem) ([]byte, error) {
+	p.calls++
+	p.item = item
+	return p.body, p.err
 }
 
 func mustZipData(t *testing.T, entries ...zipTestEntry) []byte {

@@ -1,10 +1,154 @@
 # Runtime Runbook
 
-Last updated: 2026-07-10
+Last updated: 2026-07-11
 
 This file preserves the moved runtime command and expected-output section from the pre-split root state file.
 
 ## How To Run
+
+## Direct one-shot worker execution
+
+`worker execute` is a development and worker/plugin diagnostic harness. It is
+not a production execution path. Use development-only data and credentials; the
+mode intentionally does not provide additional production credential or
+leakage guarantees.
+
+The command executes one already-resolved work item through the real
+`Worker.Run` dispatcher. It does not compile a workflow, execute dependencies,
+request work, retrieve source from a controller, report completion/failure,
+deliver log observations, or send heartbeats.
+
+Inputs:
+
+```text
+worker config JSON
+resolved model.WorkItem JSON
+optional local source-bundle ZIP
+```
+
+The config may omit `controller_url`. Its log, temporary, and data directories
+must exist before execution. Python work requires `--source-bundle`; other
+operations accept an extra bundle without reading it.
+
+### Local process
+
+From the repository root, prepare the checked-in Python fixture in PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force `
+  .run/direct/logs, .run/direct/tmp, .run/direct/data | Out-Null
+
+@'
+{
+  "log_dir": "logs",
+  "tmp_dir": "tmp",
+  "data_dir": "data",
+  "python_executable": "python"
+}
+'@ | Set-Content -Encoding ascii .run/direct/worker.json
+
+Copy-Item cmd/worker/testdata/direct-python/work-item.json `
+  .run/direct/work-item.json
+Compress-Archive -Force `
+  -Path cmd/worker/testdata/direct-python/source/* `
+  -DestinationPath .run/direct/source-bundle.zip
+
+go run ./cmd/worker execute `
+  --config .run/direct/worker.json `
+  --work-item .run/direct/work-item.json `
+  --source-bundle .run/direct/source-bundle.zip `
+  --result .run/direct/worker-result.json
+
+$LASTEXITCODE
+Get-Content .run/direct/worker-result.json
+```
+
+On Linux, use `python3` in `worker.json` and create the ZIP with its files at the
+archive root:
+
+```bash
+mkdir -p .run/direct/{logs,tmp,data}
+(cd cmd/worker/testdata/direct-python/source && zip -r "$OLDPWD/.run/direct/source-bundle.zip" .)
+
+go run ./cmd/worker execute \
+  --config .run/direct/worker.json \
+  --work-item cmd/worker/testdata/direct-python/work-item.json \
+  --source-bundle .run/direct/source-bundle.zip \
+  --result .run/direct/worker-result.json
+```
+
+Exit status is `0` for completed work and `1` for any invocation, validation,
+execution, or result-writing failure. The result path is removed after options
+parse, before config/work-item loading, so a stale completed result cannot appear
+current.
+
+For the fixture, inspect:
+
+```text
+.run/direct/worker-result.json
+.run/direct/data/direct-python-result.json
+.run/direct/data/artifacts/raw/direct-python-001/reports/fixture.txt
+.run/direct/tmp/attempts/<result.attempt_id>/source/main.py
+.run/direct/tmp/attempts/<result.attempt_id>/work/input.json
+.run/direct/tmp/attempts/<result.attempt_id>/work/output.json
+.run/direct/tmp/attempts/<result.attempt_id>/logs/stdout.log
+.run/direct/tmp/attempts/<result.attempt_id>/logs/stderr.log
+```
+
+### Container
+
+Mount a directory containing config, work item, source ZIP, and the configured
+runtime directories. Paths inside `worker.json` must be container paths:
+
+```bash
+docker run --rm \
+  -v "$PWD/.run/direct:/direct" \
+  <worker-image> \
+  /opt/gorc/worker execute \
+    --config /direct/worker.json \
+    --work-item /direct/work-item.json \
+    --source-bundle /direct/source-bundle.zip \
+    --result /direct/worker-result.json
+```
+
+### Apptainer/Singularity
+
+Bind the direct fixture directory at the paths used by the worker config:
+
+```bash
+apptainer exec \
+  --bind "$PWD/.run/direct:/direct" \
+  worker.sif \
+  /opt/gorc/worker execute \
+    --config /direct/worker.json \
+    --work-item /direct/work-item.json \
+    --source-bundle /direct/source-bundle.zip \
+    --result /direct/worker-result.json
+```
+
+### HPCC interactive allocation
+
+Obtain the allocation first; direct mode does not request Slurm resources. Run
+inside the actual target node/container environment:
+
+```bash
+salloc <site-specific-options>
+srun --pty bash
+
+apptainer exec --nv \
+  --bind /path/to/direct:/direct \
+  worker.sif \
+  /opt/gorc/worker execute \
+    --config /direct/worker.json \
+    --work-item /direct/work-item.json \
+    --source-bundle /direct/source-bundle.zip \
+    --result /direct/worker-result.json
+```
+
+Scheduler flags, GPU flags, binds, image paths, and Python executable paths are
+site-specific. Direct mode proves worker behavior inside the allocation; it does
+not prove controller compilation, scheduling, queueing, claim, reporting, or
+ledger behavior.
 
 ## Controller API Exposure Profiles
 

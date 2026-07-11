@@ -7,6 +7,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "execute" {
+		os.Exit(runDirectCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	cfg, err := loadConfig(workerConfigPath(os.Args))
 	if err != nil {
 		fmt.Println("invalid config:", err)
@@ -19,7 +23,11 @@ func main() {
 		return
 	}
 
-	worker := Worker{Config: cfg, Controller: controller}
+	worker := Worker{
+		Config:        cfg,
+		Controller:    controller,
+		SourceBundles: ControllerSourceBundleProvider{Controller: controller},
+	}
 
 	if err := worker.Validate(); err != nil {
 		fmt.Println("invalid worker:", err)
