@@ -13,6 +13,7 @@ Current implementation:
 - Controller demand snapshots count live sessions using the heartbeat cutoff before applying the one-by-one capacity policy.
 - `CareTaker.reconcile` now performs the OS-004 order through testable interfaces: recover expired sessions, prune expired inflight starts, load a fresh snapshot, plan/reserve/launch, roll back reservations on launch failure, and schedule retry deadlines.
 - `CareTaker.Run` now performs an initial startup reconciliation, blocks on coalesced state signals or the calculated timer deadline, stops/drains timers during reset and shutdown, and exits cleanly on context cancellation without closing the wake channel.
+- Controller startup now builds exactly one CareTaker from the resolved heartbeat, worker execution, and caretaker interval policy, routes worker-state signals to it, and stops/joins it before closing external execution, ownership, and persistence resources.
 - The controller implements the recovery, capacity snapshot, and worker launcher adapter methods used by the CareTaker.
 
 ## Minimum capable model

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"goetl/internal/persistence"
+	"goetl/internal/variable"
 )
 
 type CareTakerClock interface {
@@ -142,6 +144,62 @@ func (c *CareTaker) signalSnapshot() (int, string) {
 	return c.signalCount, c.lastSignal
 }
 
+func controllerCareTakerConfig(resolver variable.Resolver, policy controllerOperationalPolicy) (CareTakerConfig, error) {
+	heartbeat, err := workerHeartbeatPolicyConfig(resolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		return CareTakerConfig{}, err
+	}
+	workerExecution, err := workerExecutionConfig(resolver, defaultWorkerExecutionConfig())
+	if err != nil {
+		return CareTakerConfig{}, err
+	}
+	fallback := time.Duration(policy.CaretakerIntervalScheduleMillis) * time.Millisecond
+	retryMaximum := fallback
+	if policy.CaretakerMissedIntervalLimit > 1 {
+		retryMaximum = fallback * time.Duration(policy.CaretakerMissedIntervalLimit)
+	}
+	return CareTakerConfig{
+		DeadAfter:            heartbeat.DeadAfter,
+		InflightStartTimeout: workerExecution.InflightStartTimeout,
+		FallbackInterval:     fallback,
+		RetryInitial:         fallback,
+		RetryMaximum:         retryMaximum,
+		WorkerExecution:      workerExecution,
+	}, nil
+}
+
+func (c *Controller) startCareTaker(parent context.Context, cfg CareTakerConfig) {
+	if c == nil || c.caretaker != nil {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	caretaker := NewConfiguredCareTaker(cfg, c, c, c.workerExecutor, realCareTakerClock{})
+	done := make(chan error, 1)
+	c.caretaker = caretaker
+	c.caretakerCancel = cancel
+	c.caretakerDone = done
+	c.workerStateChanged = caretaker.Signal
+	go func() {
+		done <- caretaker.Run(ctx)
+	}()
+}
+
+func (c *Controller) stopCareTaker() error {
+	if c == nil || c.caretakerCancel == nil || c.caretakerDone == nil {
+		return nil
+	}
+	cancel := c.caretakerCancel
+	done := c.caretakerDone
+	cancel()
+	err := <-done
+	c.caretakerCancel = nil
+	c.caretakerDone = nil
+	return err
+}
+
 func (c *CareTaker) Run(ctx context.Context) error {
 	if c == nil {
 		return nil
@@ -255,6 +313,11 @@ func (c *CareTaker) reconcile(ctx context.Context, now time.Time) (CareTakerNext
 
 	_, err = c.exec.EvaluateSnapshot(ctx, now, c.cfg.WorkerExecution, snapshot, c.launch.StartWorkers)
 	if err != nil {
+		if errors.Is(err, errWorkerTargetEnvironmentNotConfigured) {
+			fmt.Println("worker_start_skipped reason=worker_target_environment_not_configured")
+			c.clearReconcileError()
+			return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), 0), nil
+		}
 		c.noteReconcileError()
 		return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), c.retryDelay), err
 	}

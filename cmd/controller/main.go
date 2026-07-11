@@ -72,6 +72,9 @@ type Controller struct {
 	authStore           controllerauth.Store
 	authPolicy          controllerauth.Policy
 	workerStateChanged  func(string)
+	caretaker           *CareTaker
+	caretakerCancel     context.CancelFunc
+	caretakerDone       chan error
 }
 
 type WorkflowSubmission struct {
@@ -372,6 +375,17 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller worker capacity failed: %w", err)
 	}
+	caretakerConfig, err := controllerCareTakerConfig(resolver, policy)
+	if err != nil {
+		if executionEnvironment != nil {
+			_ = executionEnvironment.Close()
+		}
+		if releaseDatabaseOwnership != nil {
+			_ = releaseDatabaseOwnership()
+		}
+		workflowStore.Close()
+		return nil, nil, fmt.Errorf("controller caretaker failed: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	server := &http.Server{
@@ -390,22 +404,30 @@ func buildControllerServer(
 	controller.authMode = authSettings.Mode
 	controller.authStore = authSettings.Store
 	controller.authPolicy = authSettings.Policy
+	controller.startCareTaker(context.Background(), caretakerConfig)
 
 	registerControllerRoutes(mux, controller)
 	server.Handler = controller.authorizeControllerRoutes(mux)
 
 	return server, func() error {
+		var releaseErr error
+		if err := controller.stopCareTaker(); err != nil {
+			releaseErr = errors.Join(releaseErr, err)
+		}
 		if executionEnvironment != nil {
 			if err := executionEnvironment.Close(); err != nil {
-				return err
+				releaseErr = errors.Join(releaseErr, err)
 			}
 		}
 		if releaseDatabaseOwnership != nil {
 			if err := releaseDatabaseOwnership(); err != nil {
-				return err
+				releaseErr = errors.Join(releaseErr, err)
 			}
 		}
-		return workflowStore.Close()
+		if err := workflowStore.Close(); err != nil {
+			releaseErr = errors.Join(releaseErr, err)
+		}
+		return releaseErr
 	}, nil
 }
 

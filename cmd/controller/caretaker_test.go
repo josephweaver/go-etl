@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goetl/internal/persistence"
+	"goetl/internal/variable"
 )
 
 func TestCareTakerSignalDoesNotBlock(t *testing.T) {
@@ -128,6 +129,92 @@ func TestCareTakerShutdownDoesNotRequireClosingWakeChannel(t *testing.T) {
 	case <-signalDone:
 	case <-time.After(time.Second):
 		t.Fatal("Signal blocked after CareTaker shutdown")
+	}
+}
+
+func TestControllerCareTakerConfigUsesStartupPolicy(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "2m"),
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "7m"),
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_execution_pattern", variable.TypeString, workerExecutionPatternOneByOneUntilSaturated),
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_max_active", variable.TypeInt, 4),
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_inflight_start_timeout", variable.TypeString, "45s"),
+	)), variable.ResolverConfig{})
+
+	cfg, err := controllerCareTakerConfig(resolver, controllerOperationalPolicy{
+		CaretakerIntervalScheduleMillis: 2000,
+		CaretakerMissedIntervalLimit:    3,
+	})
+	if err != nil {
+		t.Fatalf("controllerCareTakerConfig() error = %v", err)
+	}
+	if cfg.DeadAfter != 7*time.Minute {
+		t.Fatalf("DeadAfter = %s, want 7m", cfg.DeadAfter)
+	}
+	if cfg.InflightStartTimeout != 45*time.Second {
+		t.Fatalf("InflightStartTimeout = %s, want 45s", cfg.InflightStartTimeout)
+	}
+	if cfg.FallbackInterval != 2*time.Second || cfg.RetryInitial != 2*time.Second || cfg.RetryMaximum != 6*time.Second {
+		t.Fatalf("timer policy = fallback %s retry %s max %s, want 2s/2s/6s", cfg.FallbackInterval, cfg.RetryInitial, cfg.RetryMaximum)
+	}
+	if cfg.WorkerExecution.MaxActiveWorkers != 4 {
+		t.Fatalf("MaxActiveWorkers = %d, want 4", cfg.WorkerExecution.MaxActiveWorkers)
+	}
+}
+
+func TestControllerStartsOneCareTaker(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+
+	controller.startCareTaker(context.Background(), CareTakerConfig{})
+	first := controller.caretaker
+	if first == nil || controller.caretakerCancel == nil || controller.caretakerDone == nil {
+		t.Fatal("controller did not start CareTaker lifecycle")
+	}
+	if controller.workerStateChanged == nil {
+		t.Fatal("controller did not route worker state changes to CareTaker")
+	}
+	waitForCareTakerSignalCount(t, first, 1)
+
+	controller.startCareTaker(context.Background(), CareTakerConfig{FallbackInterval: time.Minute})
+	if controller.caretaker != first {
+		t.Fatal("controller started more than one CareTaker")
+	}
+	controller.workerStateChanged("test_signal")
+	_, reason := first.signalSnapshot()
+	if reason != "test_signal" {
+		t.Fatalf("last CareTaker signal reason = %q, want test_signal", reason)
+	}
+	if err := controller.stopCareTaker(); err != nil {
+		t.Fatalf("stopCareTaker() error = %v", err)
+	}
+}
+
+func TestControllerShutdownCancelsAndJoinsCareTaker(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	controller.startCareTaker(context.Background(), CareTakerConfig{})
+
+	if err := controller.stopCareTaker(); err != nil {
+		t.Fatalf("stopCareTaker() error = %v", err)
+	}
+	if controller.caretakerCancel != nil || controller.caretakerDone != nil {
+		t.Fatal("CareTaker lifecycle handles were not cleared after shutdown")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		controller.caretaker.Signal("after_shutdown")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("CareTaker signal blocked after controller shutdown")
 	}
 }
 
@@ -611,4 +698,18 @@ func waitForCareTakerStop(t *testing.T, done <-chan error) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for CareTaker shutdown")
 	}
+}
+
+func waitForCareTakerSignalCount(t *testing.T, caretaker *CareTaker, wantMin int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		count, _ := caretaker.signalSnapshot()
+		if count >= wantMin {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	count, reason := caretaker.signalSnapshot()
+	t.Fatalf("CareTaker signal count = %d/%q, want at least %d", count, reason, wantMin)
 }
