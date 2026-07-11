@@ -33,6 +33,7 @@ func DefaultFunctionRegistry() FunctionRegistry {
 	registry, _ := NewFunctionRegistry(
 		listCrossproductFunction{},
 		listZipFunction{},
+		listFlattenFunction{},
 	)
 	return registry
 }
