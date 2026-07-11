@@ -1,6 +1,6 @@
 # 017 List Zip Function
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -56,3 +56,10 @@ equal-length left/right lists
 ```bash
 go test ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `DefaultFunctionRegistry` now registers `list.zip` alongside `list.crossproduct`.
+- 2026-07-11: `list.zip(left, right)` requires exactly two list arguments of equal length and returns ordered same-index two-item list pairs.
+- 2026-07-11: Empty left and right lists return an empty list; mismatched lengths fail clearly rather than truncating.
+- 2026-07-11: `go test ./internal/variable` passes.
