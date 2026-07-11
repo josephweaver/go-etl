@@ -2,7 +2,25 @@
 
 ## Status
 
-Ready after OS-001.
+Implementation in progress.
+
+Current implementation:
+
+- shared lifecycle wire models exist in `internal/model`;
+- controller defaults and validation resolve `worker_heartbeat_interval` and `worker_dead_after`;
+- controller routes `/workers/register`, `/workers/heartbeat`, and `/workers/stop` persist session state;
+- lifecycle routes require worker or admin authorization;
+- registration confirms one inflight worker-start reservation and signals worker state changed after persistence commits;
+- heartbeat updates only active matching sessions and does not signal worker capacity;
+- stop is idempotent for stopped sessions, rejects dead/unknown sessions, and signals after a successful active-to-stopped transition.
+
+Remaining OS-002 work:
+
+- worker client register/heartbeat/stop methods;
+- worker-side session state and heartbeat supervisor;
+- normal worker startup sequence changes;
+- no-work graceful stop;
+- self-fencing behavior.
 
 ## Minimum capable model
 

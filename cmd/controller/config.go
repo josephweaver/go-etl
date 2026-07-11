@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"goetl/internal/variable"
 )
@@ -34,6 +35,11 @@ type controllerStartupSources struct {
 	DefaultsPath   string
 	Controller     ControllerConfig
 	Defaults       DefaultsDocument
+}
+
+type WorkerHeartbeatPolicy struct {
+	HeartbeatInterval time.Duration
+	DeadAfter         time.Duration
 }
 
 func loadControllerConfig(path string) (ControllerConfig, error) {
@@ -158,6 +164,42 @@ func defaultsNamespaceAllowed(namespace variable.Namespace) bool {
 	default:
 		return false
 	}
+}
+
+func defaultWorkerHeartbeatPolicy() WorkerHeartbeatPolicy {
+	return WorkerHeartbeatPolicy{
+		HeartbeatInterval: time.Minute,
+		DeadAfter:         5 * time.Minute,
+	}
+}
+
+func workerHeartbeatPolicyConfig(resolver variable.Resolver, defaults WorkerHeartbeatPolicy) (WorkerHeartbeatPolicy, error) {
+	policy := defaults
+
+	var err error
+	if policy.HeartbeatInterval, err = optionalDurationVariable(resolver, "worker_heartbeat_interval", policy.HeartbeatInterval); err != nil {
+		return WorkerHeartbeatPolicy{}, err
+	}
+	if policy.DeadAfter, err = optionalDurationVariable(resolver, "worker_dead_after", policy.DeadAfter); err != nil {
+		return WorkerHeartbeatPolicy{}, err
+	}
+	if err := validateWorkerHeartbeatPolicy(policy); err != nil {
+		return WorkerHeartbeatPolicy{}, err
+	}
+	return policy, nil
+}
+
+func validateWorkerHeartbeatPolicy(policy WorkerHeartbeatPolicy) error {
+	if policy.HeartbeatInterval <= 0 {
+		return fmt.Errorf("worker_heartbeat_interval must be greater than zero")
+	}
+	if policy.DeadAfter <= policy.HeartbeatInterval {
+		return fmt.Errorf("worker_dead_after must be greater than worker_heartbeat_interval")
+	}
+	if policy.DeadAfter < 2*policy.HeartbeatInterval {
+		return fmt.Errorf("worker_dead_after must be at least twice worker_heartbeat_interval")
+	}
+	return nil
 }
 
 func loadControllerStartupSources(controllerPath string) (controllerStartupSources, error) {

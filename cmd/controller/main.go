@@ -69,6 +69,7 @@ type Controller struct {
 	authMode            controllerauth.Mode
 	authStore           controllerauth.Store
 	authPolicy          controllerauth.Policy
+	workerStateChanged  func(string)
 }
 
 type WorkflowSubmission struct {
@@ -410,6 +411,9 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/work/next", controller.nextWorkHandler)
 	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
 	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/workers/register", controller.registerWorkerHandler)
+	mux.HandleFunc("/workers/heartbeat", controller.heartbeatWorkerHandler)
+	mux.HandleFunc("/workers/stop", controller.stopWorkerHandler)
 	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
