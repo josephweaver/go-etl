@@ -1904,6 +1904,28 @@ func canonicalSourceDocument(data []byte) ([]byte, string, error) {
 }
 
 func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
+	canonical, err := document.DecodeCanonicalWorkflowSource(data, document.DecodeOptions{
+		Path:   "workflow.json",
+		Format: document.SourceFormatJSON,
+	})
+	if err == nil {
+		adapted, err := workflow.WorkflowFromCanonicalDocument(canonical)
+		if err != nil {
+			return WorkflowSubmission{}, err
+		}
+		sourceManifest, err := sourceManifestFromCanonicalWorkflow(canonical.SourceManifest)
+		if err != nil {
+			return WorkflowSubmission{}, err
+		}
+		return WorkflowSubmission{
+			Workflow:       adapted,
+			SourceManifest: sourceManifest,
+		}, nil
+	}
+	if !errors.Is(err, document.ErrNotCanonicalWorkflow) {
+		return WorkflowSubmission{}, err
+	}
+
 	var submission WorkflowSubmission
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&submission); err != nil {
@@ -1916,6 +1938,24 @@ func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
 		return WorkflowSubmission{}, err
 	}
 	return submission, nil
+}
+
+func sourceManifestFromCanonicalWorkflow(value map[string]any) (reposource.SourceManifestDeclaration, error) {
+	if len(value) == 0 {
+		return reposource.SourceManifestDeclaration{}, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return reposource.SourceManifestDeclaration{}, fmt.Errorf("encode source_manifest: %w", err)
+	}
+	var manifest reposource.SourceManifestDeclaration
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return reposource.SourceManifestDeclaration{}, fmt.Errorf("decode source_manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return reposource.SourceManifestDeclaration{}, err
+	}
+	return manifest, nil
 }
 
 func (c *Controller) repositorySourceProvider(ref SourceDocumentReference) (reposource.Provider, error) {

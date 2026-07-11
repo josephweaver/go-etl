@@ -3748,6 +3748,79 @@ func TestSubmitWorkflowHandlerLoadsCanonicalInlineProjectVariables(t *testing.T)
 	}
 }
 
+func TestSubmitWorkflowHandlerAdmitsCanonicalInlineWorkflowDocument(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"api_version": "goet/v1alpha1",
+			"kind": "Project",
+			"id": "canonical-project",
+			"variables": {}
+		},
+		"workflow": {
+			"api_version": "goet/v1alpha1",
+			"kind": "Workflow",
+			"id": "canonical-workflow",
+			"variables": {
+				"years": [2024]
+			},
+			"steps": [
+				{
+					"id": "download",
+					"fan_out": {
+						"over": "${workflow.years[*]}",
+						"as": "year",
+						"id": "${fanout}"
+					},
+					"work": {
+						"type": "write_demo_output",
+						"output_prefix": "demo",
+						"output_extension": ".txt"
+					}
+				}
+			]
+		}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	var acknowledgement model.SubmissionAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode acknowledgement: %v", err)
+	}
+	if acknowledgement.WorkflowID != "canonical-workflow" {
+		t.Fatalf("workflow id = %q, want canonical-workflow", acknowledgement.WorkflowID)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued work count = %d, want 1", len(queued))
+	}
+	var item model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &item); err != nil {
+		t.Fatalf("decode queued work: %v", err)
+	}
+	if item.ID != "download-2024" || item.OutputFilename != "demo-2024.txt" {
+		t.Fatalf("queued item = %+v", item)
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
