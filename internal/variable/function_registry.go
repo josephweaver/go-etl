@@ -34,6 +34,7 @@ func DefaultFunctionRegistry() FunctionRegistry {
 		listCrossproductFunction{},
 		listZipFunction{},
 		listFlattenFunction{},
+		listLengthFunction{},
 	)
 	return registry
 }
