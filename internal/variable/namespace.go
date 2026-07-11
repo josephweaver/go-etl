@@ -17,6 +17,7 @@ const (
 	NamespaceFanOut                Namespace = "fanout"
 	NamespaceAsset                 Namespace = "asset"
 	NamespaceWorkItem              Namespace = "work_item"
+	NamespaceData                  Namespace = "data"
 	NamespaceRuntime               Namespace = "runtime"
 
 	// Deprecated compatibility names. Existing workflow JSON and local demo
@@ -41,6 +42,7 @@ var Precedence = []Namespace{
 	NamespaceFanOut,
 	NamespaceAsset,
 	NamespaceWorkItem,
+	NamespaceData,
 	NamespaceRuntime,
 }
 
@@ -60,6 +62,7 @@ func (n Namespace) Valid() bool {
 		NamespaceFanOut,
 		NamespaceAsset,
 		NamespaceWorkItem,
+		NamespaceData,
 		NamespaceRuntime,
 		NamespaceGlobal,
 		NamespaceBackend,
