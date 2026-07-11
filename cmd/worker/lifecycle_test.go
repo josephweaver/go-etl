@@ -156,6 +156,103 @@ func TestWorkerLifecycleMethodsValidateInputs(t *testing.T) {
 	}
 }
 
+func TestRunHeartbeatStopsOnContextCancellation(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := runHeartbeatAsync(ctx, testWorkerSession(), func(context.Context, WorkerSession) error {
+		t.Fatal("heartbeat should not run before a tick")
+		return nil
+	}, clock)
+
+	cancel()
+
+	if err := receiveHeartbeatResult(t, result); err != nil {
+		t.Fatalf("RunHeartbeat() error = %v, want nil", err)
+	}
+	if !clock.ticker.stopped {
+		t.Fatal("ticker was not stopped")
+	}
+}
+
+func TestRunHeartbeatRefreshesLastAcceptedHeartbeat(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls int
+	result := runHeartbeatAsync(ctx, testWorkerSession(), func(context.Context, WorkerSession) error {
+		calls++
+		if calls == 1 {
+			return nil
+		}
+		return errors.New("controller unavailable")
+	}, clock)
+
+	clock.tick()
+	clock.advance(4 * time.Minute)
+	clock.tick()
+	cancel()
+
+	if err := receiveHeartbeatResult(t, result); err != nil {
+		t.Fatalf("RunHeartbeat() error = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Fatalf("heartbeat calls = %d, want 2", calls)
+	}
+}
+
+func TestRunHeartbeatRejectedSessionSelfFences(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	result := runHeartbeatAsync(context.Background(), testWorkerSession(), func(context.Context, WorkerSession) error {
+		return ErrWorkerSessionNotActive
+	}, clock)
+
+	clock.tick()
+
+	if err := receiveHeartbeatResult(t, result); !errors.Is(err, ErrWorkerSessionNotActive) {
+		t.Fatalf("RunHeartbeat() error = %v, want ErrWorkerSessionNotActive", err)
+	}
+}
+
+func TestRunHeartbeatTransportFailureBeforeDeadAfterDoesNotFence(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls int
+	result := runHeartbeatAsync(ctx, testWorkerSession(), func(context.Context, WorkerSession) error {
+		calls++
+		if calls == 1 {
+			return errors.New("controller unavailable")
+		}
+		return nil
+	}, clock)
+
+	clock.advance(4 * time.Minute)
+	clock.tick()
+	clock.tick()
+	cancel()
+
+	if err := receiveHeartbeatResult(t, result); err != nil {
+		t.Fatalf("RunHeartbeat() error = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Fatalf("heartbeat calls = %d, want 2", calls)
+	}
+}
+
+func TestRunHeartbeatTransportFailureAfterDeadAfterSelfFences(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	result := runHeartbeatAsync(context.Background(), testWorkerSession(), func(context.Context, WorkerSession) error {
+		return errors.New("controller unavailable")
+	}, clock)
+
+	clock.advance(5 * time.Minute)
+	clock.tick()
+
+	if err := receiveHeartbeatResult(t, result); !errors.Is(err, ErrWorkerSelfFenced) {
+		t.Fatalf("RunHeartbeat() error = %v, want ErrWorkerSelfFenced", err)
+	}
+}
+
 func testWorkerSession() WorkerSession {
 	return WorkerSession{
 		WorkerID:          "worker-001",
@@ -179,4 +276,76 @@ func testLifecycleWorkerClient(t *testing.T, controllerURL string, token string)
 		t.Fatalf("NewWorkerControllerClient() error = %v", err)
 	}
 	return client
+}
+
+func runHeartbeatAsync(ctx context.Context, session WorkerSession, heartbeat WorkerHeartbeatFunc, clock *fakeWorkerLifecycleClock) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		result <- RunHeartbeat(ctx, session, heartbeat, clock)
+	}()
+	clock.waitForTicker()
+	return result
+}
+
+func receiveHeartbeatResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for heartbeat result")
+		return nil
+	}
+}
+
+type fakeWorkerLifecycleClock struct {
+	now          time.Time
+	ticker       *fakeWorkerLifecycleTicker
+	tickerReady  chan struct{}
+	tickerOpened bool
+}
+
+type fakeWorkerLifecycleTicker struct {
+	ch      chan time.Time
+	stopped bool
+}
+
+func newFakeWorkerLifecycleClock() *fakeWorkerLifecycleClock {
+	return &fakeWorkerLifecycleClock{
+		now:         time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
+		tickerReady: make(chan struct{}),
+	}
+}
+
+func (c *fakeWorkerLifecycleClock) Now() time.Time {
+	return c.now
+}
+
+func (c *fakeWorkerLifecycleClock) NewTicker(time.Duration) WorkerLifecycleTicker {
+	c.ticker = &fakeWorkerLifecycleTicker{ch: make(chan time.Time)}
+	if !c.tickerOpened {
+		close(c.tickerReady)
+		c.tickerOpened = true
+	}
+	return c.ticker
+}
+
+func (c *fakeWorkerLifecycleClock) advance(duration time.Duration) {
+	c.now = c.now.Add(duration)
+}
+
+func (c *fakeWorkerLifecycleClock) tick() {
+	c.ticker.ch <- c.now
+}
+
+func (c *fakeWorkerLifecycleClock) waitForTicker() {
+	<-c.tickerReady
+}
+
+func (t *fakeWorkerLifecycleTicker) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *fakeWorkerLifecycleTicker) Stop() {
+	t.stopped = true
 }

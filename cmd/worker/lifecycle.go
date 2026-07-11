@@ -13,12 +13,81 @@ import (
 )
 
 var ErrWorkerSessionNotActive = errors.New("worker session is not active")
+var ErrWorkerSelfFenced = errors.New("worker self-fenced after missed heartbeat")
 
 type WorkerSession struct {
 	WorkerID          string
 	WorkerSessionID   string
 	HeartbeatInterval time.Duration
 	DeadAfter         time.Duration
+}
+
+type WorkerHeartbeatFunc func(context.Context, WorkerSession) error
+
+type WorkerLifecycleClock interface {
+	Now() time.Time
+	NewTicker(time.Duration) WorkerLifecycleTicker
+}
+
+type WorkerLifecycleTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type realWorkerLifecycleClock struct{}
+
+type realWorkerLifecycleTicker struct {
+	ticker *time.Ticker
+}
+
+func (realWorkerLifecycleClock) Now() time.Time {
+	return time.Now().UTC()
+}
+
+func (realWorkerLifecycleClock) NewTicker(interval time.Duration) WorkerLifecycleTicker {
+	return realWorkerLifecycleTicker{ticker: time.NewTicker(interval)}
+}
+
+func (t realWorkerLifecycleTicker) C() <-chan time.Time {
+	return t.ticker.C
+}
+
+func (t realWorkerLifecycleTicker) Stop() {
+	t.ticker.Stop()
+}
+
+func RunHeartbeat(ctx context.Context, session WorkerSession, heartbeat WorkerHeartbeatFunc, clock WorkerLifecycleClock) error {
+	if err := session.Validate(); err != nil {
+		return err
+	}
+	if heartbeat == nil {
+		return fmt.Errorf("worker heartbeat function is required")
+	}
+	if clock == nil {
+		clock = realWorkerLifecycleClock{}
+	}
+
+	ticker := clock.NewTicker(session.HeartbeatInterval)
+	defer ticker.Stop()
+
+	lastAccepted := clock.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C():
+			if err := heartbeat(ctx, session); err != nil {
+				if errors.Is(err, ErrWorkerSessionNotActive) {
+					return ErrWorkerSessionNotActive
+				}
+				if clock.Now().Sub(lastAccepted) >= session.DeadAfter {
+					return ErrWorkerSelfFenced
+				}
+				continue
+			}
+			lastAccepted = clock.Now()
+		}
+	}
 }
 
 func (c WorkerControllerClient) RegisterWorker(ctx context.Context, request model.WorkerRegistrationRequest) (WorkerSession, error) {

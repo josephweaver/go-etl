@@ -14,10 +14,10 @@ Current implementation:
 - heartbeat updates only active matching sessions and does not signal worker capacity;
 - stop is idempotent for stopped sessions, rejects dead/unknown sessions, and signals after a successful active-to-stopped transition.
 - worker-side lifecycle client methods can register, heartbeat, and stop with typed session state and `ErrWorkerSessionNotActive` conflict handling.
+- worker-side `RunHeartbeat` uses a cancellable ticker loop, refreshes liveness after accepted heartbeats, maps rejected sessions distinctly, and self-fences after `dead_after` of transient heartbeat failures.
 
 Remaining OS-002 work:
 
-- worker-side session state and heartbeat supervisor;
 - normal worker startup sequence changes;
 - no-work graceful stop;
 - self-fencing behavior.
