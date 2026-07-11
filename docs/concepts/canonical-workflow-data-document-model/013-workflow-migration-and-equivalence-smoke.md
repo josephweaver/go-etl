@@ -1,6 +1,6 @@
 # 013 Workflow Migration and Equivalence Smoke
 
-Status: In progress
+Status: Implemented
 
 ## Objective
 
