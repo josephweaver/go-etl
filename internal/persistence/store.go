@@ -217,6 +217,19 @@ type EndWorkerSessionRequest struct {
 	Reason    string
 }
 
+type StopWorkerSessionAndRecoverWorkRequest struct {
+	WorkerID  string
+	SessionID string
+	StoppedAt string
+	Reason    string
+}
+
+type StopWorkerSessionAndRecoverWorkResult struct {
+	Changed           bool
+	AbandonedAttempts int
+	RequeuedWorkItems int
+}
+
 type RecoverExpiredWorkerSessionsRequest struct {
 	Cutoff      string
 	RecoveredAt string
@@ -548,6 +561,64 @@ func (s *Store) RecoverExpiredWorkerSessions(ctx context.Context, request Recove
 
 	if err := tx.Commit(); err != nil {
 		return RecoverExpiredWorkerSessionsResult{}, fmt.Errorf("commit recover expired worker sessions: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) StopWorkerSessionAndRecoverWork(ctx context.Context, request StopWorkerSessionAndRecoverWorkRequest) (StopWorkerSessionAndRecoverWorkResult, error) {
+	if err := s.requireOpen(); err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, err
+	}
+	if err := request.validate(); err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, fmt.Errorf("begin stop worker session and recover work: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, found, err := getWorkerSession(ctx, tx, request.WorkerID, request.SessionID)
+	if err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, err
+	}
+	if !found {
+		return StopWorkerSessionAndRecoverWorkResult{}, tx.Commit()
+	}
+	if session.Status != WorkerSessionStatusActive {
+		return StopWorkerSessionAndRecoverWorkResult{}, tx.Commit()
+	}
+
+	changed, err := markWorkerSessionStopped(ctx, tx, request)
+	if err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, err
+	}
+	if !changed {
+		return StopWorkerSessionAndRecoverWorkResult{}, tx.Commit()
+	}
+
+	result := StopWorkerSessionAndRecoverWorkResult{Changed: true}
+	assignments, err := listRunningWorkForSession(ctx, tx, request.SessionID)
+	if err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, err
+	}
+	for _, assignment := range assignments {
+		if err := abandonRunningWork(ctx, tx, assignment, request.StoppedAt, "worker_stopped"); err != nil {
+			return StopWorkerSessionAndRecoverWorkResult{}, err
+		}
+		result.AbandonedAttempts++
+		requeued, err := requeueAbandonedWork(ctx, tx, assignment.workItemID, request.StoppedAt)
+		if err != nil {
+			return StopWorkerSessionAndRecoverWorkResult{}, err
+		}
+		if requeued {
+			result.RequeuedWorkItems++
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return StopWorkerSessionAndRecoverWorkResult{}, fmt.Errorf("commit stop worker session and recover work: %w", err)
 	}
 	return result, nil
 }
@@ -2148,6 +2219,31 @@ func markWorkerSessionDeadIfExpired(ctx context.Context, tx *sql.Tx, session Wor
 	return changed, nil
 }
 
+func markWorkerSessionStopped(ctx context.Context, tx *sql.Tx, request StopWorkerSessionAndRecoverWorkRequest) (bool, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE worker_sessions
+	SET status = ?,
+		ended_at = ?,
+		end_reason = ?
+	WHERE worker_session_id = ?
+		AND worker_id = ?
+		AND status = ?`,
+		WorkerSessionStatusStopped,
+		request.StoppedAt,
+		request.Reason,
+		request.SessionID,
+		request.WorkerID,
+		WorkerSessionStatusActive,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mark worker session %s stopped: %w", request.SessionID, err)
+	}
+	changed, err := rowsAffected(result)
+	if err != nil {
+		return false, fmt.Errorf("mark worker session %s stopped: %w", request.SessionID, err)
+	}
+	return changed, nil
+}
+
 func listRunningWorkForSession(ctx context.Context, tx *sql.Tx, sessionID string) ([]runningWorkRecord, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT
 		attempt_id,
@@ -3676,6 +3772,25 @@ func (r EndWorkerSessionRequest) validate() error {
 	}
 	if r.Reason == "" {
 		return fmt.Errorf("worker session end reason is required")
+	}
+	return nil
+}
+
+func (r StopWorkerSessionAndRecoverWorkRequest) validate() error {
+	if r.WorkerID == "" {
+		return fmt.Errorf("worker id is required")
+	}
+	if r.SessionID == "" {
+		return fmt.Errorf("worker session id is required")
+	}
+	if r.StoppedAt == "" {
+		return fmt.Errorf("worker session stopped at is required")
+	}
+	if err := validateTimestamp("worker session stopped at", r.StoppedAt); err != nil {
+		return err
+	}
+	if r.Reason == "" {
+		return fmt.Errorf("worker session stop reason is required")
 	}
 	return nil
 }

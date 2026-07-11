@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"goetl/internal/model"
@@ -138,22 +137,17 @@ func (c *Controller) stopWorkerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	changed, err := c.workflowStore.EndWorkerSession(r.Context(), persistence.EndWorkerSessionRequest{
+	result, err := c.workflowStore.StopWorkerSessionAndRecoverWork(r.Context(), persistence.StopWorkerSessionAndRecoverWorkRequest{
 		WorkerID:  request.WorkerID,
 		SessionID: request.WorkerSessionID,
-		Status:    persistence.WorkerSessionStatusStopped,
-		EndedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		StoppedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Reason:    request.Reason,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "has running assignments") {
-			http.Error(w, "worker session has running assignments", http.StatusConflict)
-			return
-		}
 		http.Error(w, "stop worker session", http.StatusInternalServerError)
 		return
 	}
-	if !changed {
+	if !result.Changed {
 		http.Error(w, "worker session is not active", http.StatusConflict)
 		return
 	}

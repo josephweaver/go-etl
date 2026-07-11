@@ -11,10 +11,10 @@ Current implementation:
 - Controller claim failures for inactive/expired sessions and busy sessions return `409 Conflict`.
 - completion and failure payloads carry worker/session identity, worker clients fill those fields from the active session, and persistence rejects mismatched, stopped, dead, or expired assignment owners before inserting terminal records.
 - `RecoverExpiredWorkerSessions` atomically marks expired active sessions dead, records owned running attempts as abandoned, removes running assignments, and requeues abandoned work items.
+- `StopWorkerSessionAndRecoverWork` atomically marks an active session stopped, records any owned running attempts as abandoned with `worker_stopped`, removes running assignments, and requeues the work items.
 
 Remaining OS-003 work:
 
-- stop-with-running-work abandonment/requeue;
 - deterministic race tests.
 
 ## Minimum capable model
