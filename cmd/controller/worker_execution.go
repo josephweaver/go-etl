@@ -297,7 +297,7 @@ func (m *WorkerCapacityManager) removeInflightReservations(reservations []Worker
 	m.state.InflightStarts = kept
 }
 
-func (c *Controller) EvaluateWorkerCapacity(ctx context.Context, now time.Time) error {
+func (c *Controller) reconcileWorkerCapacity(ctx context.Context, now time.Time) error {
 	if c.workerExecutor == nil {
 		c.workerExecutor = NewWorkerCapacityManager(nil)
 	}

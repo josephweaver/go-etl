@@ -3,11 +3,30 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"goetl/internal/persistence"
 )
+
+func TestAutomaticWorkerLaunchOwnedByCareTaker(t *testing.T) {
+	for _, name := range []string{
+		"main.go",
+		"worker_lifecycle.go",
+		"workflow_stage_activation.go",
+	} {
+		data, err := os.ReadFile(filepath.Join(".", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.Contains(string(data), "reconcileWorkerCapacity(") {
+			t.Fatalf("%s calls reconcileWorkerCapacity directly; automatic launch must be CareTaker-owned", name)
+		}
+	}
+}
 
 func TestOneByOneStartsWhenActiveBelowClaimable(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
@@ -151,7 +170,7 @@ func TestNullWorkerExecutionPatternDoesNotStart(t *testing.T) {
 	}
 }
 
-func TestEvaluateWorkerCapacityStartsOneWorker(t *testing.T) {
+func TestReconcileWorkerCapacityStartsOneWorker(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 	starts := 0
@@ -174,7 +193,7 @@ func TestEvaluateWorkerCapacityStartsOneWorker(t *testing.T) {
 	}
 }
 
-func TestEvaluateWorkerCapacityNullPatternDoesNotLaunchOrReserve(t *testing.T) {
+func TestReconcileWorkerCapacityNullPatternDoesNotLaunchOrReserve(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 	cfg := defaultWorkerExecutionConfig()
@@ -202,7 +221,7 @@ func TestEvaluateWorkerCapacityNullPatternDoesNotLaunchOrReserve(t *testing.T) {
 	}
 }
 
-func TestEvaluateWorkerCapacityRecordsInflightBeforeLaunch(t *testing.T) {
+func TestReconcileWorkerCapacityRecordsInflightBeforeLaunch(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 
@@ -220,7 +239,7 @@ func TestEvaluateWorkerCapacityRecordsInflightBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestEvaluateWorkerCapacityRemovesInflightOnLaunchFailure(t *testing.T) {
+func TestReconcileWorkerCapacityRemovesInflightOnLaunchFailure(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 	launchErr := errors.New("launch failed")
@@ -313,7 +332,7 @@ func TestWorkerRegistrationCanTriggerNextOneByOneStart(t *testing.T) {
 	}
 }
 
-func TestEvaluateWorkerCapacityDoesNotStartForResourceBlockedQueuedWork(t *testing.T) {
+func TestReconcileWorkerCapacityDoesNotStartForResourceBlockedQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -352,15 +371,15 @@ func TestEvaluateWorkerCapacityDoesNotStartForResourceBlockedQueuedWork(t *testi
 	controller.workerStarter = starter
 	controller.launchResolver = testLocalWorkerLaunchResolver()
 
-	if err := controller.EvaluateWorkerCapacity(ctx, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("EvaluateWorkerCapacity() error = %v", err)
+	if err := controller.reconcileWorkerCapacity(ctx, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("reconcileWorkerCapacity() error = %v", err)
 	}
 	if starter.calls != 0 {
 		t.Fatalf("worker starter calls = %d, want 0", starter.calls)
 	}
 }
 
-func TestEvaluateWorkerCapacitySkipsMissingWorkerTargetWithoutInflightReservation(t *testing.T) {
+func TestReconcileWorkerCapacitySkipsMissingWorkerTargetWithoutInflightReservation(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	ctx := context.Background()
@@ -376,8 +395,8 @@ func TestEvaluateWorkerCapacitySkipsMissingWorkerTargetWithoutInflightReservatio
 	controller := newController()
 	controller.workflowStore = store
 
-	if err := controller.EvaluateWorkerCapacity(ctx, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("EvaluateWorkerCapacity() error = %v", err)
+	if err := controller.reconcileWorkerCapacity(ctx, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("reconcileWorkerCapacity() error = %v", err)
 	}
 	state := controller.workerExecutor.Snapshot()
 	if len(state.InflightStarts) != 0 {

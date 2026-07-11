@@ -13,6 +13,7 @@ Current implementation:
 - Work claim now signals `work_claimed` and no longer confirms inflight worker-start reservations or spawns a delayed capacity-evaluation goroutine; registration is the only inflight confirmation path.
 - Worker lifecycle signaling no longer has a fallback path that directly evaluates capacity when no CareTaker signaler is installed.
 - Sequential workflow stage activation now signals `workflow_stage_activated` after queued work is marked ready instead of directly scheduling workers.
+- The legacy exported `EvaluateWorkerCapacity` controller method is now package-local as `reconcileWorkerCapacity` for focused tests and CareTaker-owned reconciliation work.
 - `Controller.signalCareTaker` provides the no-fail notification seam for subsequent state-transition cutovers.
 
 ## Minimum capable model
