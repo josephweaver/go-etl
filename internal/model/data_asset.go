@@ -70,10 +70,12 @@ type DataAssetCache struct {
 }
 
 type DataAssetMaterializationTemplate struct {
+	Scope    string `json:"scope,omitempty"`
 	Strategy string `json:"strategy,omitempty"`
 }
 
 type DataAssetMaterialization struct {
+	Scope    string `json:"scope,omitempty"`
 	Strategy string `json:"strategy,omitempty"`
 }
 
@@ -249,10 +251,16 @@ func (cache DataAssetCache) EffectiveImmutable() bool {
 }
 
 func (materialization DataAssetMaterializationTemplate) Validate() error {
+	if err := ValidateMaterializationScope(materialization.Scope); err != nil {
+		return err
+	}
 	return validateMaterializationStrategy(materialization.Strategy)
 }
 
 func (materialization DataAssetMaterialization) Validate() error {
+	if err := ValidateMaterializationScope(materialization.Scope); err != nil {
+		return err
+	}
 	return validateMaterializationStrategy(materialization.Strategy)
 }
 

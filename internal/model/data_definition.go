@@ -333,7 +333,7 @@ func (binding DataInputBindingDefinition) cacheTemplate() DataAssetCacheTemplate
 }
 
 func (binding DataInputBindingDefinition) materializationTemplate() DataAssetMaterializationTemplate {
-	return DataAssetMaterializationTemplate{Strategy: binding.Materialization.Strategy}
+	return DataAssetMaterializationTemplate{Scope: binding.Materialization.Scope, Strategy: binding.Materialization.Strategy}
 }
 
 func (provider *DataProviderTemplate) applyCanonicalLocation(location DataDefinitionLocation) error {

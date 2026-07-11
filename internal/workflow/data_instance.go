@@ -79,7 +79,7 @@ func CanonicalDataAssetInstanceKey(definitionName string, selection []string, as
 		"expose_mode":           archiveExposeMode(asset.Archive),
 		"transfer_policy":       asset.TransferPolicy,
 		"binding_fingerprint":   bindingFingerprint,
-		"materialization_scope": asset.Materialization.Strategy,
+		"materialization_scope": asset.Materialization.Scope,
 	}
 	_, hash, err := fp.CanonicalJSONSHA256(normalizedCanonicalValue(identity))
 	if err != nil {
