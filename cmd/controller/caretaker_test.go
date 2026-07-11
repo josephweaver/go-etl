@@ -59,6 +59,30 @@ func TestCareTakerRunPerformsInitialReconcile(t *testing.T) {
 	waitForCareTakerStop(t, done)
 }
 
+func TestCareTakerInitialReconcileFindsStartupQueuedWork(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		snapshot: WorkerCapacitySnapshot{PendingQueued: 1, PendingClaimable: 1},
+	}
+	launcher := &fakeCareTakerLauncher{launchCh: make(chan int, 1)}
+	clock := &controllableCareTakerClock{now: now}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		WorkerExecution: WorkerExecutionConfig{
+			Pattern:          workerExecutionPatternOneByOneUntilSaturated,
+			MaxActiveWorkers: 2,
+		},
+	}, source, launcher, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	if count := waitForCareTakerLaunch(t, launcher.launchCh); count != 1 {
+		t.Fatalf("startup launch count = %d, want 1", count)
+	}
+
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
 func TestCareTakerWakesOnStateSignal(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	source := &fakeCareTakerStateSource{
@@ -690,10 +714,11 @@ func (s *fakeCareTakerStateSource) WorkerCapacitySnapshot(ctx context.Context, n
 }
 
 type fakeCareTakerLauncher struct {
-	calls  int
-	counts []int
-	err    error
-	events *[]string
+	calls    int
+	counts   []int
+	err      error
+	events   *[]string
+	launchCh chan int
 }
 
 func (l *fakeCareTakerLauncher) StartWorkers(ctx context.Context, count int) error {
@@ -701,6 +726,9 @@ func (l *fakeCareTakerLauncher) StartWorkers(ctx context.Context, count int) err
 	l.counts = append(l.counts, count)
 	if l.events != nil {
 		*l.events = append(*l.events, "launch")
+	}
+	if l.launchCh != nil {
+		l.launchCh <- count
 	}
 	return l.err
 }
@@ -793,6 +821,17 @@ func waitForCareTakerTimer(t *testing.T, ch <-chan *controllableCareTakerTimer) 
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for CareTaker timer")
 		return nil
+	}
+}
+
+func waitForCareTakerLaunch(t *testing.T, ch <-chan int) int {
+	t.Helper()
+	select {
+	case count := <-ch:
+		return count
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CareTaker launch")
+		return 0
 	}
 }
 

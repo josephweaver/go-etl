@@ -15,7 +15,7 @@ Current implementation:
 - `CareTaker.Run` now performs an initial startup reconciliation, blocks on coalesced state signals or the calculated timer deadline, stops/drains timers during reset and shutdown, and exits cleanly on context cancellation without closing the wake channel.
 - Controller startup now builds exactly one CareTaker from the resolved heartbeat, worker execution, and caretaker interval policy, routes worker-state signals to it, and stops/joins it before closing external execution, ownership, and persistence resources.
 - The loop logs caretaker start/stop, reconcile start/completion/failure, sleeping deadlines, recovery counts, snapshot demand, inflight count, start count, plan reason, and next-wake details.
-- Deterministic tests now cover signal wake, heartbeat-expiry wake, inflight-reservation-expiry wake, fallback sweep wake, launch rollback retry, persistence failure no-launch retry, successful backoff reset, and controller lifecycle start/stop.
+- Deterministic tests now cover signal wake, startup queued-work launch, heartbeat-expiry wake, inflight-reservation-expiry wake, fallback sweep wake, launch rollback retry, persistence failure no-launch retry, successful backoff reset, and controller lifecycle start/stop.
 - The controller implements the recovery, capacity snapshot, and worker launcher adapter methods used by the CareTaker.
 
 ## Minimum capable model
