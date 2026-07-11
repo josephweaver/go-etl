@@ -63,6 +63,9 @@ func TypedExpressionFromValue(value any) (variable.TypedExpression, error) {
 	case bool:
 		return variable.TypedExpression{Type: variable.TypeBool, Expression: typed}, nil
 	case map[string]any:
+		if expression, handled, err := typedExpressionDirectiveFromObject(typed); handled || err != nil {
+			return expression, err
+		}
 		fields := make(map[string]variable.TypedExpression, len(typed))
 		for key, child := range typed {
 			expression, err := TypedExpressionFromValue(child)
