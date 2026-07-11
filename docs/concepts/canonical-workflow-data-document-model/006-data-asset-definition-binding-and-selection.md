@@ -8,7 +8,7 @@ Introduce canonical data input/output definitions separating logical asset metad
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. This restructures a currently implemented model and needs strong domain-boundary review.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

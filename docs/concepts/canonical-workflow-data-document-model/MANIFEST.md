@@ -14,7 +14,8 @@ docs/concepts/canonical-workflow-data-document-model/
 - `DECISIONS.md` — accepted design decisions.
 - `REFERENCE_EXAMPLES.md` — target JSON/YAML examples.
 - `IMPLEMENTATION_ORDER.md` — dependency graph and integration gates.
-- `MODEL_ASSIGNMENTS.md` — minimum model guidance.
+- `MODEL_ASSIGNMENTS.md` — compact cost-conservative model matrix.
+- `MODEL_RECOMMENDATIONS.md` — detailed per-OS cost-conservative implementation, review, and escalation recommendations.
 - `MANIFEST.md` — this file.
 
 ## Operational Slices

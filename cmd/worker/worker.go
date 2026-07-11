@@ -10,10 +10,11 @@ import (
 import "goetl/internal/model"
 
 type Worker struct {
-	Config        Config
-	Controller    WorkerControllerClient
-	SourceBundles SourceBundleProvider
-	LocalOnly     bool
+	Config         Config
+	Controller     WorkerControllerClient
+	LifecycleClock WorkerLifecycleClock
+	SourceBundles  SourceBundleProvider
+	LocalOnly      bool
 }
 
 func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {

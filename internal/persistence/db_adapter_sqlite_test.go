@@ -822,6 +822,37 @@ func insertMinimalStage(t *testing.T, ctx context.Context, db *sql.DB) {
 func insertAttempt(t *testing.T, ctx context.Context, db *sql.DB, attemptID, workItemID, executorType string) {
 	t.Helper()
 
+	if executorType == ExecutorTypeWorker {
+		workerID := "worker-" + attemptID
+		sessionID := "session-" + attemptID
+		if _, err := db.ExecContext(ctx, `INSERT INTO workers (
+			worker_id,
+			created_at
+		) VALUES (?, '2026-07-03T00:00:00Z')`, workerID); err != nil {
+			t.Fatalf("insert worker for attempt %s: %v", attemptID, err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO worker_sessions (
+			worker_session_id,
+			worker_id,
+			status,
+			registered_at,
+			last_heartbeat_at
+		) VALUES (?, ?, 'active', '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z')`, sessionID, workerID); err != nil {
+			t.Fatalf("insert worker session for attempt %s: %v", attemptID, err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO work_item_attempts (
+			attempt_id,
+			work_item_id,
+			worker_id,
+			worker_session_id,
+			executor_type,
+			started_at
+		) VALUES (?, ?, ?, ?, ?, '2026-07-03T00:00:00Z')`, attemptID, workItemID, workerID, sessionID, executorType); err != nil {
+			t.Fatalf("insert attempt %s: %v", attemptID, err)
+		}
+		return
+	}
+
 	if _, err := db.ExecContext(ctx, `INSERT INTO work_item_attempts (
 		attempt_id,
 		work_item_id,

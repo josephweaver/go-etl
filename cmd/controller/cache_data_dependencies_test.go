@@ -69,11 +69,7 @@ func TestEnqueueReadyCacheDataDependentsQueuesComputeAfterCacheCompletion(t *tes
 		t.Fatalf("QueueWorkItems() error = %v", err)
 	}
 
-	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-cache",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-07T00:00:01Z",
-	})
+	claimed, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-cache", "2026-07-07T00:00:01Z"))
 	if err != nil {
 		t.Fatalf("ClaimNextWork() error = %v", err)
 	}
@@ -182,7 +178,7 @@ func TestHydrateCommitDataWorkItemUsesCompletedProducerArtifactManifest(t *testi
 	}); err != nil {
 		t.Fatalf("QueueWorkItems() error = %v", err)
 	}
-	claimedCompute, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-compute", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:01Z"})
+	claimedCompute, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-compute", "2026-07-07T00:00:01Z"))
 	if err != nil || !found || claimedCompute.WorkItem.ID != computeRecord.ID {
 		t.Fatalf("ClaimNextWork() = %+v found=%v err=%v, want compute", claimedCompute, found, err)
 	}
@@ -200,7 +196,7 @@ func TestHydrateCommitDataWorkItemUsesCompletedProducerArtifactManifest(t *testi
 	if err := controller.enqueueReadyCacheDataDependents(ctx, computeRecord, time.Date(2026, 7, 7, 0, 0, 3, 0, time.UTC)); err != nil {
 		t.Fatalf("enqueueReadyCacheDataDependents() error = %v", err)
 	}
-	claimedCommit, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-commit", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:04Z"})
+	claimedCommit, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-commit", "2026-07-07T00:00:04Z"))
 	if err != nil || !found || claimedCommit.WorkItem.ID != commitRecord.ID {
 		t.Fatalf("ClaimNextWork(commit) = %+v found=%v err=%v", claimedCommit, found, err)
 	}
@@ -277,7 +273,7 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 	}); err != nil {
 		t.Fatalf("QueueWorkItems() error = %v", err)
 	}
-	claimedCache, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-cache-field-tile", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:01Z"})
+	claimedCache, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-cache-field-tile", "2026-07-07T00:00:01Z"))
 	if err != nil || !found || claimedCache.WorkItem.ID != cacheRecord.ID {
 		t.Fatalf("ClaimNextWork(cache) = %+v found=%v err=%v, want cache", claimedCache, found, err)
 	}
@@ -294,7 +290,7 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: computeRecord, QueuedAt: "2026-07-07T00:00:03Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems(compute) error = %v", err)
 	}
-	claimedCompute, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-compute-field-cdl", ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-07T00:00:04Z"})
+	claimedCompute, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-compute-field-cdl", "2026-07-07T00:00:04Z"))
 	if err != nil || !found || claimedCompute.WorkItem.ID != computeRecord.ID {
 		t.Fatalf("ClaimNextWork(compute) = %+v found=%v err=%v, want compute", claimedCompute, found, err)
 	}
@@ -535,7 +531,7 @@ func completeHydrationCacheRecord(t *testing.T, ctx context.Context, store *pers
 	}); err != nil {
 		t.Fatalf("QueueWorkItems(%s) error = %v", record.ID, err)
 	}
-	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-" + record.ID, ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-11T00:00:01Z"})
+	claimed, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-"+record.ID, "2026-07-11T00:00:01Z"))
 	if err != nil || !found || claimed.WorkItem.ID != record.ID {
 		t.Fatalf("ClaimNextWork(%s) = %+v found=%v err=%v", record.ID, claimed, found, err)
 	}

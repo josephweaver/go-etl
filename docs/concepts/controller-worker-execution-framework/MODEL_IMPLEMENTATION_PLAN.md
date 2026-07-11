@@ -14,8 +14,10 @@ Give the model only:
 docs/SC-controller-worker-execution-framework.md
 docs/OS-001-one-by-one-worker-capacity-manager.md
 cmd/controller/main.go
-cmd/controller/worker_scaler.go
-cmd/controller/worker_scaler_test.go
+cmd/controller/worker_execution.go
+cmd/controller/worker_execution_test.go
+cmd/controller/caretaker.go
+cmd/controller/caretaker_test.go
 cmd/controller/execution_environment.go
 cmd/controller/worker_launch_config.go
 cmd/controller/scheduler.go

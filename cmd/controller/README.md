@@ -2,7 +2,7 @@
 
 This directory owns the local Go controller executable.
 
-The controller is the current control plane for local workflow runs. It accepts workflow submissions, normalizes dependency stages, compiles dependency-ready stages into concrete work items, owns queue state, starts local workers when configured, records completed attempts, and exposes HTTP endpoints used by clients and workers.
+The controller is the current control plane for local workflow runs. It accepts workflow submissions, normalizes dependency stages, compiles dependency-ready stages into concrete work items, owns queue state, coordinates CareTaker-driven worker launch when configured, records completed attempts, and exposes HTTP endpoints used by clients and workers.
 
 It is not the worker runtime, Python-facing API, reusable workflow language, variable system, or ledger implementation. It coordinates those pieces from the process boundary.
 
@@ -11,7 +11,8 @@ It is not the worker runtime, Python-facing API, reusable workflow language, var
 - `main.go` owns the controller process, HTTP API surface, durable queue lifecycle, workflow submission handling, submission acknowledgement, submission-scoped status reporting, dependency-aware status rendering, runtime metadata attachment, ledger write coordination, and shutdown hook.
 - `config.go` owns loading controller startup configuration into typed variables.
 - `local_worker.go` owns the local worker-starting adapter used by the controller.
-- `worker_scaler.go` owns the small worker-start planning state used when pending work exists.
+- `worker_execution.go` owns the worker execution policy and in-memory inflight start reservations used by the CareTaker reconciler.
+- `caretaker.go` owns the event-driven CareTaker reconciliation loop and controller adapters for worker recovery, capacity snapshots, and launch.
 - `demo-config.json` is the local demo controller configuration.
 
 Test files in this directory describe expected behavior but do not own production concepts.
@@ -24,7 +25,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Durable queued, running, completed, and failed work state through the workflow-execution store.
 - Workflow submission orchestration, including initial ready-stage queueing and just-in-time downstream stage activation.
 - Controller-generated runtime metadata for work items.
-- Local worker startup decisions.
+- CareTaker-owned worker startup reconciliation.
 - Controller-owned ledger write coordination.
 - Local aggregate status summary for clients and demos.
 - Submission-scoped status for `goet status <submission_id>`.
@@ -47,7 +48,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Workflow submission is the target boundary; raw work submission is local administrative/test support.
 - Runtime configuration is resolved through typed variables rather than a separate hidden config authority.
 - Workers should receive concrete work-item parameters and metadata, not unresolved workflow intent.
-- Worker startup is bounded by configured scaling limits and queued work.
+- Worker startup is bounded by the configured worker execution pattern, live worker sessions, inflight starts, and claimable queued work.
 - Queue state is stored in the workflow-execution database; a controller without a workflow store rejects queue endpoints.
 - Workflow submission queues only dependency-ready work. Sequential downstream stages are not assignable until their predecessor stage completes successfully.
 - `parallel_with` groups only adjacent steps with the same label; non-contiguous label reuse is rejected before queue mutation.

@@ -8,7 +8,7 @@ Replace the public Go-shaped workflow wrapper with one canonical workflow docume
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. This is a breaking public-schema migration touching workflow admission and compile boundaries.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

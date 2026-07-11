@@ -8,7 +8,7 @@ Implement deterministic recursive composition of `project.data`, `workflow.data`
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. Incorrect merge behavior can silently change data acquisition and scientific inputs.
+Primary: `GPT-5.4`, `High` reasoning. First escalation or review: `GPT-5.5`, `Medium` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

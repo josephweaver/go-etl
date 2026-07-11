@@ -8,7 +8,7 @@ Match later compute data requirements to completed explicit shared materializati
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. This crosses stage persistence, restart-safe outputs, assignment hydration, and alias projection.
+Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

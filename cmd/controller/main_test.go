@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,50 @@ import (
 	"goetl/internal/variable"
 	"goetl/internal/workflow"
 )
+
+const (
+	testWorkerID         = "worker-001"
+	testWorkerSessionID  = "session-001"
+	testWorkerRegistered = "2999-01-01T00:00:00Z"
+)
+
+func withTestWorkerSessionHeaders(t *testing.T, controller *Controller, request *http.Request) {
+	t.Helper()
+	if controller.workflowStore == nil {
+		t.Fatal("controller workflow store required for test worker session")
+	}
+
+	sessionID := testWorkerSessionID + "-" + randomHex(8)
+	if _, err := controller.workflowStore.RegisterWorkerSession(context.Background(), persistence.RegisterWorkerSessionRequest{
+		WorkerID:     testWorkerID,
+		SessionID:    sessionID,
+		RegisteredAt: testWorkerRegistered,
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession() error = %v", err)
+	}
+
+	setTestWorkerSessionHeaders(request, testWorkerID, sessionID)
+}
+
+func testWorkerClaimRequest(t *testing.T, store *persistence.Store, attemptID string, startedAt string) persistence.ClaimWorkRequest {
+	t.Helper()
+	workerID := testWorkerID + "-" + attemptID
+	sessionID := testWorkerSessionID + "-" + attemptID
+	if _, err := store.RegisterWorkerSession(context.Background(), persistence.RegisterWorkerSessionRequest{
+		WorkerID:     workerID,
+		SessionID:    sessionID,
+		RegisteredAt: testWorkerRegistered,
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(%s) error = %v", sessionID, err)
+	}
+	return persistence.ClaimWorkRequest{
+		AttemptID:       attemptID,
+		WorkerID:        workerID,
+		WorkerSessionID: sessionID,
+		ExecutorType:    persistence.ExecutorTypeWorker,
+		StartedAt:       startedAt,
+	}
+}
 
 func TestBuildControllerServerUsesStartupPrecedenceAndRecoveryMode(t *testing.T) {
 	dir := t.TempDir()
@@ -920,6 +965,7 @@ func TestResolveControllerHTTPSettingsRejectsInvalidValues(t *testing.T) {
 func TestNextWorkHandler(t *testing.T) {
 	controller := newTestController(t)
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 
 	controller.nextWorkHandler(response, request)
@@ -965,6 +1011,7 @@ func TestNextWorkHandlerReturnsExecutionEnvelopeProtectedRefsWithoutPlaintext(t 
 	}
 
 	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextReq)
 	nextResp := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResp, nextReq)
 	if nextResp.Code != http.StatusOK {
@@ -999,6 +1046,7 @@ func TestNextWorkHandlerReturnsNoContentWhenQueueIsEmpty(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = store
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 
 	controller.nextWorkHandler(response, request)
@@ -1672,18 +1720,10 @@ func TestStatusHandlerUsesWorkflowExecutionStoreWhenConfigured(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-running",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:03Z",
-	}); err != nil || !found {
+	if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-running", "2026-07-03T00:00:03Z")); err != nil || !found {
 		t.Fatalf("ClaimNextWork(running) found = %v error = %v, want success", found, err)
 	}
-	if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-failed",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:04Z",
-	}); err != nil || !found {
+	if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-failed", "2026-07-03T00:00:04Z")); err != nil || !found {
 		t.Fatalf("ClaimNextWork(failed) found = %v error = %v, want success", found, err)
 	}
 	if _, found, err := store.FailAttempt(ctx, persistence.FailAttemptRequest{
@@ -1870,11 +1910,7 @@ func TestSubmissionStatusHandler(t *testing.T) {
 				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 					t.Fatalf("EnqueueWorkItems() error = %v", err)
 				}
-				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-					AttemptID:    "attempt-running",
-					ExecutorType: persistence.ExecutorTypeWorker,
-					StartedAt:    "2026-07-03T00:00:01Z",
-				}); err != nil || !found {
+				if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-running", "2026-07-03T00:00:01Z")); err != nil || !found {
 					t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
 				}
 			},
@@ -1900,18 +1936,10 @@ func TestSubmissionStatusHandler(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("EnqueueWorkItems() error = %v", err)
 				}
-				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-					AttemptID:    "attempt-completed",
-					ExecutorType: persistence.ExecutorTypeWorker,
-					StartedAt:    "2026-07-03T00:00:02Z",
-				}); err != nil || !found {
+				if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-completed", "2026-07-03T00:00:02Z")); err != nil || !found {
 					t.Fatalf("ClaimNextWork(completed) found = %v error = %v, want success", found, err)
 				}
-				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-					AttemptID:    "attempt-skipped",
-					ExecutorType: persistence.ExecutorTypeWorker,
-					StartedAt:    "2026-07-03T00:00:03Z",
-				}); err != nil || !found {
+				if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-skipped", "2026-07-03T00:00:03Z")); err != nil || !found {
 					t.Fatalf("ClaimNextWork(skipped) found = %v error = %v, want success", found, err)
 				}
 				if _, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
@@ -1955,11 +1983,7 @@ func TestSubmissionStatusHandler(t *testing.T) {
 				if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 					t.Fatalf("EnqueueWorkItems() error = %v", err)
 				}
-				if _, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-					AttemptID:    "attempt-failed",
-					ExecutorType: persistence.ExecutorTypeWorker,
-					StartedAt:    "2026-07-03T00:00:01Z",
-				}); err != nil || !found {
+				if _, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-failed", "2026-07-03T00:00:01Z")); err != nil || !found {
 					t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
 				}
 				if _, found, err := store.FailAttempt(ctx, persistence.FailAttemptRequest{
@@ -2304,6 +2328,45 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 	}
 }
 
+func TestRawSubmissionSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "raw_work_queued" {
+		t.Fatalf("signals = %+v, want raw_work_queued", signals)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want 1", len(queued))
+	}
+}
+
 func TestSubmitWorkHandlerAcceptsRawWorkWrapperWithResourceConstraints(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -2477,6 +2540,7 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 	}
 
 	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextReq)
 	nextResp := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResp, nextReq)
 
@@ -2512,6 +2576,46 @@ func TestNextWorkHandlerClaimsPersistedWorkWhenWorkflowStoreConfigured(t *testin
 	}
 	if running[0].AttemptID != item.AttemptID {
 		t.Fatalf("running attempt id = %q, want assigned attempt %q", running[0].AttemptID, item.AttemptID)
+	}
+}
+
+func TestWorkClaimSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+	signals = nil
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextReq)
+	nextResp := httptest.NewRecorder()
+	controller.nextWorkHandler(nextResp, nextReq)
+
+	if nextResp.Code != http.StatusOK {
+		t.Fatalf("next status code = %d, want 200: %s", nextResp.Code, nextResp.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "work_claimed" {
+		t.Fatalf("signals = %+v, want work_claimed", signals)
 	}
 }
 
@@ -2559,6 +2663,103 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 	}
 	if terminal[0].OutputJSONSHA256 == "" || terminal[0].PreStateSHA256 == "" || terminal[0].PostStateSHA256 == "" {
 		t.Fatalf("missing completion hashes: %+v", terminal[0])
+	}
+}
+
+func TestCompletionSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+
+	first := submitAndClaimPersistedWork(t, controller)
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-002",
+		"type":"write_demo_output",
+		"output_filename":"result-2.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+	signals = nil
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+first.AttemptID+`",
+		"output_json":"{\"work_item_id\":\"test-001\",\"status\":\"ok\"}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "work_completed" {
+		t.Fatalf("signals = %+v, want work_completed", signals)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 || queued[0].ID != "test-002" {
+		t.Fatalf("queued work = %+v, want only test-002", queued)
+	}
+}
+
+func TestFailureSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	item := submitAndClaimPersistedWork(t, controller)
+	signals = nil
+
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"error":"boom"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.failWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("fail status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "work_failed" {
+		t.Fatalf("signals = %+v, want work_failed", signals)
+	}
+	running, err := store.ListRunningWork(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("running count = %d, want 0 after failure", len(running))
 	}
 }
 
@@ -2655,11 +2856,7 @@ func TestCompletePersistedWorkHandlerRecordsDependencyTerminalState(t *testing.T
 	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-001",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:01Z",
-	})
+	claimed, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-001", "2026-07-03T00:00:01Z"))
 	if err != nil || !found {
 		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
 	}
@@ -2764,11 +2961,7 @@ func TestCompletePersistedWorkHandlerMarksDependencyFailedWhenOutputCaptureFails
 	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-invalid-output",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:01Z",
-	})
+	claimed, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-invalid-output", "2026-07-03T00:00:01Z"))
 	if err != nil || !found {
 		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
 	}
@@ -2980,11 +3173,7 @@ func TestFailPersistedWorkHandlerRecordsDependencyFailure(t *testing.T) {
 	if err := store.EnqueueWorkItems(ctx, []persistence.QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{
-		AttemptID:    "attempt-fail-001",
-		ExecutorType: persistence.ExecutorTypeWorker,
-		StartedAt:    "2026-07-03T00:00:01Z",
-	})
+	claimed, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-fail-001", "2026-07-03T00:00:01Z"))
 	if err != nil || !found {
 		t.Fatalf("ClaimNextWork() found = %v error = %v, want success", found, err)
 	}
@@ -3058,6 +3247,7 @@ func submitAndClaimPersistedWork(t *testing.T, controller *Controller) model.Wor
 	}
 
 	nextReq := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextReq)
 	nextResp := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResp, nextReq)
 	if nextResp.Code != http.StatusOK {
@@ -3080,6 +3270,7 @@ func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
 	controller := newController()
 	controller.workflowStore = store
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 
 	controller.nextWorkHandler(response, request)
@@ -3122,6 +3313,7 @@ func TestSubmitWorkflowHandler(t *testing.T) {
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextRequest)
 	nextResponse := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResponse, nextRequest)
 
@@ -3324,6 +3516,7 @@ func TestSubmitWorkflowHandlerPersistsSourceReferenceWorkflowRun(t *testing.T) {
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextRequest)
 	nextResponse := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResponse, nextRequest)
 	if nextResponse.Code != http.StatusOK {
@@ -3596,8 +3789,12 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	if queuedPayload.ID == "" {
 		t.Fatal("queued worker payload id is empty")
 	}
+	if starter.calls != 0 {
+		t.Fatalf("worker starter calls after admission = %d, want no direct launch", starter.calls)
+	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextRequest)
 	nextResponse := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResponse, nextRequest)
 	if nextResponse.Code != http.StatusOK {
@@ -3609,12 +3806,6 @@ func TestSubmitWorkflowHandlerAdmitsDemoProjectWorkflowRun(t *testing.T) {
 	}
 	if claimed.ID == "" || claimed.AttemptID == "" {
 		t.Fatalf("claimed work is incomplete: %+v", claimed)
-	}
-	if starter.calls != 1 {
-		t.Fatalf("worker starter calls = %d, want 1", starter.calls)
-	}
-	if starter.targets[0] != "local" {
-		t.Fatalf("worker starter target = %q, want local", starter.targets[0])
 	}
 }
 
@@ -3905,12 +4096,16 @@ func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
 	}
 }
 
-func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testing.T) {
+func TestWorkflowAdmissionSignalsButDoesNotLaunchDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
 
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "project.json"), []byte(`{"id":"demo"}`), 0o600); err != nil {
@@ -3971,11 +4166,11 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorkerFromPersistedDemand(t *testi
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
 	}
-	if scheduler.calls != 1 {
-		t.Fatalf("scheduler calls = %d, want 1", scheduler.calls)
+	if scheduler.calls != 0 {
+		t.Fatalf("scheduler calls = %d, want no direct launch", scheduler.calls)
 	}
-	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
-		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
 	}
 }
 
@@ -4000,6 +4195,7 @@ func TestSubmitWorkflowHandlerUsesConfiguredCodeVersion(t *testing.T) {
 	}
 
 	nextRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, nextRequest)
 	nextResponse := httptest.NewRecorder()
 	controller.nextWorkHandler(nextResponse, nextRequest)
 
@@ -4218,7 +4414,33 @@ const testSlurmWorkerVariables = `
 				}
 			}`
 
-func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
+func TestSubmitWorkflowHandlerSignalsConfiguredWorkerDemand(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	scheduler := &testScheduler{}
+	controller := newControllerWithTestEnvironment(scheduler)
+	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	root := setupLocalWorkflowSource(t, controller)
+	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
+
+	response := submitLocalWorkflowSource(t, controller)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status code: %d", response.Code)
+	}
+
+	if scheduler.calls != 0 {
+		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
+	}
+}
+
+func TestSubmitWorkflowHandlerDoesNotLaunchConfiguredSlurmJobDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
@@ -4231,40 +4453,12 @@ func TestSubmitWorkflowHandlerStartsConfiguredWorker(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
-
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	if scheduler.jobs[0].RemoteScriptPath != "/data/goetl/scripts/worker.slurm" {
-		t.Fatalf("remote script path = %q, want configured path", scheduler.jobs[0].RemoteScriptPath)
-	}
-	if scheduler.jobs[0].WorkerScript.WorkerExecutable != "/data/goetl/artifacts/goetl-worker" {
-		t.Fatalf("worker executable = %q, want configured executable", scheduler.jobs[0].WorkerScript.WorkerExecutable)
 	}
 }
 
-func TestSubmitWorkflowHandlerUsesConfiguredSlurmJob(t *testing.T) {
-	store := openTestWorkflowExecutionStore(t)
-	defer store.Close()
-	scheduler := &testScheduler{}
-	controller := newControllerWithTestEnvironment(scheduler)
-	controller.workflowStore = store
-	root := setupLocalWorkflowSource(t, controller)
-	writeLocalWorkflowSource(t, root, []int{2024}, testSlurmWorkerVariables)
-
-	response := submitLocalWorkflowSource(t, controller)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("unexpected status code: %d", response.Code)
-	}
-	if scheduler.calls != 1 {
-		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	if scheduler.jobs[0].WorkerScript.WorkerConfigPath != "/data/goetl/config/worker.json" {
-		t.Fatalf("worker config path = %q, want configured path", scheduler.jobs[0].WorkerScript.WorkerConfigPath)
-	}
-}
-
-func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
+func TestSubmitWorkflowHandlerDoesNotLaunchSingularityWorkerDirectly(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
@@ -4284,34 +4478,21 @@ func TestSubmitWorkflowHandlerUsesSingularityWorkerRuntime(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("unexpected status code: %d: %s", response.Code, response.Body.String())
 	}
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
-	}
-	script := scheduler.jobs[0].WorkerScript
-	if script.WorkerExecutable != "singularity" {
-		t.Fatalf("worker executable = %q, want singularity", script.WorkerExecutable)
-	}
-	wantArgs := []string{
-		"exec",
-		"--bind",
-		"/data/goetl:/data/goetl",
-		"/data/goetl/images/goetl-worker.sif",
-		"/goetl/goetl-worker",
-	}
-	if !stringSlicesEqual(script.WorkerArgs, wantArgs) {
-		t.Fatalf("worker args = %#v, want %#v", script.WorkerArgs, wantArgs)
-	}
-	if script.WorkerConfigPath != "/data/goetl/config/worker.json" {
-		t.Fatalf("worker config path = %q, want original worker config path", script.WorkerConfigPath)
 	}
 }
 
-func TestSubmitWorkflowHandlerStartsOneWorkerForInitialClaimableDemand(t *testing.T) {
+func TestSubmitWorkflowHandlerSignalsInitialClaimableDemand(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
 	root := setupLocalWorkflowSource(t, controller)
 	writeLocalWorkflowSource(t, root, []int{2024, 2025}, testSlurmWorkerVariables)
 
@@ -4320,8 +4501,11 @@ func TestSubmitWorkflowHandlerStartsOneWorkerForInitialClaimableDemand(t *testin
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
+	}
+	if len(signals) != 1 || signals[0] != "workflow_work_queued" {
+		t.Fatalf("signals = %+v, want workflow_work_queued", signals)
 	}
 }
 
@@ -4360,7 +4544,7 @@ func TestSubmitWorkflowHandlerIgnoresSubmittedWorkerScaleConfig(t *testing.T) {
 		t.Fatalf("unexpected status code: %d", response.Code)
 	}
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls: %d", scheduler.calls)
 	}
 }
@@ -4396,20 +4580,19 @@ func TestSubmitWorkflowHandlerWaitsForWorkerClaimBeforeOrganicScaleUp(t *testing
 	scheduler := &testScheduler{}
 	controller := newControllerWithTestEnvironment(scheduler)
 	controller.workflowStore = store
-	controller.scaleCfg = WorkerScaleConfig{MaxCount: 2, CountPerStart: 1}
 	root := setupLocalWorkflowSource(t, controller)
 
 	submitLocalWorkflowYears(t, controller, root, 2024)
 	submitLocalWorkflowYears(t, controller, root, 2025)
 
-	if scheduler.calls != 1 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls before claim: %d", scheduler.calls)
 	}
 
 	assignNextWork(t, controller)
 	submitLocalWorkflowYears(t, controller, root, 2026)
 
-	if scheduler.calls != 2 {
+	if scheduler.calls != 0 {
 		t.Fatalf("unexpected scheduler calls after claim: %d", scheduler.calls)
 	}
 }
@@ -5259,12 +5442,13 @@ func (s *testScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, err
 type testWorkerStarter struct {
 	calls   int
 	targets []string
+	err     error
 }
 
 func (s *testWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
 	s.calls++
 	s.targets = append(s.targets, targetEnvironment)
-	return nil
+	return s.err
 }
 
 func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {
@@ -5750,6 +5934,7 @@ func assignNextWork(t *testing.T, controller *Controller) model.WorkItem {
 	t.Helper()
 
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 	controller.nextWorkHandler(response, request)
 

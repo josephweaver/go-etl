@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed.
+Superseded in part by `docs/concepts/controller-caretaker`.
+
+The worker execution pattern and launch backend remain, but automatic scheduling ownership moved to the controller CareTaker. Active capacity is now based on live worker sessions plus unexpired inflight starts, not running attempts alone. Worker registration, not work claim, confirms an inflight start.
 
 ## Problem
 
@@ -43,7 +45,7 @@ This pattern intentionally starts workers one at a time. Worker startup may be s
 
 This SC does not redesign workflow JSON, worker plugin contracts, artifact publication, source admission, or the worker process loop.
 
-It also does not require a durable worker heartbeat table in the first implementation. A future slice may add one if accurate worker lifecycle tracking becomes necessary.
+The first implementation did not require a durable worker heartbeat table. That non-goal is superseded: the controller CareTaker concept added worker sessions, heartbeats, expiration, and recovery.
 
 ## Current useful pieces
 

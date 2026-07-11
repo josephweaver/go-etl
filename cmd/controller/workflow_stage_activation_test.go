@@ -17,6 +17,10 @@ func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
 	defer store.Close()
 	controller := newController()
 	controller.workflowStore = store
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
 	root := setupLocalWorkflowSource(t, controller)
 	writeLocalWorkflowSourceWithSteps(t, root, []int{2024}, "",
 		`
@@ -69,6 +73,9 @@ func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
 	completeResponse := completeClaimForActivationTest(t, controller, claim, `{"next_year":2026}`)
 	if completeResponse.Code != http.StatusNoContent {
 		t.Fatalf("complete status = %d, body: %s", completeResponse.Code, completeResponse.Body.String())
+	}
+	if !stringSliceContains(signals, "workflow_stage_activated") {
+		t.Fatalf("signals = %+v, want workflow_stage_activated", signals)
 	}
 
 	queued, err = store.ListQueuedWorkItems(context.Background())
@@ -141,6 +148,15 @@ func TestCompleteWorkHandlerActivatesNextSequentialStage(t *testing.T) {
 	if counts.Queued+counts.Running+counts.Completed+counts.Failed != 2 {
 		t.Fatalf("work item count after duplicate completion = %+v, want exactly two records", counts)
 	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCompleteWorkHandlerFailsWorkflowWhenDownstreamStageCannotCompile(t *testing.T) {
@@ -555,6 +571,7 @@ func claimNextWorkForActivationTest(t *testing.T, controller *Controller) model.
 	t.Helper()
 
 	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
 	response := httptest.NewRecorder()
 	controller.nextWorkHandler(response, request)
 	if response.Code != http.StatusOK {

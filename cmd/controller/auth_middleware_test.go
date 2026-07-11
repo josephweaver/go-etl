@@ -119,6 +119,23 @@ func TestAuthorizeControllerRoutes(t *testing.T) {
 			wantNoStore: true,
 		},
 		{
+			name:       "worker reaches registration route",
+			method:     http.MethodPost,
+			path:       "/workers/register",
+			headers:    []string{"Bearer worker-secret"},
+			wantStatus: http.StatusNoContent,
+			wantCalled: true,
+			wantRole:   controllerauth.RoleWorker,
+		},
+		{
+			name:        "client cannot heartbeat worker session",
+			method:      http.MethodPost,
+			path:        "/workers/heartbeat",
+			headers:     []string{"Bearer client-secret"},
+			wantStatus:  http.StatusForbidden,
+			wantNoStore: true,
+		},
+		{
 			name:       "health is public",
 			method:     http.MethodGet,
 			path:       "/healthz",

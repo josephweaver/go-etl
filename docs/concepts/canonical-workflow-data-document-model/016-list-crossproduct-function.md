@@ -8,7 +8,7 @@ Add exactly `list.crossproduct(left, right)` to the expression-function registry
 
 ## Minimum Model
 
-Codex 5.3-spark or stronger, medium reasoning, after OS-015 is green.
+Primary: `GPT-5.3-codex-spark`, `Medium` reasoning. First escalation or review: `GPT-5.4-mini`, `Light` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

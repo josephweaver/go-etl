@@ -41,6 +41,8 @@ const rawPersistenceRunID = "__raw_run__"
 const rawPersistenceStageIndex = 0
 const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 const maxResourceConstraintSummaries = 5
+const workerIDHeader = "X-Goetl-Worker-Id"
+const workerSessionIDHeader = "X-Goetl-Worker-Session-Id"
 
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
@@ -54,12 +56,9 @@ type Controller struct {
 	workerStarter       WorkerStarter
 	launchResolver      variable.Resolver
 	workerExecutor      *WorkerCapacityManager
-	asyncWorkerCapacity bool
 	logSink             logObservationSink
 	shutdown            func(context.Context) error
 	env                 *ExecutionEnvironment
-	scaler              WorkerScaleState
-	scaleCfg            WorkerScaleConfig
 	recoveryStartedAt   time.Time
 	normalAdmission     bool
 	maxRequestBytes     int
@@ -69,6 +68,10 @@ type Controller struct {
 	authMode            controllerauth.Mode
 	authStore           controllerauth.Store
 	authPolicy          controllerauth.Policy
+	workerStateChanged  func(string)
+	caretaker           *CareTaker
+	caretakerCancel     context.CancelFunc
+	caretakerDone       chan error
 }
 
 type WorkflowSubmission struct {
@@ -172,11 +175,6 @@ func newController() *Controller {
 		workerStarter:   LocalWorkerStarter{},
 		workerExecutor:  NewWorkerCapacityManager(nil),
 		normalAdmission: true,
-		scaleCfg: WorkerScaleConfig{
-			MaxCount:                2,
-			CountPerStart:           1,
-			MinElapsedBetweenStarts: 30 * time.Second,
-		},
 	}
 }
 
@@ -346,7 +344,6 @@ func buildControllerServer(
 	}
 	controller.env = executionEnvironment
 	controller.launchResolver = resolver
-	controller.asyncWorkerCapacity = true
 	controller.maxRequestBytes = httpSettings.MaxRequestBytes
 	controller.enterRecoveryMode()
 	if err := controller.completeStartupRecovery(context.Background()); err != nil {
@@ -359,7 +356,8 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
 	}
-	if err := controller.EvaluateWorkerCapacity(context.Background(), now().UTC()); err != nil {
+	caretakerConfig, err := controllerCareTakerConfig(resolver, policy)
+	if err != nil {
 		if executionEnvironment != nil {
 			_ = executionEnvironment.Close()
 		}
@@ -367,7 +365,7 @@ func buildControllerServer(
 			_ = releaseDatabaseOwnership()
 		}
 		workflowStore.Close()
-		return nil, nil, fmt.Errorf("controller worker capacity failed: %w", err)
+		return nil, nil, fmt.Errorf("controller caretaker failed: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -387,22 +385,30 @@ func buildControllerServer(
 	controller.authMode = authSettings.Mode
 	controller.authStore = authSettings.Store
 	controller.authPolicy = authSettings.Policy
+	controller.startCareTaker(context.Background(), caretakerConfig)
 
 	registerControllerRoutes(mux, controller)
 	server.Handler = controller.authorizeControllerRoutes(mux)
 
 	return server, func() error {
+		var releaseErr error
+		if err := controller.stopCareTaker(); err != nil {
+			releaseErr = errors.Join(releaseErr, err)
+		}
 		if executionEnvironment != nil {
 			if err := executionEnvironment.Close(); err != nil {
-				return err
+				releaseErr = errors.Join(releaseErr, err)
 			}
 		}
 		if releaseDatabaseOwnership != nil {
 			if err := releaseDatabaseOwnership(); err != nil {
-				return err
+				releaseErr = errors.Join(releaseErr, err)
 			}
 		}
-		return workflowStore.Close()
+		if err := workflowStore.Close(); err != nil {
+			releaseErr = errors.Join(releaseErr, err)
+		}
+		return releaseErr
 	}, nil
 }
 
@@ -410,6 +416,9 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/work/next", controller.nextWorkHandler)
 	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
 	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/workers/register", controller.registerWorkerHandler)
+	mux.HandleFunc("/workers/heartbeat", controller.heartbeatWorkerHandler)
+	mux.HandleFunc("/workers/stop", controller.stopWorkerHandler)
 	mux.HandleFunc("/healthz", controller.healthHandler)
 	mux.HandleFunc("/workflow", controller.submitWorkflowHandler)
 	mux.HandleFunc("/workflow-runs/", controller.sourceBundleHandler)
@@ -418,6 +427,13 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/shutdown", controller.shutdownHandler)
 	mux.HandleFunc("/status", controller.statusHandler)
 	mux.HandleFunc("/observations/logs", controller.logObservationsHandler)
+}
+
+func (c *Controller) signalCareTaker(reason string) {
+	if c == nil || c.workerStateChanged == nil {
+		return
+	}
+	c.workerStateChanged(reason)
 }
 
 func (c *Controller) submissionHandler(w http.ResponseWriter, r *http.Request) {
@@ -1186,10 +1202,7 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "persist work item", http.StatusInternalServerError)
 		return
 	}
-	if err := c.EvaluateWorkerCapacity(r.Context(), submittedAt); err != nil {
-		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-		return
-	}
+	c.signalCareTaker("raw_work_queued")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1784,7 +1797,6 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 	var memberships []compiledStageWorkItemMembership
 	var items []persistence.WorkItemRecord
 	var queued []persistence.QueuedWorkRecord
-	autoAdvanced := false
 	if len(plan.Stages) != 0 {
 		if err := c.CreateWorkflowDependencyPlan(ctx, runRecord.ID, runRecord.WorkflowID, plan.Stages); err != nil {
 			return model.SubmissionAcknowledgement{}, fmt.Errorf("create workflow dependency plan: %w", err)
@@ -1824,7 +1836,6 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 			return model.SubmissionAcknowledgement{}, err
 		}
 
-		autoAdvanced = stageCompleted
 		if stageCompleted {
 			if err := c.activateNextReadyWorkflowStage(ctx, runRecord.ID, stageResult.StageIndex, submittedAt); err != nil {
 				return model.SubmissionAcknowledgement{}, err
@@ -1832,11 +1843,7 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 		}
 	}
 
-	if !autoAdvanced {
-		if err := c.EvaluateWorkerCapacity(ctx, submittedAt); err != nil {
-			return model.SubmissionAcknowledgement{}, err
-		}
-	}
+	c.signalCareTaker("workflow_work_queued")
 
 	return model.SubmissionAcknowledgement{
 		SubmissionID:         runRecord.ID,
@@ -2552,26 +2559,6 @@ func workerTargetEnvironment(resolver variable.Resolver) (string, error) {
 	return workerTarget, nil
 }
 
-func workerScaleConfig(resolver variable.Resolver, defaults WorkerScaleConfig) (WorkerScaleConfig, error) {
-	cfg := defaults
-
-	var err error
-	if cfg.MinCount, err = optionalIntVariable(resolver, "worker_min_count", cfg.MinCount); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.MaxCount, err = optionalIntVariable(resolver, "worker_max_count", cfg.MaxCount); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.CountPerStart, err = optionalIntVariable(resolver, "worker_count_per_start", cfg.CountPerStart); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-	if cfg.MinElapsedBetweenStarts, err = optionalDurationVariable(resolver, "worker_min_elapsed_time_between_starts", cfg.MinElapsedBetweenStarts); err != nil {
-		return WorkerScaleConfig{}, err
-	}
-
-	return cfg, nil
-}
-
 func optionalIntVariable(resolver variable.Resolver, name string, fallback int) (int, error) {
 	reference, err := variable.ParseReference(name)
 	if err != nil {
@@ -3273,11 +3260,18 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	failed, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
-		AttemptID: failure.AttemptID,
-		Error:     failure.Error,
-		FailedAt:  failedAt,
+		AttemptID:         failure.AttemptID,
+		WorkerID:          failure.WorkerID,
+		WorkerSessionID:   failure.WorkerSessionID,
+		LiveSessionCutoff: c.workerLiveSessionCutoff(),
+		Error:             failure.Error,
+		FailedAt:          failedAt,
 	})
 	if err != nil {
+		if errors.Is(err, persistence.ErrAssignmentNoLongerOwned) {
+			http.Error(w, "assignment_no_longer_owned", http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "conflicts with existing") {
 			http.Error(w, "fail attempt conflict", http.StatusConflict)
 			return
@@ -3307,6 +3301,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	c.signalCareTaker("work_failed")
 	fmt.Println("persisted work item failed:", failure.ID, failure.AttemptID, failure.Error)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -3325,9 +3320,14 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	request.LiveSessionCutoff = c.workerLiveSessionCutoff()
 
 	completed, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
 	if err != nil {
+		if errors.Is(err, persistence.ErrAssignmentNoLongerOwned) {
+			http.Error(w, "assignment_no_longer_owned", http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "conflicts with existing") {
 			http.Error(w, "complete attempt conflict", http.StatusConflict)
 			return
@@ -3358,10 +3358,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
-			http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-			return
-		}
+		c.signalCareTaker("work_completed")
 		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -3399,10 +3396,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			return
 		}
 	}
-	if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
-		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-		return
-	}
+	c.signalCareTaker("work_completed")
 
 	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
 	w.WriteHeader(http.StatusNoContent)
@@ -3475,6 +3469,8 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 
 	return persistence.CompleteAttemptRequest{
 		AttemptID:        completion.AttemptID,
+		WorkerID:         completion.WorkerID,
+		WorkerSessionID:  completion.WorkerSessionID,
 		SkippedParentID:  completion.SkippedParentID,
 		OutputJSON:       outputJSON,
 		OutputJSONSHA256: outputJSONSHA256,
@@ -3482,6 +3478,14 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 		PostStateSHA256:  postStateSHA256,
 		CompletedAt:      completedAt,
 	}, nil
+}
+
+func (c *Controller) workerLiveSessionCutoff() string {
+	policy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		return ""
+	}
+	return time.Now().UTC().Add(-policy.DeadAfter).Format(time.RFC3339Nano)
 }
 
 func reportedOrEvidenceSHA256(name string, reported string, evidence string) (string, error) {
@@ -3640,17 +3644,40 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {
+	identity, err := requiredWorkerSessionIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	policy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		http.Error(w, "worker heartbeat policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	now := time.Now().UTC()
+
 	claim, found, err := func() (persistence.ClaimedWorkRecord, bool, error) {
 		c.claimMu.Lock()
 		defer c.claimMu.Unlock()
 
 		return c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
-			AttemptID:    "attempt-" + randomHex(16),
-			ExecutorType: persistence.ExecutorTypeWorker,
-			StartedAt:    time.Now().UTC().Format(time.RFC3339),
+			AttemptID:         "attempt-" + randomHex(16),
+			WorkerID:          identity.WorkerID,
+			WorkerSessionID:   identity.WorkerSessionID,
+			ExecutorType:      persistence.ExecutorTypeWorker,
+			StartedAt:         now.Format(time.RFC3339),
+			LiveSessionCutoff: now.Add(-policy.DeadAfter).Format(time.RFC3339Nano),
 		})
 	}()
 	if err != nil {
+		if errors.Is(err, persistence.ErrWorkerSessionNotActive) {
+			http.Error(w, "worker_session_not_active", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, persistence.ErrWorkerSessionBusy) {
+			http.Error(w, "worker_session_busy", http.StatusConflict)
+			return
+		}
 		http.Error(w, "claim work", http.StatusInternalServerError)
 		return
 	}
@@ -3694,12 +3721,28 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	c.signalCareTaker("work_claimed")
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
 		return
 	}
-	c.ConfirmWorkerStartClaimedAndEvaluateAsync()
+}
+
+type workerSessionIdentity struct {
+	WorkerID        string
+	WorkerSessionID string
+}
+
+func requiredWorkerSessionIdentity(r *http.Request) (workerSessionIdentity, error) {
+	identity := workerSessionIdentity{
+		WorkerID:        strings.TrimSpace(r.Header.Get(workerIDHeader)),
+		WorkerSessionID: strings.TrimSpace(r.Header.Get(workerSessionIDHeader)),
+	}
+	if identity.WorkerID == "" || identity.WorkerSessionID == "" {
+		return workerSessionIdentity{}, fmt.Errorf("worker id and worker session id are required")
+	}
+	return identity, nil
 }
 
 func (c *Controller) hydrateCommitDataWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {

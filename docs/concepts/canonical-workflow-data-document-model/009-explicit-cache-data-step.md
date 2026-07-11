@@ -8,7 +8,7 @@ Add a first-class canonical workflow authoring path for explicit `cache_data` st
 
 ## Minimum Model
 
-Codex 5.5, high reasoning. This must integrate with existing data-operator runtime without creating a second execution model.
+Primary: `GPT-5.5`, `Extra High` reasoning. First escalation or review: `GPT-5.6-Terra`, `High` reasoning. See `MODEL_RECOMMENDATIONS.md` for the cost-conservative rationale and escalation policy.
 
 ## Required Context
 

@@ -299,6 +299,8 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		"controller_artifact_cache_max_size_mb",
 		"controller_artifact_cache_retention_milliseconds",
 		"controller_storage_min_free_mb",
+		"worker_heartbeat_interval",
+		"worker_dead_after",
 		"worker_execution_pattern",
 		"worker_max_active",
 		"worker_inflight_start_timeout",
@@ -349,6 +351,17 @@ func TestLoadDefaultsDocument(t *testing.T) {
 	}
 	if got, ok := insecureHTTP.Value.(bool); !ok || got {
 		t.Fatalf("controller_insecure_external_http_allowed = %#v, want false", insecureHTTP.Value)
+	}
+
+	heartbeatPolicy, err := workerHeartbeatPolicyConfig(resolver, WorkerHeartbeatPolicy{})
+	if err != nil {
+		t.Fatalf("resolve worker heartbeat policy defaults: %v", err)
+	}
+	if heartbeatPolicy.HeartbeatInterval != time.Minute {
+		t.Fatalf("heartbeat interval = %s, want 1m", heartbeatPolicy.HeartbeatInterval)
+	}
+	if heartbeatPolicy.DeadAfter != 5*time.Minute {
+		t.Fatalf("dead after = %s, want 5m", heartbeatPolicy.DeadAfter)
 	}
 }
 
@@ -442,6 +455,75 @@ func TestDefaultsDocumentRejectsDuplicateKeyWithinNamespace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "controller_config") || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("error = %q, want namespace and duplicate key", err)
+	}
+}
+
+func TestWorkerHeartbeatPolicyConfig(t *testing.T) {
+	resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "30s"),
+		testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "2m"),
+	)), variable.ResolverConfig{})
+
+	policy, err := workerHeartbeatPolicyConfig(resolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		t.Fatalf("workerHeartbeatPolicyConfig() error = %v", err)
+	}
+	if policy.HeartbeatInterval != 30*time.Second {
+		t.Fatalf("heartbeat interval = %s, want 30s", policy.HeartbeatInterval)
+	}
+	if policy.DeadAfter != 2*time.Minute {
+		t.Fatalf("dead after = %s, want 2m", policy.DeadAfter)
+	}
+}
+
+func TestWorkerHeartbeatPolicyConfigRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      string
+	}{
+		{
+			name: "non duration heartbeat",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "soon"),
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "5m"),
+			},
+			want: "worker_heartbeat_interval",
+		},
+		{
+			name: "zero heartbeat",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "0s"),
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "5m"),
+			},
+			want: "worker_heartbeat_interval must be greater than zero",
+		},
+		{
+			name: "dead after equal heartbeat",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "1m"),
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "1m"),
+			},
+			want: "worker_dead_after must be greater",
+		},
+		{
+			name: "dead after less than double heartbeat",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_heartbeat_interval", variable.TypeString, "1m"),
+				testStartupVariable(variable.NamespaceControllerConfig, "worker_dead_after", variable.TypeString, "90s"),
+			},
+			want: "worker_dead_after must be at least twice",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, test.variables...)), variable.ResolverConfig{})
+			_, err := workerHeartbeatPolicyConfig(resolver, defaultWorkerHeartbeatPolicy())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
