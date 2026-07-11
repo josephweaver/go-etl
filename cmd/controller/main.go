@@ -3386,10 +3386,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
-			http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-			return
-		}
+		c.signalCareTaker("work_completed")
 		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -3427,10 +3424,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 			return
 		}
 	}
-	if err := c.EvaluateWorkerCapacity(r.Context(), activationTimeFromCompletedWork(completed)); err != nil {
-		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-		return
-	}
+	c.signalCareTaker("work_completed")
 
 	fmt.Println("persisted work item completed:", completion.ID, completion.AttemptID)
 	w.WriteHeader(http.StatusNoContent)

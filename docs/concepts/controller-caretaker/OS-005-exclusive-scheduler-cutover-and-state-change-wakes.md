@@ -9,6 +9,7 @@ Current implementation:
 - Raw `/work` submission now signals `raw_work_queued` after persistence instead of calling `EvaluateWorkerCapacity`, so launch failures cannot change a successful raw submission response.
 - Workflow run admission now signals `workflow_work_queued` after successful admission instead of calling `EvaluateWorkerCapacity`, so submission acknowledgement is no longer coupled to worker launch.
 - Controller startup no longer calls `EvaluateWorkerCapacity`; the started CareTaker owns the startup reconciliation.
+- Work completion now signals `work_completed` after terminal persistence, dependency output capture, dependent enqueue, and stage activation instead of directly scheduling workers.
 - `Controller.signalCareTaker` provides the no-fail notification seam for subsequent state-transition cutovers.
 
 ## Minimum capable model

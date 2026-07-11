@@ -2626,6 +2626,61 @@ func TestCompleteWorkHandlerCompletesPersistedAttemptWhenWorkflowStoreConfigured
 	}
 }
 
+func TestCompletionSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+
+	first := submitAndClaimPersistedWork(t, controller)
+	submitReq := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-002",
+		"type":"write_demo_output",
+		"output_filename":"result-2.txt"
+	}`))
+	submitResp := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResp, submitReq)
+	if submitResp.Code != http.StatusNoContent {
+		t.Fatalf("submit status code = %d, want 204: %s", submitResp.Code, submitResp.Body.String())
+	}
+	signals = nil
+
+	request := httptest.NewRequest(http.MethodPost, "/work/complete", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+first.AttemptID+`",
+		"output_json":"{\"work_item_id\":\"test-001\",\"status\":\"ok\"}",
+		"pre_state_json":"{}",
+		"post_state_json":"{}"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.completeWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("complete status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "work_completed" {
+		t.Fatalf("signals = %+v, want work_completed", signals)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 || queued[0].ID != "test-002" {
+		t.Fatalf("queued work = %+v, want only test-002", queued)
+	}
+}
+
 func TestCompleteWorkHandlerAcceptsSchemaTaggedArtifactManifest(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
