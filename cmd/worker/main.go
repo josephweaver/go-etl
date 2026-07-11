@@ -7,6 +7,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "execute" {
+		os.Exit(runDirectCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
 	cfg, err := loadConfig(workerConfigPath(os.Args))
 	if err != nil {
 		fmt.Println("invalid config:", err)

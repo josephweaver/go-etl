@@ -28,6 +28,14 @@ type Config struct {
 }
 
 func loadConfig(path string) (Config, error) {
+	return loadConfigWithValidation(path, Config.Validate)
+}
+
+func loadDirectConfig(path string) (Config, error) {
+	return loadConfigWithValidation(path, Config.ValidateRuntime)
+}
+
+func loadConfigWithValidation(path string, validate func(Config) error) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file %s: %w", path, err)
@@ -38,7 +46,7 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config file %s: %w", path, err)
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := validate(cfg); err != nil {
 		return Config{}, fmt.Errorf("validate config file %s: %w", path, err)
 	}
 
@@ -83,6 +91,13 @@ func pathLooksRelative(path string) bool {
 }
 
 func (c Config) Validate() error {
+	if err := c.ValidateRuntime(); err != nil {
+		return err
+	}
+	return c.ValidateControllerMode()
+}
+
+func (c Config) ValidateRuntime() error {
 	if c.LogDir == "" {
 		return fmt.Errorf("log dir is required")
 	}
@@ -95,6 +110,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("data dir is required")
 	}
 
+	if c.MaxAssetBytes < 0 {
+		return fmt.Errorf("max asset bytes must be non-negative")
+	}
+
+	return nil
+}
+
+func (c Config) ValidateControllerMode() error {
 	if c.ControllerURL == "" {
 		return fmt.Errorf("controller url is required")
 	}
@@ -105,11 +128,6 @@ func (c Config) Validate() error {
 	if requiresToken && c.ControllerTokenFile == "" {
 		return fmt.Errorf("controller token file is required for controller url %s", c.ControllerURL)
 	}
-
-	if c.MaxAssetBytes < 0 {
-		return fmt.Errorf("max asset bytes must be non-negative")
-	}
-
 	return nil
 }
 

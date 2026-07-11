@@ -135,6 +135,47 @@ func TestLoadConfigRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDirectConfigAllowsMissingControllerURL(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	content := []byte(`{
+		"log_dir": "logs",
+		"tmp_dir": "tmp",
+		"data_dir": "data"
+	}`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadDirectConfig(path)
+	if err != nil {
+		t.Fatalf("loadDirectConfig() error = %v", err)
+	}
+	if config.ControllerURL != "" {
+		t.Fatalf("controller URL = %q, want empty", config.ControllerURL)
+	}
+	if config.LogDir != filepath.Join(root, "logs") {
+		t.Fatalf("log dir = %q, want %q", config.LogDir, filepath.Join(root, "logs"))
+	}
+}
+
+func TestLoadConfigStillRequiresControllerURL(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	content := []byte(`{
+		"log_dir": "logs",
+		"tmp_dir": "tmp",
+		"data_dir": "data"
+	}`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("loadConfig() expected missing controller URL error")
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	valid := Config{
 		LogDir:              "logs",
