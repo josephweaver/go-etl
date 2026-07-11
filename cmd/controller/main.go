@@ -3328,6 +3328,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	c.signalCareTaker("work_failed")
 	fmt.Println("persisted work item failed:", failure.ID, failure.AttemptID, failure.Error)
 	w.WriteHeader(http.StatusNoContent)
 }

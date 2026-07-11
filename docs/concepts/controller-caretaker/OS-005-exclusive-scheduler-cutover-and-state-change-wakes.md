@@ -10,6 +10,7 @@ Current implementation:
 - Workflow run admission now signals `workflow_work_queued` after successful admission instead of calling `EvaluateWorkerCapacity`, so submission acknowledgement is no longer coupled to worker launch.
 - Controller startup no longer calls `EvaluateWorkerCapacity`; the started CareTaker owns the startup reconciliation.
 - Work completion now signals `work_completed` after terminal persistence, dependency output capture, dependent enqueue, and stage activation instead of directly scheduling workers.
+- Work failure now signals `work_failed` after failure persistence, cache-data dependent failure, and dependency failure transition.
 - Work claim now signals `work_claimed` and no longer confirms inflight worker-start reservations or spawns a delayed capacity-evaluation goroutine; registration is the only inflight confirmation path.
 - Worker lifecycle signaling no longer has a fallback path that directly evaluates capacity when no CareTaker signaler is installed.
 - Sequential workflow stage activation now signals `workflow_stage_activated` after queued work is marked ready instead of directly scheduling workers.

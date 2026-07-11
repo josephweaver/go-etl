@@ -2721,6 +2721,48 @@ func TestCompletionSignalsButDoesNotLaunchDirectly(t *testing.T) {
 	}
 }
 
+func TestFailureSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	item := submitAndClaimPersistedWork(t, controller)
+	signals = nil
+
+	request := httptest.NewRequest(http.MethodPost, "/work/fail", bytes.NewBufferString(`{
+		"id":"test-001",
+		"attempt_id":"`+item.AttemptID+`",
+		"error":"boom"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.failWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("fail status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "work_failed" {
+		t.Fatalf("signals = %+v, want work_failed", signals)
+	}
+	running, err := store.ListRunningWork(context.Background())
+	if err != nil {
+		t.Fatalf("ListRunningWork() error = %v", err)
+	}
+	if len(running) != 0 {
+		t.Fatalf("running count = %d, want 0 after failure", len(running))
+	}
+}
+
 func TestCompleteWorkHandlerAcceptsSchemaTaggedArtifactManifest(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
