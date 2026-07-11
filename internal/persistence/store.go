@@ -6,16 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"goetl/internal/model"
 )
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 5
+	SupportedSchemaVersion = 6
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
+
+	WorkerSessionStatusActive  = "active"
+	WorkerSessionStatusStopped = "stopped"
+	WorkerSessionStatusDead    = "dead"
 )
 
 type Config struct {
@@ -160,12 +165,62 @@ type RunWorkStatusCounts struct {
 }
 
 type RunningWorkRecord struct {
-	AttemptID    string
-	WorkItem     WorkItemRecord
-	WorkerID     string
-	ExecutorType string
-	QueuedAt     string
-	StartedAt    string
+	AttemptID       string
+	WorkItem        WorkItemRecord
+	WorkerID        string
+	WorkerSessionID string
+	ExecutorType    string
+	QueuedAt        string
+	StartedAt       string
+}
+
+type WorkerRecord struct {
+	ID              string
+	ExecutionHandle string
+	CreatedAt       string
+}
+
+type WorkerSessionRecord struct {
+	ID              string
+	WorkerID        string
+	Status          string
+	RegisteredAt    string
+	LastHeartbeatAt string
+	EndedAt         string
+	EndReason       string
+	ExecutionHandle string
+}
+
+type RegisterWorkerSessionRequest struct {
+	WorkerID        string
+	SessionID       string
+	RegisteredAt    string
+	ExecutionHandle string
+}
+
+type HeartbeatWorkerSessionRequest struct {
+	WorkerID    string
+	SessionID   string
+	HeartbeatAt string
+}
+
+type EndWorkerSessionRequest struct {
+	WorkerID  string
+	SessionID string
+	Status    string
+	EndedAt   string
+	Reason    string
+}
+
+type AbandonedWorkRecord struct {
+	AttemptID       string
+	WorkItemID      string
+	WorkerID        string
+	WorkerSessionID string
+	QueuedAt        string
+	StartedAt       string
+	AbandonedAt     string
+	Reason          string
 }
 
 type TerminalAttemptRecord struct {
@@ -203,19 +258,21 @@ type CompleteStageResult struct {
 }
 
 type ClaimWorkRequest struct {
-	AttemptID    string
-	WorkerID     string
-	ExecutorType string
-	StartedAt    string
+	AttemptID       string
+	WorkerID        string
+	WorkerSessionID string
+	ExecutorType    string
+	StartedAt       string
 }
 
 type ClaimedWorkRecord struct {
-	AttemptID    string
-	WorkItem     WorkItemRecord
-	WorkerID     string
-	ExecutorType string
-	QueuedAt     string
-	StartedAt    string
+	AttemptID       string
+	WorkItem        WorkItemRecord
+	WorkerID        string
+	WorkerSessionID string
+	ExecutorType    string
+	QueuedAt        string
+	StartedAt       string
 }
 
 type CompleteAttemptRequest struct {
@@ -289,6 +346,233 @@ func (s *Store) CurrentSchemaVersion(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("read schema version: %w", err)
 	}
 	return version, nil
+}
+
+func (s *Store) RegisterWorkerSession(ctx context.Context, request RegisterWorkerSessionRequest) (WorkerSessionRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkerSessionRecord{}, err
+	}
+	if err := request.validate(); err != nil {
+		return WorkerSessionRecord{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkerSessionRecord{}, fmt.Errorf("begin worker session registration: %w", err)
+	}
+	defer tx.Rollback()
+
+	existing, found, err := getWorkerSessionByID(ctx, tx, request.SessionID)
+	if err != nil {
+		return WorkerSessionRecord{}, err
+	}
+	if found {
+		if !workerSessionMatchesRegistration(existing, request) {
+			return WorkerSessionRecord{}, fmt.Errorf("worker session %s already exists with different values", request.SessionID)
+		}
+		return existing, tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workers (
+		worker_id,
+		execution_handle,
+		created_at
+	) VALUES (?, ?, ?)
+	ON CONFLICT(worker_id) DO NOTHING`,
+		request.WorkerID,
+		nullString(request.ExecutionHandle),
+		request.RegisteredAt,
+	); err != nil {
+		return WorkerSessionRecord{}, fmt.Errorf("insert worker %s: %w", request.WorkerID, err)
+	}
+
+	record := WorkerSessionRecord{
+		ID:              request.SessionID,
+		WorkerID:        request.WorkerID,
+		Status:          WorkerSessionStatusActive,
+		RegisteredAt:    request.RegisteredAt,
+		LastHeartbeatAt: request.RegisteredAt,
+		ExecutionHandle: request.ExecutionHandle,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO worker_sessions (
+		worker_session_id,
+		worker_id,
+		status,
+		registered_at,
+		last_heartbeat_at,
+		execution_handle
+	) VALUES (?, ?, ?, ?, ?, ?)`,
+		record.ID,
+		record.WorkerID,
+		record.Status,
+		record.RegisteredAt,
+		record.LastHeartbeatAt,
+		nullString(record.ExecutionHandle),
+	); err != nil {
+		return WorkerSessionRecord{}, fmt.Errorf("insert worker session %s: %w", request.SessionID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return WorkerSessionRecord{}, fmt.Errorf("commit worker session registration: %w", err)
+	}
+	return record, nil
+}
+
+func (s *Store) HeartbeatWorkerSession(ctx context.Context, request HeartbeatWorkerSessionRequest) (bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return false, err
+	}
+	if err := request.validate(); err != nil {
+		return false, err
+	}
+
+	result, err := s.db.ExecContext(ctx, `UPDATE worker_sessions
+	SET last_heartbeat_at = ?
+	WHERE worker_id = ?
+		AND worker_session_id = ?
+		AND status = ?`,
+		request.HeartbeatAt,
+		request.WorkerID,
+		request.SessionID,
+		WorkerSessionStatusActive,
+	)
+	if err != nil {
+		return false, fmt.Errorf("heartbeat worker session %s/%s: %w", request.WorkerID, request.SessionID, err)
+	}
+	updated, err := rowsAffected(result)
+	if err != nil {
+		return false, fmt.Errorf("heartbeat worker session %s/%s: %w", request.WorkerID, request.SessionID, err)
+	}
+	return updated, nil
+}
+
+func (s *Store) GetWorkerSession(ctx context.Context, workerID string, sessionID string) (WorkerSessionRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return WorkerSessionRecord{}, false, err
+	}
+	if workerID == "" {
+		return WorkerSessionRecord{}, false, fmt.Errorf("worker id is required")
+	}
+	if sessionID == "" {
+		return WorkerSessionRecord{}, false, fmt.Errorf("worker session id is required")
+	}
+	return getWorkerSession(ctx, s.db, workerID, sessionID)
+}
+
+func (s *Store) ListLiveWorkerSessions(ctx context.Context, cutoff time.Time) ([]WorkerSessionRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	return listWorkerSessionsByHeartbeat(ctx, s.db, `>=`, cutoff)
+}
+
+func (s *Store) ListExpiredWorkerSessions(ctx context.Context, cutoff time.Time) ([]WorkerSessionRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	return listWorkerSessionsByHeartbeat(ctx, s.db, `<`, cutoff)
+}
+
+func (s *Store) EndWorkerSession(ctx context.Context, request EndWorkerSessionRequest) (bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return false, err
+	}
+	if err := request.validate(); err != nil {
+		return false, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin end worker session: %w", err)
+	}
+	defer tx.Rollback()
+
+	session, found, err := getWorkerSession(ctx, tx, request.WorkerID, request.SessionID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, tx.Commit()
+	}
+	if session.Status != WorkerSessionStatusActive {
+		if session.Status == request.Status && session.EndedAt == request.EndedAt && session.EndReason == request.Reason {
+			return false, tx.Commit()
+		}
+		return false, nil
+	}
+
+	var runningAssignments int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM running_work WHERE worker_session_id = ?`, request.SessionID).Scan(&runningAssignments); err != nil {
+		return false, fmt.Errorf("count running assignments for worker session %s: %w", request.SessionID, err)
+	}
+	if runningAssignments != 0 {
+		return false, fmt.Errorf("worker session %s has running assignments", request.SessionID)
+	}
+
+	result, err := tx.ExecContext(ctx, `UPDATE worker_sessions
+	SET status = ?,
+		ended_at = ?,
+		end_reason = ?
+	WHERE worker_id = ?
+		AND worker_session_id = ?
+		AND status = ?`,
+		request.Status,
+		request.EndedAt,
+		request.Reason,
+		request.WorkerID,
+		request.SessionID,
+		WorkerSessionStatusActive,
+	)
+	if err != nil {
+		return false, fmt.Errorf("end worker session %s/%s: %w", request.WorkerID, request.SessionID, err)
+	}
+	changed, err := rowsAffected(result)
+	if err != nil {
+		return false, fmt.Errorf("end worker session %s/%s: %w", request.WorkerID, request.SessionID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit end worker session: %w", err)
+	}
+	return changed, nil
+}
+
+func (s *Store) ListAbandonedWorkForItem(ctx context.Context, workItemID string) ([]AbandonedWorkRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if workItemID == "" {
+		return nil, fmt.Errorf("work item id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		abandoned_at,
+		reason
+	FROM abandoned_work
+	WHERE work_item_id = ?
+	ORDER BY abandoned_at, attempt_id`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list abandoned work for item %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	records := []AbandonedWorkRecord{}
+	for rows.Next() {
+		record, err := scanAbandonedWork(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list abandoned work for item %s: %w", workItemID, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list abandoned work for item %s: %w", workItemID, err)
+	}
+	return records, nil
 }
 
 func (s *Store) UpsertProject(ctx context.Context, project ProjectRecord) error {
@@ -1427,12 +1711,14 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 		attempt_id,
 		work_item_id,
 		worker_id,
+		worker_session_id,
 		executor_type,
 		started_at
-	) VALUES (?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?)`,
 		request.AttemptID,
 		queued.ID,
 		nullString(request.WorkerID),
+		nullString(request.WorkerSessionID),
 		request.ExecutorType,
 		request.StartedAt,
 	); err != nil {
@@ -1443,12 +1729,14 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 		attempt_id,
 		work_item_id,
 		worker_id,
+		worker_session_id,
 		queued_at,
 		started_at
-	) VALUES (?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?)`,
 		request.AttemptID,
 		queued.ID,
 		nullString(request.WorkerID),
+		nullString(request.WorkerSessionID),
 		queued.QueuedAt,
 		request.StartedAt,
 	); err != nil {
@@ -1468,12 +1756,13 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 	}
 
 	claimed := ClaimedWorkRecord{
-		AttemptID:    request.AttemptID,
-		WorkItem:     queued.WorkItemRecord,
-		WorkerID:     request.WorkerID,
-		ExecutorType: request.ExecutorType,
-		QueuedAt:     queued.QueuedAt,
-		StartedAt:    request.StartedAt,
+		AttemptID:       request.AttemptID,
+		WorkItem:        queued.WorkItemRecord,
+		WorkerID:        request.WorkerID,
+		WorkerSessionID: request.WorkerSessionID,
+		ExecutorType:    request.ExecutorType,
+		QueuedAt:        queued.QueuedAt,
+		StartedAt:       request.StartedAt,
 	}
 	if err := tx.Commit(); err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("commit claim next work: %w", err)
@@ -1641,6 +1930,10 @@ func (s *Store) FailAttempt(ctx context.Context, request FailAttemptRequest) (Fa
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type rowsQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 type scanner interface {
@@ -2360,6 +2653,112 @@ func scanQueuedResourceConstraintCheck(row scanner) (QueuedResourceConstraintChe
 	return check, err
 }
 
+func workerSessionSelectSQL() string {
+	return `SELECT
+		worker_session_id,
+		worker_id,
+		status,
+		registered_at,
+		last_heartbeat_at,
+		ended_at,
+		end_reason,
+		execution_handle
+	FROM worker_sessions`
+}
+
+func getWorkerSession(ctx context.Context, q queryer, workerID string, sessionID string) (WorkerSessionRecord, bool, error) {
+	session, err := scanWorkerSession(q.QueryRowContext(ctx, workerSessionSelectSQL()+`
+	WHERE worker_id = ? AND worker_session_id = ?`, workerID, sessionID))
+	if err == sql.ErrNoRows {
+		return WorkerSessionRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkerSessionRecord{}, false, fmt.Errorf("get worker session %s/%s: %w", workerID, sessionID, err)
+	}
+	return session, true, nil
+}
+
+func getWorkerSessionByID(ctx context.Context, q queryer, sessionID string) (WorkerSessionRecord, bool, error) {
+	session, err := scanWorkerSession(q.QueryRowContext(ctx, workerSessionSelectSQL()+`
+	WHERE worker_session_id = ?`, sessionID))
+	if err == sql.ErrNoRows {
+		return WorkerSessionRecord{}, false, nil
+	}
+	if err != nil {
+		return WorkerSessionRecord{}, false, fmt.Errorf("get worker session %s: %w", sessionID, err)
+	}
+	return session, true, nil
+}
+
+func listWorkerSessionsByHeartbeat(ctx context.Context, q rowsQueryer, operator string, cutoff time.Time) ([]WorkerSessionRecord, error) {
+	if operator != `<` && operator != `>=` {
+		return nil, fmt.Errorf("unsupported worker session heartbeat operator %q", operator)
+	}
+	rows, err := q.QueryContext(ctx, workerSessionSelectSQL()+`
+	WHERE status = ?
+		AND last_heartbeat_at `+operator+` ?
+	ORDER BY last_heartbeat_at, worker_session_id`,
+		WorkerSessionStatusActive,
+		cutoff.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list worker sessions by heartbeat: %w", err)
+	}
+	defer rows.Close()
+
+	records := []WorkerSessionRecord{}
+	for rows.Next() {
+		record, err := scanWorkerSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list worker sessions by heartbeat: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list worker sessions by heartbeat: %w", err)
+	}
+	return records, nil
+}
+
+func scanWorkerSession(row scanner) (WorkerSessionRecord, error) {
+	var session WorkerSessionRecord
+	var endedAt sql.NullString
+	var endReason sql.NullString
+	var executionHandle sql.NullString
+	err := row.Scan(
+		&session.ID,
+		&session.WorkerID,
+		&session.Status,
+		&session.RegisteredAt,
+		&session.LastHeartbeatAt,
+		&endedAt,
+		&endReason,
+		&executionHandle,
+	)
+	if err != nil {
+		return WorkerSessionRecord{}, err
+	}
+	session.EndedAt = endedAt.String
+	session.EndReason = endReason.String
+	session.ExecutionHandle = executionHandle.String
+	return session, nil
+}
+
+func scanAbandonedWork(row scanner) (AbandonedWorkRecord, error) {
+	var record AbandonedWorkRecord
+	err := row.Scan(
+		&record.AttemptID,
+		&record.WorkItemID,
+		&record.WorkerID,
+		&record.WorkerSessionID,
+		&record.QueuedAt,
+		&record.StartedAt,
+		&record.AbandonedAt,
+		&record.Reason,
+	)
+	return record, err
+}
+
 func scanWorkflowDependencyStep(row scanner) (WorkflowDependencyStepRecord, error) {
 	var step WorkflowDependencyStepRecord
 	err := row.Scan(
@@ -2420,6 +2819,7 @@ func runningWorkSelectSQL() string {
 		work_items.resolved_inputs_sha256,
 		work_items.created_at,
 		running_work.worker_id,
+		running_work.worker_session_id,
 		work_item_attempts.executor_type,
 		running_work.queued_at,
 		running_work.started_at
@@ -2431,6 +2831,7 @@ func runningWorkSelectSQL() string {
 func scanRunningWork(row scanner) (RunningWorkRecord, error) {
 	var record RunningWorkRecord
 	var workerID sql.NullString
+	var workerSessionID sql.NullString
 	err := row.Scan(
 		&record.AttemptID,
 		&record.WorkItem.ID,
@@ -2441,6 +2842,7 @@ func scanRunningWork(row scanner) (RunningWorkRecord, error) {
 		&record.WorkItem.ResolvedInputsSHA256,
 		&record.WorkItem.CreatedAt,
 		&workerID,
+		&workerSessionID,
 		&record.ExecutorType,
 		&record.QueuedAt,
 		&record.StartedAt,
@@ -2449,6 +2851,7 @@ func scanRunningWork(row scanner) (RunningWorkRecord, error) {
 		return RunningWorkRecord{}, err
 	}
 	record.WorkerID = workerID.String
+	record.WorkerSessionID = workerSessionID.String
 	return record, nil
 }
 
@@ -2913,8 +3316,75 @@ func (r ClaimWorkRequest) validate() error {
 	if !validExecutorType(r.ExecutorType) {
 		return fmt.Errorf("unsupported claim executor type: %s", r.ExecutorType)
 	}
+	switch r.ExecutorType {
+	case ExecutorTypeWorker:
+		if r.WorkerID == "" {
+			return fmt.Errorf("claim worker id is required for worker executor")
+		}
+		if r.WorkerSessionID == "" {
+			return fmt.Errorf("claim worker session id is required for worker executor")
+		}
+	case ExecutorTypeController:
+		if r.WorkerID != "" {
+			return fmt.Errorf("claim worker id must be empty for controller executor")
+		}
+		if r.WorkerSessionID != "" {
+			return fmt.Errorf("claim worker session id must be empty for controller executor")
+		}
+	}
 	if r.StartedAt == "" {
 		return fmt.Errorf("claim started at is required")
+	}
+	if err := validateTimestamp("claim started at", r.StartedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r RegisterWorkerSessionRequest) validate() error {
+	if r.WorkerID == "" {
+		return fmt.Errorf("worker id is required")
+	}
+	if r.SessionID == "" {
+		return fmt.Errorf("worker session id is required")
+	}
+	if r.RegisteredAt == "" {
+		return fmt.Errorf("worker session registered at is required")
+	}
+	return validateTimestamp("worker session registered at", r.RegisteredAt)
+}
+
+func (r HeartbeatWorkerSessionRequest) validate() error {
+	if r.WorkerID == "" {
+		return fmt.Errorf("worker id is required")
+	}
+	if r.SessionID == "" {
+		return fmt.Errorf("worker session id is required")
+	}
+	if r.HeartbeatAt == "" {
+		return fmt.Errorf("worker session heartbeat at is required")
+	}
+	return validateTimestamp("worker session heartbeat at", r.HeartbeatAt)
+}
+
+func (r EndWorkerSessionRequest) validate() error {
+	if r.WorkerID == "" {
+		return fmt.Errorf("worker id is required")
+	}
+	if r.SessionID == "" {
+		return fmt.Errorf("worker session id is required")
+	}
+	if r.Status != WorkerSessionStatusStopped && r.Status != WorkerSessionStatusDead {
+		return fmt.Errorf("worker session terminal status must be stopped or dead")
+	}
+	if r.EndedAt == "" {
+		return fmt.Errorf("worker session ended at is required")
+	}
+	if err := validateTimestamp("worker session ended at", r.EndedAt); err != nil {
+		return err
+	}
+	if r.Reason == "" {
+		return fmt.Errorf("worker session end reason is required")
 	}
 	return nil
 }
@@ -2987,6 +3457,24 @@ func validExecutorType(executorType string) bool {
 	default:
 		return false
 	}
+}
+
+func validateTimestamp(name string, value string) error {
+	if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+		return fmt.Errorf("%s must be RFC3339/RFC3339Nano: %w", name, err)
+	}
+	return nil
+}
+
+func workerSessionMatchesRegistration(session WorkerSessionRecord, request RegisterWorkerSessionRequest) bool {
+	return session.ID == request.SessionID &&
+		session.WorkerID == request.WorkerID &&
+		session.Status == WorkerSessionStatusActive &&
+		session.RegisteredAt == request.RegisteredAt &&
+		session.LastHeartbeatAt == request.RegisteredAt &&
+		session.EndedAt == "" &&
+		session.EndReason == "" &&
+		session.ExecutionHandle == request.ExecutionHandle
 }
 
 func validResourceConstraintOperator(operator string) bool {

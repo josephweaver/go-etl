@@ -901,7 +901,7 @@ func TestStoreControlledSinkSentinelPersistsOnlyRedactedSerializedRecords(t *tes
 	}
 	if _, found, err := store.ClaimNextWork(ctx, ClaimWorkRequest{
 		AttemptID:    "attempt-completed",
-		ExecutorType: ExecutorTypeWorker,
+		ExecutorType: ExecutorTypeController,
 		StartedAt:    "2026-07-03T00:00:02Z",
 	}); err != nil || !found {
 		t.Fatalf("ClaimNextWork(completed) found=%v error=%v, want success", found, err)
@@ -918,7 +918,7 @@ func TestStoreControlledSinkSentinelPersistsOnlyRedactedSerializedRecords(t *tes
 	}
 	if _, found, err := store.ClaimNextWork(ctx, ClaimWorkRequest{
 		AttemptID:    "attempt-failed",
-		ExecutorType: ExecutorTypeWorker,
+		ExecutorType: ExecutorTypeController,
 		StartedAt:    "2026-07-03T00:00:04Z",
 	}); err != nil || !found {
 		t.Fatalf("ClaimNextWork(failed) found=%v error=%v, want success", found, err)
@@ -1354,8 +1354,8 @@ func TestStoreListRunningWorkAndGetRunningWork(t *testing.T) {
 	if running[0].WorkItem != aWork {
 		t.Fatalf("running work item = %+v, want %+v", running[0].WorkItem, aWork)
 	}
-	if running[0].ExecutorType != ExecutorTypeWorker {
-		t.Fatalf("executor type = %q, want %q", running[0].ExecutorType, ExecutorTypeWorker)
+	if running[0].ExecutorType != ExecutorTypeController {
+		t.Fatalf("executor type = %q, want %q", running[0].ExecutorType, ExecutorTypeController)
 	}
 	if running[0].QueuedAt != "2026-07-03T00:00:00Z" || running[0].StartedAt != "2026-07-03T00:00:01Z" {
 		t.Fatalf("running timing = queued %q started %q, want copied timing", running[0].QueuedAt, running[0].StartedAt)
@@ -1704,10 +1704,11 @@ func TestClaimWorkRequestValidate(t *testing.T) {
 		{
 			name: "worker executor",
 			request: ClaimWorkRequest{
-				AttemptID:    "attempt-001",
-				WorkerID:     "worker-001",
-				ExecutorType: ExecutorTypeWorker,
-				StartedAt:    "2026-07-03T00:00:00Z",
+				AttemptID:       "attempt-001",
+				WorkerID:        "worker-001",
+				WorkerSessionID: "session-001",
+				ExecutorType:    ExecutorTypeWorker,
+				StartedAt:       "2026-07-03T00:00:00Z",
 			},
 		},
 		{
@@ -1738,8 +1739,10 @@ func TestClaimWorkRequestValidate(t *testing.T) {
 		{
 			name: "missing started at",
 			request: ClaimWorkRequest{
-				AttemptID:    "attempt-001",
-				ExecutorType: ExecutorTypeWorker,
+				AttemptID:       "attempt-001",
+				WorkerID:        "worker-001",
+				WorkerSessionID: "session-001",
+				ExecutorType:    ExecutorTypeWorker,
 			},
 			want: "started at is required",
 		},
@@ -1917,9 +1920,17 @@ func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
 	if err := store.EnqueueWorkItems(ctx, []QueuedWorkRecord{{WorkItemRecord: work, QueuedAt: "2026-07-03T00:00:00Z"}}); err != nil {
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
-	insertTestWorker(t, ctx, store, "worker-001", run.ID)
+	if _, err := store.RegisterWorkerSession(ctx, RegisterWorkerSessionRequest{
+		WorkerID:     "worker-001",
+		SessionID:    "session-001",
+		RegisteredAt: "2026-07-03T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession() error = %v", err)
+	}
 	request := testClaimWorkRequest()
 	request.WorkerID = "worker-001"
+	request.WorkerSessionID = "session-001"
+	request.ExecutorType = ExecutorTypeWorker
 
 	claimed, found, err := store.ClaimNextWork(ctx, request)
 	if err != nil {
@@ -1931,12 +1942,15 @@ func TestStoreClaimNextWorkRecordsExistingWorkerID(t *testing.T) {
 	if claimed.WorkerID != request.WorkerID {
 		t.Fatalf("claimed worker id = %q, want %q", claimed.WorkerID, request.WorkerID)
 	}
+	if claimed.WorkerSessionID != request.WorkerSessionID {
+		t.Fatalf("claimed worker session id = %q, want %q", claimed.WorkerSessionID, request.WorkerSessionID)
+	}
 
 	assertRunningWork(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, claimed.QueuedAt, request.StartedAt)
 	assertAttempt(t, ctx, store, request.AttemptID, work.ID, request.WorkerID, request.ExecutorType, request.StartedAt)
 }
 
-func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameWorker(t *testing.T) {
+func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameLogicalWorker(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
 	defer store.Close()
@@ -1962,14 +1976,26 @@ func TestStoreClaimNextWorkCanClaimAcrossRunIDsWithSameWorker(t *testing.T) {
 		t.Fatalf("enqueue work items: %v", err)
 	}
 
-	insertTestWorker(t, ctx, store, "worker-001", runA.ID)
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		if _, err := store.RegisterWorkerSession(ctx, RegisterWorkerSessionRequest{
+			WorkerID:     "worker-001",
+			SessionID:    sessionID,
+			RegisteredAt: "2026-07-03T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("RegisterWorkerSession(%s) error = %v", sessionID, err)
+		}
+	}
 
 	claimA := testClaimWorkRequest()
 	claimA.AttemptID = "attempt-a"
 	claimA.WorkerID = "worker-001"
+	claimA.WorkerSessionID = "session-a"
+	claimA.ExecutorType = ExecutorTypeWorker
 	claimB := testClaimWorkRequest()
 	claimB.AttemptID = "attempt-b"
 	claimB.WorkerID = "worker-001"
+	claimB.WorkerSessionID = "session-b"
+	claimB.ExecutorType = ExecutorTypeWorker
 
 	claimedA, found, err := store.ClaimNextWork(ctx, claimA)
 	if err != nil {
@@ -2799,7 +2825,7 @@ func testResourceConstraintRecord(workItemID string, constraintIndex int, resour
 func testClaimWorkRequest() ClaimWorkRequest {
 	return ClaimWorkRequest{
 		AttemptID:    "attempt-001",
-		ExecutorType: ExecutorTypeWorker,
+		ExecutorType: ExecutorTypeController,
 		StartedAt:    "2026-07-03T00:00:00Z",
 	}
 }
@@ -3019,7 +3045,7 @@ func insertTestRunningWork(t *testing.T, ctx context.Context, store *Store, atte
 		work_item_id,
 		executor_type,
 		started_at
-	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+	) VALUES (?, ?, 'controller', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert attempt: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO running_work (
@@ -3062,7 +3088,7 @@ func insertTestCompletedWork(t *testing.T, ctx context.Context, store *Store, at
 		work_item_id,
 		executor_type,
 		started_at
-	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+	) VALUES (?, ?, 'controller', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert attempt: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO completed_work (
@@ -3094,7 +3120,7 @@ func insertTestFailedWork(t *testing.T, ctx context.Context, store *Store, attem
 		work_item_id,
 		executor_type,
 		started_at
-	) VALUES (?, ?, 'worker', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
+	) VALUES (?, ?, 'controller', '2026-07-03T00:00:00Z')`, attemptID, workItemID); err != nil {
 		t.Fatalf("insert attempt: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO failed_work (

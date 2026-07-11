@@ -122,15 +122,41 @@ var sqliteSchemaStatements = []string{
 
 		FOREIGN KEY (run_id) REFERENCES workflow_instances(run_id)
 	);`,
+	`CREATE TABLE worker_sessions (
+		worker_session_id TEXT PRIMARY KEY,
+		worker_id TEXT NOT NULL,
+		status TEXT NOT NULL CHECK (status IN ('active', 'stopped', 'dead')),
+		registered_at TEXT NOT NULL,
+		last_heartbeat_at TEXT NOT NULL,
+		ended_at TEXT,
+		end_reason TEXT,
+		execution_handle TEXT,
+
+		UNIQUE (worker_id, worker_session_id),
+		FOREIGN KEY (worker_id) REFERENCES workers(worker_id),
+		CHECK (
+			(status = 'active' AND ended_at IS NULL)
+			OR
+			(status IN ('stopped', 'dead') AND ended_at IS NOT NULL)
+		)
+	);`,
 	`CREATE TABLE work_item_attempts (
 		attempt_id TEXT PRIMARY KEY,
 		work_item_id TEXT NOT NULL,
 		worker_id TEXT,
+		worker_session_id TEXT,
 		executor_type TEXT NOT NULL CHECK (executor_type IN ('worker', 'controller')),
 		started_at TEXT NOT NULL,
 
 		FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
-		FOREIGN KEY (worker_id) REFERENCES workers(worker_id)
+		FOREIGN KEY (worker_id) REFERENCES workers(worker_id),
+		FOREIGN KEY (worker_session_id) REFERENCES worker_sessions(worker_session_id),
+		FOREIGN KEY (worker_id, worker_session_id) REFERENCES worker_sessions(worker_id, worker_session_id),
+		CHECK (
+			(executor_type = 'worker' AND worker_id IS NOT NULL AND worker_session_id IS NOT NULL)
+			OR
+			(executor_type = 'controller' AND worker_id IS NULL AND worker_session_id IS NULL)
+		)
 	);`,
 	`CREATE TABLE queued_work (
 		work_item_id TEXT PRIMARY KEY,
@@ -160,12 +186,30 @@ var sqliteSchemaStatements = []string{
 		attempt_id TEXT PRIMARY KEY,
 		work_item_id TEXT NOT NULL UNIQUE,
 		worker_id TEXT,
+		worker_session_id TEXT,
 		queued_at TEXT NOT NULL,
 		started_at TEXT NOT NULL,
 
 		FOREIGN KEY (attempt_id) REFERENCES work_item_attempts(attempt_id),
 		FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
-		FOREIGN KEY (worker_id) REFERENCES workers(worker_id)
+		FOREIGN KEY (worker_id) REFERENCES workers(worker_id),
+		FOREIGN KEY (worker_session_id) REFERENCES worker_sessions(worker_session_id),
+		FOREIGN KEY (worker_id, worker_session_id) REFERENCES worker_sessions(worker_id, worker_session_id)
+	);`,
+	`CREATE TABLE abandoned_work (
+		attempt_id TEXT PRIMARY KEY,
+		work_item_id TEXT NOT NULL,
+		worker_id TEXT NOT NULL,
+		worker_session_id TEXT NOT NULL,
+		queued_at TEXT NOT NULL,
+		started_at TEXT NOT NULL,
+		abandoned_at TEXT NOT NULL,
+		reason TEXT NOT NULL,
+
+		FOREIGN KEY (attempt_id) REFERENCES work_item_attempts(attempt_id),
+		FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+		FOREIGN KEY (worker_id) REFERENCES workers(worker_id),
+		FOREIGN KEY (worker_session_id) REFERENCES worker_sessions(worker_session_id)
 	);`,
 	`CREATE TABLE completed_work (
 		attempt_id TEXT PRIMARY KEY,
@@ -207,6 +251,15 @@ var sqliteIndexStatements = []string{
 	ON queued_work(queued_at, work_item_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_running_work_started_at_attempt
 	ON running_work(started_at, attempt_id);`,
+	`CREATE INDEX IF NOT EXISTS idx_worker_sessions_status_heartbeat
+	ON worker_sessions(status, last_heartbeat_at);`,
+	`CREATE INDEX IF NOT EXISTS idx_worker_sessions_worker_registered
+	ON worker_sessions(worker_id, registered_at);`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_running_work_one_per_worker_session
+	ON running_work(worker_session_id)
+	WHERE worker_session_id IS NOT NULL;`,
+	`CREATE INDEX IF NOT EXISTS idx_abandoned_work_item_time
+	ON abandoned_work(work_item_id, abandoned_at, attempt_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_completed_work_item_completed_at
 	ON completed_work(work_item_id, completed_at, attempt_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_failed_work_item_failed_at
@@ -379,7 +432,7 @@ func validateSQLiteStoreSchemaVersion(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("sqlite schema_version must contain exactly one row, got %d", len(versions))
 	}
 	if versions[0] != SupportedSchemaVersion {
-		return fmt.Errorf("sqlite schema version %d is unsupported; controller supports version %d", versions[0], SupportedSchemaVersion)
+		return fmt.Errorf("sqlite schema version %d is unsupported; controller supports version %d; rebuild the development database or add an explicit migration", versions[0], SupportedSchemaVersion)
 	}
 
 	return nil
@@ -399,10 +452,12 @@ func sqliteCoreSchemaExists(ctx context.Context, tx *sql.Tx) (bool, error) {
 			'workflow_step_output_facts',
 			'work_items',
 			'workers',
+			'worker_sessions',
 			'work_item_resource_constraints',
 			'work_item_attempts',
 			'queued_work',
 			'running_work',
+			'abandoned_work',
 			'completed_work',
 			'failed_work'
 		)`).Scan(&tableCount); err != nil {
