@@ -90,7 +90,7 @@ func TestAggregateRowsFromPairCountsSortsByPolygonIDAndValue(t *testing.T) {
 		{FieldID: 2, ValueID: 7, Count: 1},
 		{FieldID: 1, ValueID: 5, Count: 3},
 		{FieldID: 1, ValueID: 2, Count: 1},
-	}, map[uint16]string{
+	}, map[uint32]string{
 		1: "B002",
 		2: "A001",
 	})

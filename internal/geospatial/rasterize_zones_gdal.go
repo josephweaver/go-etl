@@ -145,9 +145,9 @@ func executeAggregateByPolygonsGDAL(ctx context.Context, request AggregateByPoly
 		return aggregateByPolygonsExecutionResult{}, err
 	}
 
-	zonePolygonIDs := map[uint16]string{}
+	zonePolygonIDs := map[uint32]string{}
 	for _, feature := range features {
-		zonePolygonIDs[feature.ZoneID] = feature.PolygonID
+		zonePolygonIDs[uint32(feature.ZoneID)] = feature.PolygonID
 	}
 	rows, err := aggregateRowsFromPairCounts(pairResult.rows, zonePolygonIDs)
 	if err != nil {

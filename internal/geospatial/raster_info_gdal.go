@@ -96,6 +96,7 @@ func collectRasterMetadata(name string, spec InputSpec) (RasterMetadata, error) 
 		Height:        meta.Height,
 		BandCount:     len(meta.Bands),
 		CRSWKTPresent: wktPresent,
+		CRSWKT:        strings.TrimSpace(wkt),
 		EPSG:          epsg,
 		GeoTransform:  meta.GeoTransform,
 		Bounds:        bounds,
@@ -260,10 +261,22 @@ type rasterInfo struct {
 }
 
 func parseEPSGFromWKT(wkt string) int {
-	matches := epsgRegex.FindAllStringSubmatch(wkt, -1)
-	epsg := 0
+	matches := epsgRegex.FindAllStringSubmatchIndex(wkt, -1)
 	for _, match := range matches {
-		for _, candidate := range match[1:] {
+		if match[0] < 0 || match[1] < 0 {
+			continue
+		}
+		if wktBracketDepthAt(wkt, match[0]) != 1 {
+			continue
+		}
+		if strings.Trim(strings.TrimSpace(wkt[match[1]:]), "]") != "" {
+			continue
+		}
+		for index := 2; index+1 < len(match); index += 2 {
+			if match[index] < 0 || match[index+1] < 0 {
+				continue
+			}
+			candidate := wkt[match[index]:match[index+1]]
 			if candidate == "" {
 				continue
 			}
@@ -271,10 +284,28 @@ func parseEPSGFromWKT(wkt string) int {
 			if err != nil {
 				continue
 			}
-			epsg = value
+			return value
 		}
 	}
-	return epsg
+	return 0
+}
+
+func wktBracketDepthAt(wkt string, offset int) int {
+	depth := 0
+	for index, char := range wkt {
+		if index >= offset {
+			break
+		}
+		switch char {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
 }
 
 func computeBounds(gt []float64, width int, height int) (RasterBounds, error) {

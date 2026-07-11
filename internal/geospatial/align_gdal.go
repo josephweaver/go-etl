@@ -172,7 +172,7 @@ func ExecuteRasterAlignment(ctx context.Context, request OperationRequest, artif
 		}
 		targetGrid = GridFromMetadata(likeMetadata)
 		if targetGrid.CRS == "" {
-			return OperationResult{}, fmt.Errorf("like_raster CRS must resolve to an EPSG code or use an explicit target_crs")
+			return OperationResult{}, fmt.Errorf("like_raster CRS must be available as an EPSG code or WKT, or use an explicit target_crs")
 		}
 		if err := ValidateWarpTargetGrid(targetGrid); err != nil {
 			return OperationResult{}, err

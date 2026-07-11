@@ -398,7 +398,11 @@ func newSchedulerFromConfig(cfg ExecutionComponentConfig, transport Transport) (
 		if err != nil {
 			return nil, err
 		}
-		return SlurmScheduler{Transport: transport, MemoryMB: memoryMB}, nil
+		timeLimit, err := cfg.Settings.String("time_limit")
+		if err != nil {
+			return nil, err
+		}
+		return SlurmScheduler{Transport: transport, MemoryMB: memoryMB, TimeLimit: timeLimit}, nil
 	default:
 		return nil, fmt.Errorf("unsupported scheduler type %q", cfg.Type)
 	}

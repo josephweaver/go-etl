@@ -20,6 +20,7 @@ const (
 	OperationRasterPairValueCounts = "raster_pair_value_counts"
 	defaultChunkRows               = 1024
 	uint16MaxValue                 = math.MaxUint16
+	uint32MaxValue                 = math.MaxUint32
 	countDTypeUint64               = "uint64"
 )
 
@@ -81,7 +82,7 @@ type rasterPairBandSource struct {
 }
 
 type PairCountRow struct {
-	FieldID uint16
+	FieldID uint32
 	ValueID uint16
 	Count   uint64
 }
@@ -97,8 +98,8 @@ type PairCountMetadata struct {
 }
 
 type pairCountAccumulator struct {
-	counts             map[uint32]uint64
-	distinctFields     map[uint16]struct{}
+	counts             map[uint64]uint64
+	distinctFields     map[uint32]struct{}
 	distinctValues     map[uint16]struct{}
 	validPixels        uint64
 	skippedFieldNodata uint64
@@ -208,11 +209,11 @@ func ParseRasterPairValueCountsRequest(requestData []byte) (RasterPairValueCount
 		return RasterPairValueCountsRequest{}, fmt.Errorf("chunk_rows must be greater than 0")
 	}
 
-	fieldDType, err := normalizeRasterPairDType(options.FieldDType, "field_dtype")
+	fieldDType, err := normalizeRasterPairFieldDType(options.FieldDType)
 	if err != nil {
 		return RasterPairValueCountsRequest{}, err
 	}
-	valueDType, err := normalizeRasterPairDType(options.ValueDType, "value_dtype")
+	valueDType, err := normalizeRasterPairValueDType(options.ValueDType)
 	if err != nil {
 		return RasterPairValueCountsRequest{}, err
 	}
@@ -339,27 +340,42 @@ func validateRasterPairNodata(name string, value *int) error {
 	return nil
 }
 
-func normalizeRasterPairDType(value string, fieldName string) (string, error) {
+func normalizeRasterPairFieldDType(value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	if normalized == "" {
 		return "uint16", nil
 	}
-	if normalized != "uint16" {
-		return "", fmt.Errorf("unsupported %s %q; supported: %q", fieldName, normalized, "uint16")
+	switch normalized {
+	case "uint16", "uint32", "int32":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported field_dtype %q; supported: %q, %q, %q", normalized, "uint16", "uint32", "int32")
 	}
-	return normalized, nil
+}
+
+func normalizeRasterPairValueDType(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return "uint16", nil
+	}
+	switch normalized {
+	case "byte", "uint16":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported value_dtype %q; supported: %q, %q", normalized, "byte", "uint16")
+	}
 }
 
 func newPairCountAccumulator(includeValueNodata bool) *pairCountAccumulator {
 	return &pairCountAccumulator{
-		counts:             map[uint32]uint64{},
-		distinctFields:     map[uint16]struct{}{},
+		counts:             map[uint64]uint64{},
+		distinctFields:     map[uint32]struct{}{},
 		distinctValues:     map[uint16]struct{}{},
 		includeValueNodata: includeValueNodata,
 	}
 }
 
-func (acc *pairCountAccumulator) AddChunk(fieldValues []uint16, valueValues []uint16, fieldNodata uint16, valueNodata uint16) error {
+func (acc *pairCountAccumulator) AddChunk(fieldValues []uint32, valueValues []uint16, fieldNodata uint32, valueNodata uint16) error {
 	if len(fieldValues) != len(valueValues) {
 		return fmt.Errorf("field/value chunk lengths differ: %d != %d", len(fieldValues), len(valueValues))
 	}
@@ -377,7 +393,7 @@ func (acc *pairCountAccumulator) AddChunk(fieldValues []uint16, valueValues []ui
 			continue
 		}
 
-		key := uint32(fieldID)<<16 | uint32(valueID)
+		key := uint64(fieldID)<<16 | uint64(valueID)
 		if acc.counts[key] == math.MaxUint64 {
 			return fmt.Errorf("count overflow for field_id=%d crop_id=%d", fieldID, valueID)
 		}
@@ -393,7 +409,7 @@ func (acc *pairCountAccumulator) Rows() []PairCountRow {
 	rows := make([]PairCountRow, 0, len(acc.counts))
 	for key, count := range acc.counts {
 		rows = append(rows, PairCountRow{
-			FieldID: uint16(key >> 16),
+			FieldID: uint32(key >> 16),
 			ValueID: uint16(key & uint16MaxValue),
 			Count:   count,
 		})

@@ -309,8 +309,8 @@ func parseAggregatePolygonInput(input *aggregatePolygonInput) (aggregatePolygonS
 	return polygons, nil
 }
 
-func aggregateRowsFromPairCounts(pairRows []PairCountRow, zonePolygonIDs map[uint16]string) ([]AggregatePolygonCountRow, error) {
-	totals := map[uint16]uint64{}
+func aggregateRowsFromPairCounts(pairRows []PairCountRow, zonePolygonIDs map[uint32]string) ([]AggregatePolygonCountRow, error) {
+	totals := map[uint32]uint64{}
 	for _, row := range pairRows {
 		if _, ok := zonePolygonIDs[row.FieldID]; !ok {
 			return nil, fmt.Errorf("zone raster produced unknown polygon zone id %d", row.FieldID)

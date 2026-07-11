@@ -87,6 +87,23 @@ func TestCollectRasterMetadataErrorsForNonRaster(t *testing.T) {
 	}
 }
 
+func TestParseEPSGFromWKTRequiresCRSAuthority(t *testing.T) {
+	yanRoyWKT := `PROJCRS["Albers",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ID["EPSG",6326]],PRIMEM["Greenwich",0,ANGLEUNIT["Degree",0.0174532925199433]]],CONVERSION["unnamed",METHOD["Albers Equal Area",ID["EPSG",9822]],PARAMETER["Northing at false origin",0,LENGTHUNIT["metre",1],ID["EPSG",8827]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["Meter",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["Meter",1]]]`
+	if got := parseEPSGFromWKT(yanRoyWKT); got != 0 {
+		t.Fatalf("yan/roy epsg = %d, want 0 because only parameter IDs are present", got)
+	}
+
+	crsAuthorityWKT := `PROJCRS["NAD83 / Conus Albers",BASEGEOGCRS["NAD83",ID["EPSG",4269]],CONVERSION["Conus Albers",METHOD["Albers Equal Area",ID["EPSG",9822]]],CS[Cartesian,2],AXIS["easting",east],AXIS["northing",north],ID["EPSG",5070]]`
+	if got := parseEPSGFromWKT(crsAuthorityWKT); got != 5070 {
+		t.Fatalf("crs authority epsg = %d, want 5070", got)
+	}
+
+	unitAuthorityWKT := `PROJCRS["Albers",BASEGEOGCRS["WGS 84"],CONVERSION["unnamed"],CS[Cartesian,2],AXIS["(E)",east,LENGTHUNIT["Meter",1,ID["EPSG",9001]]],AXIS["(N)",north,LENGTHUNIT["Meter",1,ID["EPSG",9001]]]]`
+	if got := parseEPSGFromWKT(unitAuthorityWKT); got != 0 {
+		t.Fatalf("unit authority epsg = %d, want 0", got)
+	}
+}
+
 func TestResolveGDALDriverNameFromJSONSupportsDriverShortName(t *testing.T) {
 	raw := map[string]any{
 		"description":     "/tmp/in.tif",

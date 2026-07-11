@@ -219,7 +219,7 @@ func TestNewExecutionEnvironmentSupportsSlurmMemory(t *testing.T) {
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler: ExecutionComponentConfig{
 			Type:     "slurm",
-			Settings: ExecutionComponentSettings{"memory_mb": float64(8192)},
+			Settings: ExecutionComponentSettings{"memory_mb": float64(8192), "time_limit": "01:00:00"},
 		},
 		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
 			"root": "/tmp/goetl",
@@ -235,6 +235,9 @@ func TestNewExecutionEnvironmentSupportsSlurmMemory(t *testing.T) {
 	}
 	if scheduler.MemoryMB != 8192 {
 		t.Fatalf("memory mb = %d, want 8192", scheduler.MemoryMB)
+	}
+	if scheduler.TimeLimit != "01:00:00" {
+		t.Fatalf("time limit = %q, want 01:00:00", scheduler.TimeLimit)
 	}
 }
 

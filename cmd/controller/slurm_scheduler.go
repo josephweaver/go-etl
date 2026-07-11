@@ -11,6 +11,7 @@ type SlurmScheduler struct {
 	Transport Transport
 	TempDir   string
 	MemoryMB  int64
+	TimeLimit string
 }
 
 type SlurmExecutionConfig struct {
@@ -38,6 +39,9 @@ func (s SlurmScheduler) Execute(ctx context.Context, cfg SlurmExecutionConfig) (
 	}
 	if cfg.WorkerScript.MemoryMB == 0 {
 		cfg.WorkerScript.MemoryMB = s.MemoryMB
+	}
+	if cfg.WorkerScript.TimeLimit == "" {
+		cfg.WorkerScript.TimeLimit = s.TimeLimit
 	}
 
 	script, err := GenerateSlurmWorkerScript(cfg.WorkerScript)

@@ -54,6 +54,7 @@ type RasterMetadata struct {
 	Height        int                  `json:"height"`
 	BandCount     int                  `json:"band_count"`
 	CRSWKTPresent bool                 `json:"crs_wkt_present"`
+	CRSWKT        string               `json:"crs_wkt,omitempty"`
 	EPSG          int                  `json:"epsg"`
 	GeoTransform  []float64            `json:"geo_transform"`
 	Bounds        RasterBounds         `json:"bounds"`

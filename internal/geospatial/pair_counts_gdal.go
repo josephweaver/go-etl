@@ -14,7 +14,12 @@ import (
 	"time"
 )
 
-const gdalUInt16DType = "UInt16"
+const (
+	gdalByteDType   = "Byte"
+	gdalInt32DType  = "Int32"
+	gdalUInt16DType = "UInt16"
+	gdalUInt32DType = "UInt32"
+)
 
 func init() {
 	executeRasterPairValueCountsImpl = executeRasterPairValueCountsGDAL
@@ -49,7 +54,7 @@ func executeRasterPairValueCountsGDAL(ctx context.Context, request RasterPairVal
 			windowHeight = remaining
 		}
 
-		fieldValues, err := readUInt16RasterWindowXYZ(ctx, request.Field.Path, request.Field.Band, width, windowHeight, yOffset)
+		fieldValues, err := readUInt32RasterWindowXYZ(ctx, request.Field.Path, request.Field.Band, width, windowHeight, yOffset)
 		if err != nil {
 			return pairCountExecutionResult{}, fmt.Errorf("read field raster window at row %d: %w", yOffset, err)
 		}
@@ -58,7 +63,7 @@ func executeRasterPairValueCountsGDAL(ctx context.Context, request RasterPairVal
 			return pairCountExecutionResult{}, fmt.Errorf("read value raster window at row %d: %w", yOffset, err)
 		}
 
-		if err := accumulator.AddChunk(fieldValues, valueValues, uint16(fieldNodata), uint16(valueNodata)); err != nil {
+		if err := accumulator.AddChunk(fieldValues, valueValues, uint32(fieldNodata), uint16(valueNodata)); err != nil {
 			return pairCountExecutionResult{}, err
 		}
 	}
@@ -104,10 +109,25 @@ func rasterPairBandMetadata(source rasterPairBandSource, metadata RasterMetadata
 		return RasterBandMetadata{}, fmt.Errorf("input %q band %d does not exist", source.Name, source.Band)
 	}
 	bandMetadata := metadata.Bands[source.Band-1]
-	if bandMetadata.DType != gdalUInt16DType || wantDType != "uint16" {
+	if !rasterPairDTypeCompatible(bandMetadata.DType, wantDType) {
 		return RasterBandMetadata{}, fmt.Errorf("input %q dtype %q is not compatible with requested dtype %q", source.Name, bandMetadata.DType, wantDType)
 	}
 	return bandMetadata, nil
+}
+
+func rasterPairDTypeCompatible(gdalDType string, wantDType string) bool {
+	switch wantDType {
+	case "byte":
+		return gdalDType == gdalByteDType
+	case "uint16":
+		return gdalDType == gdalUInt16DType
+	case "uint32":
+		return gdalDType == gdalUInt32DType
+	case "int32":
+		return gdalDType == gdalInt32DType
+	default:
+		return false
+	}
 }
 
 func resolveRasterPairNodata(source rasterPairBandSource, bandMetadata RasterBandMetadata) (int, error) {
@@ -122,6 +142,22 @@ func resolveRasterPairNodata(source rasterPairBandSource, bandMetadata RasterBan
 }
 
 func readUInt16RasterWindowXYZ(ctx context.Context, rasterPath string, band int, width int, height int, yOffset int) ([]uint16, error) {
+	values, err := readUintRasterWindowXYZ(ctx, rasterPath, band, width, height, yOffset, uint16MaxValue, "uint16")
+	if err != nil {
+		return nil, err
+	}
+	narrowed := make([]uint16, len(values))
+	for index, value := range values {
+		narrowed[index] = uint16(value)
+	}
+	return narrowed, nil
+}
+
+func readUInt32RasterWindowXYZ(ctx context.Context, rasterPath string, band int, width int, height int, yOffset int) ([]uint32, error) {
+	return readUintRasterWindowXYZ(ctx, rasterPath, band, width, height, yOffset, uint32MaxValue, "uint32")
+}
+
+func readUintRasterWindowXYZ(ctx context.Context, rasterPath string, band int, width int, height int, yOffset int, maxValue uint64, dtypeName string) ([]uint32, error) {
 	windowCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -140,7 +176,7 @@ func readUInt16RasterWindowXYZ(ctx context.Context, rasterPath string, band int,
 		return nil, fmt.Errorf("gdal_translate: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	values := make([]uint16, 0, width*height)
+	values := make([]uint32, 0, width*height)
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -151,7 +187,7 @@ func readUInt16RasterWindowXYZ(ctx context.Context, rasterPath string, band int,
 		if len(fields) < 3 {
 			return nil, fmt.Errorf("unexpected XYZ line %q", line)
 		}
-		value, err := parseUInt16XYZValue(fields[2])
+		value, err := parseUintXYZValue(fields[2], maxValue, dtypeName)
 		if err != nil {
 			return nil, err
 		}
@@ -169,6 +205,14 @@ func readUInt16RasterWindowXYZ(ctx context.Context, rasterPath string, band int,
 }
 
 func parseUInt16XYZValue(raw string) (uint16, error) {
+	value, err := parseUintXYZValue(raw, uint16MaxValue, "uint16")
+	if err != nil {
+		return 0, err
+	}
+	return uint16(value), nil
+}
+
+func parseUintXYZValue(raw string, maxValue uint64, dtypeName string) (uint32, error) {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return 0, fmt.Errorf("parse raster value %q: %w", raw, err)
@@ -176,11 +220,11 @@ func parseUInt16XYZValue(raw string) (uint16, error) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, fmt.Errorf("raster value %q is not finite", raw)
 	}
-	if value < 0 || value > float64(uint16MaxValue) {
-		return 0, fmt.Errorf("raster value %q is out of range for dtype uint16", raw)
+	if value < 0 || value > float64(maxValue) {
+		return 0, fmt.Errorf("raster value %q is out of range for dtype %s", raw, dtypeName)
 	}
 	if math.Trunc(value) != value {
-		return 0, fmt.Errorf("raster value %q is not an integer compatible with dtype uint16", raw)
+		return 0, fmt.Errorf("raster value %q is not an integer compatible with dtype %s", raw, dtypeName)
 	}
-	return uint16(value), nil
+	return uint32(value), nil
 }

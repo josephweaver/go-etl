@@ -27,6 +27,8 @@ func GridFromMetadata(metadata RasterMetadata) RasterGrid {
 	crs := ""
 	if metadata.EPSG > 0 {
 		crs = fmt.Sprintf("EPSG:%d", metadata.EPSG)
+	} else if metadata.CRSWKTPresent {
+		crs = metadata.CRSWKT
 	}
 	transform := append([]float64(nil), metadata.GeoTransform...)
 	return RasterGrid{

@@ -120,7 +120,7 @@ func TestParseRasterPairValueCountsRequestRejectsUnsupportedDType(t *testing.T) 
     "metadata_json": "counts.metadata.json"
   },
   "options": {
-    "field_dtype": "uint32"
+    "field_dtype": "float32"
   }
 }`
 
@@ -134,7 +134,7 @@ func TestParseRasterPairValueCountsRequestRejectsUnsupportedDType(t *testing.T) 
 }
 
 func TestPairCountAccumulatorProducesSortedRowsAndMetadata(t *testing.T) {
-	fieldValues := []uint16{
+	fieldValues := []uint32{
 		2, 2, 0,
 		1, 1, 1,
 	}
@@ -175,7 +175,7 @@ func TestPairCountAccumulatorProducesSortedRowsAndMetadata(t *testing.T) {
 
 func TestPairCountAccumulatorIncludesValueNodataWhenRequested(t *testing.T) {
 	accumulator := newPairCountAccumulator(true)
-	if err := accumulator.AddChunk([]uint16{7, 7}, []uint16{0, 9}, 0, 0); err != nil {
+	if err := accumulator.AddChunk([]uint32{7, 7}, []uint16{0, 9}, 0, 0); err != nil {
 		t.Fatalf("AddChunk() error = %v", err)
 	}
 
@@ -191,12 +191,25 @@ func TestPairCountAccumulatorIncludesValueNodataWhenRequested(t *testing.T) {
 	}
 }
 
+func TestPairCountAccumulatorPreservesUInt32FieldIDs(t *testing.T) {
+	accumulator := newPairCountAccumulator(false)
+	if err := accumulator.AddChunk([]uint32{70000}, []uint16{9}, 0, 0); err != nil {
+		t.Fatalf("AddChunk() error = %v", err)
+	}
+
+	gotCSV := renderPairCountsCSV(accumulator.Rows())
+	wantCSV := "field_id,crop_id,count\n70000,9,1\n"
+	if gotCSV != wantCSV {
+		t.Fatalf("CSV = %q, want %q", gotCSV, wantCSV)
+	}
+}
+
 func TestPairCountAccumulatorRejectsOverflow(t *testing.T) {
 	accumulator := newPairCountAccumulator(false)
-	key := uint32(4)<<16 | uint32(9)
+	key := uint64(4)<<16 | uint64(9)
 	accumulator.counts[key] = math.MaxUint64
 
-	err := accumulator.AddChunk([]uint16{4}, []uint16{9}, 0, 0)
+	err := accumulator.AddChunk([]uint32{4}, []uint16{9}, 0, 0)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

@@ -10,6 +10,7 @@ import (
 type SlurmWorkerScriptConfig struct {
 	JobName          string
 	MemoryMB         int64
+	TimeLimit        string
 	WorkerExecutable string
 	WorkerArgs       []string
 	WorkerConfigPath string
@@ -46,6 +47,9 @@ func GenerateSlurmWorkerScript(cfg SlurmWorkerScriptConfig) (string, error) {
 	script.WriteString("#SBATCH --job-name=" + cfg.JobName + newline)
 	if cfg.MemoryMB > 0 {
 		script.WriteString(fmt.Sprintf("#SBATCH --mem=%dM", cfg.MemoryMB) + newline)
+	}
+	if cfg.TimeLimit != "" {
+		script.WriteString("#SBATCH --time=" + cfg.TimeLimit + newline)
 	}
 	script.WriteString("#SBATCH --output=" + logDir + "/%x-%j.out" + newline)
 	script.WriteString("#SBATCH --error=" + logDir + "/%x-%j.err" + newline)
@@ -107,6 +111,9 @@ func (cfg SlurmWorkerScriptConfig) validate() error {
 	}
 	if cfg.MemoryMB < 0 {
 		return fmt.Errorf("slurm memory mb must not be negative")
+	}
+	if strings.ContainsAny(cfg.TimeLimit, " \t\r\n") {
+		return fmt.Errorf("slurm time limit must not contain whitespace")
 	}
 	if strings.ContainsAny(cfg.JobName, " \t\r\n/") {
 		return fmt.Errorf("slurm job name must not contain whitespace or path separators")
