@@ -2,7 +2,15 @@
 
 ## Status
 
-Ready after OS-001 through OS-003.
+Implementation in progress.
+
+Current implementation:
+
+- `CareTaker` has fakeable clock/timer interfaces and a capacity-one non-blocking signal channel.
+- Pure next-wake calculation selects the earliest worker-expiry, inflight-start-expiry, retry, or fallback deadline and clamps already-past deadlines to an immediate wake.
+- Worker registration confirms the oldest inflight worker-start reservation; the legacy claim-confirm path remains temporarily in place until the OS-005 cutover.
+- Worker capacity planning counts live worker sessions plus unexpired inflight starts as observed capacity, so idle live workers satisfy pending work and dead running attempts do not.
+- Controller demand snapshots count live sessions using the heartbeat cutoff before applying the one-by-one capacity policy.
 
 ## Minimum capable model
 

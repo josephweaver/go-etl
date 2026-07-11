@@ -17,9 +17,10 @@ const (
 )
 
 type WorkerDemand struct {
-	PendingQueued    int
-	PendingClaimable int
-	RunningAttempts  int
+	PendingQueued      int
+	PendingClaimable   int
+	RunningAttempts    int
+	LiveWorkerSessions int
 }
 
 type WorkerStartReservation struct {
@@ -50,19 +51,24 @@ type OneByOneUntilSaturatedPattern struct{}
 
 func (p OneByOneUntilSaturatedPattern) Plan(now time.Time, demand WorkerDemand, state WorkerExecutionState, cfg WorkerExecutionConfig) WorkerStartPlan {
 	inflight := state.UnexpiredInflightStarts(now, cfg.InflightStartTimeout)
-	active := demand.RunningAttempts + len(inflight)
+	desired := demand.RunningAttempts + demand.PendingClaimable
+	if cfg.MaxActiveWorkers > 0 && desired > cfg.MaxActiveWorkers {
+		desired = cfg.MaxActiveWorkers
+	}
+	observed := demand.LiveWorkerSessions + len(inflight)
+	shortfall := desired - observed
 
 	if demand.PendingClaimable <= 0 {
 		return WorkerStartPlan{Reason: "no_claimable_work"}
 	}
-	if len(inflight) > 0 {
-		return WorkerStartPlan{Reason: "waiting_for_inflight_start_claim"}
-	}
-	if cfg.MaxActiveWorkers > 0 && active >= cfg.MaxActiveWorkers {
+	if cfg.MaxActiveWorkers > 0 && observed >= cfg.MaxActiveWorkers {
 		return WorkerStartPlan{Reason: "max_active_workers_reached"}
 	}
-	if active >= demand.PendingClaimable {
+	if shortfall <= 0 {
 		return WorkerStartPlan{Reason: "active_capacity_satisfies_claimable_work"}
+	}
+	if len(inflight) > 0 {
+		return WorkerStartPlan{Reason: "waiting_for_inflight_start_claim"}
 	}
 
 	return WorkerStartPlan{
@@ -137,10 +143,11 @@ func (m *WorkerCapacityManager) Evaluate(
 
 	m.pruneExpiredInflightStarts(now, cfg.InflightStartTimeout)
 	plan := pattern.Plan(now, demand, m.state, cfg)
-	fmt.Printf("worker_capacity_evaluation pending_queued=%d pending_claimable=%d running_attempts=%d inflight_starts=%d start_count=%d reason=%s pattern=%s\n",
+	fmt.Printf("worker_capacity_evaluation pending_queued=%d pending_claimable=%d running_attempts=%d live_worker_sessions=%d inflight_starts=%d start_count=%d reason=%s pattern=%s\n",
 		demand.PendingQueued,
 		demand.PendingClaimable,
 		demand.RunningAttempts,
+		demand.LiveWorkerSessions,
 		len(m.state.InflightStarts),
 		plan.StartCount,
 		plan.Reason,
@@ -188,6 +195,23 @@ func (m *WorkerCapacityManager) ConfirmInflightStartClaimed() bool {
 	confirmed := m.state.InflightStarts[0]
 	m.state.InflightStarts = append([]WorkerStartReservation(nil), m.state.InflightStarts[1:]...)
 	fmt.Printf("worker_start_confirmed_by_claim reservation_id=%s\n", confirmed.ID)
+	return true
+}
+
+func (m *WorkerCapacityManager) ConfirmOldestInflightStartRegistered(now time.Time) bool {
+	if m == nil {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.state.InflightStarts) == 0 {
+		return false
+	}
+	confirmed := m.state.InflightStarts[0]
+	m.state.InflightStarts = append([]WorkerStartReservation(nil), m.state.InflightStarts[1:]...)
+	fmt.Printf("worker_start_confirmed_by_registration reservation_id=%s registered_at=%s\n", confirmed.ID, now.UTC().Format(time.RFC3339Nano))
 	return true
 }
 
@@ -258,7 +282,13 @@ func (c *Controller) EvaluateWorkerCapacity(ctx context.Context, now time.Time) 
 	if err != nil {
 		return err
 	}
-	_, err = c.workerExecutor.Evaluate(ctx, now, cfg, c.workerDemand, func(ctx context.Context, count int) error {
+	heartbeatPolicy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		return err
+	}
+	_, err = c.workerExecutor.Evaluate(ctx, now, cfg, func(ctx context.Context) (WorkerDemand, error) {
+		return c.workerDemand(ctx, now, heartbeatPolicy.DeadAfter)
+	}, func(ctx context.Context, count int) error {
 		return c.startWorkers(ctx, c.launchResolver, count)
 	})
 	if errors.Is(err, errWorkerTargetEnvironmentNotConfigured) {
@@ -273,6 +303,13 @@ func (c *Controller) ConfirmWorkerStartClaimed() bool {
 		return false
 	}
 	return c.workerExecutor.ConfirmInflightStartClaimed()
+}
+
+func (c *Controller) ConfirmWorkerStartRegistered(now time.Time) bool {
+	if c.workerExecutor == nil {
+		return false
+	}
+	return c.workerExecutor.ConfirmOldestInflightStartRegistered(now)
 }
 
 func (c *Controller) ConfirmWorkerStartClaimedAndEvaluateAsync() {
@@ -290,7 +327,7 @@ func (c *Controller) ConfirmWorkerStartClaimedAndEvaluateAsync() {
 	}()
 }
 
-func (c *Controller) workerDemand(ctx context.Context) (WorkerDemand, error) {
+func (c *Controller) workerDemand(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerDemand, error) {
 	if c.workflowStore == nil {
 		return WorkerDemand{}, fmt.Errorf("workflow store required")
 	}
@@ -306,6 +343,14 @@ func (c *Controller) workerDemand(ctx context.Context) (WorkerDemand, error) {
 	checks, err := c.workflowStore.ListQueuedResourceConstraintChecks(ctx)
 	if err != nil {
 		return WorkerDemand{}, fmt.Errorf("list queued resource constraint checks: %w", err)
+	}
+	liveSessions := 0
+	if deadAfter > 0 {
+		live, err := c.workflowStore.ListLiveWorkerSessions(ctx, now.Add(-deadAfter))
+		if err != nil {
+			return WorkerDemand{}, fmt.Errorf("list live worker sessions: %w", err)
+		}
+		liveSessions = len(live)
 	}
 
 	queuedIDs := make(map[string]struct{}, len(queued))
@@ -337,9 +382,10 @@ func (c *Controller) workerDemand(ctx context.Context) (WorkerDemand, error) {
 	}
 
 	return WorkerDemand{
-		PendingQueued:    len(queued),
-		PendingClaimable: len(queued) - blocked,
-		RunningAttempts:  len(running),
+		PendingQueued:      len(queued),
+		PendingClaimable:   len(queued) - blocked,
+		RunningAttempts:    len(running),
+		LiveWorkerSessions: liveSessions,
 	}, nil
 }
 

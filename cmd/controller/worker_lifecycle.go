@@ -37,11 +37,11 @@ func (c *Controller) registerWorkerHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	registeredAt := time.Now().UTC()
 	session, err := c.workflowStore.RegisterWorkerSession(r.Context(), persistence.RegisterWorkerSessionRequest{
 		WorkerID:        "worker-" + randomHex(16),
 		SessionID:       "worker-session-" + randomHex(16),
-		RegisteredAt:    now,
+		RegisteredAt:    registeredAt.Format(time.RFC3339Nano),
 		ExecutionHandle: request.ExecutionHandle,
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func (c *Controller) registerWorkerHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	c.ConfirmWorkerStartClaimed()
+	c.ConfirmWorkerStartRegistered(registeredAt)
 	c.signalWorkerStateChanged("worker_registered")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

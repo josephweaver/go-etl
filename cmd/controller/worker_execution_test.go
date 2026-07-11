@@ -35,11 +35,11 @@ func TestOneByOneDoesNotStartWhenNoClaimableWork(t *testing.T) {
 	}
 }
 
-func TestOneByOneDoesNotStartWhenActiveEqualsClaimable(t *testing.T) {
+func TestOneByOneDoesNotStartWhenLiveCapacitySatisfiesDesiredWorkers(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	pattern := OneByOneUntilSaturatedPattern{}
 
-	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 2, RunningAttempts: 2}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 10})
+	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 2, RunningAttempts: 2, LiveWorkerSessions: 4}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 10})
 	if plan.StartCount != 0 {
 		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
 	}
@@ -52,7 +52,7 @@ func TestOneByOneDoesNotStartWhenMaxActiveReached(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	pattern := OneByOneUntilSaturatedPattern{}
 
-	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 5, RunningAttempts: 2}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 2})
+	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 5, RunningAttempts: 2, LiveWorkerSessions: 2}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 2})
 	if plan.StartCount != 0 {
 		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
 	}
@@ -61,7 +61,7 @@ func TestOneByOneDoesNotStartWhenMaxActiveReached(t *testing.T) {
 	}
 }
 
-func TestOneByOneCountsInflightStartAsActive(t *testing.T) {
+func TestOneByOneCountsInflightStartAsObservedCapacity(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	pattern := OneByOneUntilSaturatedPattern{}
 	state := WorkerExecutionState{
@@ -75,8 +75,8 @@ func TestOneByOneCountsInflightStartAsActive(t *testing.T) {
 	if plan.StartCount != 0 {
 		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
 	}
-	if plan.Reason != "waiting_for_inflight_start_claim" {
-		t.Fatalf("Reason = %q, want waiting_for_inflight_start_claim", plan.Reason)
+	if plan.Reason != "active_capacity_satisfies_claimable_work" {
+		t.Fatalf("Reason = %q, want active_capacity_satisfies_claimable_work", plan.Reason)
 	}
 }
 
@@ -110,6 +110,29 @@ func TestOneByOneIgnoresExpiredInflightStart(t *testing.T) {
 		MaxActiveWorkers:     10,
 		InflightStartTimeout: 5 * time.Minute,
 	})
+	if plan.StartCount != 1 {
+		t.Fatalf("StartCount = %d, want 1", plan.StartCount)
+	}
+}
+
+func TestLiveIdleWorkerSatisfiesPendingWork(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	pattern := OneByOneUntilSaturatedPattern{}
+
+	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 1, LiveWorkerSessions: 1}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 10})
+	if plan.StartCount != 0 {
+		t.Fatalf("StartCount = %d, want 0", plan.StartCount)
+	}
+	if plan.Reason != "active_capacity_satisfies_claimable_work" {
+		t.Fatalf("Reason = %q, want active_capacity_satisfies_claimable_work", plan.Reason)
+	}
+}
+
+func TestDeadRunningAttemptDoesNotCountAsCapacity(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	pattern := OneByOneUntilSaturatedPattern{}
+
+	plan := pattern.Plan(now, WorkerDemand{PendingClaimable: 1, RunningAttempts: 1, LiveWorkerSessions: 0}, WorkerExecutionState{}, WorkerExecutionConfig{MaxActiveWorkers: 10})
 	if plan.StartCount != 1 {
 		t.Fatalf("StartCount = %d, want 1", plan.StartCount)
 	}
@@ -240,6 +263,29 @@ func TestWorkerClaimConfirmsInflightStart(t *testing.T) {
 	}
 }
 
+func TestWorkerRegistrationConfirmsInflightStart(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	manager := NewWorkerCapacityManager(nil)
+
+	_, err := manager.Evaluate(context.Background(), now, defaultWorkerExecutionConfig(), fixedDemand(WorkerDemand{
+		PendingQueued:    2,
+		PendingClaimable: 2,
+	}), func(ctx context.Context, count int) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	if !manager.ConfirmOldestInflightStartRegistered(now.Add(time.Second)) {
+		t.Fatal("ConfirmOldestInflightStartRegistered() = false, want true")
+	}
+	state := manager.Snapshot()
+	if len(state.InflightStarts) != 0 {
+		t.Fatalf("inflight starts after registration = %d, want 0", len(state.InflightStarts))
+	}
+}
+
 func TestWorkerClaimCanTriggerNextOneByOneStart(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
@@ -339,6 +385,38 @@ func TestEvaluateWorkerCapacitySkipsMissingWorkerTargetWithoutInflightReservatio
 	state := controller.workerExecutor.Snapshot()
 	if len(state.InflightStarts) != 0 {
 		t.Fatalf("inflight starts = %d, want 0", len(state.InflightStarts))
+	}
+}
+
+func TestWorkerDemandCountsLiveSessionsWithHeartbeatCutoff(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-live",
+		SessionID:    "session-live",
+		RegisteredAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(live) error = %v", err)
+	}
+	if _, err := store.RegisterWorkerSession(ctx, persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-expired",
+		SessionID:    "session-expired",
+		RegisteredAt: now.Add(-10 * time.Minute).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(expired) error = %v", err)
+	}
+
+	controller := newController()
+	controller.workflowStore = store
+	demand, err := controller.workerDemand(ctx, now, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("workerDemand() error = %v", err)
+	}
+	if demand.LiveWorkerSessions != 1 {
+		t.Fatalf("LiveWorkerSessions = %d, want 1", demand.LiveWorkerSessions)
 	}
 }
 
