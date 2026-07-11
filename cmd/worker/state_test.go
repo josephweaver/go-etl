@@ -309,6 +309,60 @@ func TestWorkerControllerClientUsesTokenFileForWorkRequests(t *testing.T) {
 	}
 }
 
+func TestWorkerControllerClientSendsSessionHeaders(t *testing.T) {
+	session := testWorkerSession()
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(workerIDHeader) != session.WorkerID {
+			t.Fatalf("%s = %q, want %q", workerIDHeader, r.Header.Get(workerIDHeader), session.WorkerID)
+		}
+		if r.Header.Get(workerSessionIDHeader) != session.WorkerSessionID {
+			t.Fatalf("%s = %q, want %q", workerSessionIDHeader, r.Header.Get(workerSessionIDHeader), session.WorkerSessionID)
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/work/next":
+			seen["claim"] = true
+			_ = json.NewEncoder(w).Encode(model.WorkItem{
+				ID:             "test-001",
+				Type:           model.WorkItemTypeWriteDemoOutput,
+				OutputFilename: "result.txt",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/work/complete":
+			seen["complete"] = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/work/fail":
+			seen["fail"] = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := newUnauthenticatedWorkerControllerClient(server.URL)
+	if err != nil {
+		t.Fatalf("newUnauthenticatedWorkerControllerClient() error = %v", err)
+	}
+	item, hasWork, err := client.FetchWorkItem(session)
+	if err != nil {
+		t.Fatalf("FetchWorkItem() error = %v", err)
+	}
+	if !hasWork {
+		t.Fatal("expected work item")
+	}
+	if err := client.ReportWorkComplete(item, time.Now().UTC(), WorkEvidence{}, session); err != nil {
+		t.Fatalf("ReportWorkComplete() error = %v", err)
+	}
+	if err := client.ReportWorkFailed(model.WorkItem{ID: "test-002", AttemptID: "attempt-002"}, errors.New("failed"), session); err != nil {
+		t.Fatalf("ReportWorkFailed() error = %v", err)
+	}
+	for _, name := range []string{"claim", "complete", "fail"} {
+		if !seen[name] {
+			t.Fatalf("request %q was not observed", name)
+		}
+	}
+}
+
 func TestWorkerControllerClientRejectsMissingExternalTokenFile(t *testing.T) {
 	_, err := NewWorkerControllerClient(Config{ControllerURL: "https://controller.example.org"})
 	if err == nil {

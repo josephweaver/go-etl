@@ -152,6 +152,18 @@ func TestWorkerLifecycleHandlersRejectBadMethodAndOversizedBody(t *testing.T) {
 	}
 }
 
+func TestNextWorkHandlerRequiresWorkerSessionHeaders(t *testing.T) {
+	controller, _ := testWorkerLifecycleController(t)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
 func testWorkerLifecycleController(t *testing.T) (*Controller, *persistence.Store) {
 	t.Helper()
 	store, err := persistence.OpenStore(context.Background(), persistence.Config{

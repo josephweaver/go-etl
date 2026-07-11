@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"time"
+
+	"goetl/internal/model"
 )
 
 func main() {
@@ -54,29 +58,101 @@ func runWorkerLoop(worker Worker) error {
 	if err != nil {
 		return fmt.Errorf("controller client: %w", err)
 	}
+	session, err := controller.RegisterWorker(context.Background(), workerRegistrationRequest())
+	if err != nil {
+		return fmt.Errorf("register worker: %w", err)
+	}
+
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		heartbeatDone <- RunHeartbeat(heartbeatCtx, session, controller.HeartbeatWorker, worker.LifecycleClock)
+	}()
+	heartbeatStopped := false
+	stopHeartbeat := func() error {
+		if heartbeatStopped {
+			return nil
+		}
+		cancelHeartbeat()
+		err := <-heartbeatDone
+		heartbeatStopped = true
+		if err != nil {
+			return fmt.Errorf("worker heartbeat: %w", err)
+		}
+		return nil
+	}
+	defer func() {
+		_ = stopHeartbeat()
+	}()
+	heartbeatStatus := func() error {
+		if heartbeatStopped {
+			return nil
+		}
+		select {
+		case err := <-heartbeatDone:
+			heartbeatStopped = true
+			if err != nil {
+				return fmt.Errorf("worker heartbeat: %w", err)
+			}
+			return fmt.Errorf("worker heartbeat stopped unexpectedly")
+		default:
+			return nil
+		}
+	}
+	stopWorker := func(reason string) error {
+		if err := stopHeartbeat(); err != nil {
+			return err
+		}
+		if err := controller.StopWorker(context.Background(), session, reason); err != nil {
+			fmt.Println("worker stop failed:", err)
+		}
+		return nil
+	}
 
 	for {
-		item, hasWork, err := controller.FetchWorkItem()
+		if err := heartbeatStatus(); err != nil {
+			return err
+		}
+		item, hasWork, err := controller.FetchWorkItem(session)
 		if err != nil {
 			return fmt.Errorf("fetch work item: %w", err)
+		}
+		if err := heartbeatStatus(); err != nil {
+			return err
 		}
 
 		if !hasWork {
 			fmt.Println("no work available")
+			if err := stopWorker("no_work"); err != nil {
+				return err
+			}
 			return nil
 		}
 
 		startedAt := time.Now().UTC()
 		evidence, err := worker.Run(item)
+		if heartbeatErr := heartbeatStatus(); heartbeatErr != nil {
+			return heartbeatErr
+		}
 		if err != nil {
-			if reportErr := controller.ReportWorkFailed(item, err); reportErr != nil {
+			if reportErr := controller.ReportWorkFailed(item, err, session); reportErr != nil {
 				return fmt.Errorf("run work item: %v; report failure: %w", err, reportErr)
+			}
+			if stopErr := stopWorker("worker_error"); stopErr != nil {
+				return fmt.Errorf("run work item: %v; stop worker: %w", err, stopErr)
 			}
 			return err
 		}
 
-		if err := controller.ReportWorkComplete(item, startedAt, evidence); err != nil {
+		if err := controller.ReportWorkComplete(item, startedAt, evidence, session); err != nil {
 			return fmt.Errorf("report completion: %w", err)
 		}
+	}
+}
+
+func workerRegistrationRequest() model.WorkerRegistrationRequest {
+	return model.WorkerRegistrationRequest{
+		ExecutionHandle:      fmt.Sprintf("pid-%d", os.Getpid()),
+		ExecutionEnvironment: runtime.GOOS + "/" + runtime.GOARCH,
 	}
 }

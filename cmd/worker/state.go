@@ -31,6 +31,8 @@ type WorkEvidence struct {
 }
 
 const maxWorkerControllerTokenBytes = 32 * 1024
+const workerIDHeader = "X-Goetl-Worker-Id"
+const workerSessionIDHeader = "X-Goetl-Worker-Session-Id"
 
 type WorkerControllerClient struct {
 	client        controllerhttp.Client
@@ -118,10 +120,13 @@ func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt tim
 	return client.ReportWorkComplete(item, startedAt, evidence)
 }
 
-func (c WorkerControllerClient) ReportWorkComplete(item model.WorkItem, startedAt time.Time, evidence WorkEvidence) error {
+func (c WorkerControllerClient) ReportWorkComplete(item model.WorkItem, startedAt time.Time, evidence WorkEvidence, sessions ...WorkerSession) error {
 	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/complete", workCompletion(item, startedAt, evidence))
 	if err != nil {
 		return fmt.Errorf("create work completion request: %w", err)
+	}
+	if err := addWorkerSessionHeaders(request, sessions...); err != nil {
+		return err
 	}
 	response, err := c.client.Do(request, http.StatusNoContent)
 	if err != nil {
@@ -219,7 +224,7 @@ func reportWorkFailed(controllerURL string, item model.WorkItem, workErr error) 
 	return client.ReportWorkFailed(item, workErr)
 }
 
-func (c WorkerControllerClient) ReportWorkFailed(item model.WorkItem, workErr error) error {
+func (c WorkerControllerClient) ReportWorkFailed(item model.WorkItem, workErr error, sessions ...WorkerSession) error {
 	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/fail", model.WorkFailure{
 		ID:        item.ID,
 		AttemptID: item.AttemptID,
@@ -228,6 +233,9 @@ func (c WorkerControllerClient) ReportWorkFailed(item model.WorkItem, workErr er
 	})
 	if err != nil {
 		return fmt.Errorf("create work failure request: %w", err)
+	}
+	if err := addWorkerSessionHeaders(request, sessions...); err != nil {
+		return err
 	}
 	response, err := c.client.Do(request, http.StatusNoContent)
 	if err != nil {
@@ -245,10 +253,13 @@ func fetchWorkItem(controllerURL string) (model.WorkItem, bool, error) {
 	return client.FetchWorkItem()
 }
 
-func (c WorkerControllerClient) FetchWorkItem() (model.WorkItem, bool, error) {
+func (c WorkerControllerClient) FetchWorkItem(sessions ...WorkerSession) (model.WorkItem, bool, error) {
 	request, err := c.newRequest(context.Background(), http.MethodGet, "/work/next", nil)
 	if err != nil {
 		return model.WorkItem{}, false, fmt.Errorf("create work claim request: %w", err)
+	}
+	if err := addWorkerSessionHeaders(request, sessions...); err != nil {
+		return model.WorkItem{}, false, err
 	}
 	response, err := c.client.Do(request, http.StatusOK, http.StatusNoContent)
 	if err != nil {
@@ -269,6 +280,22 @@ func (c WorkerControllerClient) FetchWorkItem() (model.WorkItem, bool, error) {
 	}
 
 	return item, true, nil
+}
+
+func addWorkerSessionHeaders(request *http.Request, sessions ...WorkerSession) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	if len(sessions) > 1 {
+		return fmt.Errorf("at most one worker session can be attached to a controller request")
+	}
+	session := sessions[0]
+	if err := session.ValidateIdentity(); err != nil {
+		return err
+	}
+	request.Header.Set(workerIDHeader, session.WorkerID)
+	request.Header.Set(workerSessionIDHeader, session.WorkerSessionID)
+	return nil
 }
 
 func (c WorkerControllerClient) SourceBundle(runID string) ([]byte, error) {

@@ -41,6 +41,8 @@ const rawPersistenceRunID = "__raw_run__"
 const rawPersistenceStageIndex = 0
 const rawPersistenceCreatedAt = "1970-01-01T00:00:00Z"
 const maxResourceConstraintSummaries = 5
+const workerIDHeader = "X-Goetl-Worker-Id"
+const workerSessionIDHeader = "X-Goetl-Worker-Session-Id"
 
 var errSourceReferenceAdmissionNotImplemented = errors.New("source-reference workflow admission is not implemented")
 
@@ -3643,14 +3645,22 @@ func (c *Controller) nextWorkHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Request) {
+	identity, err := requiredWorkerSessionIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	claim, found, err := func() (persistence.ClaimedWorkRecord, bool, error) {
 		c.claimMu.Lock()
 		defer c.claimMu.Unlock()
 
 		return c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
-			AttemptID:    "attempt-" + randomHex(16),
-			ExecutorType: persistence.ExecutorTypeWorker,
-			StartedAt:    time.Now().UTC().Format(time.RFC3339),
+			AttemptID:       "attempt-" + randomHex(16),
+			WorkerID:        identity.WorkerID,
+			WorkerSessionID: identity.WorkerSessionID,
+			ExecutorType:    persistence.ExecutorTypeWorker,
+			StartedAt:       time.Now().UTC().Format(time.RFC3339),
 		})
 	}()
 	if err != nil {
@@ -3703,6 +3713,22 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	c.ConfirmWorkerStartClaimedAndEvaluateAsync()
+}
+
+type workerSessionIdentity struct {
+	WorkerID        string
+	WorkerSessionID string
+}
+
+func requiredWorkerSessionIdentity(r *http.Request) (workerSessionIdentity, error) {
+	identity := workerSessionIdentity{
+		WorkerID:        strings.TrimSpace(r.Header.Get(workerIDHeader)),
+		WorkerSessionID: strings.TrimSpace(r.Header.Get(workerSessionIDHeader)),
+	}
+	if identity.WorkerID == "" || identity.WorkerSessionID == "" {
+		return workerSessionIdentity{}, fmt.Errorf("worker id and worker session id are required")
+	}
+	return identity, nil
 }
 
 func (c *Controller) hydrateCommitDataWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {

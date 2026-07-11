@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress.
+Implemented.
 
 Current implementation:
 
@@ -15,12 +15,13 @@ Current implementation:
 - stop is idempotent for stopped sessions, rejects dead/unknown sessions, and signals after a successful active-to-stopped transition.
 - worker-side lifecycle client methods can register, heartbeat, and stop with typed session state and `ErrWorkerSessionNotActive` conflict handling.
 - worker-side `RunHeartbeat` uses a cancellable ticker loop, refreshes liveness after accepted heartbeats, maps rejected sessions distinctly, and self-fences after `dead_after` of transient heartbeat failures.
+- normal worker loop registration now happens before the first claim, starts the heartbeat supervisor, cancels and joins heartbeat before `no_work` stop, sends `worker_error` stop after reported execution failure, and suppresses run/report after a heartbeat rejection is observed.
+- work claim, completion, and failure requests now carry the active worker/session identity as HTTP headers; `/work/next` requires that identity so persistence can record the running assignment owner.
 
-Remaining OS-002 work:
+Deferred follow-up:
 
-- normal worker startup sequence changes;
-- no-work graceful stop;
-- self-fencing behavior.
+- OS-003 enforces assignment ownership on completion/failure and performs dead-session abandonment/requeue.
+- cooperative plugin cancellation can interrupt work earlier after self-fence; the current implementation prevents new claims and suppresses outcome reports after the current call returns.
 
 ## Minimum capable model
 
