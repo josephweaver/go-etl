@@ -365,16 +365,6 @@ func buildControllerServer(
 		workflowStore.Close()
 		return nil, nil, fmt.Errorf("controller recovery failed: %w", err)
 	}
-	if err := controller.EvaluateWorkerCapacity(context.Background(), now().UTC()); err != nil {
-		if executionEnvironment != nil {
-			_ = executionEnvironment.Close()
-		}
-		if releaseDatabaseOwnership != nil {
-			_ = releaseDatabaseOwnership()
-		}
-		workflowStore.Close()
-		return nil, nil, fmt.Errorf("controller worker capacity failed: %w", err)
-	}
 	caretakerConfig, err := controllerCareTakerConfig(resolver, policy)
 	if err != nil {
 		if executionEnvironment != nil {
