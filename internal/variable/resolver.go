@@ -14,6 +14,7 @@ const DefaultMaxDepth = 10
 type ResolverConfig struct {
 	MaxDepth                    int
 	ControllerEnvironmentLookup func(string) (string, bool)
+	FunctionRegistry            FunctionRegistry
 }
 
 type Resolver struct {
@@ -344,6 +345,9 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int, conte
 			err = locatedError{path: context.path, cause: err}
 		}
 	}()
+	if call, ok := expression.Expression.(FunctionCallExpression); ok {
+		return r.resolveFunctionCall(call, expression.Type, depth, context)
+	}
 	if expressionText, isText := expression.Expression.(string); isText {
 		if refText, ok := wholeValueReferenceExpression(expressionText); ok {
 			next, accessor, err := parseReferenceExpression(refText)
@@ -427,6 +431,48 @@ func (r Resolver) resolveExpression(expression TypedExpression, depth int, conte
 		}
 		return value, nil
 	}
+}
+
+func (r Resolver) resolveFunctionCall(call FunctionCallExpression, expectedType Type, depth int, context resolutionContext) (ResolvedValue, error) {
+	if call.ResultType != expectedType {
+		return ResolvedValue{}, fmt.Errorf("function result type %s does not match expression type %s", call.ResultType, expectedType)
+	}
+	function, ok := r.config.FunctionRegistry.Lookup(call.Name)
+	if !ok {
+		return ResolvedValue{}, fmt.Errorf("unknown function: %s", call.Name)
+	}
+
+	args := make([]ResolvedValue, 0, len(call.Arguments))
+	for index, argument := range call.Arguments {
+		argContext := context
+		argContext.path = appendJSONPointer(appendJSONPointer(context.path, "arguments"), strconv.Itoa(index))
+		resolved, err := r.resolveReference(argument.Reference, depth+1, argContext)
+		if err != nil {
+			return ResolvedValue{}, err
+		}
+		if argument.Accessor != "" {
+			resolved, err = ApplyAccessor(resolved, argument.Accessor)
+			if err != nil {
+				return ResolvedValue{}, err
+			}
+		}
+		args = append(args, resolved)
+	}
+
+	result, err := function.Evaluate(args)
+	if err != nil {
+		return ResolvedValue{}, fmt.Errorf("evaluate function %s: %w", call.Name, err)
+	}
+	if result.Type != expectedType {
+		return ResolvedValue{}, fmt.Errorf("function %s returned type %s, want %s", call.Name, result.Type, expectedType)
+	}
+	if sensitive, label, provenance := aggregateSensitivity(nil, args); sensitive {
+		result = mergeSensitivity(result, true, provenance)
+		if label != "" {
+			result.RedactionLabel = label
+		}
+	}
+	return result, nil
 }
 
 func (r Resolver) interpolate(expression string, depth int, context resolutionContext) (string, bool, string, string, error) {
