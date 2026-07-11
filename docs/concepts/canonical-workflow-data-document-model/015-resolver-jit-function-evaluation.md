@@ -1,6 +1,6 @@
 # 015 Resolver JIT Function Evaluation
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -74,3 +74,10 @@ semantic call expression
 ```bash
 go test ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `ResolverConfig` now accepts an immutable `FunctionRegistry`; no global mutable registry was introduced.
+- 2026-07-11: `Resolver` evaluates semantic `FunctionCallExpression` nodes just-in-time, resolves `$ref` arguments through normal reference/accessor logic, enforces expected result type, and propagates argument sensitivity/provenance to the function result.
+- 2026-07-11: Focused tests cover successful mock-function evaluation, unknown function errors, function-returned arity and argument-type errors, result-type mismatch, sensitive arguments, reference cycles, and max-depth enforcement.
+- 2026-07-11: `go test ./internal/variable` passes.
