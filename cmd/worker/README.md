@@ -16,6 +16,8 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
 - `config.go` owns loading and validating worker runtime configuration.
 - `direct.go` owns direct command parsing, work-item loading, attempt identity,
   one-shot execution, and local result writing.
+- `source_bundle_provider.go` owns controller-backed and local-file source ZIP
+  acquisition.
 - `worker.go` owns worker environment validation and dispatch to supported work operations.
 - `state.go` owns HTTP communication with the controller for fetching work and reporting outcomes.
 - `work_demo.go` owns the demo output-producing operation.
@@ -59,6 +61,7 @@ Direct development mode is:
 worker execute \
   --config ./worker.json \
   --work-item ./work-item.json \
+  [--source-bundle ./source-bundle.zip] \
   [--result ./worker-result.json]
 ```
 
@@ -77,12 +80,18 @@ and failed executions overwrite the path with
 `gorc/worker-direct-result/v1` JSON. Exit status is `0` for completed work and
 `1` for any failure.
 
-OS-001 supports operations that do not require controller source retrieval,
-including `write_demo_output`, `summarize_input_file`, `cache_data`, and
-`commit_data` when their normal inputs and provider configuration exist. Direct
-mode does not maintain a separate operation allow-list. Local source-bundle and
-Python direct execution are added by OS-002; do not use OS-001 direct mode for
-`python_script`.
+Direct mode accepts every operation dispatched by `Worker.Run`; it does not
+maintain a separate operation allow-list. `write_demo_output`,
+`summarize_input_file`, `cache_data`, and `commit_data` use their normal inputs
+and provider configuration. `python_script` additionally requires
+`--source-bundle`; missing source run and manifest bookkeeping receives
+`direct-run-dummy` and `source-manifest.json`. The local ZIP passes through the
+same validation and extraction code used in controller mode.
+
+Python stdout and stderr remain in the attempt log directory. Direct mode does
+not retrieve source, deliver Python log observations, fetch work, or report
+completion/failure through a controller. Controller mode explicitly uses the
+controller-backed source provider and retains observation delivery.
 
 Direct mode is intentionally unsuitable for production use or production
 credentials.

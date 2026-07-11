@@ -309,6 +309,47 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 	}
 }
 
+func TestLocalOnlyWorkerRetainsPythonLogsWithoutControllerObservations(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "unexpected local-only request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	stdoutPath := filepath.Join(root, "stdout.log")
+	stderrPath := filepath.Join(root, "stderr.log")
+	stdout := []byte("local stdout\n")
+	stderr := []byte("local stderr\n")
+	if err := os.WriteFile(stdoutPath, stdout, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stderrPath, stderr, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := Worker{
+		Config:    Config{ControllerURL: server.URL},
+		LocalOnly: true,
+	}
+	if err := worker.emitPythonSubprocessLogLines(model.WorkItem{}, stdoutPath, stderrPath, root); err != nil {
+		t.Fatalf("emitPythonSubprocessLogLines() error = %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("controller request count = %d, want 0", requests)
+	}
+	if got, err := os.ReadFile(stdoutPath); err != nil || !bytes.Equal(got, stdout) {
+		t.Fatalf("stdout log = %q, err = %v", got, err)
+	}
+	if got, err := os.ReadFile(stderrPath); err != nil || !bytes.Equal(got, stderr) {
+		t.Fatalf("stderr log = %q, err = %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fallback-observations.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected fallback observation file, stat error = %v", err)
+	}
+}
+
 func TestWorkerRunWorkItemMaterializesWorkerEnvSecretToPythonEnvAndRedactsLogs(t *testing.T) {
 	requirePython3(t)
 

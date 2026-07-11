@@ -38,13 +38,13 @@ func (w Worker) stageWorkItemSourceBundle(item model.WorkItem) (WorkStaging, err
 		return WorkStaging{}, fmt.Errorf("work item source run id is required")
 	}
 
-	controller, err := w.controllerClient()
-	if err != nil {
-		return WorkStaging{}, fmt.Errorf("controller client: %w", err)
-	}
-	body, err := controller.SourceBundle(item.Source.RunID)
+	provider, err := w.sourceBundleProvider()
 	if err != nil {
 		return WorkStaging{}, err
+	}
+	body, err := provider.SourceBundle(item)
+	if err != nil {
+		return WorkStaging{}, fmt.Errorf("get source bundle: %w", err)
 	}
 
 	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))

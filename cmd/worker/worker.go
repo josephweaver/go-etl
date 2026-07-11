@@ -10,8 +10,10 @@ import (
 import "goetl/internal/model"
 
 type Worker struct {
-	Config     Config
-	Controller WorkerControllerClient
+	Config        Config
+	Controller    WorkerControllerClient
+	SourceBundles SourceBundleProvider
+	LocalOnly     bool
 }
 
 func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {
@@ -46,6 +48,20 @@ func (w Worker) controllerClient() (WorkerControllerClient, error) {
 		return w.Controller, nil
 	}
 	return NewWorkerControllerClient(w.Config)
+}
+
+func (w Worker) sourceBundleProvider() (SourceBundleProvider, error) {
+	if w.SourceBundles != nil {
+		return w.SourceBundles, nil
+	}
+	if w.LocalOnly {
+		return nil, fmt.Errorf("source-bundle provider is required for local-only worker execution")
+	}
+	controller, err := w.controllerClient()
+	if err != nil {
+		return nil, fmt.Errorf("controller client: %w", err)
+	}
+	return ControllerSourceBundleProvider{Controller: controller}, nil
 }
 
 func (w Worker) log(message string) error {

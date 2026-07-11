@@ -420,6 +420,9 @@ func pythonArtifactDeclarations(decoded any) ([]model.ArtifactDescriptor, any, b
 }
 
 func (w Worker) emitPythonSubprocessLogLines(item model.WorkItem, stdoutPath string, stderrPath string, fallbackLogDir string) error {
+	if w.LocalOnly {
+		return nil
+	}
 	if err := w.emitPythonSubprocessLogLinesFromPath(item, stdoutPath, model.LogStreamStdout, model.LogLevelInfo, fallbackLogDir); err != nil {
 		return err
 	}

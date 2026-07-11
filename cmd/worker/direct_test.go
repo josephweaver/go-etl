@@ -36,6 +36,20 @@ func TestDirectOptionsRejectUnexpectedArguments(t *testing.T) {
 	}
 }
 
+func TestDirectOptionsAcceptSourceBundle(t *testing.T) {
+	options, err := parseDirectOptions([]string{
+		"--config", "worker.json",
+		"--work-item", "item.json",
+		"--source-bundle", "source.zip",
+	}, ioDiscard{})
+	if err != nil {
+		t.Fatalf("parseDirectOptions() error = %v", err)
+	}
+	if options.SourceBundlePath != "source.zip" {
+		t.Fatalf("source bundle path = %q", options.SourceBundlePath)
+	}
+}
+
 func TestLoadDirectWorkItemReadsModelWorkItem(t *testing.T) {
 	path := writeDirectWorkItem(t, t.TempDir(), model.WorkItem{
 		ID:             "direct-load",
@@ -100,6 +114,39 @@ func TestNormalizeDirectWorkItemRejectsUnsafeAttemptID(t *testing.T) {
 				t.Fatalf("normalizeDirectWorkItem(%q) expected error", attemptID)
 			}
 		})
+	}
+}
+
+func TestNormalizeDirectPythonSuppliesMissingSourceBookkeeping(t *testing.T) {
+	item, err := normalizeDirectWorkItem(model.WorkItem{Type: model.WorkItemTypePythonScript})
+	if err != nil {
+		t.Fatalf("normalizeDirectWorkItem() error = %v", err)
+	}
+	if item.Source == nil {
+		t.Fatal("normalized Python source is nil")
+	}
+	if item.Source.RunID != "direct-run-dummy" {
+		t.Fatalf("source run ID = %q", item.Source.RunID)
+	}
+	if item.Source.ManifestPath != "source-manifest.json" {
+		t.Fatalf("source manifest path = %q", item.Source.ManifestPath)
+	}
+}
+
+func TestNormalizeDirectPythonPreservesSourceBookkeeping(t *testing.T) {
+	source := &model.WorkItemSource{RunID: "existing-run", ManifestPath: "existing-manifest.json"}
+	item, err := normalizeDirectWorkItem(model.WorkItem{
+		Type:   model.WorkItemTypePythonScript,
+		Source: source,
+	})
+	if err != nil {
+		t.Fatalf("normalizeDirectWorkItem() error = %v", err)
+	}
+	if item.Source.RunID != source.RunID || item.Source.ManifestPath != source.ManifestPath {
+		t.Fatalf("normalized source = %+v, want %+v", item.Source, source)
+	}
+	if item.Source == source {
+		t.Fatal("normalizeDirectWorkItem() retained mutable source pointer")
 	}
 }
 
@@ -185,6 +232,75 @@ func TestRunDirectCommandPassesManifestOperationsToWorkerRun(t *testing.T) {
 				t.Fatalf("result error = %q, want %q", result.Error, want)
 			}
 		})
+	}
+}
+
+func TestRunDirectCommandRequiresSourceBundleForPython(t *testing.T) {
+	fixture := newDirectTestFixture(t, "")
+	itemPath := writeDirectWorkItem(t, fixture.root, model.WorkItem{
+		ID:             "direct-python-missing-bundle",
+		Type:           model.WorkItemTypePythonScript,
+		OutputFilename: "python.json",
+	})
+
+	exit, _, stderr := runDirectTestCommand(fixture, itemPath)
+	if exit != directExitFailure || !strings.Contains(stderr, "requires --source-bundle") {
+		t.Fatalf("exit = %d, stderr = %q", exit, stderr)
+	}
+	if _, err := os.Stat(fixture.resultPath); !os.IsNotExist(err) {
+		t.Fatalf("result exists after preflight failure, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.logDir, "worker.log")); !os.IsNotExist(err) {
+		t.Fatalf("worker ran before preflight, stat error = %v", err)
+	}
+}
+
+func TestRunDirectCommandUsesLocalSourceBundle(t *testing.T) {
+	fixture := newDirectTestFixture(t, "")
+	itemPath := writeDirectWorkItem(t, fixture.root, model.WorkItem{
+		ID:             "direct-python-local-bundle",
+		Type:           model.WorkItemTypePythonScript,
+		OutputFilename: "python.json",
+	})
+	bundlePath := filepath.Join(fixture.root, "source.zip")
+	if err := os.WriteFile(bundlePath, []byte("not a zip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exit := runDirectCommand([]string{
+		"--config", fixture.configPath,
+		"--work-item", itemPath,
+		"--source-bundle", bundlePath,
+		"--result", fixture.resultPath,
+	}, &stdout, &stderr)
+	if exit != directExitFailure {
+		t.Fatalf("runDirectCommand() exit = %d, want invalid ZIP failure", exit)
+	}
+	result := readDirectResult(t, fixture.resultPath)
+	if !strings.Contains(result.Error, "decode source bundle") {
+		t.Fatalf("result error = %q, want local ZIP decode error", result.Error)
+	}
+}
+
+func TestDirectSourceFreeWorkDoesNotReadSourceBundle(t *testing.T) {
+	fixture := newDirectTestFixture(t, "")
+	itemPath := writeDirectWorkItem(t, fixture.root, model.WorkItem{
+		ID:             "direct-extra-source",
+		Type:           model.WorkItemTypeWriteDemoOutput,
+		OutputFilename: "extra-source.txt",
+	})
+	missingBundlePath := filepath.Join(fixture.root, "missing-source.zip")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exit := runDirectCommand([]string{
+		"--config", fixture.configPath,
+		"--work-item", itemPath,
+		"--source-bundle", missingBundlePath,
+		"--result", fixture.resultPath,
+	}, &stdout, &stderr)
+	if exit != directExitSuccess {
+		t.Fatalf("runDirectCommand() exit = %d, stderr = %s", exit, stderr.String())
 	}
 }
 

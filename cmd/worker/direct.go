@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"goetl/internal/model"
@@ -25,9 +26,10 @@ const (
 var directAttemptIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type directOptions struct {
-	ConfigPath   string
-	WorkItemPath string
-	ResultPath   string
+	ConfigPath       string
+	WorkItemPath     string
+	SourceBundlePath string
+	ResultPath       string
 }
 
 type DirectExecutionResult struct {
@@ -64,6 +66,7 @@ func parseDirectOptions(args []string, stderr io.Writer) (directOptions, error) 
 	flags.SetOutput(stderr)
 	flags.StringVar(&options.ConfigPath, "config", "", "worker config JSON path")
 	flags.StringVar(&options.WorkItemPath, "work-item", "", "resolved work-item JSON path")
+	flags.StringVar(&options.SourceBundlePath, "source-bundle", "", "local source-bundle ZIP path")
 	flags.StringVar(&options.ResultPath, "result", options.ResultPath, "direct result JSON path")
 
 	if err := flags.Parse(args); err != nil {
@@ -126,6 +129,20 @@ func normalizeDirectWorkItem(item model.WorkItem) (model.WorkItem, error) {
 	if !validDirectAttemptID(item.AttemptID) {
 		return model.WorkItem{}, fmt.Errorf("attempt id %q must match [A-Za-z0-9._-]+ and must not be . or ..", item.AttemptID)
 	}
+	if item.Type == model.WorkItemTypePythonScript {
+		if item.Source == nil {
+			item.Source = &model.WorkItemSource{}
+		} else {
+			source := *item.Source
+			item.Source = &source
+		}
+		if strings.TrimSpace(item.Source.RunID) == "" {
+			item.Source.RunID = "direct-run-dummy"
+		}
+		if strings.TrimSpace(item.Source.ManifestPath) == "" {
+			item.Source.ManifestPath = "source-manifest.json"
+		}
+	}
 	return item, nil
 }
 
@@ -139,7 +156,11 @@ func runDirectCommand(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid direct command:", err)
 		return directExitFailure
 	}
-	if err := validateDirectResultPath(options.ResultPath, options.ConfigPath, options.WorkItemPath); err != nil {
+	inputPaths := []string{options.ConfigPath, options.WorkItemPath}
+	if options.SourceBundlePath != "" {
+		inputPaths = append(inputPaths, options.SourceBundlePath)
+	}
+	if err := validateDirectResultPath(options.ResultPath, inputPaths...); err != nil {
 		fmt.Fprintln(stderr, "invalid direct result path:", err)
 		return directExitFailure
 	}
@@ -165,6 +186,14 @@ func runDirectCommand(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid direct worker:", err)
 		return directExitFailure
 	}
+	if directWorkItemRequiresSourceBundle(item) && options.SourceBundlePath == "" {
+		fmt.Fprintf(stderr, "invalid direct work item: direct execution of %s requires --source-bundle\n", item.Type)
+		return directExitFailure
+	}
+	worker.LocalOnly = true
+	if options.SourceBundlePath != "" {
+		worker.SourceBundles = FileSourceBundleProvider{Path: options.SourceBundlePath}
+	}
 
 	startedAt := time.Now().UTC()
 	evidence, runErr := worker.Run(item)
@@ -181,6 +210,10 @@ func runDirectCommand(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, options.ResultPath)
 	return directExitSuccess
+}
+
+func directWorkItemRequiresSourceBundle(item model.WorkItem) bool {
+	return item.Type == model.WorkItemTypePythonScript
 }
 
 func validateDirectResultPath(resultPath string, inputPaths ...string) error {

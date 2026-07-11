@@ -23,7 +23,11 @@ func main() {
 		return
 	}
 
-	worker := Worker{Config: cfg, Controller: controller}
+	worker := Worker{
+		Config:        cfg,
+		Controller:    controller,
+		SourceBundles: ControllerSourceBundleProvider{Controller: controller},
+	}
 
 	if err := worker.Validate(); err != nil {
 		fmt.Println("invalid worker:", err)
