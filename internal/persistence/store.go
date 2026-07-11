@@ -217,6 +217,18 @@ type EndWorkerSessionRequest struct {
 	Reason    string
 }
 
+type RecoverExpiredWorkerSessionsRequest struct {
+	Cutoff      string
+	RecoveredAt string
+	Reason      string
+}
+
+type RecoverExpiredWorkerSessionsResult struct {
+	ExpiredSessions   int
+	AbandonedAttempts int
+	RequeuedWorkItems int
+}
+
 type AbandonedWorkRecord struct {
 	AttemptID       string
 	WorkItemID      string
@@ -483,6 +495,61 @@ func (s *Store) ListExpiredWorkerSessions(ctx context.Context, cutoff time.Time)
 		return nil, err
 	}
 	return listWorkerSessionsByHeartbeat(ctx, s.db, `<`, cutoff)
+}
+
+func (s *Store) RecoverExpiredWorkerSessions(ctx context.Context, request RecoverExpiredWorkerSessionsRequest) (RecoverExpiredWorkerSessionsResult, error) {
+	if err := s.requireOpen(); err != nil {
+		return RecoverExpiredWorkerSessionsResult{}, err
+	}
+	if err := request.validate(); err != nil {
+		return RecoverExpiredWorkerSessionsResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RecoverExpiredWorkerSessionsResult{}, fmt.Errorf("begin recover expired worker sessions: %w", err)
+	}
+	defer tx.Rollback()
+
+	sessions, err := listExpiredActiveWorkerSessions(ctx, tx, request.Cutoff)
+	if err != nil {
+		return RecoverExpiredWorkerSessionsResult{}, err
+	}
+
+	var result RecoverExpiredWorkerSessionsResult
+	for _, session := range sessions {
+		changed, err := markWorkerSessionDeadIfExpired(ctx, tx, session, request)
+		if err != nil {
+			return RecoverExpiredWorkerSessionsResult{}, err
+		}
+		if !changed {
+			continue
+		}
+		result.ExpiredSessions++
+
+		assignments, err := listRunningWorkForSession(ctx, tx, session.ID)
+		if err != nil {
+			return RecoverExpiredWorkerSessionsResult{}, err
+		}
+		for _, assignment := range assignments {
+			if err := abandonRunningWork(ctx, tx, assignment, request.RecoveredAt, request.Reason); err != nil {
+				return RecoverExpiredWorkerSessionsResult{}, err
+			}
+			result.AbandonedAttempts++
+			requeued, err := requeueAbandonedWork(ctx, tx, assignment.workItemID, request.RecoveredAt)
+			if err != nil {
+				return RecoverExpiredWorkerSessionsResult{}, err
+			}
+			if requeued {
+				result.RequeuedWorkItems++
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return RecoverExpiredWorkerSessionsResult{}, fmt.Errorf("commit recover expired worker sessions: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Store) EndWorkerSession(ctx context.Context, request EndWorkerSessionRequest) (bool, error) {
@@ -2018,6 +2085,150 @@ func validateRunningAssignmentOwner(ctx context.Context, tx *sql.Tx, running run
 	return nil
 }
 
+func listExpiredActiveWorkerSessions(ctx context.Context, tx *sql.Tx, cutoff string) ([]WorkerSessionRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		worker_session_id,
+		worker_id,
+		status,
+		registered_at,
+		last_heartbeat_at,
+		ended_at,
+		end_reason,
+		execution_handle
+	FROM worker_sessions
+	WHERE status = ?
+		AND last_heartbeat_at < ?
+	ORDER BY last_heartbeat_at, worker_session_id`,
+		WorkerSessionStatusActive,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list expired worker sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := []WorkerSessionRecord{}
+	for rows.Next() {
+		session, err := scanWorkerSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list expired worker sessions: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list expired worker sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+func markWorkerSessionDeadIfExpired(ctx context.Context, tx *sql.Tx, session WorkerSessionRecord, request RecoverExpiredWorkerSessionsRequest) (bool, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE worker_sessions
+	SET status = ?,
+		ended_at = ?,
+		end_reason = ?
+	WHERE worker_session_id = ?
+		AND worker_id = ?
+		AND status = ?
+		AND last_heartbeat_at < ?`,
+		WorkerSessionStatusDead,
+		request.RecoveredAt,
+		request.Reason,
+		session.ID,
+		session.WorkerID,
+		WorkerSessionStatusActive,
+		request.Cutoff,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mark worker session %s dead: %w", session.ID, err)
+	}
+	changed, err := rowsAffected(result)
+	if err != nil {
+		return false, fmt.Errorf("mark worker session %s dead: %w", session.ID, err)
+	}
+	return changed, nil
+}
+
+func listRunningWorkForSession(ctx context.Context, tx *sql.Tx, sessionID string) ([]runningWorkRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		COALESCE(worker_id, ''),
+		COALESCE(worker_session_id, ''),
+		queued_at,
+		started_at
+	FROM running_work
+	WHERE worker_session_id = ?
+	ORDER BY started_at, attempt_id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("list running work for worker session %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	assignments := []runningWorkRecord{}
+	for rows.Next() {
+		var running runningWorkRecord
+		if err := rows.Scan(
+			&running.attemptID,
+			&running.workItemID,
+			&running.workerID,
+			&running.workerSessionID,
+			&running.queuedAt,
+			&running.startedAt,
+		); err != nil {
+			return nil, fmt.Errorf("list running work for worker session %s: %w", sessionID, err)
+		}
+		assignments = append(assignments, running)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running work for worker session %s: %w", sessionID, err)
+	}
+	return assignments, nil
+}
+
+func abandonRunningWork(ctx context.Context, tx *sql.Tx, assignment runningWorkRecord, abandonedAt string, reason string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO abandoned_work (
+		attempt_id,
+		work_item_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		abandoned_at,
+		reason
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		assignment.attemptID,
+		assignment.workItemID,
+		assignment.workerID,
+		assignment.workerSessionID,
+		assignment.queuedAt,
+		assignment.startedAt,
+		abandonedAt,
+		reason,
+	); err != nil {
+		return fmt.Errorf("insert abandoned work %s: %w", assignment.attemptID, err)
+	}
+	if err := deleteRunningWork(ctx, tx, assignment.attemptID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requeueAbandonedWork(ctx context.Context, tx *sql.Tx, workItemID string, queuedAt string) (bool, error) {
+	result, err := tx.ExecContext(ctx, `INSERT INTO queued_work (
+		work_item_id,
+		queued_at
+	) VALUES (?, ?)
+	ON CONFLICT(work_item_id) DO NOTHING`, workItemID, queuedAt)
+	if err != nil {
+		return false, fmt.Errorf("requeue abandoned work %s: %w", workItemID, err)
+	}
+	inserted, err := rowsAffected(result)
+	if err != nil {
+		return false, fmt.Errorf("requeue abandoned work %s: %w", workItemID, err)
+	}
+	return inserted, nil
+}
+
 func getRunningWork(ctx context.Context, q queryer, attemptID string) (runningWorkRecord, bool, error) {
 	var running runningWorkRecord
 	err := q.QueryRowContext(ctx, `SELECT
@@ -3465,6 +3676,25 @@ func (r EndWorkerSessionRequest) validate() error {
 	}
 	if r.Reason == "" {
 		return fmt.Errorf("worker session end reason is required")
+	}
+	return nil
+}
+
+func (r RecoverExpiredWorkerSessionsRequest) validate() error {
+	if r.Cutoff == "" {
+		return fmt.Errorf("recover expired worker sessions cutoff is required")
+	}
+	if err := validateTimestamp("recover expired worker sessions cutoff", r.Cutoff); err != nil {
+		return err
+	}
+	if r.RecoveredAt == "" {
+		return fmt.Errorf("recover expired worker sessions recovered at is required")
+	}
+	if err := validateTimestamp("recover expired worker sessions recovered at", r.RecoveredAt); err != nil {
+		return err
+	}
+	if r.Reason == "" {
+		return fmt.Errorf("recover expired worker sessions reason is required")
 	}
 	return nil
 }

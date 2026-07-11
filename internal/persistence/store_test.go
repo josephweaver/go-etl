@@ -1940,6 +1940,116 @@ func TestStoreFailAttemptRequiresMatchingAssignmentOwner(t *testing.T) {
 	}
 }
 
+func TestRecoverExpiredWorkerSessionsMarksDeadAbandonsAndRequeues(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	result, err := store.RecoverExpiredWorkerSessions(ctx, RecoverExpiredWorkerSessionsRequest{
+		Cutoff:      "2026-07-03T00:00:01Z",
+		RecoveredAt: "2026-07-03T00:05:00Z",
+		Reason:      "heartbeat_expired",
+	})
+	if err != nil {
+		t.Fatalf("RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	want := RecoverExpiredWorkerSessionsResult{
+		ExpiredSessions:   1,
+		AbandonedAttempts: 1,
+		RequeuedWorkItems: 1,
+	}
+	if result != want {
+		t.Fatalf("RecoverExpiredWorkerSessions() = %+v, want %+v", result, want)
+	}
+
+	session, found, err := store.GetWorkerSession(ctx, "worker-001", "session-001")
+	if err != nil || !found {
+		t.Fatalf("GetWorkerSession() found=%v error=%v, want session", found, err)
+	}
+	if session.Status != WorkerSessionStatusDead || session.EndedAt != "2026-07-03T00:05:00Z" || session.EndReason != "heartbeat_expired" {
+		t.Fatalf("session = %+v, want dead heartbeat_expired", session)
+	}
+	history, err := store.ListAbandonedWorkForItem(ctx, work.ID)
+	if err != nil {
+		t.Fatalf("ListAbandonedWorkForItem() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("abandoned history = %+v, want one record", history)
+	}
+	if history[0].AttemptID != "attempt-001" || history[0].WorkerSessionID != "session-001" || history[0].AbandonedAt != "2026-07-03T00:05:00Z" {
+		t.Fatalf("abandoned history[0] = %+v, want attempt/session/abandoned_at", history[0])
+	}
+	assertRunningWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertQueuedWork(t, ctx, store, work.ID, "2026-07-03T00:05:00Z")
+}
+
+func TestRecoverExpiredWorkerSessionsIgnoresLiveSession(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	result, err := store.RecoverExpiredWorkerSessions(ctx, RecoverExpiredWorkerSessionsRequest{
+		Cutoff:      "2026-07-02T23:59:59Z",
+		RecoveredAt: "2026-07-03T00:05:00Z",
+		Reason:      "heartbeat_expired",
+	})
+	if err != nil {
+		t.Fatalf("RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	if result != (RecoverExpiredWorkerSessionsResult{}) {
+		t.Fatalf("RecoverExpiredWorkerSessions() = %+v, want zero result", result)
+	}
+	assertRunningWork(t, ctx, store, "attempt-001", work.ID, "worker-001", "2026-07-03T00:00:00Z", claim.StartedAt)
+	assertQueuedWorkMissing(t, ctx, store, work.ID)
+}
+
+func TestRecoverExpiredWorkerSessionsIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+	request := RecoverExpiredWorkerSessionsRequest{
+		Cutoff:      "2026-07-03T00:00:01Z",
+		RecoveredAt: "2026-07-03T00:05:00Z",
+		Reason:      "heartbeat_expired",
+	}
+	if _, err := store.RecoverExpiredWorkerSessions(ctx, request); err != nil {
+		t.Fatalf("first RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	second, err := store.RecoverExpiredWorkerSessions(ctx, request)
+	if err != nil {
+		t.Fatalf("second RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	if second != (RecoverExpiredWorkerSessionsResult{}) {
+		t.Fatalf("second RecoverExpiredWorkerSessions() = %+v, want zero result", second)
+	}
+	history, err := store.ListAbandonedWorkForItem(ctx, work.ID)
+	if err != nil {
+		t.Fatalf("ListAbandonedWorkForItem() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("abandoned history count = %d, want 1", len(history))
+	}
+	assertQueuedWork(t, ctx, store, work.ID, "2026-07-03T00:05:00Z")
+}
+
 func TestStoreClaimNextWorkClaimsOldestQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))

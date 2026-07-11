@@ -10,10 +10,10 @@ Current implementation:
 - `ClaimNextWork` validates the matching worker session is active, not expired relative to the supplied cutoff, and not already assigned running work before selecting or mutating queued work.
 - Controller claim failures for inactive/expired sessions and busy sessions return `409 Conflict`.
 - completion and failure payloads carry worker/session identity, worker clients fill those fields from the active session, and persistence rejects mismatched, stopped, dead, or expired assignment owners before inserting terminal records.
+- `RecoverExpiredWorkerSessions` atomically marks expired active sessions dead, records owned running attempts as abandoned, removes running assignments, and requeues abandoned work items.
 
 Remaining OS-003 work:
 
-- expired-session recovery transaction;
 - stop-with-running-work abandonment/requeue;
 - deterministic race tests.
 
