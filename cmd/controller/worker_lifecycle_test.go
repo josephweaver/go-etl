@@ -164,6 +164,51 @@ func TestNextWorkHandlerRequiresWorkerSessionHeaders(t *testing.T) {
 	}
 }
 
+func TestNextWorkHandlerRejectsExpiredWorkerSession(t *testing.T) {
+	controller, store := testWorkerLifecycleController(t)
+	if _, err := store.RegisterWorkerSession(context.Background(), persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-001",
+		SessionID:    "session-001",
+		RegisteredAt: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	setTestWorkerSessionHeaders(request, "worker-001", "session-001")
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusConflict, response.Body.String())
+	}
+}
+
+func TestNextWorkHandlerReturnsNoContentForLiveSessionWithNoWork(t *testing.T) {
+	controller, store := testWorkerLifecycleController(t)
+	if _, err := store.RegisterWorkerSession(context.Background(), persistence.RegisterWorkerSessionRequest{
+		WorkerID:     "worker-001",
+		SessionID:    "session-001",
+		RegisteredAt: "2999-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	setTestWorkerSessionHeaders(request, "worker-001", "session-001")
+
+	controller.nextWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+}
+
+func setTestWorkerSessionHeaders(request *http.Request, workerID string, sessionID string) {
+	request.Header.Set(workerIDHeader, workerID)
+	request.Header.Set(workerSessionIDHeader, sessionID)
+}
+
 func testWorkerLifecycleController(t *testing.T) (*Controller, *persistence.Store) {
 	t.Helper()
 	store, err := persistence.OpenStore(context.Background(), persistence.Config{

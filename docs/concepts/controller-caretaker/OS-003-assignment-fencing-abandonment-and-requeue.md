@@ -2,7 +2,21 @@
 
 ## Status
 
-Ready after OS-001 and OS-002.
+Implementation in progress.
+
+Current implementation:
+
+- `/work/next` receives worker/session identity from OS-002 and now passes a heartbeat cutoff into persistence.
+- `ClaimNextWork` validates the matching worker session is active, not expired relative to the supplied cutoff, and not already assigned running work before selecting or mutating queued work.
+- Controller claim failures for inactive/expired sessions and busy sessions return `409 Conflict`.
+
+Remaining OS-003 work:
+
+- ownership fields in completion/failure payloads;
+- completion/failure ownership predicates and late-outcome conflicts;
+- expired-session recovery transaction;
+- stop-with-running-work abandonment/requeue;
+- deterministic race tests.
 
 ## Minimum capable model
 

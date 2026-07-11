@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -22,6 +23,9 @@ const (
 	WorkerSessionStatusStopped = "stopped"
 	WorkerSessionStatusDead    = "dead"
 )
+
+var ErrWorkerSessionNotActive = errors.New("worker session is not active")
+var ErrWorkerSessionBusy = errors.New("worker session already owns running work")
 
 type Config struct {
 	Driver           string
@@ -258,11 +262,12 @@ type CompleteStageResult struct {
 }
 
 type ClaimWorkRequest struct {
-	AttemptID       string
-	WorkerID        string
-	WorkerSessionID string
-	ExecutorType    string
-	StartedAt       string
+	AttemptID         string
+	WorkerID          string
+	WorkerSessionID   string
+	ExecutorType      string
+	StartedAt         string
+	LiveSessionCutoff string
 }
 
 type ClaimedWorkRecord struct {
@@ -1684,6 +1689,12 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 	}
 	defer tx.Rollback()
 
+	if request.ExecutorType == ExecutorTypeWorker {
+		if err := validateWorkerSessionCanClaim(ctx, tx, request); err != nil {
+			return ClaimedWorkRecord{}, false, err
+		}
+	}
+
 	queuedItems, err := listQueuedWorkForClaim(ctx, tx)
 	if err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("claim next work: %w", err)
@@ -1768,6 +1779,28 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 		return ClaimedWorkRecord{}, false, fmt.Errorf("commit claim next work: %w", err)
 	}
 	return claimed, true, nil
+}
+
+func validateWorkerSessionCanClaim(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest) error {
+	session, found, err := getWorkerSession(ctx, tx, request.WorkerID, request.WorkerSessionID)
+	if err != nil {
+		return err
+	}
+	if !found || session.Status != WorkerSessionStatusActive {
+		return ErrWorkerSessionNotActive
+	}
+	if request.LiveSessionCutoff != "" && session.LastHeartbeatAt < request.LiveSessionCutoff {
+		return ErrWorkerSessionNotActive
+	}
+
+	var runningAssignments int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM running_work WHERE worker_session_id = ?`, request.WorkerSessionID).Scan(&runningAssignments); err != nil {
+		return fmt.Errorf("count running assignments for worker session %s: %w", request.WorkerSessionID, err)
+	}
+	if runningAssignments != 0 {
+		return ErrWorkerSessionBusy
+	}
+	return nil
 }
 
 func (s *Store) CompleteAttempt(ctx context.Context, request CompleteAttemptRequest) (CompletedWorkRecord, bool, error) {
@@ -3337,6 +3370,11 @@ func (r ClaimWorkRequest) validate() error {
 	}
 	if err := validateTimestamp("claim started at", r.StartedAt); err != nil {
 		return err
+	}
+	if r.LiveSessionCutoff != "" {
+		if err := validateTimestamp("claim live session cutoff", r.LiveSessionCutoff); err != nil {
+			return err
+		}
 	}
 	return nil
 }

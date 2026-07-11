@@ -3650,20 +3650,35 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	policy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		http.Error(w, "worker heartbeat policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	now := time.Now().UTC()
 
 	claim, found, err := func() (persistence.ClaimedWorkRecord, bool, error) {
 		c.claimMu.Lock()
 		defer c.claimMu.Unlock()
 
 		return c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
-			AttemptID:       "attempt-" + randomHex(16),
-			WorkerID:        identity.WorkerID,
-			WorkerSessionID: identity.WorkerSessionID,
-			ExecutorType:    persistence.ExecutorTypeWorker,
-			StartedAt:       time.Now().UTC().Format(time.RFC3339),
+			AttemptID:         "attempt-" + randomHex(16),
+			WorkerID:          identity.WorkerID,
+			WorkerSessionID:   identity.WorkerSessionID,
+			ExecutorType:      persistence.ExecutorTypeWorker,
+			StartedAt:         now.Format(time.RFC3339),
+			LiveSessionCutoff: now.Add(-policy.DeadAfter).Format(time.RFC3339Nano),
 		})
 	}()
 	if err != nil {
+		if errors.Is(err, persistence.ErrWorkerSessionNotActive) {
+			http.Error(w, "worker_session_not_active", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, persistence.ErrWorkerSessionBusy) {
+			http.Error(w, "worker_session_busy", http.StatusConflict)
+			return
+		}
 		http.Error(w, "claim work", http.StatusInternalServerError)
 		return
 	}
