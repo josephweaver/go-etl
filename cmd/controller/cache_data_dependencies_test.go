@@ -327,6 +327,271 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 	}
 }
 
+func TestHydrateCacheDataDependentWorkItemMatchesPriorStageSharedMaterialization(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	asset := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
+	assetKey, err := workflow.CacheDataAssetKey(asset, "target-local")
+	if err != nil {
+		t.Fatalf("CacheDataAssetKey() error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, assetKey, "target-local", "physical_field_tile", "/target/cache/field_tile.csv"))
+
+	computeItem := testSharedHydrationComputeItem("compute-field-cdl", "target-local", []model.BoundDataAsset{asset})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-field-cdl",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
+	}
+	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	if err != nil {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+	}
+	manifest := materializedHydrationParameter(t, hydrated)
+	if manifest.TargetEnvironmentID != "target-local" || len(manifest.Assets) != 1 {
+		t.Fatalf("manifest = %+v, want one target-local asset", manifest)
+	}
+	if manifest.Assets[0].BindingName != "field_tile_fixture" || manifest.Assets[0].LocalPath != "/target/cache/field_tile.csv" {
+		t.Fatalf("manifest asset = %+v, want projected compute alias and completed cache path", manifest.Assets[0])
+	}
+}
+
+func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationAsset(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	required := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
+	other := testSharedHydrationAsset("field_tile_fixture", "other_tile.csv")
+	otherKey, err := workflow.CacheDataAssetKey(other, "target-local")
+	if err != nil {
+		t.Fatalf("CacheDataAssetKey(other) error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-other-tile", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, otherKey, "target-local", "field_tile_fixture", "/target/cache/other_tile.csv"))
+
+	computeItem := testSharedHydrationComputeItem("compute-field-cdl", "target-local", []model.BoundDataAsset{required})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-field-cdl",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
+	}
+	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	if err == nil || !strings.Contains(err.Error(), `no completed shared materialization found for data asset "field_tile_fixture"`) {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want missing shared materialization", err)
+	}
+}
+
+func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationDomain(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	asset := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
+	assetKey, err := workflow.CanonicalDataAssetInstanceKey(asset.BindingName, nil, asset)
+	if err != nil {
+		t.Fatalf("CanonicalDataAssetInstanceKey() error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, assetKey, "target-other", "field_tile_fixture", "/target/cache/field_tile.csv"))
+
+	computeItem := testSharedHydrationComputeItem("compute-field-cdl", "target-local", []model.BoundDataAsset{asset})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-field-cdl",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
+	}
+	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	if err == nil || !strings.Contains(err.Error(), "found in domain shared/target-other, want shared/target-local") {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want domain mismatch", err)
+	}
+}
+
+func TestHydrateCacheDataDependentWorkItemProjectsOneSharedMaterializationUnderTwoAliases(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	first := testSharedHydrationAsset("field_tile_a", "field_tile.csv")
+	second := first
+	second.BindingName = "field_tile_b"
+	assetKey, err := workflow.CacheDataAssetKey(first, "target-local")
+	if err != nil {
+		t.Fatalf("CacheDataAssetKey() error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, assetKey, "target-local", "physical_field_tile", "/target/cache/field_tile.csv"))
+
+	computeItem := testSharedHydrationComputeItem("compute-field-cdl", "target-local", []model.BoundDataAsset{first, second})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-field-cdl",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
+	}
+	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	if err != nil {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+	}
+	manifest := materializedHydrationParameter(t, hydrated)
+	if len(manifest.Assets) != 2 {
+		t.Fatalf("manifest assets = %+v, want two projected aliases", manifest.Assets)
+	}
+	if manifest.Assets[0].BindingName != "field_tile_a" || manifest.Assets[1].BindingName != "field_tile_b" {
+		t.Fatalf("projected bindings = %q/%q, want field_tile_a/field_tile_b", manifest.Assets[0].BindingName, manifest.Assets[1].BindingName)
+	}
+	if manifest.Assets[0].LocalPath != manifest.Assets[1].LocalPath {
+		t.Fatalf("projected local paths = %q/%q, want same physical manifest", manifest.Assets[0].LocalPath, manifest.Assets[1].LocalPath)
+	}
+}
+
+func TestHydrateCacheDataDependentWorkItemRejectsDuplicateSharedMaterializationMatches(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	asset := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
+	assetKey, err := workflow.CacheDataAssetKey(asset, "target-local")
+	if err != nil {
+		t.Fatalf("CacheDataAssetKey() error = %v", err)
+	}
+	firstRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile-a", 0)
+	secondRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile-b", 0)
+	secondRecord.WorkItemIndex = 1
+	completeHydrationCacheRecord(t, ctx, store, firstRecord, testHydrationManifestJSON(t, assetKey, "target-local", "field_tile_fixture", "/target/cache/field_tile-a.csv"))
+	completeHydrationCacheRecord(t, ctx, store, secondRecord, testHydrationManifestJSON(t, assetKey, "target-local", "field_tile_fixture", "/target/cache/field_tile-b.csv"))
+
+	computeItem := testSharedHydrationComputeItem("compute-field-cdl", "target-local", []model.BoundDataAsset{asset})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-field-cdl",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
+	}
+	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	if err == nil || !strings.Contains(err.Error(), `multiple completed shared materializations found for data asset "field_tile_fixture"`) {
+		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want duplicate materialization match", err)
+	}
+}
+
+func testSharedHydrationAsset(bindingName string, path string) model.BoundDataAsset {
+	return model.BoundDataAsset{
+		BindingName:  bindingName,
+		ProviderName: "field_tile_provider",
+		Kind:         "fixture_matrix",
+		Format:       "csv",
+		Provider:     model.DataProviderLocalFile,
+		Location: model.DataAssetLocation{
+			Type:         model.DataProviderLocalFile,
+			LocationName: "fixture_data",
+			Path:         path,
+		},
+		Materialization: model.DataAssetMaterialization{Scope: model.DataMaterializationScopeShared},
+	}
+}
+
+func testSharedHydrationComputeItem(id string, targetEnvironmentID string, assets []model.BoundDataAsset) model.WorkItem {
+	return model.WorkItem{
+		ID:             id,
+		Type:           model.WorkItemTypePythonScript,
+		OutputFilename: id + ".json",
+		Parameters: model.Parameters{
+			"python_entrypoint":     {Type: "path", Value: "scripts/field_cdl.py"},
+			"target_environment_id": {Type: "string", Value: targetEnvironmentID},
+			"data_assets":           {Type: "data_assets", Value: assets},
+		},
+	}
+}
+
+func testHydrationCacheRecord(t *testing.T, runID string, id string, stageIndex int) persistence.WorkItemRecord {
+	t.Helper()
+	return persistence.WorkItemRecord{
+		ID:                   runID + ":" + id,
+		RunID:                runID,
+		StageIndex:           stageIndex,
+		WorkItemIndex:        0,
+		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: id, Type: model.WorkItemTypeCacheData, OutputFilename: id + ".json"}),
+		ResolvedInputsSHA256: strings.Repeat("c", 64),
+		CreatedAt:            "2026-07-11T00:00:00Z",
+	}
+}
+
+func completeHydrationCacheRecord(t *testing.T, ctx context.Context, store *persistence.Store, record persistence.WorkItemRecord, outputJSON string) {
+	t.Helper()
+	if err := store.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
+		WorkItems:  []persistence.WorkItemRecord{record},
+		QueuedWork: []persistence.QueuedWorkRecord{{WorkItemRecord: record, QueuedAt: "2026-07-11T00:00:00Z"}},
+	}); err != nil {
+		t.Fatalf("QueueWorkItems(%s) error = %v", record.ID, err)
+	}
+	claimed, found, err := store.ClaimNextWork(ctx, persistence.ClaimWorkRequest{AttemptID: "attempt-" + record.ID, ExecutorType: persistence.ExecutorTypeWorker, StartedAt: "2026-07-11T00:00:01Z"})
+	if err != nil || !found || claimed.WorkItem.ID != record.ID {
+		t.Fatalf("ClaimNextWork(%s) = %+v found=%v err=%v", record.ID, claimed, found, err)
+	}
+	if _, found, err := store.CompleteAttempt(ctx, persistence.CompleteAttemptRequest{
+		AttemptID:        claimed.AttemptID,
+		OutputJSON:       outputJSON,
+		OutputJSONSHA256: strings.Repeat("e", 64),
+		PreStateSHA256:   strings.Repeat("a", 64),
+		PostStateSHA256:  strings.Repeat("b", 64),
+		CompletedAt:      "2026-07-11T00:00:02Z",
+	}); err != nil || !found {
+		t.Fatalf("CompleteAttempt(%s) found=%v err=%v", record.ID, found, err)
+	}
+}
+
+func testHydrationManifestJSON(t *testing.T, assetKey string, targetEnvironmentID string, bindingName string, localPath string) string {
+	t.Helper()
+	manifest := model.MaterializedDataAssetManifest{
+		Schema:              model.MaterializedDataAssetManifestSchemaV1,
+		AssetKey:            assetKey,
+		TargetEnvironmentID: targetEnvironmentID,
+		Assets: []model.MaterializedDataAsset{
+			{
+				BindingName:  bindingName,
+				ProviderName: "field_tile_provider",
+				ProviderType: model.DataProviderLocalFile,
+				Kind:         "fixture_matrix",
+				Format:       "csv",
+				LocalPath:    localPath,
+			},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal materialized manifest: %v", err)
+	}
+	return string(data)
+}
+
+func materializedHydrationParameter(t *testing.T, item model.WorkItem) model.MaterializedDataAssetManifest {
+	t.Helper()
+	parameter, ok := item.Parameters["materialized_data_assets"]
+	if !ok {
+		t.Fatal("materialized_data_assets parameter missing")
+	}
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		t.Fatalf("marshal materialized_data_assets: %v", err)
+	}
+	var manifest model.MaterializedDataAssetManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode materialized_data_assets: %v", err)
+	}
+	return manifest
+}
+
 func mustWorkItemJSON(t *testing.T, item model.WorkItem) string {
 	t.Helper()
 	data, err := json.Marshal(item)

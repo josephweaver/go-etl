@@ -1,6 +1,6 @@
 # 019 List Length Function
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -53,3 +53,11 @@ resolved list
 ```bash
 go test ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `DefaultFunctionRegistry` now registers `list.length` alongside the other default list functions.
+- 2026-07-11: `list.length(items)` requires exactly one list argument and returns an existing typed integer value with the top-level item count.
+- 2026-07-11: Empty lists return `0`; non-list arguments and wrong arity fail clearly.
+- 2026-07-11: Sensitivity/provenance propagation remains resolver-owned: a sensitive list argument produces a sensitive integer result through the existing function-call framework.
+- 2026-07-11: `go test ./internal/variable` passes.

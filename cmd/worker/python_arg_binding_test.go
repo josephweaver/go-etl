@@ -39,9 +39,9 @@ func TestResolvePythonArgvBindingsInterpolatesDataAndArtifactTokens(t *testing.T
 
 	args := []string{
 		"--cdl",
-		"${data.cropland_year.local_path}",
+		"${data.cropland_year.path[0]}",
 		"--tile",
-		"${data.field_tile.local_path}",
+		"${data.field_tile.path[0]}",
 		"--out",
 		"${artifact_dir}/field_cdl_composition.csv",
 		"mixed-${artifact_dir}/prefix",
@@ -91,7 +91,7 @@ func TestResolvePythonArgvBindingsRejectsUnknownDataBinding(t *testing.T) {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	_, err := resolvePythonArgvBindings([]string{"${data.field_tile.local_path}"}, manifest, filepath.Join(root, "artifacts"))
+	_, err := resolvePythonArgvBindings([]string{"${data.field_tile.path[0]}"}, manifest, filepath.Join(root, "artifacts"))
 	if err == nil || !strings.Contains(err.Error(), "field_tile") {
 		t.Fatalf("expected unknown binding error, got %v", err)
 	}
@@ -117,8 +117,69 @@ func TestResolvePythonArgvBindingsRejectsUnsupportedProperty(t *testing.T) {
 	}
 
 	_, err := resolvePythonArgvBindings([]string{"${data.cropland_year.sha256}"}, manifest, filepath.Join(root, "artifacts"))
-	if err == nil || !strings.Contains(err.Error(), "unsupported data token property") {
+	if err == nil || !strings.Contains(err.Error(), "object field not found") {
 		t.Fatalf("expected unsupported property error, got %v", err)
+	}
+}
+
+func TestResolvePythonArgvBindingsRejectsBareDataAlias(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	manifest := filepath.Join(root, "data-assets.json")
+	if err := os.WriteFile(manifest, []byte(`{
+  "schema": "goet/materialized-data-assets/v1",
+  "assets": [
+    {
+      "binding_name": "field_segments",
+      "provider_type": "local_file",
+      "kind": "fixture",
+      "local_path": "/data/input/field.tif"
+    }
+  ]
+}`), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	_, err := resolvePythonArgvBindings([]string{"${field_segments}"}, manifest, filepath.Join(root, "artifacts"))
+	if err == nil || !strings.Contains(err.Error(), `unsupported argument token "field_segments"`) {
+		t.Fatalf("expected bare alias rejection, got %v", err)
+	}
+}
+
+func TestResolvePythonArgvBindingsInterpolatesNamedFileRolePath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	manifest := filepath.Join(root, "data-assets.json")
+	writeManifest := strings.TrimSpace(`
+	{
+	  "schema": "goet/materialized-data-assets/v1",
+	  "assets": [
+	    {
+	      "binding_name": "field_segments",
+	      "provider_type": "local_file",
+	      "kind": "fixture",
+	      "local_path": "/data/input",
+	      "archive_members": [
+	        {
+	          "member": "header",
+	          "local_path": "/data/input/field_segments.hdr"
+	        }
+	      ]
+	    }
+	  ]
+	}`)
+	if err := os.WriteFile(manifest, []byte(writeManifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	got, err := resolvePythonArgvBindings([]string{"${data.field_segments.files.header.path}"}, manifest, filepath.Join(root, "artifacts"))
+	if err != nil {
+		t.Fatalf("resolvePythonArgvBindings() error = %v", err)
+	}
+	if len(got) != 1 || got[0] != "/data/input/field_segments.hdr" {
+		t.Fatalf("args = %+v, want header path", got)
 	}
 }
 
@@ -132,7 +193,7 @@ func TestResolvePythonArgvBindingsRejectsMalformedTokens(t *testing.T) {
 	}
 
 	tests := []string{
-		"${data.cropland_year.local_path",
+		"${data.cropland_year.path[0]",
 		"${artifact_dir",
 		"prefix${artifact_dir}suffix}",
 	}
@@ -186,8 +247,8 @@ with open(os.environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") as handle:
 		"python_args": {
 			Type: "list",
 			Value: []any{
-				"--cdl", "${data.cropland_year.local_path}",
-				"--tile", "${data.field_tile.local_path}",
+				"--cdl", "${data.cropland_year.path[0]}",
+				"--tile", "${data.field_tile.path[0]}",
 				"--out", "${artifact_dir}/field_cdl_composition.csv",
 			},
 		},
@@ -264,7 +325,7 @@ with open(__import__("os").environ["GOET_OUTPUT_JSON"], "w", encoding="utf-8") a
 		},
 		"python_args": {
 			Type:  "list",
-			Value: []any{"--cdl", "${data.missing.local_path}"},
+			Value: []any{"--cdl", "${data.missing.path[0]}"},
 		},
 	})
 

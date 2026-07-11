@@ -19,12 +19,12 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"goetl/internal/controllerauth"
+	"goetl/internal/document"
 	fp "goetl/internal/fingerprint"
 	"goetl/internal/ledger"
 	"goetl/internal/model"
@@ -1504,6 +1504,10 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
+	projectVariables, err := projectVariablesFromJSON(projectRead.Content.Data)
+	if err != nil {
+		return model.SubmissionAcknowledgement{}, fmt.Errorf("decode project source: %w", err)
+	}
 	_, projectHash, err := canonicalSourceDocument(projectRead.Content.Data)
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, fmt.Errorf("canonicalize project source: %w", err)
@@ -1526,6 +1530,7 @@ func (c *Controller) submitWorkflowRunToStore(ctx context.Context, submission Wo
 		return model.SubmissionAcknowledgement{}, fmt.Errorf("read supplemental source: %w", err)
 	}
 	allReads := append(append([]reposource.ReadFileResult{}, initialReads...), supplementalReads...)
+	submission.Variables = append(projectVariables, submission.Variables...)
 
 	return c.submitAdmittedWorkflowReadsToStore(ctx, submission, resolved, allReads, submittedAt)
 }
@@ -1893,6 +1898,28 @@ func canonicalSourceDocument(data []byte) ([]byte, string, error) {
 }
 
 func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
+	canonical, err := document.DecodeCanonicalWorkflowSource(data, document.DecodeOptions{
+		Path:   "workflow.json",
+		Format: document.SourceFormatJSON,
+	})
+	if err == nil {
+		adapted, err := workflow.WorkflowFromCanonicalDocument(canonical)
+		if err != nil {
+			return WorkflowSubmission{}, err
+		}
+		sourceManifest, err := sourceManifestFromCanonicalWorkflow(canonical.SourceManifest)
+		if err != nil {
+			return WorkflowSubmission{}, err
+		}
+		return WorkflowSubmission{
+			Workflow:       adapted,
+			SourceManifest: sourceManifest,
+		}, nil
+	}
+	if !errors.Is(err, document.ErrNotCanonicalWorkflow) {
+		return WorkflowSubmission{}, err
+	}
+
 	var submission WorkflowSubmission
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&submission); err != nil {
@@ -1905,6 +1932,24 @@ func decodeWorkflowSourceSubmission(data []byte) (WorkflowSubmission, error) {
 		return WorkflowSubmission{}, err
 	}
 	return submission, nil
+}
+
+func sourceManifestFromCanonicalWorkflow(value map[string]any) (reposource.SourceManifestDeclaration, error) {
+	if len(value) == 0 {
+		return reposource.SourceManifestDeclaration{}, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return reposource.SourceManifestDeclaration{}, fmt.Errorf("encode source_manifest: %w", err)
+	}
+	var manifest reposource.SourceManifestDeclaration
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return reposource.SourceManifestDeclaration{}, fmt.Errorf("decode source_manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return reposource.SourceManifestDeclaration{}, err
+	}
+	return manifest, nil
 }
 
 func (c *Controller) repositorySourceProvider(ref SourceDocumentReference) (reposource.Provider, error) {
@@ -1963,76 +2008,32 @@ func inlineReadFileResult(repository reposource.RepositoryIdentity, sourcePath s
 }
 
 func projectVariablesFromJSON(data []byte) ([]variable.Variable, error) {
-	var fields map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&fields); err != nil {
+	value, err := document.DecodeSource(data, document.DecodeOptions{
+		Path:   "project.json",
+		Format: document.SourceFormatJSON,
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("project source contains multiple JSON values")
-	}
-	if fields == nil {
+
+	fields, ok := value.(map[string]any)
+	if !ok {
 		return nil, fmt.Errorf("project source must be a JSON object")
 	}
 
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	variables := make([]variable.Variable, 0, len(fields))
-	for _, key := range keys {
-		expression, err := typedExpressionFromJSON(fields[key])
-		if err != nil {
-			return nil, fmt.Errorf("field %q: %w", key, err)
-		}
-		variables = append(variables, variable.Variable{
-			Name:            variable.Name{Namespace: variable.NamespaceProjectConfig, Key: key},
-			TypedExpression: expression,
-		})
-	}
-	return variables, nil
-}
-
-func typedExpressionFromJSON(value any) (variable.TypedExpression, error) {
-	switch typed := value.(type) {
-	case string:
-		return variable.TypedExpression{Type: variable.TypeString, Expression: typed}, nil
-	case json.Number:
-		integer, err := strconv.Atoi(typed.String())
-		if err != nil {
-			return variable.TypedExpression{}, fmt.Errorf("number %q is not a supported integer", typed.String())
-		}
-		return variable.TypedExpression{Type: variable.TypeInt, Expression: integer}, nil
-	case bool:
-		return variable.TypedExpression{Type: variable.TypeBool, Expression: typed}, nil
-	case map[string]any:
-		fields := make(map[string]variable.TypedExpression, len(typed))
-		for key, child := range typed {
-			expression, err := typedExpressionFromJSON(child)
-			if err != nil {
-				return variable.TypedExpression{}, fmt.Errorf("object field %q: %w", key, err)
+	if _, hasAPIVersion := fields["api_version"]; hasAPIVersion {
+		if variables, ok := fields["variables"]; ok {
+			variableFields, ok := variables.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("project source variables must be an object")
 			}
-			fields[key] = expression
+			fields = variableFields
+		} else {
+			fields = map[string]any{}
 		}
-		return variable.TypedExpression{Type: variable.TypeObject, Expression: fields}, nil
-	case []any:
-		items := make([]variable.TypedExpression, 0, len(typed))
-		for index, child := range typed {
-			expression, err := typedExpressionFromJSON(child)
-			if err != nil {
-				return variable.TypedExpression{}, fmt.Errorf("list item %d: %w", index, err)
-			}
-			items = append(items, expression)
-		}
-		return variable.TypedExpression{Type: variable.TypeList, Expression: items}, nil
-	case nil:
-		return variable.TypedExpression{}, fmt.Errorf("null is not supported")
-	default:
-		return variable.TypedExpression{}, fmt.Errorf("unsupported JSON value %T", value)
 	}
+
+	return document.LoadVariables(fields, variable.NamespaceProjectConfig)
 }
 
 func requiredReadByPath(reads []reposource.ReadFileResult, path string) (reposource.ReadFileResult, error) {

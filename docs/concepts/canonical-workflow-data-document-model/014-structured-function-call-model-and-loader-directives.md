@@ -1,6 +1,6 @@
 # 014 Structured Function Call Model and Loader Directives
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -75,3 +75,10 @@ public directive object
 ```bash
 go test ./internal/document ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `internal/variable` now has semantic `FunctionName`, `FunctionCallExpression`, reference-argument nodes, and an immutable empty/default function registry.
+- 2026-07-11: `internal/document` canonical variable loading accepts exact `$type`/`$call`/`$args` directives with `$ref` argument nodes and converts them into semantic function-call expressions.
+- 2026-07-11: `$expr` remains unsupported, no `expression` resolved value type was added, and semantic function-call JSON does not preserve public directive keys.
+- 2026-07-11: `go test ./internal/document ./internal/variable` passes.

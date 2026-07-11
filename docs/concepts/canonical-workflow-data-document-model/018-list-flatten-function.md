@@ -1,6 +1,6 @@
 # 018 List Flatten Function
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -55,3 +55,11 @@ list of lists
 ```bash
 go test ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `DefaultFunctionRegistry` now registers `list.flatten` alongside `list.crossproduct` and `list.zip`.
+- 2026-07-11: `list.flatten(items)` requires exactly one list argument, requires every top-level item to be a list, and concatenates child items in order.
+- 2026-07-11: Flattening is intentionally one level only; nested child lists are preserved rather than recursively flattened.
+- 2026-07-11: Empty child lists contribute no items, scalar children fail clearly, and item sensitivity is preserved.
+- 2026-07-11: `go test ./internal/variable` passes.

@@ -118,6 +118,7 @@ func (provider DataProviderTemplate) Bind(bindingName string, parameters map[str
 		},
 		Archive: archive,
 		Materialization: DataAssetMaterialization{
+			Scope:    provider.Materialization.Scope,
 			Strategy: provider.Materialization.Strategy,
 		},
 		TransferPolicy: provider.TransferPolicy,

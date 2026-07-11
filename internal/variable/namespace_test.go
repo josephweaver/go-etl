@@ -15,7 +15,10 @@ func TestPrecedenceOrder(t *testing.T) {
 		NamespaceWorkflow,
 		NamespaceOverride,
 		NamespaceStep,
+		NamespaceFanOut,
+		NamespaceAsset,
 		NamespaceWorkItem,
+		NamespaceData,
 		NamespaceRuntime,
 	}
 

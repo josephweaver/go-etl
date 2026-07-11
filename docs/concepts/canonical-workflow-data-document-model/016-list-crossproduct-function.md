@@ -1,6 +1,6 @@
 # 016 List Crossproduct Function
 
-Status: Proposed
+Status: Implemented
 
 ## Objective
 
@@ -58,3 +58,10 @@ left list + right list
 ```bash
 go test ./internal/variable
 ```
+
+## Implementation Notes
+
+- 2026-07-11: `DefaultFunctionRegistry` now registers exactly `list.crossproduct` as the first concrete expression function.
+- 2026-07-11: `list.crossproduct(left, right)` requires exactly two list arguments and returns left-major two-item list pairs while preserving each item value, type, and sensitivity.
+- 2026-07-11: Empty left or right inputs return an empty list.
+- 2026-07-11: `go test ./internal/variable` passes.

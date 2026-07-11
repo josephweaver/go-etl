@@ -25,6 +25,12 @@ func (e TypedExpression) ValidateDefinition() error {
 	if !e.Type.Valid() {
 		return fmt.Errorf("unsupported expression type: %s", e.Type)
 	}
+	if call, ok := e.Expression.(FunctionCallExpression); ok {
+		if call.ResultType != e.Type {
+			return fmt.Errorf("function result type %s does not match expression type %s", call.ResultType, e.Type)
+		}
+		return call.Validate()
+	}
 	if text, ok := e.Expression.(string); ok {
 		if isReference, err := validateWholeReferenceText(text); isReference || err != nil {
 			return err

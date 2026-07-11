@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,9 +23,9 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 	if err != nil {
 		t.Fatalf("NormalizeStages() error = %v", err)
 	}
-	compiled, err := CompileWorkflowStage(testWorkflowResolver(t, 2024), workflowDef, plan, 0)
+	compiled, err := compileDataOperatorSmokeWorkflow(t, workflowDef, plan)
 	if err != nil {
-		t.Fatalf("CompileWorkflowStage() error = %v", err)
+		t.Fatalf("compileDataOperatorSmokeWorkflow() error = %v", err)
 	}
 
 	cacheItems := cacheDataItems(compiled)
@@ -40,11 +41,14 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 		t.Fatalf("commit_data count = %d, want 2", len(commitItems))
 	}
 	compute := computeItems[0]
+	if _, ok := compute.WorkItem.Parameters["data_assets"]; ok {
+		t.Fatal("compute item still has data_assets parameter")
+	}
 	if _, ok := compute.WorkItem.Parameters["publish"]; ok {
 		t.Fatal("compute item still has publish parameter")
 	}
-	if len(compute.WorkItem.DependsOn) != len(cacheItems) {
-		t.Fatalf("compute depends_on = %+v, want all cache_data items", compute.WorkItem.DependsOn)
+	if len(compute.WorkItem.DependsOn) != 0 {
+		t.Fatalf("compute depends_on = %+v, want no hidden cache_data dependencies", compute.WorkItem.DependsOn)
 	}
 	for _, commit := range commitItems {
 		if len(commit.WorkItem.DependsOn) != 1 || commit.WorkItem.DependsOn[0] != compute.WorkItem.ID {
@@ -54,7 +58,7 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 
 	runID := "run-data-operator-smoke"
 	createdAt := "2026-07-07T00:00:00Z"
-	insertDataOperatorSmokeRun(t, ctx, store, runID, createdAt)
+	insertDataOperatorSmokeRun(t, ctx, store, runID, plan, createdAt)
 	records, queued, constraints := dataOperatorSmokePersistenceRecords(t, runID, compiled, createdAt)
 	if err := store.QueueWorkItems(ctx, persistence.QueueWorkItemsRequest{
 		WorkItems:           records,
@@ -121,76 +125,154 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 	}
 }
 
+func compileDataOperatorSmokeWorkflow(t *testing.T, workflowDef Workflow, plan WorkflowPlan) (CompileStageResult, error) {
+	t.Helper()
+
+	compiled := CompileStageResult{
+		WorkflowID: workflowDef.ID,
+		StageIndex: -1,
+	}
+	resolver := testWorkflowResolver(t, 2024)
+	for stageIndex := range plan.Stages {
+		stage, err := CompileWorkflowStage(resolver, workflowDef, plan, stageIndex)
+		if err != nil {
+			return CompileStageResult{}, err
+		}
+		compiled.Steps = append(compiled.Steps, stage.Steps...)
+		compiled.WorkItems = append(compiled.WorkItems, stage.WorkItems...)
+	}
+	return compiled, nil
+}
+
 func dataOperatorSmokeWorkflow() Workflow {
+	definitions := dataOperatorSmokeDataDefinitions()
 	return Workflow{
 		ID: "field-cdl-composition-fixture",
 		Steps: []Step{
+			dataOperatorSmokeCacheStep("cache-crop-lookup", "crop_lookup_fixture", definitions, ""),
+			dataOperatorSmokeCacheStep("cache-field-tile", "field_tile_fixture", definitions, "data-cache"),
+			dataOperatorSmokeCacheStep("cache-cdl-tile", "cdl_tile_fixture", definitions, "data-cache"),
 			{
-				ID: "field_cdl_composition_fixture",
+				ID: "field-cdl-composition",
 				FanOut: &FanOutStep{
 					WorkItem: FanOutWorkItemTemplate{
 						FanOutExpression: "${years[*]}",
 						Type:             model.WorkItemTypePythonScript,
-						IDPrefix:         "field-cdl-composition",
 						OutputPrefix:     "field-cdl-composition",
 						OutputExtension:  ".json",
 						Parameters: model.Parameters{
 							"python_entrypoint":     {Type: "path", Value: "scripts/field_cdl_composition.py"},
 							"target_environment_id": {Type: "string", Value: "target-local"},
-							"data_assets":           {Type: "data_assets", Value: dataOperatorSmokeAssets()},
-							"publish":               {Type: "publish_targets", Value: dataOperatorSmokePublishTargets()},
 						},
 					},
+				},
+			},
+			dataOperatorSmokeCommitStep("commit-composition-csv", "publish_composition_csv", definitions, ""),
+			dataOperatorSmokeCommitStep("commit-composition-audit", "publish_composition_audit", definitions, "publish-data"),
+		},
+	}
+}
+
+func dataOperatorSmokeCacheStep(id, asset string, definitions model.DataDefinitions, parallelWith string) Step {
+	return Step{
+		ID:           id,
+		ParallelWith: parallelWith,
+		FanOut: &FanOutStep{
+			WorkItem: FanOutWorkItemTemplate{
+				FanOutExpression: "${years[*]}",
+				Type:             model.WorkItemTypeCacheData,
+				OutputPrefix:     id,
+				OutputExtension:  ".json",
+				Parameters: model.Parameters{
+					"target_environment_id": {Type: "string", Value: "target-local"},
+				},
+				ExplicitCacheData: &ExplicitCacheDataTemplate{
+					Definitions: definitions,
+					Alias:       asset,
+					Asset:       asset,
 				},
 			},
 		},
 	}
 }
 
-func dataOperatorSmokeAssets() []model.BoundDataAsset {
-	return []model.BoundDataAsset{
-		dataOperatorSmokeAsset("crop_lookup_fixture", "crop_lookup_provider", "crop_lookup.csv"),
-		dataOperatorSmokeAsset("field_tile_fixture", "field_tile_provider", "field_tile.csv"),
-		dataOperatorSmokeAsset("cdl_tile_fixture", "cdl_tile_provider", "cdl_tile.csv"),
-	}
-}
-
-func dataOperatorSmokeAsset(bindingName, providerName, path string) model.BoundDataAsset {
-	return model.BoundDataAsset{
-		BindingName:  bindingName,
-		ProviderName: providerName,
-		Kind:         "fixture_matrix",
-		Format:       "csv",
-		Provider:     model.DataProviderLocalFile,
-		Location: model.DataAssetLocation{
-			Type:         model.DataProviderLocalFile,
-			LocationName: "fixture_data",
-			Path:         path,
-		},
-		Cache: model.DataAssetCache{
-			Strategy: model.DataAssetCacheStrategyWorkerCache,
-			CacheKey: "fixture-cache/" + path,
-		},
-		TransferPolicy: model.DataAssetTransferPolicy{
-			MaxConcurrentSourceTransfers: 1,
+func dataOperatorSmokeCommitStep(id, target string, definitions model.DataDefinitions, parallelWith string) Step {
+	return Step{
+		ID:           id,
+		ParallelWith: parallelWith,
+		FanOut: &FanOutStep{
+			WorkItem: FanOutWorkItemTemplate{
+				FanOutExpression: "${years[*]}",
+				Type:             model.WorkItemTypeCommitData,
+				OutputPrefix:     id,
+				OutputExtension:  ".json",
+				Parameters: model.Parameters{
+					"target_environment_id": {Type: "string", Value: "target-local"},
+				},
+				ExplicitCommitData: &ExplicitCommitDataTemplate{
+					Definitions:  definitions,
+					Alias:        target,
+					Target:       target,
+					FromStep:     "field-cdl-composition",
+					FromArtifact: "field_cdl_composition",
+				},
+			},
 		},
 	}
 }
 
-func dataOperatorSmokePublishTargets() []model.BoundPublishTarget {
-	return []model.BoundPublishTarget{
-		dataOperatorSmokePublishTarget("publish_composition_csv", "field_cdl_composition.csv"),
-		dataOperatorSmokePublishTarget("publish_composition_audit", "field_cdl_composition.audit.csv"),
+func dataOperatorSmokeDataDefinitions() model.DataDefinitions {
+	return model.DataDefinitions{
+		Inputs: map[string]model.DataInputDefinition{
+			"crop_lookup_fixture": dataOperatorSmokeInputDefinition("crop_lookup_provider", "crop_lookup.csv"),
+			"field_tile_fixture":  dataOperatorSmokeInputDefinition("field_tile_provider", "field_tile.csv"),
+			"cdl_tile_fixture":    dataOperatorSmokeInputDefinition("cdl_tile_provider", "cdl_tile.csv"),
+		},
+		Outputs: map[string]model.DataOutputDefinition{
+			"publish_composition_csv":   dataOperatorSmokeOutputDefinition("field_cdl_composition.csv"),
+			"publish_composition_audit": dataOperatorSmokeOutputDefinition("field_cdl_composition.audit.csv"),
+		},
 	}
 }
 
-func dataOperatorSmokePublishTarget(name, path string) model.BoundPublishTarget {
-	return model.BoundPublishTarget{
-		Name:            name,
-		FromArtifact:    "field_cdl_composition",
-		TargetName:      name,
-		Location:        model.DataAssetLocation{Type: model.DataProviderRegisteredLocation, LocationName: "published_data", Path: "field_cdl_composition/year=2024/tile=fixture_tile_001/" + path},
-		OverwritePolicy: model.PublishedDataAssetOverwriteFailIfExists,
+func dataOperatorSmokeInputDefinition(providerName, path string) model.DataInputDefinition {
+	return model.DataInputDefinition{
+		Kind:   "fixture_matrix",
+		Format: "csv",
+		Binding: model.DataInputBindingDefinition{
+			ProviderName: providerName,
+			Provider:     model.DataProviderLocalFile,
+			Location: model.DataDefinitionLocation{
+				Name: "fixture_data",
+				Path: path,
+			},
+			Cache: model.DataDefinitionCache{
+				Strategy: model.DataAssetCacheStrategyWorkerCache,
+				CacheKey: "fixture-cache/" + path,
+			},
+			Materialization: model.DataDefinitionMaterialization{
+				Scope:    model.DataMaterializationScopeShared,
+				Strategy: model.DataAssetCacheStrategyWorkerCache,
+			},
+			TransferPolicy: model.DataAssetTransferPolicy{
+				MaxConcurrentSourceTransfers: 1,
+			},
+		},
+	}
+}
+
+func dataOperatorSmokeOutputDefinition(path string) model.DataOutputDefinition {
+	return model.DataOutputDefinition{
+		Kind:   "fixture_matrix",
+		Format: "csv",
+		Binding: model.DataOutputBindingDefinition{
+			Provider: model.DataProviderRegisteredLocation,
+			Location: model.DataDefinitionLocation{
+				Name: "published_data",
+				Path: "field_cdl_composition/year=2024/tile=fixture_tile_001/" + path,
+			},
+			OverwritePolicy: model.PublishedDataAssetOverwriteFailIfExists,
+		},
 	}
 }
 
@@ -203,7 +285,7 @@ func openDataOperatorSmokeStore(t *testing.T, ctx context.Context) *persistence.
 	return store
 }
 
-func insertDataOperatorSmokeRun(t *testing.T, ctx context.Context, store *persistence.Store, runID, createdAt string) {
+func insertDataOperatorSmokeRun(t *testing.T, ctx context.Context, store *persistence.Store, runID string, plan WorkflowPlan, createdAt string) {
 	t.Helper()
 	project := persistence.ProjectRecord{ID: "project-data-operator-smoke", Name: "data operator smoke", RepositoryIdentity: "local:fixture", ConfigPath: "project.json", ConfigSHA256: strings.Repeat("a", 64), CreatedAt: createdAt}
 	if err := store.UpsertProject(ctx, project); err != nil {
@@ -216,9 +298,15 @@ func insertDataOperatorSmokeRun(t *testing.T, ctx context.Context, store *persis
 	if err := store.CreateWorkflowRun(ctx, persistence.WorkflowRunRecord{ID: runID, ProjectID: project.ID, WorkflowID: workflowRecord.ID, SubmissionContextJSON: `{}`, CreatedAt: createdAt}); err != nil {
 		t.Fatalf("CreateWorkflowRun() error = %v", err)
 	}
-	if err := store.InsertStagePlan(ctx, runID, []persistence.WorkflowStageRecord{
-		{RunID: runID, StageIndex: 0, StepID: "field_cdl_composition_fixture", StageSourceReference: "fixture-stage-0", State: "ready", CreatedAt: createdAt, ReadyAt: createdAt},
-	}); err != nil {
+	stages := make([]persistence.WorkflowStageRecord, 0, len(plan.Stages))
+	for _, stage := range plan.Stages {
+		stepID := ""
+		if len(stage.Steps) > 0 {
+			stepID = stage.Steps[0].StepID
+		}
+		stages = append(stages, persistence.WorkflowStageRecord{RunID: runID, StageIndex: stage.Index, StepID: stepID, StageSourceReference: "fixture-stage-" + strconv.Itoa(stage.Index), State: "ready", CreatedAt: createdAt, ReadyAt: createdAt})
+	}
+	if err := store.InsertStagePlan(ctx, runID, stages); err != nil {
 		t.Fatalf("InsertStagePlan() error = %v", err)
 	}
 }
