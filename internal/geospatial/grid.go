@@ -3,9 +3,17 @@ package geospatial
 import (
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
+	"strings"
 )
 
 const gridFloatTolerance = 1e-9
+
+var (
+	wktMethodRegex    = regexp.MustCompile(`(?i)(?:PROJECTION|METHOD)\s*\[\s*"([^"]+)"`)
+	wktParameterRegex = regexp.MustCompile(`(?i)PARAMETER\s*\[\s*"([^"]+)"\s*,\s*([-+0-9.eE]+)`)
+)
 
 type RasterGrid struct {
 	CRS           string    `json:"crs"`
@@ -78,7 +86,7 @@ func BoundsFromGrid(grid RasterGrid) (GridBounds, error) {
 }
 
 func GridsEqual(a RasterGrid, b RasterGrid) bool {
-	if a.CRS != b.CRS || a.EPSG != b.EPSG || a.Width != b.Width || a.Height != b.Height {
+	if !sameGridCRS(a, b) || a.Width != b.Width || a.Height != b.Height {
 		return false
 	}
 	if len(a.GeoTransform) != len(b.GeoTransform) {
@@ -90,6 +98,125 @@ func GridsEqual(a RasterGrid, b RasterGrid) bool {
 		}
 	}
 	return true
+}
+
+func sameGridCRS(a RasterGrid, b RasterGrid) bool {
+	if a.EPSG > 0 || b.EPSG > 0 {
+		return a.EPSG == b.EPSG
+	}
+	if strings.TrimSpace(a.CRS) == strings.TrimSpace(b.CRS) {
+		return true
+	}
+
+	aAlbers, aOK := parseAlbersCRS(a.CRS)
+	bAlbers, bOK := parseAlbersCRS(b.CRS)
+	if !aOK || !bOK {
+		return false
+	}
+	return aAlbers.equal(bAlbers)
+}
+
+type albersCRS struct {
+	Geographic string
+	Parameters map[string]float64
+}
+
+func (a albersCRS) equal(b albersCRS) bool {
+	if a.Geographic != "" && b.Geographic != "" && a.Geographic != b.Geographic {
+		return false
+	}
+
+	for _, key := range []string{"lat_0", "lon_0", "sp_1", "sp_2", "false_easting", "false_northing"} {
+		aValue, aOK := a.Parameters[key]
+		bValue, bOK := b.Parameters[key]
+		if !aOK || !bOK {
+			return false
+		}
+		if math.Abs(aValue-bValue) > gridFloatTolerance {
+			return false
+		}
+	}
+	return true
+}
+
+func parseAlbersCRS(crs string) (albersCRS, bool) {
+	crs = strings.TrimSpace(crs)
+	if crs == "" {
+		return albersCRS{}, false
+	}
+
+	methodMatch := wktMethodRegex.FindStringSubmatch(crs)
+	if len(methodMatch) != 2 || normalizeWKTName(methodMatch[1]) != "albers_equal_area" {
+		return albersCRS{}, false
+	}
+
+	parameters := map[string]float64{}
+	for _, match := range wktParameterRegex.FindAllStringSubmatch(crs, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		key := normalizeAlbersParameterName(match[1])
+		if key == "" {
+			continue
+		}
+		value, err := strconv.ParseFloat(match[2], 64)
+		if err != nil {
+			continue
+		}
+		parameters[key] = value
+	}
+
+	return albersCRS{
+		Geographic: inferGeographicCRSName(crs),
+		Parameters: parameters,
+	}, true
+}
+
+func normalizeWKTName(name string) string {
+	compact := strings.Builder{}
+	for _, char := range strings.ToLower(name) {
+		if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' {
+			compact.WriteRune(char)
+		}
+	}
+
+	switch compact.String() {
+	case "albersconicequalarea", "albersequalarea":
+		return "albers_equal_area"
+	default:
+		return compact.String()
+	}
+}
+
+func normalizeAlbersParameterName(name string) string {
+	switch normalizeWKTName(name) {
+	case "latitudeofcenter", "latitudeoffalseorigin", "latitudeoforigin":
+		return "lat_0"
+	case "longitudeofcenter", "longitudeoffalseorigin", "longitudeoforigin", "centralmeridian":
+		return "lon_0"
+	case "standardparallel1", "latitudeof1ststandardparallel", "firststandardparallel":
+		return "sp_1"
+	case "standardparallel2", "latitudeof2ndstandardparallel", "secondstandardparallel":
+		return "sp_2"
+	case "falseeasting", "eastingatfalseorigin":
+		return "false_easting"
+	case "falsenorthing", "northingatfalseorigin":
+		return "false_northing"
+	default:
+		return ""
+	}
+}
+
+func inferGeographicCRSName(crs string) string {
+	normalized := normalizeWKTName(crs)
+	switch {
+	case strings.Contains(normalized, "wgs84") || strings.Contains(normalized, "worldgeodeticsystem1984"):
+		return "wgs84"
+	case strings.Contains(normalized, "nad83") || strings.Contains(normalized, "northamericandatum1983"):
+		return "nad83"
+	default:
+		return ""
+	}
 }
 
 func almostZero(value float64) bool {
