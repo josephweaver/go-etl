@@ -62,6 +62,14 @@ type WorkerRecoverySummary struct {
 	RequeuedWorkItems int
 }
 
+type CareTakerReconcileResult struct {
+	Recovery WorkerRecoverySummary
+	Snapshot WorkerCapacitySnapshot
+	Plan     WorkerStartPlan
+	State    WorkerExecutionState
+	NextWake CareTakerNextWake
+}
+
 type CareTakerConfig struct {
 	DeadAfter            time.Duration
 	InflightStartTimeout time.Duration
@@ -212,6 +220,8 @@ func (c *CareTaker) Run(ctx context.Context) error {
 	}
 
 	c.Signal("startup")
+	fmt.Println("caretaker_started")
+	defer fmt.Println("caretaker_stopped")
 
 	var timer CareTakerTimer
 	var timerC <-chan time.Time
@@ -222,27 +232,72 @@ func (c *CareTaker) Run(ctx context.Context) error {
 			return nil
 		case <-c.wakeCh:
 			drainCareTakerSignals(c.wakeCh)
-			next, err := c.reconcile(ctx, c.clock.Now())
-			if ctx.Err() != nil {
+			count, reason := c.signalSnapshot()
+			next, ok := c.runReconcile(ctx, "signal", count, reason)
+			if !ok {
 				stopAndDrainCareTakerTimer(timer)
 				return nil
 			}
-			if err != nil {
-				fmt.Printf("caretaker reconcile failed: %v\n", err)
-			}
 			timer, timerC = resetCareTakerTimer(c.clock, timer, next)
+			logCareTakerSleeping(next)
 		case <-timerC:
-			next, err := c.reconcile(ctx, c.clock.Now())
-			if ctx.Err() != nil {
+			next, ok := c.runReconcile(ctx, "timer", 0, "")
+			if !ok {
 				stopAndDrainCareTakerTimer(timer)
 				return nil
 			}
-			if err != nil {
-				fmt.Printf("caretaker reconcile failed: %v\n", err)
-			}
 			timer, timerC = resetCareTakerTimer(c.clock, timer, next)
+			logCareTakerSleeping(next)
 		}
 	}
+}
+
+func (c *CareTaker) runReconcile(ctx context.Context, trigger string, signalCount int, signalReason string) (CareTakerNextWake, bool) {
+	started := c.clock.Now()
+	fmt.Printf("caretaker_reconcile_started trigger=%s signal_count=%d signal_reason=%q\n", trigger, signalCount, signalReason)
+	result, err := c.reconcileDetailed(ctx, started)
+	if ctx.Err() != nil {
+		return CareTakerNextWake{}, false
+	}
+	duration := c.clock.Now().Sub(started)
+	if err != nil {
+		fmt.Printf("caretaker_reconcile_failed trigger=%s error=%q next_wake_at=%s next_wake_reason=%s duration=%s\n",
+			trigger,
+			err.Error(),
+			formatCareTakerWake(result.NextWake.At),
+			result.NextWake.Reason,
+			duration,
+		)
+		return result.NextWake, true
+	}
+	fmt.Printf("caretaker_reconcile_completed trigger=%s pending_queued=%d pending_claimable=%d running_attempts=%d live_worker_sessions=%d inflight_starts=%d start_count=%d plan_reason=%s expired_sessions=%d abandoned_attempts=%d requeued_work_items=%d next_wake_at=%s next_wake_reason=%s duration=%s\n",
+		trigger,
+		result.Snapshot.PendingQueued,
+		result.Snapshot.PendingClaimable,
+		result.Snapshot.RunningAttempts,
+		result.Snapshot.LiveWorkerSessions,
+		len(result.State.InflightStarts),
+		result.Plan.StartCount,
+		result.Plan.Reason,
+		result.Recovery.ExpiredSessions,
+		result.Recovery.AbandonedAttempts,
+		result.Recovery.RequeuedWorkItems,
+		formatCareTakerWake(result.NextWake.At),
+		result.NextWake.Reason,
+		duration,
+	)
+	return result.NextWake, true
+}
+
+func logCareTakerSleeping(next CareTakerNextWake) {
+	fmt.Printf("caretaker_sleeping next_wake_at=%s next_wake_reason=%s\n", formatCareTakerWake(next.At), next.Reason)
+}
+
+func formatCareTakerWake(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339Nano)
 }
 
 func drainCareTakerSignals(ch <-chan struct{}) {
@@ -290,39 +345,59 @@ func resetCareTakerTimer(clock CareTakerClock, timer CareTakerTimer, next CareTa
 }
 
 func (c *CareTaker) reconcile(ctx context.Context, now time.Time) (CareTakerNextWake, error) {
+	result, err := c.reconcileDetailed(ctx, now)
+	return result.NextWake, err
+}
+
+func (c *CareTaker) reconcileDetailed(ctx context.Context, now time.Time) (CareTakerReconcileResult, error) {
+	var result CareTakerReconcileResult
 	if c.source == nil {
-		return CareTakerNextWake{}, nil
+		return result, nil
 	}
 	if c.launch == nil {
-		return CareTakerNextWake{}, nil
+		return result, nil
 	}
 	if c.exec == nil {
 		c.exec = NewWorkerCapacityManager(nil)
 	}
 
-	if _, err := c.source.RecoverExpiredWorkerSessions(ctx, now, c.cfg.DeadAfter); err != nil {
+	recovery, err := c.source.RecoverExpiredWorkerSessions(ctx, now, c.cfg.DeadAfter)
+	result.Recovery = recovery
+	if err != nil {
 		c.noteReconcileError()
-		return calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, c.exec.Snapshot(), c.retryDelay), err
+		result.State = c.exec.Snapshot()
+		result.NextWake = calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, result.State, c.retryDelay)
+		return result, err
 	}
 	c.exec.PruneExpiredInflightStarts(now, c.cfg.InflightStartTimeout)
 	snapshot, err := c.source.WorkerCapacitySnapshot(ctx, now, c.cfg.DeadAfter)
+	result.Snapshot = snapshot
 	if err != nil {
 		c.noteReconcileError()
-		return calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, c.exec.Snapshot(), c.retryDelay), err
+		result.State = c.exec.Snapshot()
+		result.NextWake = calculateCareTakerNextWake(now, c.cfg, WorkerCapacitySnapshot{}, result.State, c.retryDelay)
+		return result, err
 	}
 
-	_, err = c.exec.EvaluateSnapshot(ctx, now, c.cfg.WorkerExecution, snapshot, c.launch.StartWorkers)
+	plan, err := c.exec.EvaluateSnapshot(ctx, now, c.cfg.WorkerExecution, snapshot, c.launch.StartWorkers)
+	result.Plan = plan
+	result.State = c.exec.Snapshot()
 	if err != nil {
 		if errors.Is(err, errWorkerTargetEnvironmentNotConfigured) {
 			fmt.Println("worker_start_skipped reason=worker_target_environment_not_configured")
 			c.clearReconcileError()
-			return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), 0), nil
+			result.NextWake = calculateCareTakerNextWake(now, c.cfg, snapshot, result.State, 0)
+			return result, nil
 		}
 		c.noteReconcileError()
-		return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), c.retryDelay), err
+		result.State = c.exec.Snapshot()
+		result.NextWake = calculateCareTakerNextWake(now, c.cfg, snapshot, result.State, c.retryDelay)
+		return result, err
 	}
 	c.clearReconcileError()
-	return calculateCareTakerNextWake(now, c.cfg, snapshot, c.exec.Snapshot(), 0), nil
+	result.State = c.exec.Snapshot()
+	result.NextWake = calculateCareTakerNextWake(now, c.cfg, snapshot, result.State, 0)
+	return result, nil
 }
 
 func (c *CareTaker) noteReconcileError() {
