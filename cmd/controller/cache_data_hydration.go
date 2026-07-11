@@ -9,10 +9,11 @@ import (
 
 	"goetl/internal/model"
 	"goetl/internal/persistence"
+	"goetl/internal/workflow"
 )
 
 func (c *Controller) hydrateCacheDataDependentWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {
-	if len(item.DependsOn) == 0 || item.Type == model.WorkItemTypeCacheData || item.Type == model.WorkItemTypeCommitData {
+	if item.Type == model.WorkItemTypeCacheData || item.Type == model.WorkItemTypeCommitData {
 		return item, nil
 	}
 	if _, ok := item.Parameters["materialized_data_assets"]; ok {
@@ -28,6 +29,33 @@ func (c *Controller) hydrateCacheDataDependentWorkItem(ctx context.Context, clai
 		if terminal.TerminalState == "completed" {
 			completedByWorkItemID[terminal.WorkItem.ID] = terminal
 		}
+	}
+
+	requirements, err := sharedMaterializationRequirements(item)
+	if err != nil {
+		return model.WorkItem{}, err
+	}
+	if len(requirements) > 0 {
+		candidates, err := completedPriorMaterializationCandidates(terminals, claim, item.DependsOn)
+		if err != nil {
+			return model.WorkItem{}, err
+		}
+		manifest, err := projectSharedMaterializationRequirements(requirements, candidates)
+		if err != nil {
+			return model.WorkItem{}, err
+		}
+		if item.Parameters == nil {
+			item.Parameters = model.Parameters{}
+		}
+		item.Parameters["materialized_data_assets"] = model.Parameter{
+			Type:  "materialized_data_assets",
+			Value: manifest,
+		}
+		return item, nil
+	}
+
+	if len(item.DependsOn) == 0 {
+		return item, nil
 	}
 
 	combined := model.MaterializedDataAssetManifest{
@@ -74,6 +102,222 @@ func (c *Controller) hydrateCacheDataDependentWorkItem(ctx context.Context, clai
 		Value: combined,
 	}
 	return item, nil
+}
+
+type sharedMaterializationRequirement struct {
+	BindingName string
+	AssetKeys   []string
+	Domain      model.MaterializationDomain
+}
+
+type completedMaterializationCandidate struct {
+	WorkItemID string
+	Manifest   model.MaterializedDataAssetManifest
+	Domain     model.MaterializationDomain
+}
+
+func sharedMaterializationRequirements(item model.WorkItem) ([]sharedMaterializationRequirement, error) {
+	assets, found, err := boundDataAssetsFromWorkItemParameters(item.Parameters)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	var targetEnvironmentID string
+	requirements := []sharedMaterializationRequirement{}
+	for i, asset := range assets {
+		switch asset.Materialization.Scope {
+		case "":
+			continue
+		case model.DataMaterializationScopeShared:
+			if targetEnvironmentID == "" {
+				targetEnvironmentID, err = stringParameterValue(item.Parameters, "target_environment_id")
+				if err != nil {
+					return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
+				}
+			}
+			domain, err := model.ResolveMaterializationDomain(asset.Materialization, targetEnvironmentID)
+			if err != nil {
+				return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
+			}
+			assetKeys, err := materializationAssetKeyCandidates(asset, targetEnvironmentID)
+			if err != nil {
+				return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
+			}
+			requirements = append(requirements, sharedMaterializationRequirement{
+				BindingName: asset.BindingName,
+				AssetKeys:   assetKeys,
+				Domain:      domain,
+			})
+		case model.DataMaterializationScopeWorker:
+			return nil, fmt.Errorf("%w: %s", model.ErrMaterializationScopeNotImplemented, model.DataMaterializationScopeWorker)
+		default:
+			if err := asset.Materialization.Validate(); err != nil {
+				return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
+			}
+		}
+	}
+	return requirements, nil
+}
+
+func boundDataAssetsFromWorkItemParameters(parameters model.Parameters) ([]model.BoundDataAsset, bool, error) {
+	parameter, ok := parameters["data_assets"]
+	if !ok {
+		return nil, false, nil
+	}
+	if parameter.Type != "data_assets" && parameter.Type != "list" {
+		return nil, true, fmt.Errorf("parameter data_assets has type %s, want data_assets or list", parameter.Type)
+	}
+
+	data, err := json.Marshal(parameter.Value)
+	if err != nil {
+		return nil, true, fmt.Errorf("encode data_assets parameter: %w", err)
+	}
+	var assets []model.BoundDataAsset
+	if err := json.Unmarshal(data, &assets); err != nil {
+		return nil, true, fmt.Errorf("decode data_assets parameter: %w", err)
+	}
+	for i, asset := range assets {
+		if err := asset.Validate(); err != nil {
+			return nil, true, fmt.Errorf("data_assets[%d]: %w", i, err)
+		}
+	}
+	return assets, true, nil
+}
+
+func stringParameterValue(parameters model.Parameters, name string) (string, error) {
+	parameter, ok := parameters[name]
+	if !ok {
+		return "", fmt.Errorf("parameter %s is required", name)
+	}
+	if parameter.Type != "" && parameter.Type != "string" {
+		return "", fmt.Errorf("parameter %s has type %s, want string", name, parameter.Type)
+	}
+	value, ok := parameter.Value.(string)
+	if !ok {
+		return "", fmt.Errorf("parameter %s value must be a string", name)
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("parameter %s is required", name)
+	}
+	return value, nil
+}
+
+func materializationAssetKeyCandidates(asset model.BoundDataAsset, targetEnvironmentID string) ([]string, error) {
+	candidates := []string{}
+	canonicalKey, err := workflow.CanonicalDataAssetInstanceKey(asset.BindingName, nil, asset)
+	if err != nil {
+		return nil, err
+	}
+	candidates = append(candidates, canonicalKey)
+
+	cacheKey, err := workflow.CacheDataAssetKey(asset, targetEnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	if cacheKey != canonicalKey {
+		candidates = append(candidates, cacheKey)
+	}
+	return candidates, nil
+}
+
+func completedPriorMaterializationCandidates(terminals []persistence.TerminalAttemptRecord, claim persistence.ClaimedWorkRecord, dependsOn []string) ([]completedMaterializationCandidate, error) {
+	dependencyIDs := map[string]struct{}{}
+	for _, dependencyID := range dependsOn {
+		dependencyIDs[dependencyID] = struct{}{}
+	}
+
+	candidates := []completedMaterializationCandidate{}
+	for _, terminal := range terminals {
+		if terminal.TerminalState != "completed" {
+			continue
+		}
+		if _, ok := dependencyIDs[terminal.WorkItem.ID]; !ok && terminal.WorkItem.StageIndex >= claim.WorkItem.StageIndex {
+			continue
+		}
+		if strings.TrimSpace(terminal.OutputJSON) == "" {
+			continue
+		}
+		manifest, found, err := materializedDataAssetManifestFromOutputJSON(terminal.OutputJSON)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		domain, err := model.SharedMaterializationDomain(manifest.TargetEnvironmentID)
+		if err != nil {
+			return nil, fmt.Errorf("completed materialized manifest %s: %w", terminal.WorkItem.ID, err)
+		}
+		candidates = append(candidates, completedMaterializationCandidate{
+			WorkItemID: terminal.WorkItem.ID,
+			Manifest:   manifest,
+			Domain:     domain,
+		})
+	}
+	return candidates, nil
+}
+
+func projectSharedMaterializationRequirements(requirements []sharedMaterializationRequirement, candidates []completedMaterializationCandidate) (model.MaterializedDataAssetManifest, error) {
+	combined := model.MaterializedDataAssetManifest{
+		Schema: model.MaterializedDataAssetManifestSchemaV1,
+		Assets: []model.MaterializedDataAsset{},
+	}
+	seenBindings := map[string]struct{}{}
+
+	for _, requirement := range requirements {
+		matches := []completedMaterializationCandidate{}
+		wrongDomains := []model.MaterializationDomain{}
+		for _, candidate := range candidates {
+			if !containsString(requirement.AssetKeys, candidate.Manifest.AssetKey) {
+				continue
+			}
+			if candidate.Domain != requirement.Domain {
+				wrongDomains = append(wrongDomains, candidate.Domain)
+				continue
+			}
+			matches = append(matches, candidate)
+		}
+		if len(matches) == 0 {
+			if len(wrongDomains) > 0 {
+				return model.MaterializedDataAssetManifest{}, fmt.Errorf("materialized data asset %q found in domain %s, want %s", requirement.BindingName, materializationDomainLabel(wrongDomains[0]), materializationDomainLabel(requirement.Domain))
+			}
+			return model.MaterializedDataAssetManifest{}, fmt.Errorf("no completed shared materialization found for data asset %q in domain %s", requirement.BindingName, materializationDomainLabel(requirement.Domain))
+		}
+		if len(matches) > 1 {
+			return model.MaterializedDataAssetManifest{}, fmt.Errorf("multiple completed shared materializations found for data asset %q in domain %s", requirement.BindingName, materializationDomainLabel(requirement.Domain))
+		}
+
+		match := matches[0]
+		if len(match.Manifest.Assets) != 1 {
+			return model.MaterializedDataAssetManifest{}, fmt.Errorf("completed shared materialization %s has %d assets, want 1", match.WorkItemID, len(match.Manifest.Assets))
+		}
+		if _, ok := seenBindings[requirement.BindingName]; ok {
+			return model.MaterializedDataAssetManifest{}, fmt.Errorf("duplicate materialized data binding %q", requirement.BindingName)
+		}
+		seenBindings[requirement.BindingName] = struct{}{}
+
+		if combined.TargetEnvironmentID == "" {
+			combined.TargetEnvironmentID = match.Manifest.TargetEnvironmentID
+		} else if match.Manifest.TargetEnvironmentID != combined.TargetEnvironmentID {
+			return model.MaterializedDataAssetManifest{}, fmt.Errorf("shared materialization target_environment_id mismatch: %s != %s", match.Manifest.TargetEnvironmentID, combined.TargetEnvironmentID)
+		}
+
+		asset := match.Manifest.Assets[0]
+		asset.BindingName = requirement.BindingName
+		combined.Assets = append(combined.Assets, asset)
+	}
+
+	if err := combined.Validate(); err != nil {
+		return model.MaterializedDataAssetManifest{}, fmt.Errorf("validate shared materialized data assets: %w", err)
+	}
+	return combined, nil
+}
+
+func materializationDomainLabel(domain model.MaterializationDomain) string {
+	return domain.Scope + "/" + domain.ID
 }
 
 func materializedDataAssetManifestFromOutputJSON(outputJSON string) (model.MaterializedDataAssetManifest, bool, error) {
