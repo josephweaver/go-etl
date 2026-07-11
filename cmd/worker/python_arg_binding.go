@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
-	"goetl/internal/model"
+	"goetl/internal/variable"
 )
 
 func resolvePythonArgvBindings(args []string, dataAssetsPath string, artifactDir string) ([]string, error) {
@@ -14,7 +12,7 @@ func resolvePythonArgvBindings(args []string, dataAssetsPath string, artifactDir
 		return nil, nil
 	}
 
-	var materializedDataAssets map[string]string
+	var dataResolver *variable.Resolver
 	resolved := make([]string, len(args))
 
 	for i, arg := range args {
@@ -26,7 +24,7 @@ func resolvePythonArgvBindings(args []string, dataAssetsPath string, artifactDir
 					return nil, fmt.Errorf("malformed argument token in %q: missing closing }", arg)
 				}
 				token := arg[cursor+2 : cursor+2+tokenEnd]
-				replacement, err := resolvePythonArgBindingToken(token, dataAssetsPath, artifactDir, &materializedDataAssets)
+				replacement, err := resolvePythonArgBindingToken(token, dataAssetsPath, artifactDir, &dataResolver)
 				if err != nil {
 					return nil, err
 				}
@@ -46,7 +44,7 @@ func resolvePythonArgvBindings(args []string, dataAssetsPath string, artifactDir
 	return resolved, nil
 }
 
-func resolvePythonArgBindingToken(token string, dataAssetsPath string, artifactDir string, materializedDataAssets *map[string]string) (string, error) {
+func resolvePythonArgBindingToken(token string, dataAssetsPath string, artifactDir string, dataResolver **variable.Resolver) (string, error) {
 	if token == "artifact_dir" {
 		return artifactDir, nil
 	}
@@ -55,62 +53,69 @@ func resolvePythonArgBindingToken(token string, dataAssetsPath string, artifactD
 		return "", fmt.Errorf("unsupported argument token %q", token)
 	}
 
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("unsupported data token %q", token)
-	}
-	if parts[1] == "" {
-		return "", fmt.Errorf("unsupported data token %q", token)
-	}
-	if parts[2] != "local_path" {
-		return "", fmt.Errorf("unsupported data token property %q in %q", parts[2], token)
-	}
-
-	binding := parts[1]
 	if strings.TrimSpace(dataAssetsPath) == "" {
 		return "", fmt.Errorf("no materialized data assets available for data token %q", token)
 	}
-	if *materializedDataAssets == nil {
-		assets, err := readMaterializedDataAssets(dataAssetsPath)
+	if *dataResolver == nil {
+		scope, err := dataScopeFromMaterializedDataAssetsPath(dataAssetsPath)
 		if err != nil {
 			return "", err
 		}
-		*materializedDataAssets = assets
+		resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+		*dataResolver = &resolver
 	}
 
-	localPath, ok := (*materializedDataAssets)[binding]
-	if !ok {
-		return "", fmt.Errorf("data binding %q was not materialized", binding)
+	value, err := resolveDataToken(*dataResolver, token)
+	if err != nil {
+		return "", fmt.Errorf("resolve data token %q: %w", token, err)
 	}
-	if strings.TrimSpace(localPath) == "" {
-		return "", fmt.Errorf("data binding %q has empty local_path", binding)
-	}
-	return localPath, nil
+	return value, nil
 }
 
-func readMaterializedDataAssets(path string) (map[string]string, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, fmt.Errorf("data assets manifest path is required")
-	}
-	data, err := os.ReadFile(path)
+func resolveDataToken(resolver *variable.Resolver, token string) (string, error) {
+	referenceText, accessor, err := splitDataToken(token)
 	if err != nil {
-		return nil, fmt.Errorf("read data assets manifest %s: %w", path, err)
+		return "", err
 	}
-
-	var manifest model.MaterializedDataAssetManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, fmt.Errorf("decode data assets manifest %s: %w", path, err)
+	resolved, err := resolver.Resolve(variable.Reference{
+		Name:      variable.Name{Namespace: variable.NamespaceData, Key: referenceText},
+		Qualified: true,
+	})
+	if err != nil {
+		return "", err
 	}
-	if err := manifest.Validate(); err != nil {
-		return nil, fmt.Errorf("validate data assets manifest %s: %w", path, err)
-	}
-
-	result := make(map[string]string, len(manifest.Assets))
-	for _, asset := range manifest.Assets {
-		if _, exists := result[asset.BindingName]; exists {
-			return nil, fmt.Errorf("duplicate data binding %q in data assets manifest", asset.BindingName)
+	if accessor != "" {
+		resolved, err = variable.ApplyAccessor(resolved, accessor)
+		if err != nil {
+			return "", err
 		}
-		result[asset.BindingName] = asset.LocalPath
 	}
-	return result, nil
+	if resolved.Type != variable.TypePath && resolved.Type != variable.TypeString {
+		return "", fmt.Errorf("%s has type %s, want path or string", token, resolved.Type)
+	}
+	value, ok := resolved.Value.(string)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%s is required", token)
+	}
+	return value, nil
+}
+
+func splitDataToken(token string) (string, string, error) {
+	const prefix = "data."
+	if !strings.HasPrefix(token, prefix) {
+		return "", "", fmt.Errorf("unsupported data token %q", token)
+	}
+	rest := strings.TrimPrefix(token, prefix)
+	if rest == "" {
+		return "", "", fmt.Errorf("unsupported data token %q", token)
+	}
+	index := strings.IndexAny(rest, ".[")
+	if index == -1 {
+		return rest, "", nil
+	}
+	key := rest[:index]
+	if key == "" {
+		return "", "", fmt.Errorf("unsupported data token %q", token)
+	}
+	return key, rest[index:], nil
 }

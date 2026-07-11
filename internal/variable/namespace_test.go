@@ -18,6 +18,7 @@ func TestPrecedenceOrder(t *testing.T) {
 		NamespaceFanOut,
 		NamespaceAsset,
 		NamespaceWorkItem,
+		NamespaceData,
 		NamespaceRuntime,
 	}
 
