@@ -10,6 +10,7 @@ Current implementation:
 - Workflow run admission now signals `workflow_work_queued` after successful admission instead of calling `EvaluateWorkerCapacity`, so submission acknowledgement is no longer coupled to worker launch.
 - Controller startup no longer calls `EvaluateWorkerCapacity`; the started CareTaker owns the startup reconciliation.
 - Work completion now signals `work_completed` after terminal persistence, dependency output capture, dependent enqueue, and stage activation instead of directly scheduling workers.
+- Work claim now signals `work_claimed` and no longer confirms inflight worker-start reservations or spawns a delayed capacity-evaluation goroutine; registration is the only inflight confirmation path.
 - `Controller.signalCareTaker` provides the no-fail notification seam for subsequent state-transition cutovers.
 
 ## Minimum capable model

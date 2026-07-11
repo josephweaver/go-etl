@@ -3749,12 +3749,12 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	c.signalCareTaker("work_claimed")
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(item); err != nil {
 		http.Error(w, "encode work item", http.StatusInternalServerError)
 		return
 	}
-	c.ConfirmWorkerStartClaimedAndEvaluateAsync()
 }
 
 type workerSessionIdentity struct {

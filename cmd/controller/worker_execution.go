@@ -222,23 +222,6 @@ func (m *WorkerCapacityManager) patternForConfig(pattern string) (WorkerExecutio
 	}
 }
 
-func (m *WorkerCapacityManager) ConfirmInflightStartClaimed() bool {
-	if m == nil {
-		return false
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if len(m.state.InflightStarts) == 0 {
-		return false
-	}
-	confirmed := m.state.InflightStarts[0]
-	m.state.InflightStarts = append([]WorkerStartReservation(nil), m.state.InflightStarts[1:]...)
-	fmt.Printf("worker_start_confirmed_by_claim reservation_id=%s\n", confirmed.ID)
-	return true
-}
-
 func (m *WorkerCapacityManager) ConfirmOldestInflightStartRegistered(now time.Time) bool {
 	if m == nil {
 		return false
@@ -339,33 +322,11 @@ func (c *Controller) EvaluateWorkerCapacity(ctx context.Context, now time.Time) 
 	return err
 }
 
-func (c *Controller) ConfirmWorkerStartClaimed() bool {
-	if c.workerExecutor == nil {
-		return false
-	}
-	return c.workerExecutor.ConfirmInflightStartClaimed()
-}
-
 func (c *Controller) ConfirmWorkerStartRegistered(now time.Time) bool {
 	if c.workerExecutor == nil {
 		return false
 	}
 	return c.workerExecutor.ConfirmOldestInflightStartRegistered(now)
-}
-
-func (c *Controller) ConfirmWorkerStartClaimedAndEvaluateAsync() {
-	if !c.ConfirmWorkerStartClaimed() {
-		return
-	}
-	if !c.asyncWorkerCapacity {
-		return
-	}
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		if err := c.EvaluateWorkerCapacity(context.Background(), time.Now().UTC()); err != nil {
-			fmt.Println("worker capacity evaluation after claim failed:", err)
-		}
-	}()
 }
 
 func (c *Controller) workerDemand(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerDemand, error) {

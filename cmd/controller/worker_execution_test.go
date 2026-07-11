@@ -240,7 +240,7 @@ func TestEvaluateWorkerCapacityRemovesInflightOnLaunchFailure(t *testing.T) {
 	}
 }
 
-func TestWorkerClaimConfirmsInflightStart(t *testing.T) {
+func TestClaimDoesNotConfirmInflightStart(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 
@@ -254,12 +254,9 @@ func TestWorkerClaimConfirmsInflightStart(t *testing.T) {
 		t.Fatalf("Evaluate() error = %v", err)
 	}
 
-	if !manager.ConfirmInflightStartClaimed() {
-		t.Fatal("ConfirmInflightStartClaimed() = false, want true")
-	}
 	state := manager.Snapshot()
-	if len(state.InflightStarts) != 0 {
-		t.Fatalf("inflight starts after claim = %d, want 0", len(state.InflightStarts))
+	if len(state.InflightStarts) != 1 {
+		t.Fatalf("inflight starts after claim = %d, want 1 still pending registration", len(state.InflightStarts))
 	}
 }
 
@@ -286,7 +283,7 @@ func TestWorkerRegistrationConfirmsInflightStart(t *testing.T) {
 	}
 }
 
-func TestWorkerClaimCanTriggerNextOneByOneStart(t *testing.T) {
+func TestWorkerRegistrationCanTriggerNextOneByOneStart(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	manager := NewWorkerCapacityManager(nil)
 	starts := 0
@@ -302,7 +299,7 @@ func TestWorkerClaimCanTriggerNextOneByOneStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Evaluate() error = %v", err)
 	}
-	manager.ConfirmInflightStartClaimed()
+	manager.ConfirmOldestInflightStartRegistered(now.Add(time.Second))
 	_, err = manager.Evaluate(context.Background(), now.Add(time.Second), defaultWorkerExecutionConfig(), fixedDemand(WorkerDemand{
 		PendingQueued:    2,
 		PendingClaimable: 2,
