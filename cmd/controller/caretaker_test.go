@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,94 @@ func TestCareTakerSignalsCoalesce(t *testing.T) {
 	count, reason := caretaker.signalSnapshot()
 	if count != 3 || reason != "third" {
 		t.Fatalf("signal snapshot = %d/%q, want 3/third", count, reason)
+	}
+}
+
+func TestCareTakerRunPerformsInitialReconcile(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recoverCh: make(chan int, 2),
+	}
+	clock := &controllableCareTakerClock{now: now}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
+func TestCareTakerWakesOnStateSignal(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recoverCh: make(chan int, 4),
+	}
+	clock := &controllableCareTakerClock{now: now}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	caretaker.Signal("state_changed")
+	waitForCareTakerCall(t, source.recoverCh)
+
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
+func TestCareTakerWakesAtEarliestHeartbeatExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		snapshot:  WorkerCapacitySnapshot{EarliestHeartbeat: now},
+		recoverCh: make(chan int, 4),
+	}
+	clock := &controllableCareTakerClock{
+		now:     now,
+		timerCh: make(chan *controllableCareTakerTimer, 2),
+	}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		DeadAfter: 5 * time.Minute,
+	}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	timer := waitForCareTakerTimer(t, clock.timerCh)
+	if timer.duration != 5*time.Minute {
+		t.Fatalf("timer duration = %s, want 5m", timer.duration)
+	}
+
+	timer.fire(now.Add(5 * time.Minute))
+	waitForCareTakerCall(t, source.recoverCh)
+
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
+func TestCareTakerShutdownDoesNotRequireClosingWakeChannel(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recoverCh: make(chan int, 2),
+	}
+	clock := &controllableCareTakerClock{now: now}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	cancel()
+	waitForCareTakerStop(t, done)
+
+	signalDone := make(chan struct{})
+	go func() {
+		caretaker.Signal("after_shutdown")
+		close(signalDone)
+	}()
+	select {
+	case <-signalDone:
+	case <-time.After(time.Second):
+		t.Fatal("Signal blocked after CareTaker shutdown")
 	}
 }
 
@@ -360,17 +449,31 @@ func (t fakeCareTakerTimer) Reset(d time.Duration) bool {
 }
 
 type fakeCareTakerStateSource struct {
-	recovery WorkerRecoverySummary
-	snapshot WorkerCapacitySnapshot
-	err      error
-	calls    []string
-	events   *[]string
+	mu        sync.Mutex
+	recovery  WorkerRecoverySummary
+	snapshot  WorkerCapacitySnapshot
+	err       error
+	calls     []string
+	events    *[]string
+	recoverCh chan int
 }
 
 func (s *fakeCareTakerStateSource) RecoverExpiredWorkerSessions(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerRecoverySummary, error) {
+	s.mu.Lock()
 	s.calls = append(s.calls, "recover")
 	if s.events != nil {
 		*s.events = append(*s.events, "recover")
+	}
+	recoverCh := s.recoverCh
+	recoverCalls := 0
+	for _, call := range s.calls {
+		if call == "recover" {
+			recoverCalls++
+		}
+	}
+	s.mu.Unlock()
+	if recoverCh != nil {
+		recoverCh <- recoverCalls
 	}
 	if s.err != nil {
 		return WorkerRecoverySummary{}, s.err
@@ -379,10 +482,12 @@ func (s *fakeCareTakerStateSource) RecoverExpiredWorkerSessions(ctx context.Cont
 }
 
 func (s *fakeCareTakerStateSource) WorkerCapacitySnapshot(ctx context.Context, now time.Time, deadAfter time.Duration) (WorkerCapacitySnapshot, error) {
+	s.mu.Lock()
 	s.calls = append(s.calls, "snapshot")
 	if s.events != nil {
 		*s.events = append(*s.events, "snapshot")
 	}
+	s.mu.Unlock()
 	if s.err != nil {
 		return WorkerCapacitySnapshot{}, s.err
 	}
@@ -415,4 +520,95 @@ func equalStrings(a []string, b []string) bool {
 		}
 	}
 	return true
+}
+
+type controllableCareTakerClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	timerCh chan *controllableCareTakerTimer
+}
+
+func (c *controllableCareTakerClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *controllableCareTakerClock) NewTimer(d time.Duration) CareTakerTimer {
+	timer := &controllableCareTakerTimer{ch: make(chan time.Time, 1), duration: d}
+	if c.timerCh != nil {
+		c.timerCh <- timer
+	}
+	return timer
+}
+
+type controllableCareTakerTimer struct {
+	ch       chan time.Time
+	duration time.Duration
+	stopped  bool
+}
+
+func (t *controllableCareTakerTimer) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *controllableCareTakerTimer) Stop() bool {
+	if t.stopped {
+		return false
+	}
+	t.stopped = true
+	return true
+}
+
+func (t *controllableCareTakerTimer) Reset(d time.Duration) bool {
+	wasActive := !t.stopped
+	t.duration = d
+	t.stopped = false
+	return wasActive
+}
+
+func (t *controllableCareTakerTimer) fire(at time.Time) {
+	t.ch <- at
+}
+
+func runCareTakerForTest(caretaker *CareTaker, ctx context.Context) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- caretaker.Run(ctx)
+	}()
+	return done
+}
+
+func waitForCareTakerCall(t *testing.T, ch <-chan int) int {
+	t.Helper()
+	select {
+	case call := <-ch:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CareTaker call")
+		return 0
+	}
+}
+
+func waitForCareTakerTimer(t *testing.T, ch <-chan *controllableCareTakerTimer) *controllableCareTakerTimer {
+	t.Helper()
+	select {
+	case timer := <-ch:
+		return timer
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CareTaker timer")
+		return nil
+	}
+}
+
+func waitForCareTakerStop(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CareTaker Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for CareTaker shutdown")
+	}
 }

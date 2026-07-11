@@ -142,6 +142,95 @@ func (c *CareTaker) signalSnapshot() (int, string) {
 	return c.signalCount, c.lastSignal
 }
 
+func (c *CareTaker) Run(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c.clock == nil {
+		c.clock = realCareTakerClock{}
+	}
+
+	c.Signal("startup")
+
+	var timer CareTakerTimer
+	var timerC <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			stopAndDrainCareTakerTimer(timer)
+			return nil
+		case <-c.wakeCh:
+			drainCareTakerSignals(c.wakeCh)
+			next, err := c.reconcile(ctx, c.clock.Now())
+			if ctx.Err() != nil {
+				stopAndDrainCareTakerTimer(timer)
+				return nil
+			}
+			if err != nil {
+				fmt.Printf("caretaker reconcile failed: %v\n", err)
+			}
+			timer, timerC = resetCareTakerTimer(c.clock, timer, next)
+		case <-timerC:
+			next, err := c.reconcile(ctx, c.clock.Now())
+			if ctx.Err() != nil {
+				stopAndDrainCareTakerTimer(timer)
+				return nil
+			}
+			if err != nil {
+				fmt.Printf("caretaker reconcile failed: %v\n", err)
+			}
+			timer, timerC = resetCareTakerTimer(c.clock, timer, next)
+		}
+	}
+}
+
+func drainCareTakerSignals(ch <-chan struct{}) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+func stopAndDrainCareTakerTimer(timer CareTakerTimer) {
+	if timer == nil {
+		return
+	}
+	if timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C():
+	default:
+	}
+}
+
+func resetCareTakerTimer(clock CareTakerClock, timer CareTakerTimer, next CareTakerNextWake) (CareTakerTimer, <-chan time.Time) {
+	if next.At.IsZero() {
+		stopAndDrainCareTakerTimer(timer)
+		return nil, nil
+	}
+	if clock == nil {
+		clock = realCareTakerClock{}
+	}
+	delay := next.At.Sub(clock.Now())
+	if delay < 0 {
+		delay = 0
+	}
+	if timer == nil {
+		timer = clock.NewTimer(delay)
+		return timer, timer.C()
+	}
+	stopAndDrainCareTakerTimer(timer)
+	timer.Reset(delay)
+	return timer, timer.C()
+}
+
 func (c *CareTaker) reconcile(ctx context.Context, now time.Time) (CareTakerNextWake, error) {
 	if c.source == nil {
 		return CareTakerNextWake{}, nil
