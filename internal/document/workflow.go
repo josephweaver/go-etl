@@ -76,6 +76,12 @@ func jsonSourceIsNotCanonicalWorkflow(data []byte, options DecodeOptions) (bool,
 		return false, nil
 	}
 	if _, ok := fields["workflow"]; ok {
+		if _, hasAPIVersion := fields["api_version"]; hasAPIVersion {
+			return false, nil
+		}
+		if _, hasKind := fields["kind"]; hasKind {
+			return false, nil
+		}
 		return true, nil
 	}
 	if _, hasAPIVersion := fields["api_version"]; !hasAPIVersion {
@@ -88,6 +94,12 @@ func jsonSourceIsNotCanonicalWorkflow(data []byte, options DecodeOptions) (bool,
 
 func CanonicalWorkflowFromValue(root map[string]any) (CanonicalWorkflowDocument, error) {
 	if _, ok := root["workflow"]; ok {
+		if _, hasAPIVersion := root["api_version"]; hasAPIVersion {
+			return CanonicalWorkflowDocument{}, legacyWorkflowWrapperMigrationError()
+		}
+		if _, hasKind := root["kind"]; hasKind {
+			return CanonicalWorkflowDocument{}, legacyWorkflowWrapperMigrationError()
+		}
 		return CanonicalWorkflowDocument{}, ErrNotCanonicalWorkflow
 	}
 	if _, ok := root["api_version"]; !ok {
@@ -145,6 +157,10 @@ func CanonicalWorkflowFromValue(root map[string]any) (CanonicalWorkflowDocument,
 		Steps:          steps,
 		SourceManifest: sourceManifest,
 	}, nil
+}
+
+func legacyWorkflowWrapperMigrationError() error {
+	return fmt.Errorf("legacy workflow wrapper is not supported in canonical Workflow documents; move workflow.ID/Steps into top-level id/steps and use canonical fan_out, work, and data fields")
 }
 
 func requiredWorkflowSteps(root map[string]any) ([]CanonicalWorkflowStep, error) {

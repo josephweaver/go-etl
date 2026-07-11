@@ -3821,6 +3821,24 @@ func TestSubmitWorkflowHandlerAdmitsCanonicalInlineWorkflowDocument(t *testing.T
 	}
 }
 
+func TestDecodeWorkflowSourceSubmissionRejectsCanonicalLegacyWorkflowWrapper(t *testing.T) {
+	_, err := decodeWorkflowSourceSubmission([]byte(`{
+		"api_version": "goet/v1alpha1",
+		"kind": "Workflow",
+		"workflow": {
+			"ID": "legacy-wrapper",
+			"Steps": []
+		},
+		"source_manifest": {}
+	}`))
+	if err == nil {
+		t.Fatal("decodeWorkflowSourceSubmission() expected error")
+	}
+	if !strings.Contains(err.Error(), "legacy workflow wrapper is not supported in canonical Workflow documents") {
+		t.Fatalf("decodeWorkflowSourceSubmission() error = %v, want migration error", err)
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
