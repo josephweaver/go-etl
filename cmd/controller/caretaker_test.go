@@ -106,6 +106,61 @@ func TestCareTakerWakesAtEarliestHeartbeatExpiry(t *testing.T) {
 	waitForCareTakerStop(t, done)
 }
 
+func TestCareTakerWakesAtInflightReservationExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recoverCh: make(chan int, 4),
+	}
+	clock := &controllableCareTakerClock{
+		now:     now,
+		timerCh: make(chan *controllableCareTakerTimer, 2),
+	}
+	manager := NewWorkerCapacityManager(nil)
+	manager.reserveInflightStarts(now, 1)
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		InflightStartTimeout: 5 * time.Minute,
+	}, source, &fakeCareTakerLauncher{}, manager, clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	timer := waitForCareTakerTimer(t, clock.timerCh)
+	if timer.duration != 5*time.Minute {
+		t.Fatalf("timer duration = %s, want 5m", timer.duration)
+	}
+
+	timer.fire(now.Add(5 * time.Minute))
+	waitForCareTakerCall(t, source.recoverCh)
+
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
+func TestCareTakerUsesFallbackSafetySweep(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	source := &fakeCareTakerStateSource{
+		recoverCh: make(chan int, 4),
+	}
+	clock := &controllableCareTakerClock{
+		now:     now,
+		timerCh: make(chan *controllableCareTakerTimer, 2),
+	}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		FallbackInterval: 10 * time.Minute,
+	}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runCareTakerForTest(caretaker, ctx)
+
+	waitForCareTakerCall(t, source.recoverCh)
+	timer := waitForCareTakerTimer(t, clock.timerCh)
+	if timer.duration != 10*time.Minute {
+		t.Fatalf("timer duration = %s, want 10m", timer.duration)
+	}
+
+	cancel()
+	waitForCareTakerStop(t, done)
+}
+
 func TestCareTakerShutdownDoesNotRequireClosingWakeChannel(t *testing.T) {
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	source := &fakeCareTakerStateSource{
@@ -421,6 +476,59 @@ func TestCareTakerLaunchFailureRemovesReservationAndSchedulesRetry(t *testing.T)
 	want := now.Add(30 * time.Second)
 	if !next.At.Equal(want) || next.Reason != "retry" {
 		t.Fatalf("next wake = %+v, want %s retry", next, want)
+	}
+}
+
+func TestCareTakerPersistenceFailureDoesNotLaunch(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	sourceErr := errors.New("store unavailable")
+	source := &fakeCareTakerStateSource{err: sourceErr}
+	launcher := &fakeCareTakerLauncher{}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		RetryInitial: 30 * time.Second,
+		RetryMaximum: 5 * time.Minute,
+	}, source, launcher, NewWorkerCapacityManager(nil), fakeCareTakerClock{now: now})
+
+	next, err := caretaker.reconcile(context.Background(), now)
+	if !errors.Is(err, sourceErr) {
+		t.Fatalf("reconcile() error = %v, want source error", err)
+	}
+	if launcher.calls != 0 {
+		t.Fatalf("launcher calls = %d, want no launch on persistence failure", launcher.calls)
+	}
+	want := now.Add(30 * time.Second)
+	if !next.At.Equal(want) || next.Reason != "retry" {
+		t.Fatalf("next wake = %+v, want %s retry", next, want)
+	}
+}
+
+func TestSuccessfulReconcileResetsBackoff(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	sourceErr := errors.New("store unavailable")
+	source := &fakeCareTakerStateSource{err: sourceErr}
+	caretaker := NewConfiguredCareTaker(CareTakerConfig{
+		RetryInitial:     30 * time.Second,
+		RetryMaximum:     5 * time.Minute,
+		FallbackInterval: 10 * time.Minute,
+	}, source, &fakeCareTakerLauncher{}, NewWorkerCapacityManager(nil), fakeCareTakerClock{now: now})
+
+	if _, err := caretaker.reconcile(context.Background(), now); !errors.Is(err, sourceErr) {
+		t.Fatalf("first reconcile() error = %v, want source error", err)
+	}
+	if caretaker.retryDelay != 30*time.Second {
+		t.Fatalf("retryDelay = %s, want 30s after failure", caretaker.retryDelay)
+	}
+
+	source.err = nil
+	next, err := caretaker.reconcile(context.Background(), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("second reconcile() error = %v", err)
+	}
+	if caretaker.retryDelay != 0 {
+		t.Fatalf("retryDelay = %s, want reset after success", caretaker.retryDelay)
+	}
+	if next.Reason == "retry" {
+		t.Fatalf("next wake = %+v, want non-retry after successful reconcile", next)
 	}
 }
 
