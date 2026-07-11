@@ -2,7 +2,12 @@
 
 ## Status
 
-Ready after OS-004.
+Implementation in progress.
+
+Current implementation:
+
+- Raw `/work` submission now signals `raw_work_queued` after persistence instead of calling `EvaluateWorkerCapacity`, so launch failures cannot change a successful raw submission response.
+- `Controller.signalCareTaker` provides the no-fail notification seam for subsequent state-transition cutovers.
 
 ## Minimum capable model
 

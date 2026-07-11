@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2324,6 +2325,45 @@ func TestSubmitWorkHandlerPersistsRawWorkWhenWorkflowStoreConfigured(t *testing.
 	}
 	if persisted.Parameters["year"].Value == nil {
 		t.Fatalf("persisted parameters = %+v, want year parameter", persisted.Parameters)
+	}
+}
+
+func TestRawSubmissionSignalsButDoesNotLaunchDirectly(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	starter := &testWorkerStarter{err: errors.New("launcher should not be called")}
+	controller.workerStarter = starter
+	controller.launchResolver = testLocalWorkerLaunchResolver()
+	var signals []string
+	controller.workerStateChanged = func(reason string) {
+		signals = append(signals, reason)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/work", bytes.NewBufferString(`{
+		"id":"test-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkHandler(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status code = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("starter calls = %d, want no direct launch", starter.calls)
+	}
+	if len(signals) != 1 || signals[0] != "raw_work_queued" {
+		t.Fatalf("signals = %+v, want raw_work_queued", signals)
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("queued count = %d, want 1", len(queued))
 	}
 }
 
@@ -5277,12 +5317,13 @@ func (s *testScheduler) Submit(ctx context.Context, job JobSpec) (JobHandle, err
 type testWorkerStarter struct {
 	calls   int
 	targets []string
+	err     error
 }
 
 func (s *testWorkerStarter) StartWorker(targetEnvironment string, resolver variable.Resolver) error {
 	s.calls++
 	s.targets = append(s.targets, targetEnvironment)
-	return nil
+	return s.err
 }
 
 func newControllerWithTestEnvironment(scheduler Scheduler) *Controller {

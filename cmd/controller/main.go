@@ -448,6 +448,13 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/observations/logs", controller.logObservationsHandler)
 }
 
+func (c *Controller) signalCareTaker(reason string) {
+	if c == nil || c.workerStateChanged == nil {
+		return
+	}
+	c.workerStateChanged(reason)
+}
+
 func (c *Controller) submissionHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := strings.CutSuffix(r.URL.Path, "/status"); ok {
 		c.submissionStatusHandler(w, r)
@@ -1214,10 +1221,7 @@ func (c *Controller) submitWorkHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "persist work item", http.StatusInternalServerError)
 		return
 	}
-	if err := c.EvaluateWorkerCapacity(r.Context(), submittedAt); err != nil {
-		http.Error(w, "evaluate worker capacity", http.StatusInternalServerError)
-		return
-	}
+	c.signalCareTaker("raw_work_queued")
 	w.WriteHeader(http.StatusNoContent)
 }
 
