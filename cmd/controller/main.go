@@ -3278,11 +3278,18 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	failed, found, err := c.workflowStore.FailAttempt(r.Context(), persistence.FailAttemptRequest{
-		AttemptID: failure.AttemptID,
-		Error:     failure.Error,
-		FailedAt:  failedAt,
+		AttemptID:         failure.AttemptID,
+		WorkerID:          failure.WorkerID,
+		WorkerSessionID:   failure.WorkerSessionID,
+		LiveSessionCutoff: c.workerLiveSessionCutoff(),
+		Error:             failure.Error,
+		FailedAt:          failedAt,
 	})
 	if err != nil {
+		if errors.Is(err, persistence.ErrAssignmentNoLongerOwned) {
+			http.Error(w, "assignment_no_longer_owned", http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "conflicts with existing") {
 			http.Error(w, "fail attempt conflict", http.StatusConflict)
 			return
@@ -3330,9 +3337,14 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	request.LiveSessionCutoff = c.workerLiveSessionCutoff()
 
 	completed, found, err := c.workflowStore.CompleteAttempt(r.Context(), request)
 	if err != nil {
+		if errors.Is(err, persistence.ErrAssignmentNoLongerOwned) {
+			http.Error(w, "assignment_no_longer_owned", http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "conflicts with existing") {
 			http.Error(w, "complete attempt conflict", http.StatusConflict)
 			return
@@ -3480,6 +3492,8 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 
 	return persistence.CompleteAttemptRequest{
 		AttemptID:        completion.AttemptID,
+		WorkerID:         completion.WorkerID,
+		WorkerSessionID:  completion.WorkerSessionID,
 		SkippedParentID:  completion.SkippedParentID,
 		OutputJSON:       outputJSON,
 		OutputJSONSHA256: outputJSONSHA256,
@@ -3487,6 +3501,14 @@ func completeAttemptRequestFromCompletion(completion model.WorkCompletion, fallb
 		PostStateSHA256:  postStateSHA256,
 		CompletedAt:      completedAt,
 	}, nil
+}
+
+func (c *Controller) workerLiveSessionCutoff() string {
+	policy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		return ""
+	}
+	return time.Now().UTC().Add(-policy.DeadAfter).Format(time.RFC3339Nano)
 }
 
 func reportedOrEvidenceSHA256(name string, reported string, evidence string) (string, error) {

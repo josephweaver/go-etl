@@ -9,11 +9,10 @@ Current implementation:
 - `/work/next` receives worker/session identity from OS-002 and now passes a heartbeat cutoff into persistence.
 - `ClaimNextWork` validates the matching worker session is active, not expired relative to the supplied cutoff, and not already assigned running work before selecting or mutating queued work.
 - Controller claim failures for inactive/expired sessions and busy sessions return `409 Conflict`.
+- completion and failure payloads carry worker/session identity, worker clients fill those fields from the active session, and persistence rejects mismatched, stopped, dead, or expired assignment owners before inserting terminal records.
 
 Remaining OS-003 work:
 
-- ownership fields in completion/failure payloads;
-- completion/failure ownership predicates and late-outcome conflicts;
 - expired-session recovery transaction;
 - stop-with-running-work abandonment/requeue;
 - deterministic race tests.

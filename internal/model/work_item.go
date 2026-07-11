@@ -126,6 +126,8 @@ type ExecutionEnvelopeProtectedReference struct {
 type WorkCompletion struct {
 	ID                   string     `json:"id"`
 	AttemptID            string     `json:"attempt_id,omitempty"`
+	WorkerID             string     `json:"worker_id,omitempty"`
+	WorkerSessionID      string     `json:"worker_session_id,omitempty"`
 	Skipped              bool       `json:"skipped,omitempty"`
 	SkippedParentID      string     `json:"skipped_parent_id,omitempty"`
 	SkipReason           string     `json:"skip_reason,omitempty"`
@@ -154,10 +156,12 @@ type WorkCompletion struct {
 }
 
 type WorkFailure struct {
-	ID        string `json:"id"`
-	AttemptID string `json:"attempt_id,omitempty"`
-	FailedAt  string `json:"failed_at,omitempty"`
-	Error     string `json:"error"`
+	ID              string `json:"id"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	WorkerID        string `json:"worker_id,omitempty"`
+	WorkerSessionID string `json:"worker_session_id,omitempty"`
+	FailedAt        string `json:"failed_at,omitempty"`
+	Error           string `json:"error"`
 }
 
 type WorkSkip struct {

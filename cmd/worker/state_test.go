@@ -328,9 +328,23 @@ func TestWorkerControllerClientSendsSessionHeaders(t *testing.T) {
 				OutputFilename: "result.txt",
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/work/complete":
+			var completion model.WorkCompletion
+			if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
+				t.Fatalf("decode completion: %v", err)
+			}
+			if completion.WorkerID != session.WorkerID || completion.WorkerSessionID != session.WorkerSessionID {
+				t.Fatalf("completion owner = %q/%q, want %q/%q", completion.WorkerID, completion.WorkerSessionID, session.WorkerID, session.WorkerSessionID)
+			}
 			seen["complete"] = true
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/work/fail":
+			var failure model.WorkFailure
+			if err := json.NewDecoder(r.Body).Decode(&failure); err != nil {
+				t.Fatalf("decode failure: %v", err)
+			}
+			if failure.WorkerID != session.WorkerID || failure.WorkerSessionID != session.WorkerSessionID {
+				t.Fatalf("failure owner = %q/%q, want %q/%q", failure.WorkerID, failure.WorkerSessionID, session.WorkerID, session.WorkerSessionID)
+			}
 			seen["fail"] = true
 			w.WriteHeader(http.StatusNoContent)
 		default:

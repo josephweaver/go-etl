@@ -1872,6 +1872,74 @@ func TestStoreClaimNextWorkEnforcesOneRunningAssignmentPerWorkerSession(t *testi
 	assertQueuedWork(t, ctx, store, second.ID, "2026-07-03T00:00:00Z")
 }
 
+func TestStoreCompleteAttemptRequiresMatchingAssignmentOwner(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	request := testCompleteAttemptRequest("attempt-001")
+	request.WorkerID = "worker-002"
+	request.WorkerSessionID = "session-002"
+	_, found, err := store.CompleteAttempt(ctx, request)
+	if !errors.Is(err, ErrAssignmentNoLongerOwned) {
+		t.Fatalf("CompleteAttempt() error = %v, want ErrAssignmentNoLongerOwned", err)
+	}
+	if found {
+		t.Fatal("CompleteAttempt() found = true, want false")
+	}
+	assertRunningWork(t, ctx, store, "attempt-001", work.ID, "worker-001", "2026-07-03T00:00:00Z", claim.StartedAt)
+
+	request.WorkerID = "worker-001"
+	request.WorkerSessionID = "session-001"
+	completed, found, err := store.CompleteAttempt(ctx, request)
+	if err != nil || !found {
+		t.Fatalf("CompleteAttempt(owner) found=%v error=%v, want success", found, err)
+	}
+	if completed.WorkItemID != work.ID {
+		t.Fatalf("completed work item = %q, want %q", completed.WorkItemID, work.ID)
+	}
+}
+
+func TestStoreFailAttemptRequiresMatchingAssignmentOwner(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	request := testFailAttemptRequest("attempt-001")
+	request.WorkerID = "worker-002"
+	request.WorkerSessionID = "session-002"
+	_, found, err := store.FailAttempt(ctx, request)
+	if !errors.Is(err, ErrAssignmentNoLongerOwned) {
+		t.Fatalf("FailAttempt() error = %v, want ErrAssignmentNoLongerOwned", err)
+	}
+	if found {
+		t.Fatal("FailAttempt() found = true, want false")
+	}
+	assertRunningWork(t, ctx, store, "attempt-001", work.ID, "worker-001", "2026-07-03T00:00:00Z", claim.StartedAt)
+
+	request.WorkerID = "worker-001"
+	request.WorkerSessionID = "session-001"
+	failed, found, err := store.FailAttempt(ctx, request)
+	if err != nil || !found {
+		t.Fatalf("FailAttempt(owner) found=%v error=%v, want success", found, err)
+	}
+	if failed.WorkItemID != work.ID {
+		t.Fatalf("failed work item = %q, want %q", failed.WorkItemID, work.ID)
+	}
+}
+
 func TestStoreClaimNextWorkClaimsOldestQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))

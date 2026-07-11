@@ -121,7 +121,11 @@ func reportWorkComplete(controllerURL string, item model.WorkItem, startedAt tim
 }
 
 func (c WorkerControllerClient) ReportWorkComplete(item model.WorkItem, startedAt time.Time, evidence WorkEvidence, sessions ...WorkerSession) error {
-	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/complete", workCompletion(item, startedAt, evidence))
+	completion, err := workCompletionForSession(item, startedAt, evidence, sessions...)
+	if err != nil {
+		return err
+	}
+	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/complete", completion)
 	if err != nil {
 		return fmt.Errorf("create work completion request: %w", err)
 	}
@@ -208,6 +212,22 @@ func workCompletion(item model.WorkItem, startedAt time.Time, evidence WorkEvide
 	return completion
 }
 
+func workCompletionForSession(item model.WorkItem, startedAt time.Time, evidence WorkEvidence, sessions ...WorkerSession) (model.WorkCompletion, error) {
+	completion := workCompletion(item, startedAt, evidence)
+	if len(sessions) == 0 {
+		return completion, nil
+	}
+	if len(sessions) > 1 {
+		return model.WorkCompletion{}, fmt.Errorf("at most one worker session can be attached to a work completion")
+	}
+	if err := sessions[0].ValidateIdentity(); err != nil {
+		return model.WorkCompletion{}, err
+	}
+	completion.WorkerID = sessions[0].WorkerID
+	completion.WorkerSessionID = sessions[0].WorkerSessionID
+	return completion, nil
+}
+
 func randomHex(byteCount int) string {
 	data := make([]byte, byteCount)
 	if _, err := rand.Read(data); err != nil {
@@ -225,12 +245,22 @@ func reportWorkFailed(controllerURL string, item model.WorkItem, workErr error) 
 }
 
 func (c WorkerControllerClient) ReportWorkFailed(item model.WorkItem, workErr error, sessions ...WorkerSession) error {
-	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/fail", model.WorkFailure{
+	failure := model.WorkFailure{
 		ID:        item.ID,
 		AttemptID: item.AttemptID,
 		FailedAt:  time.Now().UTC().Format(time.RFC3339),
 		Error:     workErr.Error(),
-	})
+	}
+	if len(sessions) == 1 {
+		if err := sessions[0].ValidateIdentity(); err != nil {
+			return err
+		}
+		failure.WorkerID = sessions[0].WorkerID
+		failure.WorkerSessionID = sessions[0].WorkerSessionID
+	} else if len(sessions) > 1 {
+		return fmt.Errorf("at most one worker session can be attached to a work failure")
+	}
+	request, err := c.newJSONRequest(context.Background(), http.MethodPost, "/work/fail", failure)
 	if err != nil {
 		return fmt.Errorf("create work failure request: %w", err)
 	}

@@ -26,6 +26,7 @@ const (
 
 var ErrWorkerSessionNotActive = errors.New("worker session is not active")
 var ErrWorkerSessionBusy = errors.New("worker session already owns running work")
+var ErrAssignmentNoLongerOwned = errors.New("assignment no longer owned")
 
 type Config struct {
 	Driver           string
@@ -281,13 +282,16 @@ type ClaimedWorkRecord struct {
 }
 
 type CompleteAttemptRequest struct {
-	AttemptID        string
-	SkippedParentID  string
-	OutputJSON       string
-	OutputJSONSHA256 string
-	PreStateSHA256   string
-	PostStateSHA256  string
-	CompletedAt      string
+	AttemptID         string
+	WorkerID          string
+	WorkerSessionID   string
+	LiveSessionCutoff string
+	SkippedParentID   string
+	OutputJSON        string
+	OutputJSONSHA256  string
+	PreStateSHA256    string
+	PostStateSHA256   string
+	CompletedAt       string
 }
 
 type CompletedWorkRecord struct {
@@ -304,9 +308,12 @@ type CompletedWorkRecord struct {
 }
 
 type FailAttemptRequest struct {
-	AttemptID string
-	Error     string
-	FailedAt  string
+	AttemptID         string
+	WorkerID          string
+	WorkerSessionID   string
+	LiveSessionCutoff string
+	Error             string
+	FailedAt          string
 }
 
 type FailedWorkRecord struct {
@@ -1841,6 +1848,9 @@ func (s *Store) CompleteAttempt(ctx context.Context, request CompleteAttemptRequ
 		}
 		return CompletedWorkRecord{}, false, nil
 	}
+	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
+		return CompletedWorkRecord{}, false, err
+	}
 
 	completed := CompletedWorkRecord{
 		AttemptID:        request.AttemptID,
@@ -1926,6 +1936,9 @@ func (s *Store) FailAttempt(ctx context.Context, request FailAttemptRequest) (Fa
 		}
 		return FailedWorkRecord{}, false, nil
 	}
+	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
+		return FailedWorkRecord{}, false, err
+	}
 
 	failed := FailedWorkRecord{
 		AttemptID:  request.AttemptID,
@@ -1974,10 +1987,35 @@ type scanner interface {
 }
 
 type runningWorkRecord struct {
-	attemptID  string
-	workItemID string
-	queuedAt   string
-	startedAt  string
+	attemptID       string
+	workItemID      string
+	workerID        string
+	workerSessionID string
+	queuedAt        string
+	startedAt       string
+}
+
+func validateRunningAssignmentOwner(ctx context.Context, tx *sql.Tx, running runningWorkRecord, workerID string, sessionID string, cutoff string) error {
+	if workerID == "" && sessionID == "" {
+		return nil
+	}
+	if workerID == "" || sessionID == "" {
+		return ErrAssignmentNoLongerOwned
+	}
+	if running.workerID != workerID || running.workerSessionID != sessionID {
+		return ErrAssignmentNoLongerOwned
+	}
+	session, found, err := getWorkerSession(ctx, tx, workerID, sessionID)
+	if err != nil {
+		return err
+	}
+	if !found || session.Status != WorkerSessionStatusActive {
+		return ErrAssignmentNoLongerOwned
+	}
+	if cutoff != "" && session.LastHeartbeatAt < cutoff {
+		return ErrAssignmentNoLongerOwned
+	}
+	return nil
 }
 
 func getRunningWork(ctx context.Context, q queryer, attemptID string) (runningWorkRecord, bool, error) {
@@ -1985,12 +2023,16 @@ func getRunningWork(ctx context.Context, q queryer, attemptID string) (runningWo
 	err := q.QueryRowContext(ctx, `SELECT
 		attempt_id,
 		work_item_id,
+		COALESCE(worker_id, ''),
+		COALESCE(worker_session_id, ''),
 		queued_at,
 		started_at
 	FROM running_work
 	WHERE attempt_id = ?`, attemptID).Scan(
 		&running.attemptID,
 		&running.workItemID,
+		&running.workerID,
+		&running.workerSessionID,
 		&running.queuedAt,
 		&running.startedAt,
 	)
@@ -3431,6 +3473,14 @@ func (r CompleteAttemptRequest) validate() error {
 	if r.AttemptID == "" {
 		return fmt.Errorf("complete attempt id is required")
 	}
+	if (r.WorkerID == "") != (r.WorkerSessionID == "") {
+		return fmt.Errorf("complete worker id and worker session id must be provided together")
+	}
+	if r.LiveSessionCutoff != "" {
+		if err := validateTimestamp("complete live session cutoff", r.LiveSessionCutoff); err != nil {
+			return err
+		}
+	}
 	if r.OutputJSON == "" {
 		return fmt.Errorf("complete output json is required")
 	}
@@ -3455,6 +3505,14 @@ func (r CompleteAttemptRequest) validate() error {
 func (r FailAttemptRequest) validate() error {
 	if r.AttemptID == "" {
 		return fmt.Errorf("fail attempt id is required")
+	}
+	if (r.WorkerID == "") != (r.WorkerSessionID == "") {
+		return fmt.Errorf("fail worker id and worker session id must be provided together")
+	}
+	if r.LiveSessionCutoff != "" {
+		if err := validateTimestamp("fail live session cutoff", r.LiveSessionCutoff); err != nil {
+			return err
+		}
 	}
 	if r.Error == "" {
 		return fmt.Errorf("fail error is required")
