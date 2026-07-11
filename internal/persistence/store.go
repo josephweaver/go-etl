@@ -1984,6 +1984,15 @@ func (s *Store) CompleteAttempt(ctx context.Context, request CompleteAttemptRequ
 		if failed {
 			return CompletedWorkRecord{}, false, fmt.Errorf("complete attempt %s conflicts with existing failed work", request.AttemptID)
 		}
+		if request.WorkerID != "" {
+			abandoned, err := hasAbandonedWork(ctx, tx, request.AttemptID)
+			if err != nil {
+				return CompletedWorkRecord{}, false, err
+			}
+			if abandoned {
+				return CompletedWorkRecord{}, false, ErrAssignmentNoLongerOwned
+			}
+		}
 		return CompletedWorkRecord{}, false, nil
 	}
 	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
@@ -2071,6 +2080,15 @@ func (s *Store) FailAttempt(ctx context.Context, request FailAttemptRequest) (Fa
 		}
 		if completed {
 			return FailedWorkRecord{}, false, fmt.Errorf("fail attempt %s conflicts with existing completed work", request.AttemptID)
+		}
+		if request.WorkerID != "" {
+			abandoned, err := hasAbandonedWork(ctx, tx, request.AttemptID)
+			if err != nil {
+				return FailedWorkRecord{}, false, err
+			}
+			if abandoned {
+				return FailedWorkRecord{}, false, ErrAssignmentNoLongerOwned
+			}
 		}
 		return FailedWorkRecord{}, false, nil
 	}
@@ -2323,6 +2341,14 @@ func requeueAbandonedWork(ctx context.Context, tx *sql.Tx, workItemID string, qu
 		return false, fmt.Errorf("requeue abandoned work %s: %w", workItemID, err)
 	}
 	return inserted, nil
+}
+
+func hasAbandonedWork(ctx context.Context, tx *sql.Tx, attemptID string) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM abandoned_work WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		return false, fmt.Errorf("count abandoned work %s: %w", attemptID, err)
+	}
+	return count != 0, nil
 }
 
 func getRunningWork(ctx context.Context, q queryer, attemptID string) (runningWorkRecord, bool, error) {

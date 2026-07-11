@@ -2136,6 +2136,96 @@ func TestStopWorkerSessionAndRecoverWorkIsIdempotent(t *testing.T) {
 	assertQueuedWork(t, ctx, store, work.ID, "2026-07-03T00:05:00Z")
 }
 
+func TestStopBeforeTerminalReportRejectsAbandonedAssignment(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+	if _, err := store.StopWorkerSessionAndRecoverWork(ctx, StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  "worker-001",
+		SessionID: "session-001",
+		StoppedAt: "2026-07-03T00:05:00Z",
+		Reason:    "process_exit",
+	}); err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() error = %v", err)
+	}
+
+	completion := testCompleteAttemptRequest("attempt-001")
+	completion.WorkerID = "worker-001"
+	completion.WorkerSessionID = "session-001"
+	_, found, err := store.CompleteAttempt(ctx, completion)
+	if !errors.Is(err, ErrAssignmentNoLongerOwned) {
+		t.Fatalf("CompleteAttempt() error = %v, want ErrAssignmentNoLongerOwned", err)
+	}
+	if found {
+		t.Fatal("CompleteAttempt() found = true, want false")
+	}
+
+	failure := testFailAttemptRequest("attempt-001")
+	failure.WorkerID = "worker-001"
+	failure.WorkerSessionID = "session-001"
+	_, found, err = store.FailAttempt(ctx, failure)
+	if !errors.Is(err, ErrAssignmentNoLongerOwned) {
+		t.Fatalf("FailAttempt() error = %v, want ErrAssignmentNoLongerOwned", err)
+	}
+	if found {
+		t.Fatal("FailAttempt() found = true, want false")
+	}
+
+	assertCompletedWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertFailedWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertQueuedWork(t, ctx, store, work.ID, "2026-07-03T00:05:00Z")
+}
+
+func TestCompletionBeforeStopDoesNotAbandonOrRequeue(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work := insertQueuedClaimTestWork(t, ctx, store, "work-001")
+	insertWorkerSessionForTest(t, ctx, store, "worker-001", "session-001")
+	claim := testWorkerClaimWorkRequest("attempt-001", "worker-001", "session-001")
+	if _, found, err := store.ClaimNextWork(ctx, claim); err != nil || !found {
+		t.Fatalf("ClaimNextWork() found=%v error=%v, want success", found, err)
+	}
+
+	completion := testCompleteAttemptRequest("attempt-001")
+	completion.WorkerID = "worker-001"
+	completion.WorkerSessionID = "session-001"
+	completed, found, err := store.CompleteAttempt(ctx, completion)
+	if err != nil || !found {
+		t.Fatalf("CompleteAttempt() found=%v error=%v, want success", found, err)
+	}
+	result, err := store.StopWorkerSessionAndRecoverWork(ctx, StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  "worker-001",
+		SessionID: "session-001",
+		StoppedAt: "2026-07-03T00:05:00Z",
+		Reason:    "process_exit",
+	})
+	if err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() error = %v", err)
+	}
+	want := StopWorkerSessionAndRecoverWorkResult{Changed: true}
+	if result != want {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() = %+v, want %+v", result, want)
+	}
+
+	history, err := store.ListAbandonedWorkForItem(ctx, work.ID)
+	if err != nil {
+		t.Fatalf("ListAbandonedWorkForItem() error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("abandoned history = %+v, want none", history)
+	}
+	assertRunningWorkMissingForAttempt(t, ctx, store, "attempt-001")
+	assertQueuedWorkMissing(t, ctx, store, work.ID)
+	assertCompletedWork(t, ctx, store, completed)
+}
+
 func TestStoreClaimNextWorkClaimsOldestQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
@@ -3282,6 +3372,30 @@ func assertRunningWorkMissingForAttempt(t *testing.T, ctx context.Context, store
 	}
 	if count != 0 {
 		t.Fatalf("running work count = %d, want 0", count)
+	}
+}
+
+func assertCompletedWorkMissingForAttempt(t *testing.T, ctx context.Context, store *Store, attemptID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM completed_work WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		t.Fatalf("count completed work: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("completed work count = %d, want 0", count)
+	}
+}
+
+func assertFailedWorkMissingForAttempt(t *testing.T, ctx context.Context, store *Store, attemptID string) {
+	t.Helper()
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM failed_work WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		t.Fatalf("count failed work: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("failed work count = %d, want 0", count)
 	}
 }
 
