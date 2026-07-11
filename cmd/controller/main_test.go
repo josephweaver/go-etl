@@ -3679,6 +3679,75 @@ func TestSubmitWorkflowHandlerAdmitsInlineProjectAndWorkflowJSON(t *testing.T) {
 	}
 }
 
+func TestSubmitWorkflowHandlerLoadsCanonicalInlineProjectVariables(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"api_version": "goet/v1alpha1",
+			"kind": "Project",
+			"id": "canonical-project",
+			"variables": {
+				"year": 2026
+			}
+		},
+		"workflow": {
+			"workflow": {
+				"ID": "inline-workflow",
+				"Steps": []
+			},
+			"source_manifest": {}
+		}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	runs, err := store.ListActiveWorkflowRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns() error = %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active run count = %d, want 1", len(runs))
+	}
+	var submissionContext workflowRunSubmissionContext
+	if err := json.Unmarshal([]byte(runs[0].SubmissionContextJSON), &submissionContext); err != nil {
+		t.Fatalf("decode submission context: %v", err)
+	}
+	if len(submissionContext.Variables) != 1 {
+		t.Fatalf("submission variable count = %d, want 1", len(submissionContext.Variables))
+	}
+	got := submissionContext.Variables[0]
+	if got.Name != (variable.Name{Namespace: variable.NamespaceProjectConfig, Key: "year"}) {
+		t.Fatalf("variable name = %+v, want project_config.year", got.Name)
+	}
+	if got.Type != variable.TypeInt {
+		t.Fatalf("variable type = %s, want int", got.Type)
+	}
+	number, ok := got.Expression.(json.Number)
+	if !ok {
+		t.Fatalf("variable expression = %T %[1]v, want json.Number", got.Expression)
+	}
+	year, err := number.Int64()
+	if err != nil {
+		t.Fatalf("parse variable expression: %v", err)
+	}
+	if year != 2026 {
+		t.Fatalf("variable expression = %d, want 2026", year)
+	}
+}
+
 func TestSubmitWorkflowHandlerAdmitsInlineSourceManifestFiles(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
