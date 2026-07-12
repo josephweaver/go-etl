@@ -1,6 +1,6 @@
 # 010 Collection Materialization Smoke and Concept Closure
 
-Status: proposed
+Status: implemented pending review
 
 ## Objective
 
@@ -189,3 +189,40 @@ A runtime change is not part of this closure slice. If the smoke exposes a produ
 - Report exact commands and paths used by the smoke.
 - The smoke should prove the orchestration contract, not scientific validity.
 - Suggested HCI: `EC-3 / operational slice / files(0)+test+doc+config+newfile`.
+
+## Implementation Notes
+
+Implemented 2026-07-12.
+
+The closure smoke is a focused controller integration test:
+
+```text
+cmd/controller/collection_materialization_smoke_test.go
+```
+
+It uses the existing synthetic 2008, 2009, and 2010 collection helpers from
+`cmd/controller/workflow_outputs_test.go`, verifies that aggregation produces
+one compact `goet/materialized-asset-collection/v1` object instead of a JSON
+list, resolves the typed fan-out domain through `workflow.step[0]`, persists
+three completed member records, hydrates each downstream member by concrete
+year, and verifies the existing `data.cdl.path[0]` projection.
+
+Destination filesystem promotion, pinned destination reuse, and conflict-safe
+failure remain owned by the worker tests in:
+
+```text
+cmd/worker/work_asset_materialize_test.go
+```
+
+No real CDL archive, external network, GDAL dependency, HPCC path, or new smoke
+script is required for this slice.
+
+Validation commands:
+
+```text
+go test ./cmd/controller
+go test ./...
+```
+
+The Strategic Concept README is intentionally not marked `Implemented` until
+implementation review and human acceptance complete.

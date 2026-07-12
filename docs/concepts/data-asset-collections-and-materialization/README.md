@@ -1,6 +1,6 @@
 # Data Asset Collections and Explicit Materialization
 
-Status: Ready  
+Status: Ready for implementation review  
 Cadence: CSxIx  
 Target repository: `josephweaver/go-etl`  
 Reviewed against repository `main`: 2026-07-12
@@ -182,21 +182,21 @@ The canonical document concept already moves acquisition out of compute paramete
 The current repository has these concrete behaviors:
 
 - `internal/model/data_definition.go` defines `DataInputDefinition`, parameter definitions, file roles, provider bindings, cache policy, and `DataDefinitionMaterialization` with `scope` and `strategy`.
-- A data input does not declare a finite collection domain.
-- `DataDefinitionMaterialization` does not declare a deterministic destination template.
+- A data input may declare an ordered finite collection domain over existing asset parameters.
+- `DataDefinitionMaterialization` may declare a deterministic destination template.
 - `internal/workflow/data_instance.go` instantiates one fully bound asset from explicit parameter bindings.
 - `internal/model/work_item.go` defines `WorkItemTypeAssetMaterialize = "asset.materialize"` and `AssetMaterializeWorkItemPayload`.
-- `internal/workflow/explicit_asset_materialize.go` compiles an explicit `asset.materialize` item for one bound asset.
-- `internal/workflow/asset_materialize_plan.go` still contains legacy planning that can generate materialization work from compute-item data parameters.
+- `internal/workflow/explicit_asset_materialize.go` compiles explicit `asset.materialize` work for scalar assets and finite asset collections.
+- Legacy hidden materialization planning has been removed; workflow-authored `parameters.data_assets`, `parameters.publish`, and `parameters.publish_targets` are rejected with migration diagnostics.
 - `cmd/worker/work_asset_materialize.go` validates the `asset_materialize` payload and delegates actual work to the existing `assetMaterializer`.
 - `cmd/worker/data_asset_materializer.go` acquires sources into the worker asset cache, verifies integrity, and applies archive selection.
-- The current materializer chooses its cache/extraction paths from cache keys and worker configuration; the asset definition does not name the final deterministic member path.
+- The worker materializer still uses the existing provider acquisition, source-cache, and archive-selection mechanics, then promotes selected bytes to the declared deterministic destination when one is present.
 - `cmd/controller/asset_materialize_dependencies.go` and `asset_materialize_hydration.go` own dependency release and completed-manifest hydration using `asset.materialize` terminology.
-- `cmd/controller/workflow_outputs.go` returns one object for a one-item step and a JSON list for a step with multiple completed work items.
+- `cmd/controller/workflow_outputs.go` returns ordinary one-object or list outputs for ordinary steps, and emits one compact collection descriptor for completed collection materialization members.
 - `internal/model/materialized_projection.go` and `cmd/worker/data_scope.go` project concrete materialized paths into the step-local `data` namespace.
 - Arbitrary unresolved interpolation fails during ordinary variable resolution, which is the correct default.
 
-The mismatch is that an authored fan-out materialization step naturally produces a list of completed outputs, while the desired collection abstraction is one logical asset collection with a finite domain and an indexed path template.
+The implemented boundary now preserves concrete member evidence for recovery and hydration while exposing one logical asset collection with a finite domain and indexed path template.
 
 ## Target State
 
@@ -651,7 +651,7 @@ A future naming review may consider a namespaced publication operation, but that
    Remove compute-parameter scanning and migrate active workflows, fixtures, tests, and canonical docs.
 
 10. `010-collection-materialization-smoke-and-concept-closure.md`  
-    Prove the complete fixture path, update current-state documentation, and close the concept after review.
+    Prove the fixture-sized controller path, update current-state documentation, and leave the concept ready for review.
 
 ## Completion Criteria
 
