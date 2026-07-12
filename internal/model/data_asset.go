@@ -102,6 +102,11 @@ type MaterializedDataAsset struct {
 	Kind                    string                                 `json:"kind"`
 	Format                  string                                 `json:"format,omitempty"`
 	LocalPath               string                                 `json:"local_path"`
+	MaterializationKey      string                                 `json:"materialization_key,omitempty"`
+	MaterializationDomainID string                                 `json:"materialization_domain_id,omitempty"`
+	DestinationRelativePath string                                 `json:"destination_relative_path,omitempty"`
+	DestinationSizeBytes    *int64                                 `json:"destination_size_bytes,omitempty"`
+	DestinationSHA256       string                                 `json:"destination_sha256,omitempty"`
 	MaterializationStrategy string                                 `json:"materialization_strategy,omitempty"`
 	CacheKey                string                                 `json:"cache_key,omitempty"`
 	CacheImmutable          *bool                                  `json:"cache_immutable,omitempty"`
@@ -350,6 +355,19 @@ func (asset MaterializedDataAsset) Validate() error {
 	if strings.TrimSpace(asset.LocalPath) == "" {
 		return fmt.Errorf("materialized data asset local_path is required")
 	}
+	if asset.MaterializationKey != "" {
+		if err := validatePrefixedSHA256("materialized data asset materialization_key", asset.MaterializationKey); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(asset.MaterializationDomainID) != asset.MaterializationDomainID {
+		return fmt.Errorf("materialized data asset materialization_domain_id must not contain leading or trailing whitespace")
+	}
+	if asset.DestinationRelativePath != "" {
+		if _, err := ValidateArtifactRelativePath(asset.DestinationRelativePath); err != nil {
+			return fmt.Errorf("materialized data asset destination_relative_path: %w", err)
+		}
+	}
 	if asset.CacheKey != "" {
 		if _, err := validateDataRelativePath(asset.CacheKey, "materialized data asset cache_key"); err != nil {
 			return err
@@ -361,10 +379,16 @@ func (asset MaterializedDataAsset) Validate() error {
 	if err := validateOptionalSize("selected_size_bytes", asset.SelectedSizeBytes); err != nil {
 		return err
 	}
+	if err := validateOptionalSize("destination_size_bytes", asset.DestinationSizeBytes); err != nil {
+		return err
+	}
 	if err := validateOptionalSHA256("source_sha256", asset.SourceSHA256); err != nil {
 		return err
 	}
 	if err := validateOptionalSHA256("selected_sha256", asset.SelectedSHA256); err != nil {
+		return err
+	}
+	if err := validateOptionalSHA256("destination_sha256", asset.DestinationSHA256); err != nil {
 		return err
 	}
 	if asset.ArchiveType != "" {

@@ -369,6 +369,11 @@ func TestMaterializedDataAssetManifestValidateAndRoundTrip(t *testing.T) {
 				Kind:                    "raster",
 				Format:                  "geotiff",
 				LocalPath:               "/worker/cache/cdl.tif",
+				MaterializationKey:      "sha256:" + validDataSHA256,
+				MaterializationDomainID: "target-local",
+				DestinationRelativePath: "cdl/2024.tif",
+				DestinationSizeBytes:    int64Ptr(120),
+				DestinationSHA256:       validDataSHA256,
 				MaterializationStrategy: DataAssetCacheStrategyWorkerCache,
 				CacheKey:                "cdl/2024/source.zip",
 				CacheImmutable:          boolPtr(true),
@@ -420,6 +425,24 @@ func TestMaterializedDataAssetManifestValidateAndRoundTrip(t *testing.T) {
 			name: "missing provider type",
 			manifest: MaterializedDataAssetManifest{Assets: []MaterializedDataAsset{
 				{BindingName: "cropland_year", Kind: "raster", LocalPath: "/worker/cache/cdl.tif"},
+			}},
+		},
+		{
+			name: "invalid destination path",
+			manifest: MaterializedDataAssetManifest{Assets: []MaterializedDataAsset{
+				{BindingName: "cropland_year", ProviderType: DataProviderHTTP, Kind: "raster", LocalPath: "/worker/cache/cdl.tif", DestinationRelativePath: "../cdl.tif"},
+			}},
+		},
+		{
+			name: "invalid materialization key",
+			manifest: MaterializedDataAssetManifest{Assets: []MaterializedDataAsset{
+				{BindingName: "cropland_year", ProviderType: DataProviderHTTP, Kind: "raster", LocalPath: "/worker/cache/cdl.tif", MaterializationKey: validDataSHA256},
+			}},
+		},
+		{
+			name: "invalid destination hash",
+			manifest: MaterializedDataAssetManifest{Assets: []MaterializedDataAsset{
+				{BindingName: "cropland_year", ProviderType: DataProviderHTTP, Kind: "raster", LocalPath: "/worker/cache/cdl.tif", DestinationSHA256: "bad"},
 			}},
 		},
 	}

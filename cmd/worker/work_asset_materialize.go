@@ -35,11 +35,36 @@ func (w Worker) AssetMaterialize(ctx OperationContext) (WorkEvidence, error) {
 		return WorkEvidence{}, err
 	}
 
+	destination := assetDestinationRequest{
+		root:    w.Config.effectiveAssetCacheDir(),
+		payload: payload,
+		asset:   asset,
+	}
+	if materialized, ok, err := existingMaterializedDestination(destination); err != nil || ok {
+		if err != nil {
+			return WorkEvidence{}, err
+		}
+		return w.assetMaterializeEvidence(payload, materialized, preStateSHA256, preState)
+	}
+
 	materializer := assetMaterializer{config: w.Config, workDir: workDir}
 	materialized, err := materializer.materialize(asset)
 	if err != nil {
 		return WorkEvidence{}, err
 	}
+	materialized, err = promoteMaterializedDestination(destination, materialized)
+	if err != nil {
+		return WorkEvidence{}, err
+	}
+	return w.assetMaterializeEvidence(payload, materialized, preStateSHA256, preState)
+}
+
+func (w Worker) assetMaterializeEvidence(
+	payload model.AssetMaterializeWorkItemPayload,
+	materialized model.MaterializedDataAsset,
+	preStateSHA256 string,
+	preState map[string]any,
+) (WorkEvidence, error) {
 	manifest := model.MaterializedDataAssetManifest{
 		Schema:              model.MaterializedDataAssetManifestSchemaV1,
 		AssetKey:            payload.AssetKey,
