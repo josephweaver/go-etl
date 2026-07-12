@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"goetl/internal/model"
 )
@@ -184,6 +185,53 @@ func TestRunWorkerLoopStopsBeforeNoWorkExit(t *testing.T) {
 
 	if err := runWorkerLoop(worker); err != nil {
 		t.Fatalf("runWorkerLoop() error = %v", err)
+	}
+	if !sawStop {
+		t.Fatal("worker did not send no_work stop")
+	}
+}
+
+func TestRunWorkerLoopPollsUntilIdleTimeout(t *testing.T) {
+	var nextCalls int
+	var sawStop bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/workers/register":
+			writeTestWorkerRegistration(t, w)
+		case r.Method == http.MethodGet && r.URL.Path == "/work/next":
+			assertTestWorkerSessionHeaders(t, r)
+			nextCalls++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/workers/stop":
+			var stop model.WorkerStopRequest
+			if err := json.NewDecoder(r.Body).Decode(&stop); err != nil {
+				t.Fatalf("decode stop: %v", err)
+			}
+			if stop.Reason != "no_work" {
+				t.Fatalf("stop reason = %q, want no_work", stop.Reason)
+			}
+			sawStop = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	worker := newTestWorker(t)
+	worker.Config.ControllerURL = server.URL
+	worker.Config.IdlePollIntervalSeconds = 1
+	worker.Config.IdleTimeoutSeconds = 1
+
+	startedAt := time.Now()
+	if err := runWorkerLoop(worker); err != nil {
+		t.Fatalf("runWorkerLoop() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed < time.Second {
+		t.Fatalf("worker stopped after %s, want at least one idle poll interval", elapsed)
+	}
+	if nextCalls < 2 {
+		t.Fatalf("next calls = %d, want at least 2", nextCalls)
 	}
 	if !sawStop {
 		t.Fatal("worker did not send no_work stop")

@@ -116,6 +116,8 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 		RcloneConfigPath:                      "/data/goetl-test/secrets/rclone.conf",
 		EnableGDriveRcloneProvider:            true,
 		MaxAssetBytes:                         20000000000,
+		IdlePollIntervalSeconds:               30,
+		IdleTimeoutSeconds:                    600,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
 			"published_data": "/data/goetl-test/published",
@@ -169,6 +171,12 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	}
 	if cfg.MaxAssetBytes != 20000000000 {
 		t.Fatalf("max asset bytes = %d, want 20000000000", cfg.MaxAssetBytes)
+	}
+	if cfg.IdlePollIntervalSeconds != 30 {
+		t.Fatalf("idle poll interval seconds = %d, want 30", cfg.IdlePollIntervalSeconds)
+	}
+	if cfg.IdleTimeoutSeconds != 600 {
+		t.Fatalf("idle timeout seconds = %d, want 600", cfg.IdleTimeoutSeconds)
 	}
 	if cfg.DataLocationRoots["fixture_data"] != "/data/goetl-test/fixtures" ||
 		cfg.DataLocationRoots["published_data"] != "/data/goetl-test/published" {

@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+const defaultWorkerIdlePollInterval = 30 * time.Second
 
 type Config struct {
 	LogDir                                string            `json:"log_dir"`
@@ -25,6 +28,8 @@ type Config struct {
 	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
 	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
 	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
+	IdlePollIntervalSeconds               int               `json:"idle_poll_interval_seconds,omitempty"`
+	IdleTimeoutSeconds                    int               `json:"idle_timeout_seconds,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -114,6 +119,14 @@ func (c Config) ValidateRuntime() error {
 		return fmt.Errorf("max asset bytes must be non-negative")
 	}
 
+	if c.IdlePollIntervalSeconds < 0 {
+		return fmt.Errorf("idle poll interval seconds must be non-negative")
+	}
+
+	if c.IdleTimeoutSeconds < 0 {
+		return fmt.Errorf("idle timeout seconds must be non-negative")
+	}
+
 	return nil
 }
 
@@ -169,4 +182,18 @@ func (c Config) effectiveMaxAssetBytes() int64 {
 		return c.MaxAssetBytes
 	}
 	return 5 * 1024 * 1024
+}
+
+func (c Config) effectiveIdlePollInterval() time.Duration {
+	if c.IdlePollIntervalSeconds > 0 {
+		return time.Duration(c.IdlePollIntervalSeconds) * time.Second
+	}
+	return defaultWorkerIdlePollInterval
+}
+
+func (c Config) effectiveIdleTimeout() time.Duration {
+	if c.IdleTimeoutSeconds > 0 {
+		return time.Duration(c.IdleTimeoutSeconds) * time.Second
+	}
+	return 0
 }

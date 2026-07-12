@@ -498,6 +498,14 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	idlePollIntervalSeconds, err := nonNegativeIntSetting(settings, "idle_poll_interval_seconds")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
+	idleTimeoutSeconds, err := nonNegativeIntSetting(settings, "idle_timeout_seconds")
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	roots, err := settings.StringMap("data_location_roots")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -517,7 +525,24 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		EnableGDriveRcloneProvider:            enableGDriveRcloneProvider,
 		MaxAssetBytes:                         maxAssetBytes,
 		DataLocationRoots:                     roots,
+		IdlePollIntervalSeconds:               idlePollIntervalSeconds,
+		IdleTimeoutSeconds:                    idleTimeoutSeconds,
 	}, nil
+}
+
+func nonNegativeIntSetting(settings ExecutionComponentSettings, name string) (int, error) {
+	value, err := settings.Int64(name)
+	if err != nil {
+		return 0, err
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("setting %s must be non-negative", name)
+	}
+	maxInt := int64(int(^uint(0) >> 1))
+	if value > maxInt {
+		return 0, fmt.Errorf("setting %s is too large", name)
+	}
+	return int(value), nil
 }
 
 func (settings ExecutionComponentSettings) String(name string) (string, error) {

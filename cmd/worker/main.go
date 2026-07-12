@@ -58,6 +58,10 @@ func runWorkerLoop(worker Worker) error {
 	if err != nil {
 		return fmt.Errorf("controller client: %w", err)
 	}
+	lifecycleClock := worker.LifecycleClock
+	if lifecycleClock == nil {
+		lifecycleClock = realWorkerLifecycleClock{}
+	}
 	session, err := controller.RegisterWorker(context.Background(), workerRegistrationRequest())
 	if err != nil {
 		return fmt.Errorf("register worker: %w", err)
@@ -66,7 +70,7 @@ func runWorkerLoop(worker Worker) error {
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
 	heartbeatDone := make(chan error, 1)
 	go func() {
-		heartbeatDone <- RunHeartbeat(heartbeatCtx, session, controller.HeartbeatWorker, worker.LifecycleClock)
+		heartbeatDone <- RunHeartbeat(heartbeatCtx, session, controller.HeartbeatWorker, lifecycleClock)
 	}()
 	heartbeatStopped := false
 	stopHeartbeat := func() error {
@@ -108,7 +112,22 @@ func runWorkerLoop(worker Worker) error {
 		}
 		return nil
 	}
+	waitForIdlePoll := func(duration time.Duration) error {
+		ticker := lifecycleClock.NewTicker(duration)
+		defer ticker.Stop()
+		select {
+		case <-ticker.C():
+			return heartbeatStatus()
+		case err := <-heartbeatDone:
+			heartbeatStopped = true
+			if err != nil {
+				return fmt.Errorf("worker heartbeat: %w", err)
+			}
+			return fmt.Errorf("worker heartbeat stopped unexpectedly")
+		}
+	}
 
+	var idleStarted time.Time
 	for {
 		if err := heartbeatStatus(); err != nil {
 			return err
@@ -122,12 +141,39 @@ func runWorkerLoop(worker Worker) error {
 		}
 
 		if !hasWork {
-			fmt.Println("no work available")
-			if err := stopWorker("no_work"); err != nil {
-				return err
+			idleTimeout := worker.Config.effectiveIdleTimeout()
+			if idleTimeout <= 0 {
+				fmt.Println("no work available")
+				if err := stopWorker("no_work"); err != nil {
+					return err
+				}
+				return nil
 			}
-			return nil
+			now := lifecycleClock.Now()
+			if idleStarted.IsZero() {
+				idleStarted = now
+				fmt.Printf("no work available; polling for up to %s\n", idleTimeout)
+			}
+			elapsed := now.Sub(idleStarted)
+			if elapsed >= idleTimeout {
+				fmt.Println("no work available; idle timeout reached")
+				if err := stopWorker("no_work"); err != nil {
+					return err
+				}
+				return nil
+			}
+			wait := worker.Config.effectiveIdlePollInterval()
+			if remaining := idleTimeout - elapsed; remaining < wait {
+				wait = remaining
+			}
+			if wait > 0 {
+				if err := waitForIdlePoll(wait); err != nil {
+					return err
+				}
+			}
+			continue
 		}
+		idleStarted = time.Time{}
 
 		startedAt := time.Now().UTC()
 		evidence, err := worker.Run(item)

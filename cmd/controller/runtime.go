@@ -39,6 +39,8 @@ type WorkerRuntime struct {
 	EnableGDriveRcloneProvider            bool
 	MaxAssetBytes                         int64
 	DataLocationRoots                     map[string]string
+	IdlePollIntervalSeconds               int
+	IdleTimeoutSeconds                    int
 }
 
 func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
@@ -146,6 +148,8 @@ type WorkerConfig struct {
 	EnableGDriveRcloneProvider            bool              `json:"enable_gdrive_rclone_provider,omitempty"`
 	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
 	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
+	IdlePollIntervalSeconds               int               `json:"idle_poll_interval_seconds,omitempty"`
+	IdleTimeoutSeconds                    int               `json:"idle_timeout_seconds,omitempty"`
 }
 
 func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
@@ -211,6 +215,8 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 		EnableGDriveRcloneProvider:            r.EnableGDriveRcloneProvider,
 		MaxAssetBytes:                         r.MaxAssetBytes,
 		DataLocationRoots:                     r.DataLocationRoots,
+		IdlePollIntervalSeconds:               r.IdlePollIntervalSeconds,
+		IdleTimeoutSeconds:                    r.IdleTimeoutSeconds,
 	}
 	if _, ok := transport.(LocalTransport); ok {
 		var err error

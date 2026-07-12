@@ -24,6 +24,8 @@ func TestLoadConfig(t *testing.T) {
 		"enable_gdrive_rclone_provider": true,
 		"asset_cache_dir": "asset-cache",
 		"max_asset_bytes": 1024,
+		"idle_poll_interval_seconds": 15,
+		"idle_timeout_seconds": 300,
 		"data_location_roots": {
 			"fixture": "fixtures"
 		}
@@ -88,6 +90,14 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.MaxAssetBytes != 1024 {
 		t.Fatalf("unexpected max asset bytes: %d", config.MaxAssetBytes)
+	}
+
+	if config.IdlePollIntervalSeconds != 15 {
+		t.Fatalf("unexpected idle poll interval seconds: %d", config.IdlePollIntervalSeconds)
+	}
+
+	if config.IdleTimeoutSeconds != 300 {
+		t.Fatalf("unexpected idle timeout seconds: %d", config.IdleTimeoutSeconds)
 	}
 
 	if config.DataLocationRoots["fixture"] != filepath.Join(root, "fixtures") {
@@ -211,6 +221,12 @@ func TestConfigValidate(t *testing.T) {
 		}},
 		{name: "negative max asset bytes", config: Config{
 			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "http://localhost:8080", MaxAssetBytes: -1,
+		}, wantErr: true},
+		{name: "negative idle poll interval", config: Config{
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "http://localhost:8080", IdlePollIntervalSeconds: -1,
+		}, wantErr: true},
+		{name: "negative idle timeout", config: Config{
+			LogDir: "logs", TmpDir: "tmp", DataDir: "data", ControllerURL: "http://localhost:8080", IdleTimeoutSeconds: -1,
 		}, wantErr: true},
 	}
 

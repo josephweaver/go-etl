@@ -153,6 +153,8 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 			"rclone_config_path":            "/tmp/goetl/secrets/rclone.conf",
 			"enable_gdrive_rclone_provider": true,
 			"max_asset_bytes":               float64(20000000000),
+			"idle_poll_interval_seconds":    float64(30),
+			"idle_timeout_seconds":          float64(600),
 		}},
 	})
 	if err != nil {
@@ -186,6 +188,12 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 	if runtime.MaxAssetBytes != 20000000000 {
 		t.Fatalf("max asset bytes = %d, want 20000000000", runtime.MaxAssetBytes)
+	}
+	if runtime.IdlePollIntervalSeconds != 30 {
+		t.Fatalf("idle poll interval seconds = %d, want 30", runtime.IdlePollIntervalSeconds)
+	}
+	if runtime.IdleTimeoutSeconds != 600 {
+		t.Fatalf("idle timeout seconds = %d, want 600", runtime.IdleTimeoutSeconds)
 	}
 }
 
