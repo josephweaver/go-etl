@@ -2,104 +2,40 @@ package workflow
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"goetl/internal/model"
 )
 
-func TestPlanAssetMaterializeWorkItemsDeduplicatesSameProviderParametersForTwoComputeJobs(t *testing.T) {
+func TestPlanStageAssetMaterializeWorkItemsDoesNotCreateHiddenMaterializationFromDataAssets(t *testing.T) {
 	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
-	stage := testAssetMaterializeStage(
-		testComputeStageItem("compute-a", asset, "target-local"),
-		testComputeStageItem("compute-b", asset, "target-local"),
-	)
+	stage := testAssetMaterializeStage(testComputeStageItem("compute-a", asset, "target-local"))
 
-	planned, err := PlanAssetMaterializeWorkItems(stage)
+	planned, err := PlanStageAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
+		t.Fatalf("PlanStageAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	cacheItems := AssetMaterializeItems(planned)
-	if len(cacheItems) != 1 {
-		t.Fatalf("asset_materialize item count = %d, want 1", len(cacheItems))
+	if len(planned.WorkItems) != 1 {
+		t.Fatalf("work item count = %d, want authored compute only", len(planned.WorkItems))
 	}
-	for _, item := range computeDataItems(planned) {
-		if len(item.WorkItem.DependsOn) != 1 || item.WorkItem.DependsOn[0] != cacheItems[0].WorkItem.ID {
-			t.Fatalf("compute %s depends_on = %+v, want %s", item.WorkItem.ID, item.WorkItem.DependsOn, cacheItems[0].WorkItem.ID)
-		}
+	compute := planned.WorkItems[0].WorkItem
+	if compute.Type != model.WorkItemTypePythonScript {
+		t.Fatalf("work item type = %q, want python_script", compute.Type)
 	}
-
-	payload, ok := cacheItems[0].WorkItem.Parameters["asset_materialize"]
-	if !ok || payload.Type != "asset_materialize" {
-		t.Fatalf("asset_materialize parameter = %+v, want asset_materialize payload", payload)
+	if len(compute.DependsOn) != 0 {
+		t.Fatalf("compute depends_on = %+v, want no hidden dependency", compute.DependsOn)
 	}
-	if len(cacheItems[0].ResourceConstraints) != 1 {
-		t.Fatalf("resource constraint count = %d, want 1", len(cacheItems[0].ResourceConstraints))
+	if _, ok := compute.Parameters["data_assets"]; !ok {
+		t.Fatal("compute item lost data_assets parameter")
 	}
-	constraint := cacheItems[0].ResourceConstraints[0]
-	if constraint.ResourceKey != "provider:http:example.invalid/download" {
-		t.Fatalf("resource key = %q", constraint.ResourceKey)
-	}
-	if constraint.RequestedUnits != 1 || constraint.Operator != model.WorkItemResourceConstraintOperatorLessEq || constraint.TargetUnits != 1 {
-		t.Fatalf("resource constraint = %+v, want source mutex", constraint)
+	if len(AssetMaterializeItems(planned)) != 0 {
+		t.Fatalf("asset_materialize item count = %d, want 0", len(AssetMaterializeItems(planned)))
 	}
 }
 
-func TestPlanAssetMaterializeWorkItemsDeduplicatesSamePhysicalAssetUnderTwoAliases(t *testing.T) {
-	cropland := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
-	inputRaster := cropland
-	inputRaster.BindingName = "input_raster"
-	stage := testAssetMaterializeStage(
-		testComputeStageItem("compute-a", cropland, "target-local"),
-		testComputeStageItem("compute-b", inputRaster, "target-local"),
-	)
-
-	planned, err := PlanAssetMaterializeWorkItems(stage)
-	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
-	}
-
-	if got := len(AssetMaterializeItems(planned)); got != 1 {
-		t.Fatalf("asset_materialize item count = %d, want 1", got)
-	}
-}
-
-func TestPlanAssetMaterializeWorkItemsDoesNotDeduplicateDifferentArchiveSelection(t *testing.T) {
-	first := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
-	second := testAssetMaterializeAsset("cropland_year", "metadata.xml")
-	stage := testAssetMaterializeStage(
-		testComputeStageItem("compute-a", first, "target-local"),
-		testComputeStageItem("compute-b", second, "target-local"),
-	)
-
-	planned, err := PlanAssetMaterializeWorkItems(stage)
-	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
-	}
-
-	if got := len(AssetMaterializeItems(planned)); got != 2 {
-		t.Fatalf("asset_materialize item count = %d, want 2", got)
-	}
-}
-
-func TestPlanAssetMaterializeWorkItemsDoesNotDeduplicateDifferentTargetEnvironment(t *testing.T) {
-	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
-	stage := testAssetMaterializeStage(
-		testComputeStageItem("compute-a", asset, "target-local"),
-		testComputeStageItem("compute-b", asset, "target-hpcc"),
-	)
-
-	planned, err := PlanAssetMaterializeWorkItems(stage)
-	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
-	}
-
-	if got := len(AssetMaterializeItems(planned)); got != 2 {
-		t.Fatalf("asset_materialize item count = %d, want 2", got)
-	}
-}
-
-func TestPlanAssetMaterializeWorkItemsUsesConfiguredSourceCapacityAndTransferLimits(t *testing.T) {
+func TestAssetMaterializePayloadUsesConfiguredSourceCapacityAndTransferLimits(t *testing.T) {
 	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
 	asset.TransferPolicy = model.DataAssetTransferPolicy{
 		MaxConcurrentSourceTransfers:   2,
@@ -109,23 +45,17 @@ func TestPlanAssetMaterializeWorkItemsUsesConfiguredSourceCapacityAndTransferLim
 			"rclone_bwlimit": "25M",
 		},
 	}
-	stage := testAssetMaterializeStage(testComputeStageItem("compute-a", asset, "target-local"))
-
-	planned, err := PlanAssetMaterializeWorkItems(stage)
+	assetKey, err := AssetMaterializeAssetKey(asset, "target-local")
 	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
+		t.Fatalf("AssetMaterializeAssetKey() error = %v", err)
 	}
-
-	cacheItems := AssetMaterializeItems(planned)
-	if len(cacheItems) != 1 {
-		t.Fatalf("asset_materialize item count = %d, want 1", len(cacheItems))
+	payload, constraints, err := AssetMaterializePayload(asset, "target-local", assetKey)
+	if err != nil {
+		t.Fatalf("AssetMaterializePayload() error = %v", err)
 	}
-	constraint := cacheItems[0].ResourceConstraints[0]
-	if constraint.TargetUnits != 2 {
-		t.Fatalf("target units = %d, want 2", constraint.TargetUnits)
+	if len(constraints) != 1 || constraints[0].TargetUnits != 2 {
+		t.Fatalf("constraints = %+v, want source capacity 2", constraints)
 	}
-
-	payload := decodeAssetMaterializePayload(t, cacheItems[0])
 	if payload.TransferLimits.MaxBytesPerSecond != 26214400 {
 		t.Fatalf("transfer max bytes/sec = %d", payload.TransferLimits.MaxBytesPerSecond)
 	}
@@ -172,104 +102,58 @@ func TestAssetMaterializeResourceKeysAreSanitizedByProviderSource(t *testing.T) 
 	}
 }
 
-func TestPlanCommitDataWorkItemsSplitsPublishBindingFromCompute(t *testing.T) {
-	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
-	compute := testComputeStageItem("compute-a", asset, "target-local")
-	compute.WorkItem.Parameters["publish"] = model.Parameter{Type: "publish_targets", Value: []model.BoundPublishTarget{testPublishTarget("published_data", "reports/summary.csv")}}
-	stage := testAssetMaterializeStage(compute)
-
-	planned, err := PlanCommitDataWorkItems(stage)
-	if err != nil {
-		t.Fatalf("PlanCommitDataWorkItems() error = %v", err)
+func TestCompileWorkflowStageRejectsLegacyDataOperatorParameters(t *testing.T) {
+	tests := []struct {
+		name      string
+		parameter model.Parameter
+		want      string
+	}{
+		{
+			name:      "data_assets",
+			parameter: model.Parameter{Type: "data_assets", Value: []model.BoundDataAsset{testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")}},
+			want:      `legacy work parameter "data_assets" is not allowed`,
+		},
+		{
+			name:      "publish",
+			parameter: model.Parameter{Type: "publish_targets", Value: []model.BoundPublishTarget{testPublishTarget("published_data", "reports/summary.csv")}},
+			want:      `legacy work parameter "publish" is not allowed`,
+		},
 	}
-
-	if got := len(planned.WorkItems); got != 2 {
-		t.Fatalf("work item count = %d, want 2", got)
-	}
-	computeItem := planned.WorkItems[0]
-	if _, ok := computeItem.WorkItem.Parameters["publish"]; ok {
-		t.Fatal("compute item still has publish parameter")
-	}
-	commitItem := planned.WorkItems[1]
-	if commitItem.WorkItem.Type != model.WorkItemTypeCommitData {
-		t.Fatalf("commit item type = %q, want commit_data", commitItem.WorkItem.Type)
-	}
-	if len(commitItem.WorkItem.DependsOn) != 1 || commitItem.WorkItem.DependsOn[0] != compute.WorkItem.ID {
-		t.Fatalf("commit depends_on = %+v, want %s", commitItem.WorkItem.DependsOn, compute.WorkItem.ID)
-	}
-	payload := decodeCommitDataPayload(t, commitItem)
-	if payload.Source.FromWorkItemID != compute.WorkItem.ID || payload.Source.FromArtifact != "summary" {
-		t.Fatalf("commit source = %+v, want compute summary", payload.Source)
-	}
-	if len(commitItem.ResourceConstraints) != 1 {
-		t.Fatalf("resource constraint count = %d, want 1", len(commitItem.ResourceConstraints))
-	}
-	constraint := commitItem.ResourceConstraints[0]
-	if constraint.ResourceKey != "target:target-local/published-data-write:published_data" {
-		t.Fatalf("resource key = %q", constraint.ResourceKey)
-	}
-	if constraint.RequestedUnits != 1 || constraint.Operator != model.WorkItemResourceConstraintOperatorLessEq || constraint.TargetUnits != 1 {
-		t.Fatalf("resource constraint = %+v, want write mutex", constraint)
-	}
-}
-
-func TestCompileWorkflowStageDoesNotPlanLegacyDataOperators(t *testing.T) {
-	resolver := testWorkflowResolver(t, 2024)
-	workflow := Workflow{
-		ID: "cdl",
-		Steps: []Step{
-			{
-				ID: "compute",
-				FanOut: &FanOutStep{
-					WorkItem: FanOutWorkItemTemplate{
-						FanOutExpression: "${years[*]}",
-						Type:             model.WorkItemTypePythonScript,
-						IDPrefix:         "compute",
-						OutputPrefix:     "compute",
-						OutputExtension:  ".json",
-						Parameters: model.Parameters{
-							"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
-							"target_environment_id": {Type: "string", Value: "target-local"},
-							"data_assets":           {Type: "data_assets", Value: []model.BoundDataAsset{testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")}},
-							"publish":               {Type: "publish_targets", Value: []model.BoundPublishTarget{testPublishTarget("published_data", "reports/summary.csv")}},
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := testWorkflowResolver(t, 2024)
+			workflow := Workflow{
+				ID: "cdl",
+				Steps: []Step{
+					{
+						ID: "compute",
+						FanOut: &FanOutStep{
+							WorkItem: FanOutWorkItemTemplate{
+								FanOutExpression: "${years[*]}",
+								Type:             model.WorkItemTypePythonScript,
+								IDPrefix:         "compute",
+								OutputPrefix:     "compute",
+								OutputExtension:  ".json",
+								Parameters: model.Parameters{
+									"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
+									"target_environment_id": {Type: "string", Value: "target-local"},
+									test.name:               test.parameter,
+								},
+							},
 						},
 					},
 				},
-			},
-		},
-	}
-	plan, err := NormalizeStages(workflow)
-	if err != nil {
-		t.Fatalf("PlanWorkflow() error = %v", err)
-	}
+			}
+			plan, err := NormalizeStages(workflow)
+			if err != nil {
+				t.Fatalf("NormalizeStages() error = %v", err)
+			}
 
-	result, err := CompileWorkflowStage(resolver, workflow, plan, 0)
-	if err != nil {
-		t.Fatalf("CompileWorkflowStage() error = %v", err)
-	}
-
-	if len(result.WorkItems) != 1 {
-		t.Fatalf("work item count = %d, want authored compute item only", len(result.WorkItems))
-	}
-	if len(AssetMaterializeItems(result)) != 0 {
-		t.Fatalf("asset_materialize item count = %d, want 0", len(AssetMaterializeItems(result)))
-	}
-	if len(commitDataItems(result)) != 0 {
-		t.Fatalf("commit_data item count = %d, want 0", len(commitDataItems(result)))
-	}
-	computeItems := computeDataItems(result)
-	if len(computeItems) != 1 {
-		t.Fatalf("compute item count = %d, want 1", len(computeItems))
-	}
-	compute := computeItems[0]
-	if _, ok := compute.WorkItem.Parameters["data_assets"]; !ok {
-		t.Fatal("compute item lost legacy data_assets parameter")
-	}
-	if _, ok := compute.WorkItem.Parameters["publish"]; !ok {
-		t.Fatal("compute item lost legacy publish parameter")
-	}
-	if len(compute.WorkItem.DependsOn) != 0 {
-		t.Fatalf("compute depends_on = %+v, want no hidden cache dependency", compute.WorkItem.DependsOn)
+			_, err = CompileWorkflowStage(resolver, workflow, plan, 0)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("CompileWorkflowStage() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

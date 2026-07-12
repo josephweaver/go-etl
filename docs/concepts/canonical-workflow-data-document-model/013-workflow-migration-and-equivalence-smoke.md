@@ -17,7 +17,7 @@ Read:
 - OS-001 through OS-012
 - current smoke scripts and workflows
 - current workflow authoring documentation
-- `internal/workflow/cache_data_plan.go`
+- `internal/workflow/asset_materialize_plan.go`
 - controller/client submission tests
 
 ## Allowed Production Files
@@ -40,7 +40,7 @@ Read:
 ```text
 legacy workflow fixtures
     -> canonical JSON/YAML fixtures
-    -> explicit cache_data/compute/commit_data stages
+    -> explicit asset.materialize/compute/commit_data stages
     -> remove legacy parameter scanners
     -> one supported public model
 ```
@@ -52,7 +52,7 @@ legacy workflow fixtures
 - Move provider/binding definitions to project or workflow `data` sections.
 - Replace `data_assets` and `publish` compute parameters.
 - Add at least one complete JSON/YAML equivalent workflow pair.
-- Remove or disable automatic `PlanCacheDataWorkItems` and `PlanCommitDataWorkItems` discovery from compute parameters.
+- Remove automatic `PlanAssetMaterializeWorkItems` and `PlanCommitDataWorkItems` discovery from compute parameters.
 - Reject legacy public workflow shape with a focused migration error.
 - Update authoring docs and concept state.
 - Run full tests and fixture-sized smoke paths.
@@ -83,4 +83,4 @@ go test ./...
 ## Implementation Notes
 
 - 2026-07-11: Repository JSON/YAML fixture search found no checked-in workflow fixture files still using the legacy public wrapper shape.
-- 2026-07-11: `go test ./...` passes after disabling normal stage-compilation discovery of compute-side `data_assets` and `publish` planner parameters.
+- 2026-07-12: `go test ./...` passes after removing the remaining workflow planner entry points that discovered compute-side `data_assets` and `publish` parameters, while retaining explicit `asset.materialize` and `commit_data` helpers.

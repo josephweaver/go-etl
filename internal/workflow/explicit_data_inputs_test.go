@@ -8,7 +8,7 @@ import (
 	"goetl/internal/variable"
 )
 
-func TestCanonicalComputeDataInputsPlanAssetMaterializeDependency(t *testing.T) {
+func TestCanonicalComputeDataInputsCompileRequirementWithoutHiddenMaterialization(t *testing.T) {
 	doc, err := document.DecodeCanonicalWorkflowSource([]byte(`{
 		"api_version": "goet/v1alpha1",
 		"kind": "Workflow",
@@ -97,19 +97,15 @@ func TestCanonicalComputeDataInputsPlanAssetMaterializeDependency(t *testing.T) 
 		t.Fatalf("PlanStageAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	if len(planned.WorkItems) != 2 {
-		t.Fatalf("planned work item count = %d, want asset_materialize and compute", len(planned.WorkItems))
+	if len(planned.WorkItems) != 1 {
+		t.Fatalf("planned work item count = %d, want authored compute only", len(planned.WorkItems))
 	}
-	cache := planned.WorkItems[0].WorkItem
-	compute := planned.WorkItems[1].WorkItem
-	if cache.Type != model.WorkItemTypeAssetMaterialize {
-		t.Fatalf("first type = %q, want asset_materialize", cache.Type)
-	}
+	compute := planned.WorkItems[0].WorkItem
 	if compute.Type != model.WorkItemTypePythonScript {
-		t.Fatalf("second type = %q, want python_script", compute.Type)
+		t.Fatalf("work item type = %q, want python_script", compute.Type)
 	}
-	if len(compute.DependsOn) != 1 || compute.DependsOn[0] != cache.ID {
-		t.Fatalf("compute depends_on = %+v, want %s", compute.DependsOn, cache.ID)
+	if len(compute.DependsOn) != 0 {
+		t.Fatalf("compute depends_on = %+v, want no hidden materialization dependency", compute.DependsOn)
 	}
 	assets, err := boundDataAssetsFromParameters(compute.Parameters)
 	if err != nil {

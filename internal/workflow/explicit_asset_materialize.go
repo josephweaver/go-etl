@@ -276,40 +276,7 @@ func PlanStageAssetMaterializeWorkItems(result CompileStageResult) (CompileStage
 	if err := ValidateExplicitAssetMaterializeWorkItems(result); err != nil {
 		return CompileStageResult{}, err
 	}
-	if len(result.WorkItems) == 0 {
-		return result, nil
-	}
-
-	legacyInput := CompileStageResult{
-		WorkflowID: result.WorkflowID,
-		StageIndex: result.StageIndex,
-		Steps:      result.Steps,
-		WorkItems:  make([]CompileStageWorkItem, 0, len(result.WorkItems)),
-	}
-	explicit := make([]CompileStageWorkItem, 0)
-	seenExplicit := map[string]string{}
-	for _, item := range result.WorkItems {
-		if item.WorkItem.Type == model.WorkItemTypeAssetMaterialize {
-			dedupeKey, err := explicitAssetMaterializeDedupeKey(item)
-			if err != nil {
-				return CompileStageResult{}, err
-			}
-			if previous, ok := seenExplicit[dedupeKey]; ok {
-				return CompileStageResult{}, fmt.Errorf("duplicate explicit asset_materialize materializer for %s: %s and %s", dedupeKey, previous, item.WorkItem.ID)
-			}
-			seenExplicit[dedupeKey] = item.WorkItem.ID
-			explicit = append(explicit, item)
-			continue
-		}
-		legacyInput.WorkItems = append(legacyInput.WorkItems, item)
-	}
-
-	planned, err := PlanAssetMaterializeWorkItems(legacyInput)
-	if err != nil {
-		return CompileStageResult{}, err
-	}
-	planned.WorkItems = append(explicit, planned.WorkItems...)
-	return planned, nil
+	return result, nil
 }
 
 func ValidateExplicitAssetMaterializeWorkItems(result CompileStageResult) error {

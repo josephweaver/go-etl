@@ -1,6 +1,6 @@
 # 009 Remove Legacy Hidden Materialization and Migrate Fixtures
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

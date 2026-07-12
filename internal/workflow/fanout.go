@@ -160,6 +160,9 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if err := bindParameterAccessors(item.Parameters, value, template.ParameterAccessors); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
 		}
+		if err := rejectLegacyHiddenPlannerParameters(item.Parameters); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
+		}
 		if err := compileExplicitDataInputs(resolver, context, &item, template.DataInputs); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d data inputs: %w", index, err)
 		}
@@ -509,6 +512,18 @@ func validateFanOutRenderedToken(token string, name string) error {
 	for _, char := range token {
 		if unicode.IsControl(char) {
 			return fmt.Errorf("%s token must not contain control characters", name)
+		}
+	}
+	return nil
+}
+
+func rejectLegacyHiddenPlannerParameters(parameters model.Parameters) error {
+	for name := range parameters {
+		switch name {
+		case "data_assets":
+			return fmt.Errorf("legacy work parameter %q is not allowed; use step.data.inputs with a prior explicit asset.materialize step", name)
+		case "publish", "publish_targets":
+			return fmt.Errorf("legacy work parameter %q is not allowed; use an explicit commit_data step with data.outputs", name)
 		}
 	}
 	return nil

@@ -370,7 +370,7 @@ func TestPersistenceRecordsFromCompiledStageResultsRejectsSensitivePlaintext(t *
 }
 
 func TestPersistenceRecordsFromCompiledStageResultsQueuesAssetMaterializeBeforeCompute(t *testing.T) {
-	stageResult, err := workflow.PlanAssetMaterializeWorkItems(workflow.CompileStageResult{
+	stageResult := workflow.CompileStageResult{
 		WorkflowID: "cdl",
 		StageIndex: 0,
 		WorkItems: []workflow.CompileStageWorkItem{
@@ -378,25 +378,35 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesAssetMaterializeBeforeC
 				WorkflowID:    "cdl",
 				StageIndex:    0,
 				StepIndex:     0,
+				StepID:        "materialize",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "asset-materialize-001",
+					Type:           model.WorkItemTypeAssetMaterialize,
+					OutputFilename: "asset-materialize-001.json",
+					Parameters: model.Parameters{
+						"target_environment_id": {Type: "string", Value: "target-local"},
+					},
+				},
+			},
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    0,
+				StepIndex:     1,
 				StepID:        "compute",
 				WorkItemIndex: 0,
 				WorkItem: model.WorkItem{
 					ID:             "compute-001",
 					Type:           model.WorkItemTypePythonScript,
 					OutputFilename: "compute-001.json",
+					DependsOn:      []string{"asset-materialize-001"},
 					Parameters: model.Parameters{
 						"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
 						"target_environment_id": {Type: "string", Value: "target-local"},
-						"data_assets": {Type: "data_assets", Value: []model.BoundDataAsset{
-							controllerTestAssetMaterializeAsset("cropland_year"),
-						}},
 					},
 				},
 			},
 		},
-	})
-	if err != nil {
-		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
 	records, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
@@ -496,33 +506,5 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesPriorStageDependency(t 
 	}
 	if got, want := queuedPayload.DependsOn, []string{"run-001:package-delivery-delivery"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("depends_on = %+v, want %+v", got, want)
-	}
-}
-
-func controllerTestAssetMaterializeAsset(bindingName string) model.BoundDataAsset {
-	required := true
-	return model.BoundDataAsset{
-		BindingName:  bindingName,
-		ProviderName: "cdl_zip",
-		Kind:         "raster_archive",
-		Format:       "geotiff_zip",
-		Provider:     model.DataProviderHTTP,
-		Location: model.DataAssetLocation{
-			Type: model.DataProviderHTTP,
-			URI:  "https://example.invalid/2023_30m_cdls.zip",
-		},
-		Integrity: model.DataAssetIntegrity{SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
-		Cache: model.DataAssetCache{
-			Strategy: model.DataAssetCacheStrategyWorkerCache,
-			CacheKey: "cdl/2023/30m/source.zip",
-		},
-		Archive: &model.DataAssetArchive{
-			Type: model.DataAssetArchiveTypeZip,
-			Select: []model.DataAssetArchiveSelect{
-				{Member: "2023_30m_cdls.tif", As: "cdl.tif", Required: &required},
-			},
-			Expose: model.DataAssetArchiveExposeSelectedPath,
-		},
-		Parameters: map[string]any{"year": 2023},
 	}
 }
