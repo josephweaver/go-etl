@@ -27,8 +27,9 @@ type FanOutWorkItemTemplate struct {
 	ParameterExpressions map[string]variable.TypedExpression
 	ParameterAccessors   map[string]string
 	ResourceConstraints  []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
-	ExplicitCacheData    *ExplicitCacheDataTemplate      `json:"explicit_cache_data,omitempty"`
-	ExplicitCommitData   *ExplicitCommitDataTemplate     `json:"explicit_commit_data,omitempty"`
+	DataInputs           []ExplicitDataInputTemplate
+	ExplicitCacheData    *ExplicitCacheDataTemplate  `json:"explicit_cache_data,omitempty"`
+	ExplicitCommitData   *ExplicitCommitDataTemplate `json:"explicit_commit_data,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -150,6 +151,9 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		}
 		if err := bindParameterAccessors(item.Parameters, value, template.ParameterAccessors); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
+		}
+		if err := compileExplicitDataInputs(resolver, context, &item, template.DataInputs); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d data inputs: %w", index, err)
 		}
 		explicitConstraints, err := compileExplicitCacheDataWorkItem(resolver, context, &item, template.ExplicitCacheData)
 		if err != nil {

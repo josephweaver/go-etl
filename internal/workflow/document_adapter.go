@@ -62,6 +62,10 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
+	dataInputs, err := explicitDataInputsFromCanonical(step, definitions)
+	if err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
 	if err := rejectCanonicalHiddenPlannerParameters(step); err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
@@ -77,6 +81,7 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 		ParameterExpressions: parameters,
 		ParameterAccessors:   step.Work.ParameterAccessors,
 		ResourceConstraints:  constraints,
+		DataInputs:           dataInputs,
 		ExplicitCacheData:    explicitCache,
 		ExplicitCommitData:   explicitCommit,
 	}, nil
@@ -244,6 +249,48 @@ func explicitCommitDataFromCanonical(step document.CanonicalWorkflowStep, defini
 		FromArtifact: fromArtifact,
 		With:         with,
 	}, nil
+}
+
+func explicitDataInputsFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) ([]ExplicitDataInputTemplate, error) {
+	raw, hasInputs := step.Data["inputs"]
+	if !hasInputs {
+		return nil, nil
+	}
+	workType := model.WorkItemType(step.Work.Type)
+	if workType == model.WorkItemTypeCacheData || workType == model.WorkItemTypeCommitData {
+		return nil, fmt.Errorf("data.inputs requires compute work")
+	}
+	items, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("data.inputs must be an object")
+	}
+	inputs := make([]ExplicitDataInputTemplate, 0, len(items))
+	for alias, rawBinding := range items {
+		fields, ok := rawBinding.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("data.inputs.%s must be an object", alias)
+		}
+		assetName, err := canonicalStringField(fields, "asset", "data.inputs."+alias)
+		if err != nil {
+			return nil, err
+		}
+		with, err := canonicalTypedExpressionMap(fields, "with", "data.inputs."+alias)
+		if err != nil {
+			return nil, err
+		}
+		selection, err := canonicalStringListField(fields, "select", "data.inputs."+alias)
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, ExplicitDataInputTemplate{
+			Definitions: definitions,
+			Alias:       alias,
+			Asset:       assetName,
+			Selection:   selection,
+			With:        with,
+		})
+	}
+	return inputs, nil
 }
 
 func rejectCanonicalHiddenPlannerParameters(step document.CanonicalWorkflowStep) error {
