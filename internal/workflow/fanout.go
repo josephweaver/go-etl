@@ -30,6 +30,7 @@ type FanOutWorkItemTemplate struct {
 	DataInputs               []ExplicitDataInputTemplate
 	ExplicitAssetMaterialize *ExplicitAssetMaterializeTemplate `json:"explicit_asset_materialize,omitempty"`
 	ExplicitCommitData       *ExplicitCommitDataTemplate       `json:"explicit_commit_data,omitempty"`
+	ExplicitArchiveOperation *ExplicitArchiveOperationTemplate `json:"explicit_archive_operation,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -111,6 +112,9 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if template.Type == model.WorkItemTypeAssetMaterialize && template.ExplicitAssetMaterialize != nil {
 			return compileStandaloneExplicitAssetMaterializeWorkItems(resolver, template)
 		}
+		if template.ExplicitArchiveOperation != nil {
+			return compileStandaloneExplicitArchiveOperationWorkItems(resolver, template)
+		}
 	}
 	if err := rejectCollectionAssetMaterializeFanOut(template); err != nil {
 		return nil, err
@@ -174,9 +178,6 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d explicit commit_data: %w", index, err)
 		}
-		if err := item.ValidateForWorkflowCompile(); err != nil {
-			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
-		}
 		if previous, ok := seenWorkItemIDs[item.ID]; ok {
 			return nil, fmt.Errorf("compile fan-out item %d: duplicate generated work-item id %q also produced by item %d", index, item.ID, previous)
 		}
@@ -195,6 +196,12 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		}
 		if len(explicitCommitConstraints) > 0 {
 			constraints = appendExplicitResourceConstraints(explicitCommitConstraints, constraints)
+		}
+		if err := compileExplicitArchiveOperationWorkItem(resolver, context, idToken, &item, template.ExplicitArchiveOperation, constraints); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d explicit archive operation: %w", index, err)
+		}
+		if err := item.ValidateForWorkflowCompile(); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d: %w", index, err)
 		}
 
 		items = append(items, CompiledFanOutWorkItem{

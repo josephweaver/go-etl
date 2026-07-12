@@ -15,6 +15,8 @@ const (
 	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 	WorkItemTypePythonScript       WorkItemType = "python_script"
 	WorkItemTypeAssetMaterialize   WorkItemType = "asset.materialize"
+	WorkItemTypeArchiveExtract     WorkItemType = "archive.extract"
+	WorkItemTypeArchiveCreate      WorkItemType = "archive.create"
 	WorkItemTypeCommitData         WorkItemType = "commit_data"
 )
 
@@ -201,6 +203,54 @@ type CommitDataWorkItemPayload struct {
 	Source              CommitDataSource             `json:"source"`
 	PublishTarget       BoundPublishTarget           `json:"publish_target"`
 	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+}
+
+type ArchiveExtractWorkItemPayload struct {
+	Operator            string                       `json:"operator"`
+	ArchiveType         string                       `json:"archive_type"`
+	Source              ArchiveExtractSource         `json:"source"`
+	Members             []ArchiveExtractMember       `json:"members"`
+	OutputPath          string                       `json:"output_path"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+}
+
+type ArchiveExtractSource struct {
+	MaterializedAsset *ArchiveMaterializedAssetSource `json:"materialized_asset,omitempty"`
+	LocalPath         string                          `json:"local_path,omitempty"`
+}
+
+type ArchiveMaterializedAssetSource struct {
+	FromWorkItemID string `json:"from_work_item_id"`
+	BindingName    string `json:"binding_name"`
+}
+
+type ArchiveExtractMember struct {
+	Member   string `json:"member"`
+	As       string `json:"as"`
+	Required bool   `json:"required,omitempty"`
+}
+
+type ArchiveCreateWorkItemPayload struct {
+	Operator            string                       `json:"operator"`
+	ArchiveType         string                       `json:"archive_type"`
+	Entries             []ArchiveCreateEntry         `json:"entries"`
+	OutputPath          string                       `json:"output_path"`
+	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
+}
+
+type ArchiveCreateEntry struct {
+	From ArchiveCreateEntrySource `json:"from"`
+	As   string                   `json:"as"`
+}
+
+type ArchiveCreateEntrySource struct {
+	Artifact  *ArchiveArtifactSource `json:"artifact,omitempty"`
+	LocalPath string                 `json:"local_path,omitempty"`
+}
+
+type ArchiveArtifactSource struct {
+	FromWorkItemID string `json:"from_work_item_id"`
+	Name           string `json:"name"`
 }
 
 type CommitDataSource struct {
@@ -523,6 +573,137 @@ func (payload AssetMaterializeWorkItemPayload) Validate() error {
 	return nil
 }
 
+func (payload ArchiveExtractWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeArchiveExtract) {
+		return fmt.Errorf("archive_extract operator must be %q", WorkItemTypeArchiveExtract)
+	}
+	if err := validateArchiveOperationType("archive_extract", payload.ArchiveType); err != nil {
+		return err
+	}
+	if err := payload.Source.Validate(); err != nil {
+		return fmt.Errorf("archive_extract source: %w", err)
+	}
+	if len(payload.Members) == 0 {
+		return fmt.Errorf("archive_extract members is required")
+	}
+	for i, member := range payload.Members {
+		if err := member.Validate(); err != nil {
+			return fmt.Errorf("archive_extract members[%d]: %w", i, err)
+		}
+	}
+	if err := validateArchiveOperationRelativePath("archive_extract output_path", payload.OutputPath); err != nil {
+		return err
+	}
+	if err := validateArchiveOperationResourceConstraints("archive_extract", payload.ResourceConstraints); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (source ArchiveExtractSource) Validate() error {
+	sourceCount := 0
+	if source.MaterializedAsset != nil {
+		sourceCount++
+		if err := source.MaterializedAsset.Validate(); err != nil {
+			return fmt.Errorf("materialized_asset: %w", err)
+		}
+	}
+	if source.LocalPath != "" {
+		sourceCount++
+		if strings.TrimSpace(source.LocalPath) == "" {
+			return fmt.Errorf("local_path is required")
+		}
+	}
+	if sourceCount != 1 {
+		return fmt.Errorf("exactly one source form is required")
+	}
+	return nil
+}
+
+func (source ArchiveMaterializedAssetSource) Validate() error {
+	if strings.TrimSpace(source.FromWorkItemID) == "" {
+		return fmt.Errorf("from_work_item_id is required")
+	}
+	if err := validateDataName(source.BindingName, "binding_name"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (member ArchiveExtractMember) Validate() error {
+	if err := validateArchiveOperationRelativePath("member", member.Member); err != nil {
+		return err
+	}
+	if err := validateArchiveOperationRelativePath("as", member.As); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (payload ArchiveCreateWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeArchiveCreate) {
+		return fmt.Errorf("archive_create operator must be %q", WorkItemTypeArchiveCreate)
+	}
+	if err := validateArchiveOperationType("archive_create", payload.ArchiveType); err != nil {
+		return err
+	}
+	if len(payload.Entries) == 0 {
+		return fmt.Errorf("archive_create entries is required")
+	}
+	for i, entry := range payload.Entries {
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("archive_create entries[%d]: %w", i, err)
+		}
+	}
+	if err := validateArchiveOperationRelativePath("archive_create output_path", payload.OutputPath); err != nil {
+		return err
+	}
+	if err := validateArchiveOperationResourceConstraints("archive_create", payload.ResourceConstraints); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (entry ArchiveCreateEntry) Validate() error {
+	if err := entry.From.Validate(); err != nil {
+		return fmt.Errorf("from: %w", err)
+	}
+	if err := validateArchiveOperationRelativePath("as", entry.As); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (source ArchiveCreateEntrySource) Validate() error {
+	sourceCount := 0
+	if source.Artifact != nil {
+		sourceCount++
+		if err := source.Artifact.Validate(); err != nil {
+			return fmt.Errorf("artifact: %w", err)
+		}
+	}
+	if source.LocalPath != "" {
+		sourceCount++
+		if strings.TrimSpace(source.LocalPath) == "" {
+			return fmt.Errorf("local_path is required")
+		}
+	}
+	if sourceCount != 1 {
+		return fmt.Errorf("exactly one source form is required")
+	}
+	return nil
+}
+
+func (source ArchiveArtifactSource) Validate() error {
+	if strings.TrimSpace(source.FromWorkItemID) == "" {
+		return fmt.Errorf("from_work_item_id is required")
+	}
+	if err := validateArchiveOperationRelativePath("name", source.Name); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (payload CommitDataWorkItemPayload) Validate() error {
 	if payload.Operator != string(WorkItemTypeCommitData) {
 		return fmt.Errorf("commit_data operator must be %q", WorkItemTypeCommitData)
@@ -554,6 +735,41 @@ func (payload CommitDataWorkItemPayload) Validate() error {
 		}
 		if constraint.TargetUnits < 0 {
 			return fmt.Errorf("commit_data resource_constraints[%d] target_units must be non-negative", i)
+		}
+	}
+	return nil
+}
+
+func validateArchiveOperationType(context string, archiveType string) error {
+	if archiveType != "zip" {
+		return fmt.Errorf("%s unsupported archive_type %q", context, archiveType)
+	}
+	return nil
+}
+
+func validateArchiveOperationRelativePath(context string, path string) error {
+	if _, err := ValidateArtifactRelativePath(path); err != nil {
+		return fmt.Errorf("%s: %w", context, err)
+	}
+	if strings.Contains(path, "\\") {
+		return fmt.Errorf("%s must use slash-relative paths", context)
+	}
+	return nil
+}
+
+func validateArchiveOperationResourceConstraints(context string, constraints []WorkItemResourceConstraint) error {
+	for i, constraint := range constraints {
+		if strings.TrimSpace(constraint.ResourceKey) == "" {
+			return fmt.Errorf("%s resource_constraints[%d] resource_key is required", context, i)
+		}
+		if constraint.RequestedUnits <= 0 {
+			return fmt.Errorf("%s resource_constraints[%d] requested_units must be greater than 0", context, i)
+		}
+		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
+			return fmt.Errorf("%s resource_constraints[%d] unsupported operator %q", context, i, constraint.Operator)
+		}
+		if constraint.TargetUnits < 0 {
+			return fmt.Errorf("%s resource_constraints[%d] target_units must be non-negative", context, i)
 		}
 	}
 	return nil

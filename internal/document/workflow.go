@@ -221,7 +221,7 @@ func canonicalWorkflowStep(fields map[string]any, index int) (CanonicalWorkflowS
 		if err != nil {
 			return CanonicalWorkflowStep{}, err
 		}
-	} else if work.Type != "asset.materialize" {
+	} else if !canonicalWorkTypeAllowsStandaloneStep(work.Type) {
 		return CanonicalWorkflowStep{}, fmt.Errorf("%s fan_out is required", context)
 	}
 	dataSection, err := optionalObject(fields, "data", context)
@@ -235,6 +235,15 @@ func canonicalWorkflowStep(fields map[string]any, index int) (CanonicalWorkflowS
 		Data:         dataSection,
 		Work:         work,
 	}, nil
+}
+
+func canonicalWorkTypeAllowsStandaloneStep(workType string) bool {
+	switch workType {
+	case "asset.materialize", "archive.extract", "archive.create":
+		return true
+	default:
+		return false
+	}
 }
 
 func canonicalFanOut(fields map[string]any, context string) (CanonicalFanOut, error) {

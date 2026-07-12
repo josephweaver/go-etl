@@ -65,6 +65,10 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
+	explicitArchive, err := explicitArchiveOperationFromCanonical(step)
+	if err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
 	dataInputs, err := explicitDataInputsFromCanonical(step, definitions)
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
@@ -87,6 +91,7 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 		DataInputs:               dataInputs,
 		ExplicitAssetMaterialize: explicitCache,
 		ExplicitCommitData:       explicitCommit,
+		ExplicitArchiveOperation: explicitArchive,
 	}, nil
 }
 
@@ -271,7 +276,10 @@ func explicitDataInputsFromCanonical(step document.CanonicalWorkflowStep, defini
 		return nil, nil
 	}
 	workType := model.WorkItemType(step.Work.Type)
-	if workType == model.WorkItemTypeAssetMaterialize || workType == model.WorkItemTypeCommitData {
+	if workType == model.WorkItemTypeAssetMaterialize ||
+		workType == model.WorkItemTypeCommitData ||
+		workType == model.WorkItemTypeArchiveExtract ||
+		workType == model.WorkItemTypeArchiveCreate {
 		return nil, fmt.Errorf("data.inputs requires compute work")
 	}
 	items, ok := raw.(map[string]any)

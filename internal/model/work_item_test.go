@@ -457,6 +457,113 @@ func TestCommitDataWorkItemPayloadValidate(t *testing.T) {
 	}
 }
 
+func TestArchiveExtractWorkItemPayloadValidate(t *testing.T) {
+	valid := ArchiveExtractWorkItemPayload{
+		Operator:    string(WorkItemTypeArchiveExtract),
+		ArchiveType: "zip",
+		Source: ArchiveExtractSource{
+			MaterializedAsset: &ArchiveMaterializedAssetSource{
+				FromWorkItemID: "materialize-aqi-2024",
+				BindingName:    "annual_aqi_zip",
+			},
+		},
+		Members: []ArchiveExtractMember{
+			{Member: "annual_aqi_by_county_2024.csv", As: "annual_aqi_by_county_2024.csv", Required: true},
+		},
+		OutputPath: "annual_aqi_by_county_2024.csv",
+	}
+
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ArchiveExtractWorkItemPayload)
+	}{
+		{name: "wrong operator", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.Operator = "extract" }},
+		{name: "unsupported archive type", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.ArchiveType = "seven_zip" }},
+		{name: "missing source", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.Source = ArchiveExtractSource{} }},
+		{name: "multiple source forms", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.Source.LocalPath = "fixtures/source.zip" }},
+		{name: "missing members", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.Members = nil }},
+		{name: "unsafe member", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.Members[0].Member = "../bad.csv" }},
+		{name: "unsafe output path", mutate: func(payload *ArchiveExtractWorkItemPayload) { payload.OutputPath = "bad\\file.csv" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := valid
+			payload.Source = ArchiveExtractSource{
+				MaterializedAsset: &ArchiveMaterializedAssetSource{
+					FromWorkItemID: valid.Source.MaterializedAsset.FromWorkItemID,
+					BindingName:    valid.Source.MaterializedAsset.BindingName,
+				},
+			}
+			payload.Members = append([]ArchiveExtractMember(nil), valid.Members...)
+			test.mutate(&payload)
+			if err := payload.Validate(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestArchiveCreateWorkItemPayloadValidate(t *testing.T) {
+	valid := ArchiveCreateWorkItemPayload{
+		Operator:    string(WorkItemTypeArchiveCreate),
+		ArchiveType: "zip",
+		Entries: []ArchiveCreateEntry{
+			{
+				From: ArchiveCreateEntrySource{
+					Artifact: &ArchiveArtifactSource{
+						FromWorkItemID: "extract-aqi-2024",
+						Name:           "annual_aqi_by_county_2024.csv",
+					},
+				},
+				As: "annual_aqi_by_county_2024.csv",
+			},
+		},
+		OutputPath: "annual_aqi_by_county_2024.zip",
+	}
+
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ArchiveCreateWorkItemPayload)
+	}{
+		{name: "wrong operator", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Operator = "create" }},
+		{name: "unsupported archive type", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.ArchiveType = "tar" }},
+		{name: "missing entries", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Entries = nil }},
+		{name: "missing entry source", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Entries[0].From = ArchiveCreateEntrySource{} }},
+		{name: "multiple entry source forms", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Entries[0].From.LocalPath = "fixtures/report.csv" }},
+		{name: "unsafe artifact name", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Entries[0].From.Artifact.Name = "/bad.csv" }},
+		{name: "unsafe entry name", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.Entries[0].As = "../bad.csv" }},
+		{name: "unsafe output path", mutate: func(payload *ArchiveCreateWorkItemPayload) { payload.OutputPath = "bad\\archive.zip" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload := valid
+			payload.Entries = []ArchiveCreateEntry{
+				{
+					From: ArchiveCreateEntrySource{
+						Artifact: &ArchiveArtifactSource{
+							FromWorkItemID: valid.Entries[0].From.Artifact.FromWorkItemID,
+							Name:           valid.Entries[0].From.Artifact.Name,
+						},
+					},
+					As: valid.Entries[0].As,
+				},
+			}
+			test.mutate(&payload)
+			if err := payload.Validate(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
 func TestWorkItemJSONIncludesRuntimeMetadata(t *testing.T) {
 	item := WorkItem{
 		ID:        "work-item-001",
