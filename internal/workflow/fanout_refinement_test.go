@@ -140,7 +140,7 @@ steps:
             year: ${pair[0]}
             tile: ${fanout[1]}
     work:
-      type: cache_data
+      type: asset.materialize
       parameters:
         target_environment_id: target-local
 `)

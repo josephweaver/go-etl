@@ -24,7 +24,7 @@ func compileExplicitDataInputs(
 	if len(templates) == 0 {
 		return nil
 	}
-	if item.Type == model.WorkItemTypeCacheData || item.Type == model.WorkItemTypeCommitData {
+	if item.Type == model.WorkItemTypeAssetMaterialize || item.Type == model.WorkItemTypeCommitData {
 		return fmt.Errorf("data inputs require compute work, got %q", item.Type)
 	}
 

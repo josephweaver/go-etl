@@ -54,7 +54,10 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
-	explicitCache, err := explicitCacheDataFromCanonical(step, definitions)
+	if err := validateCanonicalWorkType(step.Work.Type); err != nil {
+		return FanOutWorkItemTemplate{}, err
+	}
+	explicitCache, err := explicitAssetMaterializeFromCanonical(step, definitions)
 	if err != nil {
 		return FanOutWorkItemTemplate{}, err
 	}
@@ -71,20 +74,31 @@ func workItemTemplateFromCanonical(step document.CanonicalWorkflowStep, definiti
 	}
 
 	return FanOutWorkItemTemplate{
-		FanOutExpression:     step.FanOut.Over,
-		FanOutAlias:          step.FanOut.As,
-		IDTemplate:           step.FanOut.ID,
-		OutputTemplate:       step.FanOut.Output,
-		Type:                 model.WorkItemType(step.Work.Type),
-		OutputPrefix:         defaultString(step.Work.OutputPrefix, step.ID),
-		OutputExtension:      defaultString(step.Work.OutputExtension, ".json"),
-		ParameterExpressions: parameters,
-		ParameterAccessors:   step.Work.ParameterAccessors,
-		ResourceConstraints:  constraints,
-		DataInputs:           dataInputs,
-		ExplicitCacheData:    explicitCache,
-		ExplicitCommitData:   explicitCommit,
+		FanOutExpression:         step.FanOut.Over,
+		FanOutAlias:              step.FanOut.As,
+		IDTemplate:               step.FanOut.ID,
+		OutputTemplate:           step.FanOut.Output,
+		Type:                     model.WorkItemType(step.Work.Type),
+		OutputPrefix:             defaultString(step.Work.OutputPrefix, step.ID),
+		OutputExtension:          defaultString(step.Work.OutputExtension, ".json"),
+		ParameterExpressions:     parameters,
+		ParameterAccessors:       step.Work.ParameterAccessors,
+		ResourceConstraints:      constraints,
+		DataInputs:               dataInputs,
+		ExplicitAssetMaterialize: explicitCache,
+		ExplicitCommitData:       explicitCommit,
 	}, nil
+}
+
+func validateCanonicalWorkType(value string) error {
+	switch value {
+	case "cache_data":
+		return fmt.Errorf("work.type %q was renamed to %q", value, model.WorkItemTypeAssetMaterialize)
+	case "asset.materialization":
+		return fmt.Errorf("unsupported work.type %q; use %q", value, model.WorkItemTypeAssetMaterialize)
+	default:
+		return nil
+	}
 }
 
 func fanoutAccessorFromExpression(expression string) (string, error) {
@@ -140,16 +154,16 @@ func resourceConstraintsFromCanonical(values []any) ([]ResourceConstraintDeclara
 	return constraints, nil
 }
 
-func explicitCacheDataFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (*ExplicitCacheDataTemplate, error) {
+func explicitAssetMaterializeFromCanonical(step document.CanonicalWorkflowStep, definitions model.DataDefinitions) (*ExplicitAssetMaterializeTemplate, error) {
 	raw, hasMaterialize := step.Data["materialize"]
 	if !hasMaterialize {
-		if model.WorkItemType(step.Work.Type) == model.WorkItemTypeCacheData {
-			return nil, fmt.Errorf("cache_data step requires data.materialize")
+		if model.WorkItemType(step.Work.Type) == model.WorkItemTypeAssetMaterialize {
+			return nil, fmt.Errorf("%s step requires data.materialize", model.WorkItemTypeAssetMaterialize)
 		}
 		return nil, nil
 	}
-	if model.WorkItemType(step.Work.Type) != model.WorkItemTypeCacheData {
-		return nil, fmt.Errorf("data.materialize requires work.type %q", model.WorkItemTypeCacheData)
+	if model.WorkItemType(step.Work.Type) != model.WorkItemTypeAssetMaterialize {
+		return nil, fmt.Errorf("data.materialize requires work.type %q", model.WorkItemTypeAssetMaterialize)
 	}
 	items, ok := raw.(map[string]any)
 	if !ok {
@@ -182,7 +196,7 @@ func explicitCacheDataFromCanonical(step document.CanonicalWorkflowStep, definit
 	if err != nil {
 		return nil, err
 	}
-	return &ExplicitCacheDataTemplate{
+	return &ExplicitAssetMaterializeTemplate{
 		Definitions: definitions,
 		Alias:       alias,
 		Asset:       assetName,
@@ -257,7 +271,7 @@ func explicitDataInputsFromCanonical(step document.CanonicalWorkflowStep, defini
 		return nil, nil
 	}
 	workType := model.WorkItemType(step.Work.Type)
-	if workType == model.WorkItemTypeCacheData || workType == model.WorkItemTypeCommitData {
+	if workType == model.WorkItemTypeAssetMaterialize || workType == model.WorkItemTypeCommitData {
 		return nil, fmt.Errorf("data.inputs requires compute work")
 	}
 	items, ok := raw.(map[string]any)
@@ -299,7 +313,7 @@ func rejectCanonicalHiddenPlannerParameters(step document.CanonicalWorkflowStep)
 	}
 	for name := range step.Work.Parameters {
 		if name == "data_assets" {
-			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit cache_data step with data.materialize", name)
+			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit asset_materialize step with data.materialize", name)
 		}
 		if name == "publish" || name == "publish_targets" {
 			return fmt.Errorf("canonical work parameter %q is not allowed; use an explicit commit_data step with data.outputs", name)

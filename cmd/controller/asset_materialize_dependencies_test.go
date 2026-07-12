@@ -12,7 +12,7 @@ import (
 	"goetl/internal/workflow"
 )
 
-func TestEnqueueReadyCacheDataDependentsQueuesComputeAfterCacheCompletion(t *testing.T) {
+func TestEnqueueReadyAssetMaterializeDependentsQueuesComputeAfterCacheCompletion(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -31,19 +31,19 @@ func TestEnqueueReadyCacheDataDependentsQueuesComputeAfterCacheCompletion(t *tes
 	}
 
 	cachePayload := mustWorkItemJSON(t, model.WorkItem{
-		ID:             "cache-data-a",
-		Type:           model.WorkItemTypeCacheData,
-		OutputFilename: "cache-data-a.json",
+		ID:             "asset-materialize-a",
+		Type:           model.WorkItemTypeAssetMaterialize,
+		OutputFilename: "asset-materialize-a.json",
 	})
 	computePayload := mustWorkItemJSON(t, model.WorkItem{
 		ID:               "compute-a",
 		Type:             model.WorkItemTypeWriteDemoOutput,
 		OutputFilename:   "compute-a.txt",
 		StepDefinitionID: "compute",
-		DependsOn:        []string{run.ID + ":cache-data-a"},
+		DependsOn:        []string{run.ID + ":asset-materialize-a"},
 	})
 	cacheRecord := persistence.WorkItemRecord{
-		ID:                   run.ID + ":cache-data-a",
+		ID:                   run.ID + ":asset-materialize-a",
 		RunID:                run.ID,
 		StageIndex:           0,
 		WorkItemIndex:        0,
@@ -94,8 +94,8 @@ func TestEnqueueReadyCacheDataDependentsQueuesComputeAfterCacheCompletion(t *tes
 		t.Fatalf("completed work item = %s, want cache", completed.WorkItemID)
 	}
 
-	if err := controller.enqueueReadyCacheDataDependents(ctx, cacheRecord, time.Date(2026, 7, 7, 0, 0, 3, 0, time.UTC)); err != nil {
-		t.Fatalf("enqueueReadyCacheDataDependents() error = %v", err)
+	if err := controller.enqueueReadyAssetMaterializeDependents(ctx, cacheRecord, time.Date(2026, 7, 7, 0, 0, 3, 0, time.UTC)); err != nil {
+		t.Fatalf("enqueueReadyAssetMaterializeDependents() error = %v", err)
 	}
 	queued, err := store.ListQueuedWorkItems(ctx)
 	if err != nil {
@@ -193,8 +193,8 @@ func TestHydrateCommitDataWorkItemUsesCompletedProducerArtifactManifest(t *testi
 	if err != nil || !found {
 		t.Fatalf("CompleteAttempt() found=%v err=%v", found, err)
 	}
-	if err := controller.enqueueReadyCacheDataDependents(ctx, computeRecord, time.Date(2026, 7, 7, 0, 0, 3, 0, time.UTC)); err != nil {
-		t.Fatalf("enqueueReadyCacheDataDependents() error = %v", err)
+	if err := controller.enqueueReadyAssetMaterializeDependents(ctx, computeRecord, time.Date(2026, 7, 7, 0, 0, 3, 0, time.UTC)); err != nil {
+		t.Fatalf("enqueueReadyAssetMaterializeDependents() error = %v", err)
 	}
 	claimedCommit, found, err := store.ClaimNextWork(ctx, testWorkerClaimRequest(t, store, "attempt-commit", "2026-07-07T00:00:04Z"))
 	if err != nil || !found || claimedCommit.WorkItem.ID != commitRecord.ID {
@@ -218,7 +218,7 @@ func TestHydrateCommitDataWorkItemUsesCompletedProducerArtifactManifest(t *testi
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemUsesCompletedMaterializedManifest(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -227,11 +227,11 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 	run := insertTestPersistenceRunWithStage(t, ctx, store)
 
 	cacheRecord := persistence.WorkItemRecord{
-		ID:                   run.ID + ":cache-data-field-tile",
+		ID:                   run.ID + ":asset-materialize-field-tile",
 		RunID:                run.ID,
 		StageIndex:           0,
 		WorkItemIndex:        0,
-		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: "cache-data-field-tile", Type: model.WorkItemTypeCacheData, OutputFilename: "cache-data-field-tile.json"}),
+		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: "asset-materialize-field-tile", Type: model.WorkItemTypeAssetMaterialize, OutputFilename: "asset-materialize-field-tile.json"}),
 		ResolvedInputsSHA256: strings.Repeat("c", 64),
 		CreatedAt:            "2026-07-07T00:00:00Z",
 	}
@@ -299,9 +299,9 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 	if err := json.Unmarshal([]byte(claimedCompute.WorkItem.WorkerPayloadJSON), &computeItem); err != nil {
 		t.Fatalf("decode compute payload: %v", err)
 	}
-	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claimedCompute, computeItem)
+	hydrated, err := controller.hydrateAssetMaterializeDependentWorkItem(ctx, claimedCompute, computeItem)
 	if err != nil {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v", err)
 	}
 	parameter, ok := hydrated.Parameters["materialized_data_assets"]
 	if !ok {
@@ -319,11 +319,11 @@ func TestHydrateCacheDataDependentWorkItemUsesCompletedMaterializedManifest(t *t
 		t.Fatalf("manifest = %+v, want one target-local asset", manifest)
 	}
 	if manifest.Assets[0].BindingName != "field_tile_fixture" || manifest.Assets[0].LocalPath != "/target/cache/field_tile.csv" {
-		t.Fatalf("manifest asset = %+v, want completed cache_data local path", manifest.Assets[0])
+		t.Fatalf("manifest asset = %+v, want completed asset_materialize local path", manifest.Assets[0])
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemMatchesPriorStageSharedMaterialization(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemMatchesPriorStageSharedMaterialization(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -332,9 +332,9 @@ func TestHydrateCacheDataDependentWorkItemMatchesPriorStageSharedMaterialization
 	run := insertTestPersistenceRunWithStage(t, ctx, store)
 
 	asset := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
-	assetKey, err := workflow.CacheDataAssetKey(asset, "target-local")
+	assetKey, err := workflow.AssetMaterializeAssetKey(asset, "target-local")
 	if err != nil {
-		t.Fatalf("CacheDataAssetKey() error = %v", err)
+		t.Fatalf("AssetMaterializeAssetKey() error = %v", err)
 	}
 	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile", 0)
 	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, assetKey, "target-local", "physical_field_tile", "/target/cache/field_tile.csv"))
@@ -344,9 +344,9 @@ func TestHydrateCacheDataDependentWorkItemMatchesPriorStageSharedMaterialization
 		AttemptID: "attempt-compute-field-cdl",
 		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
 	}
-	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	hydrated, err := controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err != nil {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v", err)
 	}
 	manifest := materializedHydrationParameter(t, hydrated)
 	if manifest.TargetEnvironmentID != "target-local" || len(manifest.Assets) != 1 {
@@ -357,7 +357,7 @@ func TestHydrateCacheDataDependentWorkItemMatchesPriorStageSharedMaterialization
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationAsset(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemRejectsWrongSharedMaterializationAsset(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -367,9 +367,9 @@ func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationAsset
 
 	required := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
 	other := testSharedHydrationAsset("field_tile_fixture", "other_tile.csv")
-	otherKey, err := workflow.CacheDataAssetKey(other, "target-local")
+	otherKey, err := workflow.AssetMaterializeAssetKey(other, "target-local")
 	if err != nil {
-		t.Fatalf("CacheDataAssetKey(other) error = %v", err)
+		t.Fatalf("AssetMaterializeAssetKey(other) error = %v", err)
 	}
 	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-other-tile", 0)
 	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, otherKey, "target-local", "field_tile_fixture", "/target/cache/other_tile.csv"))
@@ -379,13 +379,13 @@ func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationAsset
 		AttemptID: "attempt-compute-field-cdl",
 		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
 	}
-	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	_, err = controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err == nil || !strings.Contains(err.Error(), `no completed shared materialization found for data asset "field_tile_fixture"`) {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want missing shared materialization", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v, want missing shared materialization", err)
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationDomain(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemRejectsWrongSharedMaterializationDomain(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -406,13 +406,13 @@ func TestHydrateCacheDataDependentWorkItemRejectsWrongSharedMaterializationDomai
 		AttemptID: "attempt-compute-field-cdl",
 		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
 	}
-	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	_, err = controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err == nil || !strings.Contains(err.Error(), "found in domain shared/target-other, want shared/target-local") {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want domain mismatch", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v, want domain mismatch", err)
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemProjectsOneSharedMaterializationUnderTwoAliases(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemProjectsOneSharedMaterializationUnderTwoAliases(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -423,9 +423,9 @@ func TestHydrateCacheDataDependentWorkItemProjectsOneSharedMaterializationUnderT
 	first := testSharedHydrationAsset("field_tile_a", "field_tile.csv")
 	second := first
 	second.BindingName = "field_tile_b"
-	assetKey, err := workflow.CacheDataAssetKey(first, "target-local")
+	assetKey, err := workflow.AssetMaterializeAssetKey(first, "target-local")
 	if err != nil {
-		t.Fatalf("CacheDataAssetKey() error = %v", err)
+		t.Fatalf("AssetMaterializeAssetKey() error = %v", err)
 	}
 	cacheRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile", 0)
 	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationManifestJSON(t, assetKey, "target-local", "physical_field_tile", "/target/cache/field_tile.csv"))
@@ -435,9 +435,9 @@ func TestHydrateCacheDataDependentWorkItemProjectsOneSharedMaterializationUnderT
 		AttemptID: "attempt-compute-field-cdl",
 		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
 	}
-	hydrated, err := controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	hydrated, err := controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err != nil {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v", err)
 	}
 	manifest := materializedHydrationParameter(t, hydrated)
 	if len(manifest.Assets) != 2 {
@@ -451,7 +451,7 @@ func TestHydrateCacheDataDependentWorkItemProjectsOneSharedMaterializationUnderT
 	}
 }
 
-func TestHydrateCacheDataDependentWorkItemRejectsDuplicateSharedMaterializationMatches(t *testing.T) {
+func TestHydrateAssetMaterializeDependentWorkItemRejectsDuplicateSharedMaterializationMatches(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()
@@ -460,9 +460,9 @@ func TestHydrateCacheDataDependentWorkItemRejectsDuplicateSharedMaterializationM
 	run := insertTestPersistenceRunWithStage(t, ctx, store)
 
 	asset := testSharedHydrationAsset("field_tile_fixture", "field_tile.csv")
-	assetKey, err := workflow.CacheDataAssetKey(asset, "target-local")
+	assetKey, err := workflow.AssetMaterializeAssetKey(asset, "target-local")
 	if err != nil {
-		t.Fatalf("CacheDataAssetKey() error = %v", err)
+		t.Fatalf("AssetMaterializeAssetKey() error = %v", err)
 	}
 	firstRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile-a", 0)
 	secondRecord := testHydrationCacheRecord(t, run.ID, "cache-field-tile-b", 0)
@@ -475,9 +475,9 @@ func TestHydrateCacheDataDependentWorkItemRejectsDuplicateSharedMaterializationM
 		AttemptID: "attempt-compute-field-cdl",
 		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-field-cdl", RunID: run.ID, StageIndex: 1},
 	}
-	_, err = controller.hydrateCacheDataDependentWorkItem(ctx, claim, computeItem)
+	_, err = controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err == nil || !strings.Contains(err.Error(), `multiple completed shared materializations found for data asset "field_tile_fixture"`) {
-		t.Fatalf("hydrateCacheDataDependentWorkItem() error = %v, want duplicate materialization match", err)
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v, want duplicate materialization match", err)
 	}
 }
 
@@ -517,7 +517,7 @@ func testHydrationCacheRecord(t *testing.T, runID string, id string, stageIndex 
 		RunID:                runID,
 		StageIndex:           stageIndex,
 		WorkItemIndex:        0,
-		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: id, Type: model.WorkItemTypeCacheData, OutputFilename: id + ".json"}),
+		WorkerPayloadJSON:    mustWorkItemJSON(t, model.WorkItem{ID: id, Type: model.WorkItemTypeAssetMaterialize, OutputFilename: id + ".json"}),
 		ResolvedInputsSHA256: strings.Repeat("c", 64),
 		CreatedAt:            "2026-07-11T00:00:00Z",
 	}

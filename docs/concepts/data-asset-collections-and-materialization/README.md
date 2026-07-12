@@ -175,7 +175,7 @@ The remaining placeholder is intentional collection metadata. It is not an unres
 
 GOET already treats large input data as execution-environment data rather than repository-source bytes or SQLite payload bytes. Provider acquisition, archive extraction, integrity evidence, immutable source caching, transfer limits, resource constraints, and materialized-data manifests exist.
 
-The canonical document concept already moves acquisition out of compute parameters and requires a visible materialization step. Its current public name is `cache_data`.
+The canonical document concept already moves acquisition out of compute parameters and requires a visible materialization step. Its current public name is `asset.materialize`.
 
 ### Operational state
 
@@ -185,13 +185,13 @@ The current repository has these concrete behaviors:
 - A data input does not declare a finite collection domain.
 - `DataDefinitionMaterialization` does not declare a deterministic destination template.
 - `internal/workflow/data_instance.go` instantiates one fully bound asset from explicit parameter bindings.
-- `internal/model/work_item.go` defines `WorkItemTypeCacheData = "cache_data"` and `CacheDataWorkItemPayload`.
-- `internal/workflow/explicit_cache_data.go` compiles an explicit `cache_data` item for one bound asset.
-- `internal/workflow/cache_data_plan.go` still contains legacy planning that can generate materialization work from compute-item data parameters.
-- `cmd/worker/work_cache_data.go` validates the `cache_data` payload and delegates actual work to the existing `assetMaterializer`.
+- `internal/model/work_item.go` defines `WorkItemTypeAssetMaterialize = "asset.materialize"` and `AssetMaterializeWorkItemPayload`.
+- `internal/workflow/explicit_asset_materialize.go` compiles an explicit `asset.materialize` item for one bound asset.
+- `internal/workflow/asset_materialize_plan.go` still contains legacy planning that can generate materialization work from compute-item data parameters.
+- `cmd/worker/work_asset_materialize.go` validates the `asset_materialize` payload and delegates actual work to the existing `assetMaterializer`.
 - `cmd/worker/data_asset_materializer.go` acquires sources into the worker asset cache, verifies integrity, and applies archive selection.
 - The current materializer chooses its cache/extraction paths from cache keys and worker configuration; the asset definition does not name the final deterministic member path.
-- `cmd/controller/cache_data_dependencies.go` and `cache_data_hydration.go` own dependency release and completed-manifest hydration using `cache_data` terminology.
+- `cmd/controller/asset_materialize_dependencies.go` and `asset_materialize_hydration.go` own dependency release and completed-manifest hydration using `asset.materialize` terminology.
 - `cmd/controller/workflow_outputs.go` returns one object for a one-item step and a JSON list for a step with multiple completed work items.
 - `internal/model/materialized_projection.go` and `cmd/worker/data_scope.go` project concrete materialized paths into the step-local `data` namespace.
 - Arbitrary unresolved interpolation fails during ordinary variable resolution, which is the correct default.
@@ -661,7 +661,7 @@ A future naming review may consider a namespaced publication operation, but that
 - `binding.materialization.path_template` is safe, slash-relative, and references only declared asset parameters.
 - Every collection dimension participates in the phase-one destination template.
 - The work-item operation is `asset.materialize`.
-- Current production code has no active `cache_data` work-item type, payload, parameter, dispatch, or planner.
+- Current production code has no active `cache_data` work-item type, payload, dispatch, or planner. The internal materialization payload parameter remains `asset_materialize`.
 - `asset.materialization` is not accepted as an operation.
 - One explicit collection materialization step compiles into a deterministic ordered set of concrete members.
 - Each concrete member has a source asset key and a distinct materialization identity.

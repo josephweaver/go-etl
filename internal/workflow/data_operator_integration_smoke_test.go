@@ -28,11 +28,11 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 		t.Fatalf("compileDataOperatorSmokeWorkflow() error = %v", err)
 	}
 
-	cacheItems := cacheDataItems(compiled)
+	cacheItems := AssetMaterializeItems(compiled)
 	computeItems := computeDataItems(compiled)
 	commitItems := commitDataItems(compiled)
 	if len(cacheItems) != 3 {
-		t.Fatalf("cache_data count = %d, want 3", len(cacheItems))
+		t.Fatalf("asset_materialize count = %d, want 3", len(cacheItems))
 	}
 	if len(computeItems) != 1 {
 		t.Fatalf("compute count = %d, want 1", len(computeItems))
@@ -48,7 +48,7 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 		t.Fatal("compute item still has publish parameter")
 	}
 	if len(compute.WorkItem.DependsOn) != 0 {
-		t.Fatalf("compute depends_on = %+v, want no hidden cache_data dependencies", compute.WorkItem.DependsOn)
+		t.Fatalf("compute depends_on = %+v, want no hidden asset_materialize dependencies", compute.WorkItem.DependsOn)
 	}
 	for _, commit := range commitItems {
 		if len(commit.WorkItem.DependsOn) != 1 || commit.WorkItem.DependsOn[0] != compute.WorkItem.ID {
@@ -69,7 +69,7 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 	}
 
 	for i := range cacheItems {
-		claim := claimSmokeWork(t, ctx, store, "attempt-cache-"+string(rune('a'+i)), model.WorkItemTypeCacheData)
+		claim := claimSmokeWork(t, ctx, store, "attempt-cache-"+string(rune('a'+i)), model.WorkItemTypeAssetMaterialize)
 		if i == 0 {
 			if blocked, found, err := store.ClaimNextWork(ctx, smokeWorkerClaimRequest(t, ctx, store, "attempt-cache-blocked", "2026-07-07T00:00:01Z")); err != nil {
 				t.Fatalf("blocked ClaimNextWork() error = %v", err)
@@ -120,8 +120,8 @@ func TestDataOperatorIntegrationSmokePlansQueuesAndRecordsEvidence(t *testing.T)
 		}
 		counts[item.Type]++
 	}
-	if counts[model.WorkItemTypeCacheData] != 3 || counts[model.WorkItemTypePythonScript] != 1 || counts[model.WorkItemTypeCommitData] != 2 {
-		t.Fatalf("terminal type counts = %+v, want 3 cache_data, 1 compute, 2 commit_data", counts)
+	if counts[model.WorkItemTypeAssetMaterialize] != 3 || counts[model.WorkItemTypePythonScript] != 1 || counts[model.WorkItemTypeCommitData] != 2 {
+		t.Fatalf("terminal type counts = %+v, want 3 asset_materialize, 1 compute, 2 commit_data", counts)
 	}
 }
 
@@ -180,13 +180,13 @@ func dataOperatorSmokeCacheStep(id, asset string, definitions model.DataDefiniti
 		FanOut: &FanOutStep{
 			WorkItem: FanOutWorkItemTemplate{
 				FanOutExpression: "${years[*]}",
-				Type:             model.WorkItemTypeCacheData,
+				Type:             model.WorkItemTypeAssetMaterialize,
 				OutputPrefix:     id,
 				OutputExtension:  ".json",
 				Parameters: model.Parameters{
 					"target_environment_id": {Type: "string", Value: "target-local"},
 				},
-				ExplicitCacheData: &ExplicitCacheDataTemplate{
+				ExplicitAssetMaterialize: &ExplicitAssetMaterializeTemplate{
 					Definitions: definitions,
 					Alias:       asset,
 					Asset:       asset,
@@ -339,7 +339,7 @@ func dataOperatorSmokePersistenceRecords(t *testing.T, runID string, compiled Co
 			CreatedAt:            createdAt,
 		}
 		records = append(records, record)
-		if item.WorkItem.Type == model.WorkItemTypeCacheData {
+		if item.WorkItem.Type == model.WorkItemTypeAssetMaterialize {
 			queued = append(queued, persistence.QueuedWorkRecord{WorkItemRecord: record, QueuedAt: createdAt})
 		}
 		for _, constraint := range item.ResourceConstraints {
@@ -452,16 +452,16 @@ func materializedSmokeManifest(t *testing.T, claim persistence.ClaimedWorkRecord
 	t.Helper()
 	var item model.WorkItem
 	if err := json.Unmarshal([]byte(claim.WorkItem.WorkerPayloadJSON), &item); err != nil {
-		t.Fatalf("decode cache_data payload: %v", err)
+		t.Fatalf("decode asset_materialize payload: %v", err)
 	}
-	parameter := item.Parameters["cache_data"]
+	parameter := item.Parameters["asset_materialize"]
 	data, err := json.Marshal(parameter.Value)
 	if err != nil {
-		t.Fatalf("marshal cache_data parameter: %v", err)
+		t.Fatalf("marshal asset_materialize parameter: %v", err)
 	}
-	var payload model.CacheDataWorkItemPayload
+	var payload model.AssetMaterializeWorkItemPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatalf("decode cache_data parameter: %v", err)
+		t.Fatalf("decode asset_materialize parameter: %v", err)
 	}
 	size := int64(21)
 	return model.MaterializedDataAssetManifest{

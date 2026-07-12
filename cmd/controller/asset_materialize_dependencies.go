@@ -11,7 +11,7 @@ import (
 	"goetl/internal/persistence"
 )
 
-func (c *Controller) enqueueReadyCacheDataDependents(ctx context.Context, completed persistence.WorkItemRecord, queuedAt time.Time) error {
+func (c *Controller) enqueueReadyAssetMaterializeDependents(ctx context.Context, completed persistence.WorkItemRecord, queuedAt time.Time) error {
 	if c.workflowStore == nil {
 		return nil
 	}
@@ -91,7 +91,7 @@ func (c *Controller) enqueueReadyCacheDataDependents(ctx context.Context, comple
 
 		step, ok := stepsByStageAndID[dependencyStepKey(record.StageIndex, item.StepDefinitionID)]
 		if !ok {
-			return fmt.Errorf("dependency step not found for cache_data dependent %s at stage %d step %s", record.ID, record.StageIndex, item.StepDefinitionID)
+			return fmt.Errorf("dependency step not found for asset_materialize dependent %s at stage %d step %s", record.ID, record.StageIndex, item.StepDefinitionID)
 		}
 		toQueue = append(toQueue, persistence.QueuedWorkRecord{
 			WorkItemRecord: record,
@@ -115,26 +115,26 @@ func (c *Controller) enqueueReadyCacheDataDependents(ctx context.Context, comple
 		return toQueue[i].WorkItemIndex < toQueue[j].WorkItemIndex
 	})
 	if err := c.workflowStore.EnqueueWorkItems(ctx, toQueue); err != nil {
-		return fmt.Errorf("enqueue cache_data dependent work: %w", err)
+		return fmt.Errorf("enqueue asset_materialize dependent work: %w", err)
 	}
 	for _, membership := range memberships {
 		if err := c.RecordCompiledWorkItemMembership(ctx, completed.RunID, membership.stageIndex, membership.stepIndex, membership.workItemID, membership.workItemIndex); err != nil {
-			return fmt.Errorf("record cache_data dependent membership: %w", err)
+			return fmt.Errorf("record asset_materialize dependent membership: %w", err)
 		}
 	}
 	return nil
 }
 
-func (c *Controller) failCacheDataDependents(ctx context.Context, failed persistence.WorkItemRecord, reason string) error {
+func (c *Controller) failAssetMaterializeDependents(ctx context.Context, failed persistence.WorkItemRecord, reason string) error {
 	item, err := workItemPayloadFromRecord(failed)
 	if err != nil {
 		return err
 	}
-	if item.Type != model.WorkItemTypeCacheData {
+	if item.Type != model.WorkItemTypeAssetMaterialize {
 		return nil
 	}
 	if reason == "" {
-		reason = "cache_data failed"
+		reason = "asset_materialize failed"
 	}
 	return c.markWorkflowStageActivationFailed(ctx, failed.RunID, failed.StageIndex, reason)
 }

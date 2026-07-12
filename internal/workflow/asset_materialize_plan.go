@@ -15,7 +15,7 @@ import (
 
 const defaultTargetEnvironmentID = "target-local"
 
-func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, error) {
+func PlanAssetMaterializeWorkItems(result CompileStageResult) (CompileStageResult, error) {
 	if len(result.WorkItems) == 0 {
 		return result, nil
 	}
@@ -32,7 +32,7 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 	for _, item := range result.WorkItems {
 		assets, err := boundDataAssetsFromParameters(item.WorkItem.Parameters)
 		if err != nil {
-			return CompileStageResult{}, fmt.Errorf("plan cache_data for work item %s: %w", item.WorkItem.ID, err)
+			return CompileStageResult{}, fmt.Errorf("plan asset_materialize for work item %s: %w", item.WorkItem.ID, err)
 		}
 		if len(assets) == 0 {
 			transformed.WorkItems = append(transformed.WorkItems, item)
@@ -41,19 +41,19 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 
 		targetEnvironmentID, err := targetEnvironmentIDFromParameters(item.WorkItem.Parameters)
 		if err != nil {
-			return CompileStageResult{}, fmt.Errorf("plan cache_data for work item %s: %w", item.WorkItem.ID, err)
+			return CompileStageResult{}, fmt.Errorf("plan asset_materialize for work item %s: %w", item.WorkItem.ID, err)
 		}
 
 		for _, asset := range assets {
-			assetKey, err := CacheDataAssetKey(asset, targetEnvironmentID)
+			assetKey, err := AssetMaterializeAssetKey(asset, targetEnvironmentID)
 			if err != nil {
-				return CompileStageResult{}, fmt.Errorf("plan cache_data for work item %s binding %s: %w", item.WorkItem.ID, asset.BindingName, err)
+				return CompileStageResult{}, fmt.Errorf("plan asset_materialize for work item %s binding %s: %w", item.WorkItem.ID, asset.BindingName, err)
 			}
 			cacheItem, ok := cacheByAssetKey[assetKey]
 			if !ok {
-				payload, constraints, err := CacheDataPayload(asset, targetEnvironmentID, assetKey)
+				payload, constraints, err := AssetMaterializePayload(asset, targetEnvironmentID, assetKey)
 				if err != nil {
-					return CompileStageResult{}, fmt.Errorf("plan cache_data for work item %s binding %s: %w", item.WorkItem.ID, asset.BindingName, err)
+					return CompileStageResult{}, fmt.Errorf("plan asset_materialize for work item %s binding %s: %w", item.WorkItem.ID, asset.BindingName, err)
 				}
 				cacheItem = CompileStageWorkItem{
 					WorkflowID:    item.WorkflowID,
@@ -62,12 +62,12 @@ func PlanCacheDataWorkItems(result CompileStageResult) (CompileStageResult, erro
 					StepID:        item.StepID,
 					WorkItemIndex: item.WorkItemIndex,
 					WorkItem: model.WorkItem{
-						ID:             cacheDataWorkItemID(assetKey),
-						Type:           model.WorkItemTypeCacheData,
-						OutputFilename: cacheDataOutputFilename(assetKey),
+						ID:             AssetMaterializeWorkItemID(assetKey),
+						Type:           model.WorkItemTypeAssetMaterialize,
+						OutputFilename: AssetMaterializeOutputFilename(assetKey),
 						Parameters: model.Parameters{
-							"cache_data": {
-								Type:  "cache_data",
+							"asset_materialize": {
+								Type:  "asset_materialize",
 								Value: payload,
 							},
 							"data_assets": {
@@ -191,7 +191,7 @@ func PlanCommitDataWorkItems(result CompileStageResult) (CompileStageResult, err
 	return planned, nil
 }
 
-func CacheDataAssetKey(asset model.BoundDataAsset, targetEnvironmentID string) (string, error) {
+func AssetMaterializeAssetKey(asset model.BoundDataAsset, targetEnvironmentID string) (string, error) {
 	if err := asset.Validate(); err != nil {
 		return "", err
 	}
@@ -217,20 +217,20 @@ func CacheDataAssetKey(asset model.BoundDataAsset, targetEnvironmentID string) (
 	return "sha256:" + hash, nil
 }
 
-func CacheDataPayload(asset model.BoundDataAsset, targetEnvironmentID string, assetKey string) (model.CacheDataWorkItemPayload, []model.WorkItemResourceConstraint, error) {
-	constraints, err := CacheDataResourceConstraints(asset, targetEnvironmentID)
+func AssetMaterializePayload(asset model.BoundDataAsset, targetEnvironmentID string, assetKey string) (model.AssetMaterializeWorkItemPayload, []model.WorkItemResourceConstraint, error) {
+	constraints, err := AssetMaterializeResourceConstraints(asset, targetEnvironmentID)
 	if err != nil {
-		return model.CacheDataWorkItemPayload{}, nil, err
+		return model.AssetMaterializeWorkItemPayload{}, nil, err
 	}
 	limits := model.DataAssetTransferLimits{}
 	if asset.TransferPolicy.MaxBytesPerSecond > 0 {
 		limits.MaxBytesPerSecond = asset.TransferPolicy.MaxBytesPerSecond
 	}
-	return model.CacheDataWorkItemPayload{
-		Operator:            string(model.WorkItemTypeCacheData),
+	return model.AssetMaterializeWorkItemPayload{
+		Operator:            string(model.WorkItemTypeAssetMaterialize),
 		TargetEnvironmentID: targetEnvironmentID,
 		AssetKey:            assetKey,
-		DedupeKey:           fmt.Sprintf("cache_data:%s:%s", targetEnvironmentID, assetKey),
+		DedupeKey:           fmt.Sprintf("asset_materialize:%s:%s", targetEnvironmentID, assetKey),
 		BindingName:         asset.BindingName,
 		ProviderName:        asset.ProviderName,
 		ProviderType:        asset.Provider,
@@ -248,14 +248,14 @@ func CacheDataPayload(asset model.BoundDataAsset, targetEnvironmentID string, as
 	}, constraints, nil
 }
 
-func CacheDataResourceConstraints(asset model.BoundDataAsset, targetEnvironmentID string) ([]model.WorkItemResourceConstraint, error) {
+func AssetMaterializeResourceConstraints(asset model.BoundDataAsset, targetEnvironmentID string) ([]model.WorkItemResourceConstraint, error) {
 	if err := asset.Validate(); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(targetEnvironmentID) == "" {
 		return nil, fmt.Errorf("target_environment_id is required")
 	}
-	sourceKey, err := cacheDataProviderResourceKey(asset)
+	sourceKey, err := AssetMaterializeProviderResourceKey(asset)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +301,7 @@ func CommitDataResourceConstraints(target model.BoundPublishTarget, targetEnviro
 	}, nil
 }
 
-func cacheDataProviderResourceKey(asset model.BoundDataAsset) (string, error) {
+func AssetMaterializeProviderResourceKey(asset model.BoundDataAsset) (string, error) {
 	switch asset.Provider {
 	case model.DataProviderHTTP:
 		parsed, err := url.Parse(asset.Location.URI)
@@ -480,12 +480,12 @@ func targetEnvironmentIDFromParameters(parameters model.Parameters) (string, err
 	return value, nil
 }
 
-func cacheDataWorkItemID(assetKey string) string {
-	return "cache-data-" + strings.TrimPrefix(assetKey, "sha256:")
+func AssetMaterializeWorkItemID(assetKey string) string {
+	return "asset-materialize-" + strings.TrimPrefix(assetKey, "sha256:")
 }
 
-func cacheDataOutputFilename(assetKey string) string {
-	return cacheDataWorkItemID(assetKey) + ".json"
+func AssetMaterializeOutputFilename(assetKey string) string {
+	return AssetMaterializeWorkItemID(assetKey) + ".json"
 }
 
 func commitDataWorkItemID(sourceWorkItemID string, target model.BoundPublishTarget) (string, error) {

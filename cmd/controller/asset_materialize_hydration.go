@@ -12,8 +12,8 @@ import (
 	"goetl/internal/workflow"
 )
 
-func (c *Controller) hydrateCacheDataDependentWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {
-	if item.Type == model.WorkItemTypeCacheData || item.Type == model.WorkItemTypeCommitData {
+func (c *Controller) hydrateAssetMaterializeDependentWorkItem(ctx context.Context, claim persistence.ClaimedWorkRecord, item model.WorkItem) (model.WorkItem, error) {
+	if item.Type == model.WorkItemTypeAssetMaterialize || item.Type == model.WorkItemTypeCommitData {
 		return item, nil
 	}
 	if _, ok := item.Parameters["materialized_data_assets"]; ok {
@@ -78,7 +78,7 @@ func (c *Controller) hydrateCacheDataDependentWorkItem(ctx context.Context, clai
 		if combined.TargetEnvironmentID == "" {
 			combined.TargetEnvironmentID = manifest.TargetEnvironmentID
 		} else if manifest.TargetEnvironmentID != "" && manifest.TargetEnvironmentID != combined.TargetEnvironmentID {
-			return model.WorkItem{}, fmt.Errorf("cache_data dependency target_environment_id mismatch: %s != %s", manifest.TargetEnvironmentID, combined.TargetEnvironmentID)
+			return model.WorkItem{}, fmt.Errorf("asset_materialize dependency target_environment_id mismatch: %s != %s", manifest.TargetEnvironmentID, combined.TargetEnvironmentID)
 		}
 		for _, asset := range manifest.Assets {
 			if _, ok := seenBindings[asset.BindingName]; ok {
@@ -213,7 +213,7 @@ func materializationAssetKeyCandidates(asset model.BoundDataAsset, targetEnviron
 	}
 	candidates = append(candidates, canonicalKey)
 
-	cacheKey, err := workflow.CacheDataAssetKey(asset, targetEnvironmentID)
+	cacheKey, err := workflow.AssetMaterializeAssetKey(asset, targetEnvironmentID)
 	if err != nil {
 		return nil, err
 	}

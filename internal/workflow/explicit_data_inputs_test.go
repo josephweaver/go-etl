@@ -8,7 +8,7 @@ import (
 	"goetl/internal/variable"
 )
 
-func TestCanonicalComputeDataInputsPlanCacheDataDependency(t *testing.T) {
+func TestCanonicalComputeDataInputsPlanAssetMaterializeDependency(t *testing.T) {
 	doc, err := document.DecodeCanonicalWorkflowSource([]byte(`{
 		"api_version": "goet/v1alpha1",
 		"kind": "Workflow",
@@ -92,18 +92,18 @@ func TestCanonicalComputeDataInputsPlanCacheDataDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileWorkflowStage() error = %v", err)
 	}
-	planned, err := PlanStageCacheDataWorkItems(stage)
+	planned, err := PlanStageAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanStageCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanStageAssetMaterializeWorkItems() error = %v", err)
 	}
 
 	if len(planned.WorkItems) != 2 {
-		t.Fatalf("planned work item count = %d, want cache_data and compute", len(planned.WorkItems))
+		t.Fatalf("planned work item count = %d, want asset_materialize and compute", len(planned.WorkItems))
 	}
 	cache := planned.WorkItems[0].WorkItem
 	compute := planned.WorkItems[1].WorkItem
-	if cache.Type != model.WorkItemTypeCacheData {
-		t.Fatalf("first type = %q, want cache_data", cache.Type)
+	if cache.Type != model.WorkItemTypeAssetMaterialize {
+		t.Fatalf("first type = %q, want asset_materialize", cache.Type)
 	}
 	if compute.Type != model.WorkItemTypePythonScript {
 		t.Fatalf("second type = %q, want python_script", compute.Type)

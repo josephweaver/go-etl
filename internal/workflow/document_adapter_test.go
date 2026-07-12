@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	"goetl/internal/document"
@@ -64,6 +65,59 @@ func TestWorkflowFromCanonicalDocumentCompilesNoDataFixture(t *testing.T) {
 	}
 	if items[0].Parameters["label"].Type != "string" || items[0].Parameters["label"].Value != "canonical" {
 		t.Fatalf("label parameter = %+v", items[0].Parameters["label"])
+	}
+}
+
+func TestWorkflowFromCanonicalDocumentRejectsRetiredAssetMaterializeTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		workType    string
+		wantMessage string
+	}{
+		{
+			name:        "old cache_data",
+			workType:    "cache_data",
+			wantMessage: `work.type "cache_data" was renamed to "asset.materialize"`,
+		},
+		{
+			name:        "asset materialization near miss",
+			workType:    "asset.materialization",
+			wantMessage: `unsupported work.type "asset.materialization"; use "asset.materialize"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			doc, err := document.DecodeCanonicalWorkflowSource([]byte(`{
+				"api_version": "goet/v1alpha1",
+				"kind": "Workflow",
+				"id": "canonical-demo",
+				"variables": {
+					"items": ["one"]
+				},
+				"steps": [
+					{
+						"id": "materialize",
+						"fan_out": {
+							"over": "${workflow.items[*]}",
+							"as": "item",
+							"id": "${fanout}"
+						},
+						"work": {
+							"type": "`+test.workType+`"
+						}
+					}
+				]
+			}`), document.DecodeOptions{Path: "workflow.json"})
+			if err != nil {
+				t.Fatalf("DecodeCanonicalWorkflowSource() error = %v", err)
+			}
+
+			_, err = WorkflowFromCanonicalDocument(doc)
+			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("WorkflowFromCanonicalDocument() error = %v, want %q", err, test.wantMessage)
+			}
+		})
 	}
 }
 

@@ -87,7 +87,7 @@ steps:
           with:
             tile: "${fanout.tile}"
     work:
-      type: cache_data
+      type: asset.materialize
 
   - id: analyze-field-segment-headers
     fan_out:
@@ -151,7 +151,7 @@ source_manifest:
         }
       },
       "work": {
-        "type": "cache_data"
+        "type": "asset.materialize"
       }
     },
     {

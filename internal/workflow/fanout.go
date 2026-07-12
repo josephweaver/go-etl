@@ -12,24 +12,24 @@ import (
 )
 
 type FanOutWorkItemTemplate struct {
-	FanOutExpression     string
-	FanOutAlias          string
-	IDTemplate           string
-	OutputTemplate       string
-	TokenAccessor        string
-	IDTokenAccessor      string
-	OutputAccessor       string
-	Type                 model.WorkItemType
-	IDPrefix             string
-	OutputPrefix         string
-	OutputExtension      string
-	Parameters           model.Parameters
-	ParameterExpressions map[string]variable.TypedExpression
-	ParameterAccessors   map[string]string
-	ResourceConstraints  []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
-	DataInputs           []ExplicitDataInputTemplate
-	ExplicitCacheData    *ExplicitCacheDataTemplate  `json:"explicit_cache_data,omitempty"`
-	ExplicitCommitData   *ExplicitCommitDataTemplate `json:"explicit_commit_data,omitempty"`
+	FanOutExpression         string
+	FanOutAlias              string
+	IDTemplate               string
+	OutputTemplate           string
+	TokenAccessor            string
+	IDTokenAccessor          string
+	OutputAccessor           string
+	Type                     model.WorkItemType
+	IDPrefix                 string
+	OutputPrefix             string
+	OutputExtension          string
+	Parameters               model.Parameters
+	ParameterExpressions     map[string]variable.TypedExpression
+	ParameterAccessors       map[string]string
+	ResourceConstraints      []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
+	DataInputs               []ExplicitDataInputTemplate
+	ExplicitAssetMaterialize *ExplicitAssetMaterializeTemplate `json:"explicit_asset_materialize,omitempty"`
+	ExplicitCommitData       *ExplicitCommitDataTemplate       `json:"explicit_commit_data,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -155,9 +155,9 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if err := compileExplicitDataInputs(resolver, context, &item, template.DataInputs); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d data inputs: %w", index, err)
 		}
-		explicitConstraints, err := compileExplicitCacheDataWorkItem(resolver, context, &item, template.ExplicitCacheData)
+		explicitConstraints, err := compileExplicitAssetMaterializeWorkItem(resolver, context, &item, template.ExplicitAssetMaterialize)
 		if err != nil {
-			return nil, fmt.Errorf("compile fan-out item %d explicit cache_data: %w", index, err)
+			return nil, fmt.Errorf("compile fan-out item %d explicit asset_materialize: %w", index, err)
 		}
 		explicitCommitConstraints, err := compileExplicitCommitDataWorkItem(resolver, context, idToken, &item, template.ExplicitCommitData)
 		if err != nil {

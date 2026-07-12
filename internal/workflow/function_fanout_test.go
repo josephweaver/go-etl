@@ -100,7 +100,7 @@ func TestFunctionProducedFanOutCompilesEquivalentJSONAndYAMLWorkItems(t *testing
 					}
 				},
 				"work": {
-					"type": "cache_data",
+					"type": "asset.materialize",
 					"parameters": {
 						"target_environment_id": "target-local"
 					}
@@ -176,7 +176,7 @@ steps:
             year: ${fanout.year}
             region: ${fanout.region}
     work:
-      type: cache_data
+      type: asset.materialize
       parameters:
         target_environment_id: target-local
 `)
@@ -261,10 +261,10 @@ func compileFunctionFanOutIdentities(t *testing.T, source []byte, format documen
 
 	identities := make([]functionFanOutIdentity, 0, len(stage.WorkItems))
 	for _, item := range stage.WorkItems {
-		if item.WorkItem.Type != model.WorkItemTypeCacheData {
-			t.Fatalf("work item %s type = %q, want cache_data", item.WorkItem.ID, item.WorkItem.Type)
+		if item.WorkItem.Type != model.WorkItemTypeAssetMaterialize {
+			t.Fatalf("work item %s type = %q, want asset_materialize", item.WorkItem.ID, item.WorkItem.Type)
 		}
-		payload := decodeCacheDataPayload(t, item)
+		payload := decodeAssetMaterializePayload(t, item)
 		assets, err := boundDataAssetsFromParameters(item.WorkItem.Parameters)
 		if err != nil {
 			t.Fatalf("boundDataAssetsFromParameters(%s) error = %v", item.WorkItem.ID, err)
@@ -273,7 +273,7 @@ func compileFunctionFanOutIdentities(t *testing.T, source []byte, format documen
 			t.Fatalf("work item %s bound assets = %d, want 1", item.WorkItem.ID, len(assets))
 		}
 		asset := assets[0]
-		if payload.AssetKey == "" || payload.DedupeKey != "cache_data:target-local:"+payload.AssetKey {
+		if payload.AssetKey == "" || payload.DedupeKey != "asset_materialize:target-local:"+payload.AssetKey {
 			t.Fatalf("work item %s payload asset_key=%q dedupe_key=%q", item.WorkItem.ID, payload.AssetKey, payload.DedupeKey)
 		}
 		if asset.Archive == nil || len(asset.Archive.Select) != 1 {

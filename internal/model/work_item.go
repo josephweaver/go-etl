@@ -14,7 +14,7 @@ const (
 	WorkItemTypeWriteDemoOutput    WorkItemType = "write_demo_output"
 	WorkItemTypeSummarizeInputFile WorkItemType = "summarize_input_file"
 	WorkItemTypePythonScript       WorkItemType = "python_script"
-	WorkItemTypeCacheData          WorkItemType = "cache_data"
+	WorkItemTypeAssetMaterialize   WorkItemType = "asset.materialize"
 	WorkItemTypeCommitData         WorkItemType = "commit_data"
 )
 
@@ -170,7 +170,7 @@ type WorkSkip struct {
 	Reason         string `json:"reason"`
 }
 
-type CacheDataWorkItemPayload struct {
+type AssetMaterializeWorkItemPayload struct {
 	Operator            string                       `json:"operator"`
 	TargetEnvironmentID string                       `json:"target_environment_id"`
 	AssetKey            string                       `json:"asset_key"`
@@ -436,33 +436,33 @@ func (e ExecutionEnvelope) Validate() error {
 	return nil
 }
 
-func (payload CacheDataWorkItemPayload) Validate() error {
-	if payload.Operator != string(WorkItemTypeCacheData) {
-		return fmt.Errorf("cache_data operator must be %q", WorkItemTypeCacheData)
+func (payload AssetMaterializeWorkItemPayload) Validate() error {
+	if payload.Operator != string(WorkItemTypeAssetMaterialize) {
+		return fmt.Errorf("asset_materialize operator must be %q", WorkItemTypeAssetMaterialize)
 	}
 	if strings.TrimSpace(payload.TargetEnvironmentID) == "" {
-		return fmt.Errorf("cache_data target_environment_id is required")
+		return fmt.Errorf("asset_materialize target_environment_id is required")
 	}
 	if !strings.HasPrefix(payload.AssetKey, "sha256:") {
-		return fmt.Errorf("cache_data asset_key must use sha256: prefix")
+		return fmt.Errorf("asset_materialize asset_key must use sha256: prefix")
 	}
-	if err := validateOptionalSHA256("cache_data asset_key", strings.TrimPrefix(payload.AssetKey, "sha256:")); err != nil {
+	if err := validateOptionalSHA256("asset_materialize asset_key", strings.TrimPrefix(payload.AssetKey, "sha256:")); err != nil {
 		return err
 	}
 	if strings.TrimSpace(payload.DedupeKey) == "" {
-		return fmt.Errorf("cache_data dedupe_key is required")
+		return fmt.Errorf("asset_materialize dedupe_key is required")
 	}
-	if err := validateDataName(payload.BindingName, "cache_data binding_name"); err != nil {
+	if err := validateDataName(payload.BindingName, "asset_materialize binding_name"); err != nil {
 		return err
 	}
-	if err := validateDataName(payload.ProviderName, "cache_data provider_name"); err != nil {
+	if err := validateDataName(payload.ProviderName, "asset_materialize provider_name"); err != nil {
 		return err
 	}
 	if !isSupportedDataProvider(payload.ProviderType) {
-		return fmt.Errorf("unsupported cache_data provider_type %q", payload.ProviderType)
+		return fmt.Errorf("unsupported asset_materialize provider_type %q", payload.ProviderType)
 	}
 	if strings.TrimSpace(payload.Kind) == "" {
-		return fmt.Errorf("cache_data kind is required")
+		return fmt.Errorf("asset_materialize kind is required")
 	}
 	if err := payload.ResolvedLocation.Validate(); err != nil {
 		return err
@@ -480,23 +480,23 @@ func (payload CacheDataWorkItemPayload) Validate() error {
 	}
 	for i, constraint := range payload.ResourceConstraints {
 		if strings.TrimSpace(constraint.ResourceKey) == "" {
-			return fmt.Errorf("cache_data resource_constraints[%d] resource_key is required", i)
+			return fmt.Errorf("asset_materialize resource_constraints[%d] resource_key is required", i)
 		}
 		if constraint.RequestedUnits <= 0 {
-			return fmt.Errorf("cache_data resource_constraints[%d] requested_units must be greater than 0", i)
+			return fmt.Errorf("asset_materialize resource_constraints[%d] requested_units must be greater than 0", i)
 		}
 		if !isSupportedWorkItemResourceConstraintOperator(constraint.Operator) {
-			return fmt.Errorf("cache_data resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
+			return fmt.Errorf("asset_materialize resource_constraints[%d] unsupported operator %q", i, constraint.Operator)
 		}
 		if constraint.TargetUnits < 0 {
-			return fmt.Errorf("cache_data resource_constraints[%d] target_units must be non-negative", i)
+			return fmt.Errorf("asset_materialize resource_constraints[%d] target_units must be non-negative", i)
 		}
 	}
 	if err := payload.TransferPolicy.Validate(); err != nil {
-		return fmt.Errorf("cache_data transfer_policy: %w", err)
+		return fmt.Errorf("asset_materialize transfer_policy: %w", err)
 	}
 	if payload.TransferLimits.MaxBytesPerSecond < 0 {
-		return fmt.Errorf("cache_data transfer_limits max_bytes_per_second must be non-negative")
+		return fmt.Errorf("asset_materialize transfer_limits max_bytes_per_second must be non-negative")
 	}
 	return nil
 }

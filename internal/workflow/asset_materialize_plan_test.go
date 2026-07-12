@@ -7,21 +7,21 @@ import (
 	"goetl/internal/model"
 )
 
-func TestPlanCacheDataWorkItemsDeduplicatesSameProviderParametersForTwoComputeJobs(t *testing.T) {
-	asset := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
-	stage := testCacheDataStage(
+func TestPlanAssetMaterializeWorkItemsDeduplicatesSameProviderParametersForTwoComputeJobs(t *testing.T) {
+	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
+	stage := testAssetMaterializeStage(
 		testComputeStageItem("compute-a", asset, "target-local"),
 		testComputeStageItem("compute-b", asset, "target-local"),
 	)
 
-	planned, err := PlanCacheDataWorkItems(stage)
+	planned, err := PlanAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	cacheItems := cacheDataItems(planned)
+	cacheItems := AssetMaterializeItems(planned)
 	if len(cacheItems) != 1 {
-		t.Fatalf("cache_data item count = %d, want 1", len(cacheItems))
+		t.Fatalf("asset_materialize item count = %d, want 1", len(cacheItems))
 	}
 	for _, item := range computeDataItems(planned) {
 		if len(item.WorkItem.DependsOn) != 1 || item.WorkItem.DependsOn[0] != cacheItems[0].WorkItem.ID {
@@ -29,9 +29,9 @@ func TestPlanCacheDataWorkItemsDeduplicatesSameProviderParametersForTwoComputeJo
 		}
 	}
 
-	payload, ok := cacheItems[0].WorkItem.Parameters["cache_data"]
-	if !ok || payload.Type != "cache_data" {
-		t.Fatalf("cache_data parameter = %+v, want cache_data payload", payload)
+	payload, ok := cacheItems[0].WorkItem.Parameters["asset_materialize"]
+	if !ok || payload.Type != "asset_materialize" {
+		t.Fatalf("asset_materialize parameter = %+v, want asset_materialize payload", payload)
 	}
 	if len(cacheItems[0].ResourceConstraints) != 1 {
 		t.Fatalf("resource constraint count = %d, want 1", len(cacheItems[0].ResourceConstraints))
@@ -45,62 +45,62 @@ func TestPlanCacheDataWorkItemsDeduplicatesSameProviderParametersForTwoComputeJo
 	}
 }
 
-func TestPlanCacheDataWorkItemsDeduplicatesSamePhysicalAssetUnderTwoAliases(t *testing.T) {
-	cropland := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
+func TestPlanAssetMaterializeWorkItemsDeduplicatesSamePhysicalAssetUnderTwoAliases(t *testing.T) {
+	cropland := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
 	inputRaster := cropland
 	inputRaster.BindingName = "input_raster"
-	stage := testCacheDataStage(
+	stage := testAssetMaterializeStage(
 		testComputeStageItem("compute-a", cropland, "target-local"),
 		testComputeStageItem("compute-b", inputRaster, "target-local"),
 	)
 
-	planned, err := PlanCacheDataWorkItems(stage)
+	planned, err := PlanAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	if got := len(cacheDataItems(planned)); got != 1 {
-		t.Fatalf("cache_data item count = %d, want 1", got)
+	if got := len(AssetMaterializeItems(planned)); got != 1 {
+		t.Fatalf("asset_materialize item count = %d, want 1", got)
 	}
 }
 
-func TestPlanCacheDataWorkItemsDoesNotDeduplicateDifferentArchiveSelection(t *testing.T) {
-	first := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
-	second := testCacheDataAsset("cropland_year", "metadata.xml")
-	stage := testCacheDataStage(
+func TestPlanAssetMaterializeWorkItemsDoesNotDeduplicateDifferentArchiveSelection(t *testing.T) {
+	first := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
+	second := testAssetMaterializeAsset("cropland_year", "metadata.xml")
+	stage := testAssetMaterializeStage(
 		testComputeStageItem("compute-a", first, "target-local"),
 		testComputeStageItem("compute-b", second, "target-local"),
 	)
 
-	planned, err := PlanCacheDataWorkItems(stage)
+	planned, err := PlanAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	if got := len(cacheDataItems(planned)); got != 2 {
-		t.Fatalf("cache_data item count = %d, want 2", got)
+	if got := len(AssetMaterializeItems(planned)); got != 2 {
+		t.Fatalf("asset_materialize item count = %d, want 2", got)
 	}
 }
 
-func TestPlanCacheDataWorkItemsDoesNotDeduplicateDifferentTargetEnvironment(t *testing.T) {
-	asset := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
-	stage := testCacheDataStage(
+func TestPlanAssetMaterializeWorkItemsDoesNotDeduplicateDifferentTargetEnvironment(t *testing.T) {
+	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
+	stage := testAssetMaterializeStage(
 		testComputeStageItem("compute-a", asset, "target-local"),
 		testComputeStageItem("compute-b", asset, "target-hpcc"),
 	)
 
-	planned, err := PlanCacheDataWorkItems(stage)
+	planned, err := PlanAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	if got := len(cacheDataItems(planned)); got != 2 {
-		t.Fatalf("cache_data item count = %d, want 2", got)
+	if got := len(AssetMaterializeItems(planned)); got != 2 {
+		t.Fatalf("asset_materialize item count = %d, want 2", got)
 	}
 }
 
-func TestPlanCacheDataWorkItemsUsesConfiguredSourceCapacityAndTransferLimits(t *testing.T) {
-	asset := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
+func TestPlanAssetMaterializeWorkItemsUsesConfiguredSourceCapacityAndTransferLimits(t *testing.T) {
+	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
 	asset.TransferPolicy = model.DataAssetTransferPolicy{
 		MaxConcurrentSourceTransfers:   2,
 		RequestedBandwidthMiBPerSecond: 25,
@@ -109,23 +109,23 @@ func TestPlanCacheDataWorkItemsUsesConfiguredSourceCapacityAndTransferLimits(t *
 			"rclone_bwlimit": "25M",
 		},
 	}
-	stage := testCacheDataStage(testComputeStageItem("compute-a", asset, "target-local"))
+	stage := testAssetMaterializeStage(testComputeStageItem("compute-a", asset, "target-local"))
 
-	planned, err := PlanCacheDataWorkItems(stage)
+	planned, err := PlanAssetMaterializeWorkItems(stage)
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
-	cacheItems := cacheDataItems(planned)
+	cacheItems := AssetMaterializeItems(planned)
 	if len(cacheItems) != 1 {
-		t.Fatalf("cache_data item count = %d, want 1", len(cacheItems))
+		t.Fatalf("asset_materialize item count = %d, want 1", len(cacheItems))
 	}
 	constraint := cacheItems[0].ResourceConstraints[0]
 	if constraint.TargetUnits != 2 {
 		t.Fatalf("target units = %d, want 2", constraint.TargetUnits)
 	}
 
-	payload := decodeCacheDataPayload(t, cacheItems[0])
+	payload := decodeAssetMaterializePayload(t, cacheItems[0])
 	if payload.TransferLimits.MaxBytesPerSecond != 26214400 {
 		t.Fatalf("transfer max bytes/sec = %d", payload.TransferLimits.MaxBytesPerSecond)
 	}
@@ -137,7 +137,7 @@ func TestPlanCacheDataWorkItemsUsesConfiguredSourceCapacityAndTransferLimits(t *
 	}
 }
 
-func TestCacheDataResourceKeysAreSanitizedByProviderSource(t *testing.T) {
+func TestAssetMaterializeResourceKeysAreSanitizedByProviderSource(t *testing.T) {
 	tests := []struct {
 		name  string
 		asset model.BoundDataAsset
@@ -145,25 +145,25 @@ func TestCacheDataResourceKeysAreSanitizedByProviderSource(t *testing.T) {
 	}{
 		{
 			name:  "http host",
-			asset: testCacheDataAsset("cropland_year", "2023_30m_cdls.tif"),
+			asset: testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif"),
 			want:  "provider:http:example.invalid/download",
 		},
 		{
 			name:  "gdrive remote",
-			asset: testGDriveCacheDataAsset("landcore shared", "Risk Model/data.txt"),
+			asset: testGDriveAssetMaterializeAsset("landcore shared", "Risk Model/data.txt"),
 			want:  "provider:gdrive-rclone:landcore-shared/download",
 		},
 		{
 			name:  "local root",
-			asset: testLocalCacheDataAsset("fixture_data", "input.txt"),
+			asset: testLocalAssetMaterializeAsset("fixture_data", "input.txt"),
 			want:  "provider:local-file:fixture_data/read",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			constraints, err := CacheDataResourceConstraints(tt.asset, "target-local")
+			constraints, err := AssetMaterializeResourceConstraints(tt.asset, "target-local")
 			if err != nil {
-				t.Fatalf("CacheDataResourceConstraints() error = %v", err)
+				t.Fatalf("AssetMaterializeResourceConstraints() error = %v", err)
 			}
 			if len(constraints) != 1 || constraints[0].ResourceKey != tt.want {
 				t.Fatalf("constraints = %+v, want resource key %q", constraints, tt.want)
@@ -173,10 +173,10 @@ func TestCacheDataResourceKeysAreSanitizedByProviderSource(t *testing.T) {
 }
 
 func TestPlanCommitDataWorkItemsSplitsPublishBindingFromCompute(t *testing.T) {
-	asset := testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")
+	asset := testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")
 	compute := testComputeStageItem("compute-a", asset, "target-local")
 	compute.WorkItem.Parameters["publish"] = model.Parameter{Type: "publish_targets", Value: []model.BoundPublishTarget{testPublishTarget("published_data", "reports/summary.csv")}}
-	stage := testCacheDataStage(compute)
+	stage := testAssetMaterializeStage(compute)
 
 	planned, err := PlanCommitDataWorkItems(stage)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestCompileWorkflowStageDoesNotPlanLegacyDataOperators(t *testing.T) {
 						Parameters: model.Parameters{
 							"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
 							"target_environment_id": {Type: "string", Value: "target-local"},
-							"data_assets":           {Type: "data_assets", Value: []model.BoundDataAsset{testCacheDataAsset("cropland_year", "2023_30m_cdls.tif")}},
+							"data_assets":           {Type: "data_assets", Value: []model.BoundDataAsset{testAssetMaterializeAsset("cropland_year", "2023_30m_cdls.tif")}},
 							"publish":               {Type: "publish_targets", Value: []model.BoundPublishTarget{testPublishTarget("published_data", "reports/summary.csv")}},
 						},
 					},
@@ -251,8 +251,8 @@ func TestCompileWorkflowStageDoesNotPlanLegacyDataOperators(t *testing.T) {
 	if len(result.WorkItems) != 1 {
 		t.Fatalf("work item count = %d, want authored compute item only", len(result.WorkItems))
 	}
-	if len(cacheDataItems(result)) != 0 {
-		t.Fatalf("cache_data item count = %d, want 0", len(cacheDataItems(result)))
+	if len(AssetMaterializeItems(result)) != 0 {
+		t.Fatalf("asset_materialize item count = %d, want 0", len(AssetMaterializeItems(result)))
 	}
 	if len(commitDataItems(result)) != 0 {
 		t.Fatalf("commit_data item count = %d, want 0", len(commitDataItems(result)))
@@ -273,7 +273,7 @@ func TestCompileWorkflowStageDoesNotPlanLegacyDataOperators(t *testing.T) {
 	}
 }
 
-func testCacheDataStage(items ...CompileStageWorkItem) CompileStageResult {
+func testAssetMaterializeStage(items ...CompileStageWorkItem) CompileStageResult {
 	return CompileStageResult{
 		WorkflowID: "cdl",
 		StageIndex: 0,
@@ -323,7 +323,7 @@ func testComputeStageItem(id string, asset model.BoundDataAsset, targetEnvironme
 	}
 }
 
-func testCacheDataAsset(bindingName string, archiveMember string) model.BoundDataAsset {
+func testAssetMaterializeAsset(bindingName string, archiveMember string) model.BoundDataAsset {
 	required := true
 	return model.BoundDataAsset{
 		BindingName:  bindingName,
@@ -354,8 +354,8 @@ func testCacheDataAsset(bindingName string, archiveMember string) model.BoundDat
 	}
 }
 
-func testGDriveCacheDataAsset(remote string, drivePath string) model.BoundDataAsset {
-	asset := testCacheDataAsset("drive_data", "2023_30m_cdls.tif")
+func testGDriveAssetMaterializeAsset(remote string, drivePath string) model.BoundDataAsset {
+	asset := testAssetMaterializeAsset("drive_data", "2023_30m_cdls.tif")
 	asset.ProviderName = "drive_provider"
 	asset.Provider = model.DataProviderGDriveRclone
 	asset.Location = model.DataAssetLocation{
@@ -367,8 +367,8 @@ func testGDriveCacheDataAsset(remote string, drivePath string) model.BoundDataAs
 	return asset
 }
 
-func testLocalCacheDataAsset(rootName string, relPath string) model.BoundDataAsset {
-	asset := testCacheDataAsset("local_data", "2023_30m_cdls.tif")
+func testLocalAssetMaterializeAsset(rootName string, relPath string) model.BoundDataAsset {
+	asset := testAssetMaterializeAsset("local_data", "2023_30m_cdls.tif")
 	asset.ProviderName = "local_provider"
 	asset.Provider = model.DataProviderLocalFile
 	asset.Location = model.DataAssetLocation{
@@ -381,16 +381,16 @@ func testLocalCacheDataAsset(rootName string, relPath string) model.BoundDataAss
 	return asset
 }
 
-func decodeCacheDataPayload(t *testing.T, item CompileStageWorkItem) model.CacheDataWorkItemPayload {
+func decodeAssetMaterializePayload(t *testing.T, item CompileStageWorkItem) model.AssetMaterializeWorkItemPayload {
 	t.Helper()
-	parameter := item.WorkItem.Parameters["cache_data"]
+	parameter := item.WorkItem.Parameters["asset_materialize"]
 	data, err := json.Marshal(parameter.Value)
 	if err != nil {
-		t.Fatalf("marshal cache_data payload: %v", err)
+		t.Fatalf("marshal asset_materialize payload: %v", err)
 	}
-	var payload model.CacheDataWorkItemPayload
+	var payload model.AssetMaterializeWorkItemPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
-		t.Fatalf("decode cache_data payload: %v", err)
+		t.Fatalf("decode asset_materialize payload: %v", err)
 	}
 	return payload
 }
@@ -409,10 +409,10 @@ func decodeCommitDataPayload(t *testing.T, item CompileStageWorkItem) model.Comm
 	return payload
 }
 
-func cacheDataItems(result CompileStageResult) []CompileStageWorkItem {
+func AssetMaterializeItems(result CompileStageResult) []CompileStageWorkItem {
 	var items []CompileStageWorkItem
 	for _, item := range result.WorkItems {
-		if item.WorkItem.Type == model.WorkItemTypeCacheData {
+		if item.WorkItem.Type == model.WorkItemTypeAssetMaterialize {
 			items = append(items, item)
 		}
 	}
@@ -422,7 +422,7 @@ func cacheDataItems(result CompileStageResult) []CompileStageWorkItem {
 func computeDataItems(result CompileStageResult) []CompileStageWorkItem {
 	var items []CompileStageWorkItem
 	for _, item := range result.WorkItems {
-		if item.WorkItem.Type != model.WorkItemTypeCacheData && item.WorkItem.Type != model.WorkItemTypeCommitData {
+		if item.WorkItem.Type != model.WorkItemTypeAssetMaterialize && item.WorkItem.Type != model.WorkItemTypeCommitData {
 			items = append(items, item)
 		}
 	}

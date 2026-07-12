@@ -369,8 +369,8 @@ func TestPersistenceRecordsFromCompiledStageResultsRejectsSensitivePlaintext(t *
 	}
 }
 
-func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(t *testing.T) {
-	stageResult, err := workflow.PlanCacheDataWorkItems(workflow.CompileStageResult{
+func TestPersistenceRecordsFromCompiledStageResultsQueuesAssetMaterializeBeforeCompute(t *testing.T) {
+	stageResult, err := workflow.PlanAssetMaterializeWorkItems(workflow.CompileStageResult{
 		WorkflowID: "cdl",
 		StageIndex: 0,
 		WorkItems: []workflow.CompileStageWorkItem{
@@ -388,7 +388,7 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(
 						"python_entrypoint":     {Type: "path", Value: "scripts/run.py"},
 						"target_environment_id": {Type: "string", Value: "target-local"},
 						"data_assets": {Type: "data_assets", Value: []model.BoundDataAsset{
-							controllerTestCacheDataAsset("cropland_year"),
+							controllerTestAssetMaterializeAsset("cropland_year"),
 						}},
 					},
 				},
@@ -396,7 +396,7 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(
 		},
 	})
 	if err != nil {
-		t.Fatalf("PlanCacheDataWorkItems() error = %v", err)
+		t.Fatalf("PlanAssetMaterializeWorkItems() error = %v", err)
 	}
 
 	records, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
@@ -404,17 +404,17 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(
 		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
 	}
 	if len(records) != 2 {
-		t.Fatalf("records count = %d, want cache_data and compute", len(records))
+		t.Fatalf("records count = %d, want asset_materialize and compute", len(records))
 	}
 	if len(queued) != 1 {
-		t.Fatalf("queued count = %d, want only cache_data queued", len(queued))
+		t.Fatalf("queued count = %d, want only asset_materialize queued", len(queued))
 	}
 	var queuedPayload model.WorkItem
 	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &queuedPayload); err != nil {
 		t.Fatalf("decode queued payload: %v", err)
 	}
-	if queuedPayload.Type != model.WorkItemTypeCacheData {
-		t.Fatalf("queued payload type = %s, want cache_data", queuedPayload.Type)
+	if queuedPayload.Type != model.WorkItemTypeAssetMaterialize {
+		t.Fatalf("queued payload type = %s, want asset_materialize", queuedPayload.Type)
 	}
 	if len(memberships) != 0 {
 		t.Fatalf("memberships = %+v, want compute membership deferred until dependency is queued", memberships)
@@ -431,7 +431,7 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(
 		}
 	}
 	if len(computePayload.DependsOn) != 1 || computePayload.DependsOn[0] != queued[0].ID {
-		t.Fatalf("compute depends_on = %+v, want queued cache_data id %s", computePayload.DependsOn, queued[0].ID)
+		t.Fatalf("compute depends_on = %+v, want queued asset_materialize id %s", computePayload.DependsOn, queued[0].ID)
 	}
 }
 
@@ -499,7 +499,7 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesPriorStageDependency(t 
 	}
 }
 
-func controllerTestCacheDataAsset(bindingName string) model.BoundDataAsset {
+func controllerTestAssetMaterializeAsset(bindingName string) model.BoundDataAsset {
 	required := true
 	return model.BoundDataAsset{
 		BindingName:  bindingName,

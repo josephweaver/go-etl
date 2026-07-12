@@ -10,16 +10,16 @@ import (
 	"goetl/internal/model"
 )
 
-func TestWorkerCacheDataMaterializesAndReportsManifest(t *testing.T) {
+func TestWorkerAssetMaterializeMaterializesAndReportsManifest(t *testing.T) {
 	worker, root := newDataAssetTestWorker(t)
-	writeFixture(t, root, "fixture/source.txt", "cache-data fixture")
-	hash := sha256Text("cache-data fixture")
+	writeFixture(t, root, "fixture/source.txt", "asset-materialize fixture")
+	hash := sha256Text("asset-materialize fixture")
 	asset := localFileAsset("fixture", "source.txt", model.DataAssetCacheStrategyWorkerCache, "cache/source.txt", &hash)
-	payload := model.CacheDataWorkItemPayload{
-		Operator:            string(model.WorkItemTypeCacheData),
+	payload := model.AssetMaterializeWorkItemPayload{
+		Operator:            string(model.WorkItemTypeAssetMaterialize),
 		TargetEnvironmentID: "target-local",
 		AssetKey:            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		DedupeKey:           "cache_data:target-local:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		DedupeKey:           "asset_materialize:target-local:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		BindingName:         asset.BindingName,
 		ProviderName:        asset.ProviderName,
 		ProviderType:        asset.Provider,
@@ -30,10 +30,10 @@ func TestWorkerCacheDataMaterializesAndReportsManifest(t *testing.T) {
 		Parameters:          asset.Parameters,
 	}
 
-	item := cacheDataTestItem(payload, asset)
-	evidence, err := worker.cacheData(newTestOperationContext(t, worker, item))
+	item := AssetMaterializeTestItem(payload, asset)
+	evidence, err := worker.AssetMaterialize(newTestOperationContext(t, worker, item))
 	if err != nil {
-		t.Fatalf("cacheData() error = %v", err)
+		t.Fatalf("AssetMaterialize() error = %v", err)
 	}
 	if evidence.OutputJSON == "" || evidence.PreStateJSON == "" || evidence.PostStateJSON == "" {
 		t.Fatalf("evidence missing JSON documents: %+v", evidence)
@@ -54,7 +54,7 @@ func TestWorkerCacheDataMaterializesAndReportsManifest(t *testing.T) {
 	}
 }
 
-func TestWorkerCacheDataFailsOnConflictingImmutableCacheEvidence(t *testing.T) {
+func TestWorkerAssetMaterializeFailsOnConflictingImmutableCacheEvidence(t *testing.T) {
 	worker, root := newDataAssetTestWorker(t)
 	writeFixture(t, root, "fixture/source.txt", "new fixture")
 	asset := localFileAsset("fixture", "source.txt", model.DataAssetCacheStrategyWorkerCache, "cache/conflict.txt", nil)
@@ -78,11 +78,11 @@ func TestWorkerCacheDataFailsOnConflictingImmutableCacheEvidence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	payload := model.CacheDataWorkItemPayload{
-		Operator:            string(model.WorkItemTypeCacheData),
+	payload := model.AssetMaterializeWorkItemPayload{
+		Operator:            string(model.WorkItemTypeAssetMaterialize),
 		TargetEnvironmentID: "target-local",
 		AssetKey:            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		DedupeKey:           "cache_data:target-local:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		DedupeKey:           "asset_materialize:target-local:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		BindingName:         asset.BindingName,
 		ProviderName:        asset.ProviderName,
 		ProviderType:        asset.Provider,
@@ -92,21 +92,21 @@ func TestWorkerCacheDataFailsOnConflictingImmutableCacheEvidence(t *testing.T) {
 		Integrity:           asset.Integrity,
 	}
 
-	item := cacheDataTestItem(payload, asset)
-	_, err := worker.cacheData(newTestOperationContext(t, worker, item))
+	item := AssetMaterializeTestItem(payload, asset)
+	_, err := worker.AssetMaterialize(newTestOperationContext(t, worker, item))
 	if err == nil || !strings.Contains(err.Error(), "asset cache source does not match manifest") {
-		t.Fatalf("cacheData() error = %v, want conflicting cache evidence", err)
+		t.Fatalf("AssetMaterialize() error = %v, want conflicting cache evidence", err)
 	}
 }
 
-func cacheDataTestItem(payload model.CacheDataWorkItemPayload, asset model.BoundDataAsset) model.WorkItem {
+func AssetMaterializeTestItem(payload model.AssetMaterializeWorkItemPayload, asset model.BoundDataAsset) model.WorkItem {
 	return model.WorkItem{
-		ID:             "cache-data-test",
-		AttemptID:      "attempt-cache-data-test",
-		Type:           model.WorkItemTypeCacheData,
-		OutputFilename: "cache-data-test.json",
+		ID:             "asset-materialize-test",
+		AttemptID:      "attempt-asset-materialize-test",
+		Type:           model.WorkItemTypeAssetMaterialize,
+		OutputFilename: "asset-materialize-test.json",
 		Parameters: model.Parameters{
-			"cache_data":            {Type: "cache_data", Value: payload},
+			"asset_materialize":     {Type: "asset_materialize", Value: payload},
 			"data_assets":           {Type: "data_assets", Value: []model.BoundDataAsset{asset}},
 			"target_environment_id": {Type: "string", Value: payload.TargetEnvironmentID},
 		},

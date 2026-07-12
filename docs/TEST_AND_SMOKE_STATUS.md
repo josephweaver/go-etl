@@ -59,7 +59,7 @@ Current coverage includes:
 - SQLite schema creation, strict version-1 validation, parent-directory creation, and attempt snapshot insertion.
 - Controller-owned attempt recording adapter.
 - Controller completion handling that records full completion metadata when present and still accepts legacy `id`-only completions.
-- Explicit data-operator fixture smoke coverage for `cache_data -> compute -> commit_data`, including materialized input manifest hydration into compute, terminal records for all three operator families, source-transfer resource serialization, and publish-location write serialization.
+- Explicit data-operator fixture smoke coverage for `asset.materialize -> compute -> commit_data`, including materialized input manifest hydration into compute, terminal records for all three operator families, source-transfer resource serialization, and publish-location write serialization.
 - Worker use of controller-provided `materialized_data_assets` manifests without reacquiring provider data.
 - Direct worker development execution for source-free and Python work, including
   runtime-only config, local source ZIP staging, generated bookkeeping,

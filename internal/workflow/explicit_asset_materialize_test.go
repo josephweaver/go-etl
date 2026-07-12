@@ -9,7 +9,7 @@ import (
 	"goetl/internal/variable"
 )
 
-func TestCanonicalExplicitCacheDataStepCompilesVisibleCacheWork(t *testing.T) {
+func TestCanonicalExplicitAssetMaterializeStepCompilesVisibleCacheWork(t *testing.T) {
 	doc, err := document.DecodeCanonicalWorkflowSource([]byte(`{
 		"api_version": "goet/v1alpha1",
 		"kind": "Workflow",
@@ -81,7 +81,7 @@ func TestCanonicalExplicitCacheDataStepCompilesVisibleCacheWork(t *testing.T) {
 					}
 				},
 				"work": {
-					"type": "cache_data",
+					"type": "asset.materialize",
 					"parameters": {
 						"target_environment_id": "msu-hpcc"
 					}
@@ -112,11 +112,11 @@ func TestCanonicalExplicitCacheDataStepCompilesVisibleCacheWork(t *testing.T) {
 	}
 
 	if len(stage.WorkItems) != 1 {
-		t.Fatalf("work item count = %d, want explicit cache_data only", len(stage.WorkItems))
+		t.Fatalf("work item count = %d, want explicit asset_materialize only", len(stage.WorkItems))
 	}
 	item := stage.WorkItems[0]
-	if item.WorkItem.Type != model.WorkItemTypeCacheData {
-		t.Fatalf("work item type = %q, want cache_data", item.WorkItem.Type)
+	if item.WorkItem.Type != model.WorkItemTypeAssetMaterialize {
+		t.Fatalf("work item type = %q, want asset_materialize", item.WorkItem.Type)
 	}
 	if item.WorkItem.ID != "cache-field-segment-headers-h18v07" {
 		t.Fatalf("work item id = %q", item.WorkItem.ID)
@@ -128,7 +128,7 @@ func TestCanonicalExplicitCacheDataStepCompilesVisibleCacheWork(t *testing.T) {
 		t.Fatalf("resource constraints = %+v", item.ResourceConstraints)
 	}
 
-	payload := decodeCacheDataPayload(t, item)
+	payload := decodeAssetMaterializePayload(t, item)
 	if payload.TargetEnvironmentID != "msu-hpcc" {
 		t.Fatalf("target_environment_id = %q", payload.TargetEnvironmentID)
 	}
@@ -157,7 +157,7 @@ func TestCanonicalExplicitCacheDataStepCompilesVisibleCacheWork(t *testing.T) {
 	}
 }
 
-func TestExplicitCacheDataRejectsComputeParameters(t *testing.T) {
+func TestExplicitAssetMaterializeRejectsComputeParameters(t *testing.T) {
 	workflow := explicitCacheWorkflowForTest()
 	workflow.Steps[0].FanOut.WorkItem.Parameters["python_entrypoint"] = model.Parameter{Type: "path", Value: "scripts/run.py"}
 	plan, err := NormalizeStages(workflow)
@@ -166,12 +166,12 @@ func TestExplicitCacheDataRejectsComputeParameters(t *testing.T) {
 	}
 
 	_, err = CompileWorkflowStage(explicitCacheResolverForTest(t, workflow), workflow, plan, 0)
-	if err == nil || !strings.Contains(err.Error(), `cache_data step does not accept work parameter "python_entrypoint"`) {
+	if err == nil || !strings.Contains(err.Error(), `asset.materialize step does not accept work parameter "python_entrypoint"`) {
 		t.Fatalf("CompileWorkflowStage() error = %v", err)
 	}
 }
 
-func TestExplicitCacheDataRejectsDuplicateMaterializerInstanceInStage(t *testing.T) {
+func TestExplicitAssetMaterializeRejectsDuplicateMaterializerInstanceInStage(t *testing.T) {
 	workflow := explicitCacheWorkflowForTest()
 	second := workflow.Steps[0]
 	fanOut := *workflow.Steps[0].FanOut
@@ -188,7 +188,7 @@ func TestExplicitCacheDataRejectsDuplicateMaterializerInstanceInStage(t *testing
 	}
 
 	_, err = CompileWorkflowStage(explicitCacheResolverForTest(t, workflow), workflow, plan, 0)
-	if err == nil || !strings.Contains(err.Error(), "duplicate explicit cache_data materializer") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate explicit asset_materialize materializer") {
 		t.Fatalf("CompileWorkflowStage() error = %v", err)
 	}
 }
@@ -214,14 +214,14 @@ func explicitCacheWorkflowForTest() Workflow {
 					ID: "cache",
 					WorkItem: FanOutWorkItemTemplate{
 						FanOutExpression: "${workflow.tiles[*]}",
-						Type:             model.WorkItemTypeCacheData,
+						Type:             model.WorkItemTypeAssetMaterialize,
 						IDPrefix:         "cache",
 						OutputPrefix:     "cache",
 						OutputExtension:  ".json",
 						Parameters: model.Parameters{
 							"target_environment_id": {Type: "string", Value: "target-local"},
 						},
-						ExplicitCacheData: &ExplicitCacheDataTemplate{
+						ExplicitAssetMaterialize: &ExplicitAssetMaterializeTemplate{
 							Definitions: model.DataDefinitions{
 								Inputs: map[string]model.DataInputDefinition{
 									"asset": explicitCacheDefinitionForTest(),

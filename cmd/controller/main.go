@@ -3384,7 +3384,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "failed work item not found", http.StatusInternalServerError)
 		return
 	}
-	if err := c.failCacheDataDependents(r.Context(), workItem, failure.Error); err != nil {
+	if err := c.failAssetMaterializeDependents(r.Context(), workItem, failure.Error); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3445,13 +3445,13 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, "decode completed worker payload", http.StatusInternalServerError)
 		return
 	}
-	if completedPayload.Type == model.WorkItemTypeCacheData {
-		if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+	if completedPayload.Type == model.WorkItemTypeAssetMaterialize {
+		if err := c.enqueueReadyAssetMaterializeDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		c.signalCareTaker("work_completed")
-		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
+		fmt.Println("persisted asset_materialize work item completed:", completion.ID, completion.AttemptID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -3478,7 +3478,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+	if err := c.enqueueReadyAssetMaterializeDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3796,10 +3796,10 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if item.Type != model.WorkItemTypeCacheData && item.Type != model.WorkItemTypeCommitData {
-		item, err = c.hydrateCacheDataDependentWorkItem(r.Context(), claim, item)
+	if item.Type != model.WorkItemTypeAssetMaterialize && item.Type != model.WorkItemTypeCommitData {
+		item, err = c.hydrateAssetMaterializeDependentWorkItem(r.Context(), claim, item)
 		if err != nil {
-			http.Error(w, "hydrate cache_data dependent work item", http.StatusInternalServerError)
+			http.Error(w, "hydrate asset_materialize dependent work item", http.StatusInternalServerError)
 			return
 		}
 	}
