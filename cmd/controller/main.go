@@ -477,15 +477,15 @@ func controllerConfigPath(explicitPath string, executablePath func() (string, er
 
 func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
 	var options controllerStartupOptions
-	var configSet bool
+	var hasConfig bool
 
 	flags := flag.NewFlagSet("controller", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Func("config", "controller configuration path", func(value string) error {
-		if configSet {
+		if hasConfig {
 			return fmt.Errorf("--config may be specified only once")
 		}
-		configSet = true
+		hasConfig = true
 		options.ConfigPath = value
 		return nil
 	})
