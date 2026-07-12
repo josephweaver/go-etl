@@ -545,35 +545,28 @@ func newStartupRuntimeScope(processID int, instanceID string, startedAt time.Tim
 		return nil, fmt.Errorf("runtime.controller_build_version is required")
 	}
 
+	controllerProcessID, err := variable.Create(variable.NamespaceRuntime, "controller_process_id", processID, variable.TypeInt)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_process_id: %w", err)
+	}
+	controllerInstanceID, err := variable.Create(variable.NamespaceRuntime, "controller_instance_id", instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_instance_id: %w", err)
+	}
+	controllerStartedAt, err := variable.Create(variable.NamespaceRuntime, "controller_started_at", startedAt, variable.TypeDatetime)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_started_at: %w", err)
+	}
+	controllerBuildVersion, err := variable.Create(variable.NamespaceRuntime, "controller_build_version", buildVersion)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_build_version: %w", err)
+	}
+
 	return variable.NewScope(
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_process_id"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeInt,
-				Expression: processID,
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_instance_id"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeString,
-				Expression: instanceID,
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_started_at"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeDatetime,
-				Expression: startedAt.UTC().Format(time.RFC3339Nano),
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_build_version"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeString,
-				Expression: buildVersion,
-			},
-		},
+		controllerProcessID,
+		controllerInstanceID,
+		controllerStartedAt,
+		controllerBuildVersion,
 	)
 }
 

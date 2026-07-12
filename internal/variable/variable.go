@@ -3,6 +3,7 @@ package variable
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 type Variable struct {
@@ -10,6 +11,111 @@ type Variable struct {
 	TypedExpression
 	Sensitive    bool
 	ProtectedRef *ProtectedRef
+}
+
+var (
+	TypeAuto = Type{}
+)
+
+func Create(namespace Namespace, key string, value any, optionalArgs ...any) (Variable, error) {
+	valueType := TypeAuto
+	sensitive := false
+
+	switch len(optionalArgs) {
+	case 0:
+	case 1:
+		switch typed := optionalArgs[0].(type) {
+		case Type:
+			valueType = typed
+		case bool:
+			sensitive = typed
+		default:
+			return Variable{}, fmt.Errorf("invalid optional argument type %T", optionalArgs[0])
+		}
+	case 2:
+		var typeArg, sensitiveArg bool
+		if _, typeArg = optionalArgs[0].(Type); !typeArg {
+			return Variable{}, fmt.Errorf("invalid optional type argument: expected variable.Type")
+		}
+		valueType, _ = optionalArgs[0].(Type)
+		if _, sensitiveArg = optionalArgs[1].(bool); !sensitiveArg {
+			return Variable{}, fmt.Errorf("invalid optional sensitive argument: expected bool")
+		}
+		sensitive = optionalArgs[1].(bool)
+	default:
+		return Variable{}, fmt.Errorf("too many optional arguments: got %d, want at most 2", len(optionalArgs))
+	}
+
+	return createWithType(namespace, key, value, valueType, sensitive)
+}
+
+func createWithType(namespace Namespace, key string, value any, valueType Type, sensitive bool) (Variable, error) {
+	resolvedType := valueType
+	resolvedValue := value
+
+	if resolvedType == TypeAuto {
+		var err error
+		resolvedType, resolvedValue, err = inferVariableType(value)
+		if err != nil {
+			return Variable{}, err
+		}
+	}
+	expression, err := normalizeVariableExpression(resolvedValue, resolvedType)
+	if err != nil {
+		return Variable{}, err
+	}
+
+	variable := Variable{
+		Name: Name{
+			Namespace: namespace,
+			Key:       key,
+		},
+		TypedExpression: TypedExpression{
+			Type:       resolvedType,
+			Expression: expression,
+		},
+		Sensitive: sensitive,
+	}
+	if err := variable.Validate(); err != nil {
+		return Variable{}, err
+	}
+	return variable, nil
+}
+
+func inferVariableType(value any) (Type, any, error) {
+	switch typed := value.(type) {
+	case time.Time:
+		return TypeDatetime, typed.UTC().Format(time.RFC3339), nil
+	case string:
+		return TypeString, typed, nil
+	case bool:
+		return TypeBool, typed, nil
+	case int:
+		return TypeInt, typed, nil
+	case json.Number:
+		return TypeInt, typed, nil
+	case []TypedExpression:
+		return TypeList, typed, nil
+	case map[string]TypedExpression:
+		return TypeObject, typed, nil
+	default:
+		return Type{}, nil, fmt.Errorf("unable to infer variable type from %T", value)
+	}
+}
+
+func normalizeVariableExpression(expression any, expressionType Type) (any, error) {
+	if expressionType != TypeDatetime {
+		return expression, nil
+	}
+	if text, ok := expression.(string); ok {
+		return text, nil
+	}
+	switch value := expression.(type) {
+	case time.Time:
+			return value.UTC().Format(time.RFC3339), nil
+	default:
+		return nil, fmt.Errorf("datetime expression must be string or time")
+	}
 }
 
 type variableNameJSON struct {
