@@ -171,24 +171,28 @@ type WorkSkip struct {
 }
 
 type AssetMaterializeWorkItemPayload struct {
-	Operator            string                       `json:"operator"`
-	TargetEnvironmentID string                       `json:"target_environment_id"`
-	AssetKey            string                       `json:"asset_key"`
-	DedupeKey           string                       `json:"dedupe_key"`
-	BindingName         string                       `json:"binding_name"`
-	ProviderName        string                       `json:"provider_name"`
-	ProviderType        string                       `json:"provider_type"`
-	Kind                string                       `json:"kind"`
-	Format              string                       `json:"format,omitempty"`
-	ResolvedLocation    DataAssetLocation            `json:"resolved_location"`
-	Cache               DataAssetCache               `json:"cache,omitempty"`
-	Integrity           DataAssetIntegrity           `json:"integrity,omitempty"`
-	Archive             *DataAssetArchive            `json:"archive,omitempty"`
-	ResourceConstraints []WorkItemResourceConstraint `json:"resource_constraints,omitempty"`
-	TransferPolicy      DataAssetTransferPolicy      `json:"transfer_policy,omitempty"`
-	TransferLimits      DataAssetTransferLimits      `json:"transfer_limits,omitempty"`
-	Parameters          map[string]any               `json:"parameters,omitempty"`
-	Metadata            map[string]any               `json:"metadata,omitempty"`
+	Operator                string                                 `json:"operator"`
+	TargetEnvironmentID     string                                 `json:"target_environment_id"`
+	AssetKey                string                                 `json:"asset_key"`
+	DedupeKey               string                                 `json:"dedupe_key"`
+	BindingName             string                                 `json:"binding_name"`
+	ProviderName            string                                 `json:"provider_name"`
+	ProviderType            string                                 `json:"provider_type"`
+	Kind                    string                                 `json:"kind"`
+	Format                  string                                 `json:"format,omitempty"`
+	ResolvedLocation        DataAssetLocation                      `json:"resolved_location"`
+	MaterializationDomainID string                                 `json:"materialization_domain_id,omitempty"`
+	DestinationRelativePath string                                 `json:"destination_relative_path,omitempty"`
+	MaterializationKey      string                                 `json:"materialization_key,omitempty"`
+	CollectionMember        *MaterializedDataAssetCollectionMember `json:"collection_member,omitempty"`
+	Cache                   DataAssetCache                         `json:"cache,omitempty"`
+	Integrity               DataAssetIntegrity                     `json:"integrity,omitempty"`
+	Archive                 *DataAssetArchive                      `json:"archive,omitempty"`
+	ResourceConstraints     []WorkItemResourceConstraint           `json:"resource_constraints,omitempty"`
+	TransferPolicy          DataAssetTransferPolicy                `json:"transfer_policy,omitempty"`
+	TransferLimits          DataAssetTransferLimits                `json:"transfer_limits,omitempty"`
+	Parameters              map[string]any                         `json:"parameters,omitempty"`
+	Metadata                map[string]any                         `json:"metadata,omitempty"`
 }
 
 type CommitDataWorkItemPayload struct {
@@ -466,6 +470,24 @@ func (payload AssetMaterializeWorkItemPayload) Validate() error {
 	}
 	if err := payload.ResolvedLocation.Validate(); err != nil {
 		return err
+	}
+	if strings.TrimSpace(payload.MaterializationDomainID) != payload.MaterializationDomainID {
+		return fmt.Errorf("asset_materialize materialization_domain_id must not contain leading or trailing whitespace")
+	}
+	if payload.DestinationRelativePath != "" {
+		if _, err := ValidateArtifactRelativePath(payload.DestinationRelativePath); err != nil {
+			return fmt.Errorf("asset_materialize destination_relative_path: %w", err)
+		}
+	}
+	if payload.MaterializationKey != "" {
+		if err := validatePrefixedSHA256("asset_materialize materialization_key", payload.MaterializationKey); err != nil {
+			return err
+		}
+	}
+	if payload.CollectionMember != nil {
+		if err := payload.CollectionMember.Validate(); err != nil {
+			return fmt.Errorf("asset_materialize collection_member: %w", err)
+		}
 	}
 	if err := payload.Cache.Validate(); err != nil {
 		return err

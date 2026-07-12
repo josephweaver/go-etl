@@ -107,6 +107,14 @@ func CompileFanOutWorkItems(resolver variable.Resolver, template FanOutWorkItemT
 }
 
 func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWorkItemTemplate) ([]CompiledFanOutWorkItem, error) {
+	if template.FanOutExpression == "" {
+		if template.Type == model.WorkItemTypeAssetMaterialize && template.ExplicitAssetMaterialize != nil {
+			return compileStandaloneExplicitAssetMaterializeWorkItems(resolver, template)
+		}
+	}
+	if err := rejectCollectionAssetMaterializeFanOut(template); err != nil {
+		return nil, err
+	}
 	values, err := resolver.ResolveFanOutExpression(template.FanOutExpression)
 	if err != nil {
 		return nil, err
