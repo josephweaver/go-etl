@@ -70,8 +70,9 @@ type DataDefinitionCache struct {
 }
 
 type DataDefinitionMaterialization struct {
-	Scope    string `json:"scope,omitempty"`
-	Strategy string `json:"strategy,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Strategy     string `json:"strategy,omitempty"`
+	PathTemplate string `json:"path_template,omitempty"`
 }
 
 type DataOutputDefinition struct {
@@ -145,6 +146,9 @@ func (definition DataInputDefinition) ProviderTemplate(name string, selection []
 	}
 	effectiveSelection, err := definition.EffectiveSelection(selection)
 	if err != nil {
+		return DataProviderTemplate{}, err
+	}
+	if err := definition.validateMaterializationPathTemplate(effectiveSelection); err != nil {
 		return DataProviderTemplate{}, err
 	}
 	archive, err := definition.archiveTemplate(effectiveSelection)
@@ -245,6 +249,24 @@ func (definition DataInputDefinition) CollectionCardinality() (uint64, error) {
 		return 1, nil
 	}
 	return definition.Collection.Cardinality(definition.Parameters)
+}
+
+func (definition DataInputDefinition) validateMaterializationPathTemplate(selection []string) error {
+	template := definition.Binding.Materialization.PathTemplate
+	if definition.Collection == nil {
+		if template == "" {
+			return nil
+		}
+	} else if template == "" {
+		return fmt.Errorf("collection materialization path_template is required")
+	}
+	if definition.Collection != nil && len(selection) != 1 {
+		return fmt.Errorf("collection materialization requires exactly one selected file role")
+	}
+	if err := ValidateMaterializationPathTemplate(template, definition.Parameters, definition.Collection); err != nil {
+		return fmt.Errorf("materialization path_template: %w", err)
+	}
+	return nil
 }
 
 func (definition DataOutputDefinition) parameterNames() ([]string, error) {
@@ -354,7 +376,11 @@ func (binding DataInputBindingDefinition) cacheTemplate() DataAssetCacheTemplate
 }
 
 func (binding DataInputBindingDefinition) materializationTemplate() DataAssetMaterializationTemplate {
-	return DataAssetMaterializationTemplate{Scope: binding.Materialization.Scope, Strategy: binding.Materialization.Strategy}
+	return DataAssetMaterializationTemplate{
+		Scope:        binding.Materialization.Scope,
+		Strategy:     binding.Materialization.Strategy,
+		PathTemplate: canonicalAssetTemplate(binding.Materialization.PathTemplate),
+	}
 }
 
 func (provider *DataProviderTemplate) applyCanonicalLocation(location DataDefinitionLocation) error {

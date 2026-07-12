@@ -70,13 +70,15 @@ type DataAssetCache struct {
 }
 
 type DataAssetMaterializationTemplate struct {
-	Scope    string `json:"scope,omitempty"`
-	Strategy string `json:"strategy,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Strategy     string `json:"strategy,omitempty"`
+	PathTemplate string `json:"path_template,omitempty"`
 }
 
 type DataAssetMaterialization struct {
-	Scope    string `json:"scope,omitempty"`
-	Strategy string `json:"strategy,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	Strategy     string `json:"strategy,omitempty"`
+	PathTemplate string `json:"path_template,omitempty"`
 }
 
 type DataAssetTransferPolicy struct {
@@ -94,22 +96,23 @@ type MaterializedDataAssetManifest struct {
 }
 
 type MaterializedDataAsset struct {
-	BindingName             string                      `json:"binding_name"`
-	ProviderName            string                      `json:"provider_name,omitempty"`
-	ProviderType            string                      `json:"provider_type,omitempty"`
-	Kind                    string                      `json:"kind"`
-	Format                  string                      `json:"format,omitempty"`
-	LocalPath               string                      `json:"local_path"`
-	MaterializationStrategy string                      `json:"materialization_strategy,omitempty"`
-	CacheKey                string                      `json:"cache_key,omitempty"`
-	CacheImmutable          *bool                       `json:"cache_immutable,omitempty"`
-	SourceSizeBytes         *int64                      `json:"source_size_bytes,omitempty"`
-	SourceSHA256            string                      `json:"source_sha256,omitempty"`
-	SelectedSizeBytes       *int64                      `json:"selected_size_bytes,omitempty"`
-	SelectedSHA256          string                      `json:"selected_sha256,omitempty"`
-	ArchiveType             string                      `json:"archive_type,omitempty"`
-	ArchiveMembers          []MaterializedArchiveMember `json:"archive_members,omitempty"`
-	Metadata                map[string]any              `json:"metadata,omitempty"`
+	BindingName             string                                 `json:"binding_name"`
+	ProviderName            string                                 `json:"provider_name,omitempty"`
+	ProviderType            string                                 `json:"provider_type,omitempty"`
+	Kind                    string                                 `json:"kind"`
+	Format                  string                                 `json:"format,omitempty"`
+	LocalPath               string                                 `json:"local_path"`
+	MaterializationStrategy string                                 `json:"materialization_strategy,omitempty"`
+	CacheKey                string                                 `json:"cache_key,omitempty"`
+	CacheImmutable          *bool                                  `json:"cache_immutable,omitempty"`
+	SourceSizeBytes         *int64                                 `json:"source_size_bytes,omitempty"`
+	SourceSHA256            string                                 `json:"source_sha256,omitempty"`
+	SelectedSizeBytes       *int64                                 `json:"selected_size_bytes,omitempty"`
+	SelectedSHA256          string                                 `json:"selected_sha256,omitempty"`
+	ArchiveType             string                                 `json:"archive_type,omitempty"`
+	ArchiveMembers          []MaterializedArchiveMember            `json:"archive_members,omitempty"`
+	Metadata                map[string]any                         `json:"metadata,omitempty"`
+	CollectionMember        *MaterializedDataAssetCollectionMember `json:"collection_member,omitempty"`
 }
 
 type MaterializedArchiveMember struct {
@@ -254,12 +257,22 @@ func (materialization DataAssetMaterializationTemplate) Validate() error {
 	if err := ValidateMaterializationScope(materialization.Scope); err != nil {
 		return err
 	}
+	if materialization.PathTemplate != "" {
+		if _, err := ValidateArtifactRelativePath(materialization.PathTemplate); err != nil {
+			return fmt.Errorf("materialization path_template: %w", err)
+		}
+	}
 	return validateMaterializationStrategy(materialization.Strategy)
 }
 
 func (materialization DataAssetMaterialization) Validate() error {
 	if err := ValidateMaterializationScope(materialization.Scope); err != nil {
 		return err
+	}
+	if materialization.PathTemplate != "" {
+		if _, err := ValidateArtifactRelativePath(materialization.PathTemplate); err != nil {
+			return fmt.Errorf("materialization path_template: %w", err)
+		}
 	}
 	return validateMaterializationStrategy(materialization.Strategy)
 }
@@ -362,6 +375,11 @@ func (asset MaterializedDataAsset) Validate() error {
 	for i, member := range asset.ArchiveMembers {
 		if err := member.Validate(); err != nil {
 			return fmt.Errorf("archive member %d: %w", i, err)
+		}
+	}
+	if asset.CollectionMember != nil {
+		if err := asset.CollectionMember.Validate(); err != nil {
+			return fmt.Errorf("collection_member: %w", err)
 		}
 	}
 	return nil

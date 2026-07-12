@@ -226,7 +226,7 @@ func TestDataAssetCollectionJSONRoundTripPreservesOrderAndValueTypes(t *testing.
 		"binding": {
 			"provider": "http",
 			"location": {"url_template": "https://example.invalid/${year}/${tile}.zip"},
-			"materialization": {"scope": "shared", "strategy": "worker_cache"}
+			"materialization": {"scope": "shared", "strategy": "worker_cache", "path_template": "cdl/${asset.year}/${asset.tile}/${asset.mask}.tif"}
 		}
 	}`)
 
@@ -286,9 +286,100 @@ func cdlCollectionDefinition() DataInputDefinition {
 				URLTemplate: "https://example.invalid/cdl/${year}_30m_cdls.zip",
 			},
 			Materialization: DataDefinitionMaterialization{
-				Scope:    "shared",
-				Strategy: DataAssetCacheStrategyWorkerCache,
+				Scope:        "shared",
+				Strategy:     DataAssetCacheStrategyWorkerCache,
+				PathTemplate: "cdl/${asset.year}.tif",
 			},
 		},
+	}
+}
+
+func TestMaterializationPathTemplateValidation(t *testing.T) {
+	parameters := map[string]DataParameterDefinition{
+		"year": {Type: "int"},
+		"tile": {Type: "string"},
+	}
+	collection := &DataAssetCollectionDefinition{
+		Dimensions: []DataAssetCollectionDimension{
+			{Parameter: "year", Range: &DataAssetCollectionRange{From: 2008, Through: 2023}},
+		},
+	}
+
+	if err := ValidateMaterializationPathTemplate("cdl/${asset.year}.tif", parameters, collection); err != nil {
+		t.Fatalf("ValidateMaterializationPathTemplate() error = %v", err)
+	}
+
+	parsed, err := ParseMaterializationPathTemplate("cdl/${asset.tile}/${asset.year}.tif")
+	if err != nil {
+		t.Fatalf("ParseMaterializationPathTemplate() error = %v", err)
+	}
+	if !reflect.DeepEqual(parsed.Placeholders, []string{"tile", "year"}) {
+		t.Fatalf("placeholders = %#v, want tile/year order", parsed.Placeholders)
+	}
+	escaped, err := ParseMaterializationPathTemplate(`cdl/\${literal}.txt`)
+	if err != nil {
+		t.Fatalf("escaped literal ParseMaterializationPathTemplate() error = %v", err)
+	}
+	if len(escaped.Placeholders) != 0 || escaped.Clean != "cdl/${literal}.txt" {
+		t.Fatalf("escaped literal parse = %+v", escaped)
+	}
+
+	tests := []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{name: "missing collection dimension", template: "cdl/current.tif", want: `omits collection dimension "year"`},
+		{name: "undeclared parameter", template: "cdl/${asset.month}.tif", want: `undeclared parameter "month"`},
+		{name: "absolute", template: "/cdl/${asset.year}.tif", want: "must be relative"},
+		{name: "drive qualified", template: "C:/cdl/${asset.year}.tif", want: "must be relative"},
+		{name: "backslash", template: `cdl\year.tif`, want: "forward slashes"},
+		{name: "traversal", template: "cdl/../${asset.year}.tif", want: ".. segments"},
+		{name: "empty segment", template: "cdl//${asset.year}.tif", want: "empty segments"},
+		{name: "dot segment", template: "cdl/./${asset.year}.tif", want: ". segments"},
+		{name: "bare placeholder", template: "cdl/${year}.tif", want: "must use asset.<parameter>"},
+		{name: "nested interpolation", template: "cdl/${asset.${year}}.tif", want: "nested or malformed"},
+		{name: "unterminated interpolation", template: "cdl/${asset.year.tif", want: "unterminated"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateMaterializationPathTemplate(test.template, parameters, collection)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateMaterializationPathTemplate() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCollectionMaterializationRequiresPathTemplateAndSingleSelectedRole(t *testing.T) {
+	definition := cdlCollectionDefinition()
+	definition.Binding.Materialization.PathTemplate = ""
+	if err := definition.Validate("cdl"); err == nil || !strings.Contains(err.Error(), "path_template is required") {
+		t.Fatalf("Validate() error = %v, want path_template required", err)
+	}
+
+	definition = cdlCollectionDefinition()
+	definition.Files["qa"] = DataFileRoleDefinition{Member: "qa/${asset.year}.tif"}
+	definition.Select = []string{"raster", "qa"}
+	if err := definition.Validate("cdl"); err == nil || !strings.Contains(err.Error(), "exactly one selected file role") {
+		t.Fatalf("Validate() error = %v, want one selected role error", err)
+	}
+}
+
+func TestCollectionOutputPathTemplateNormalizesDeferredDimensions(t *testing.T) {
+	definition := cdlCollectionDefinition()
+	definition.Parameters["tile"] = DataParameterDefinition{Type: "string"}
+	definition.Binding.Materialization.PathTemplate = "cdl/${asset.tile}/${asset.year}.tif"
+
+	path, required, err := definition.CollectionOutputPathTemplate(map[string]any{"tile": "h18v07"})
+	if err != nil {
+		t.Fatalf("CollectionOutputPathTemplate() error = %v", err)
+	}
+	if path != "cdl/h18v07/${year}.tif" {
+		t.Fatalf("path = %q", path)
+	}
+	if !reflect.DeepEqual(required, []string{"year"}) {
+		t.Fatalf("required = %#v, want year", required)
 	}
 }

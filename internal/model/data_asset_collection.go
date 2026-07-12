@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 )
 
 type DataAssetCollectionDefinition struct {
@@ -21,6 +22,12 @@ type DataAssetCollectionDimension struct {
 type DataAssetCollectionRange struct {
 	From    int `json:"from"`
 	Through int `json:"through"`
+}
+
+type MaterializationPathTemplate struct {
+	Value        string
+	Clean        string
+	Placeholders []string
 }
 
 func (collection DataAssetCollectionDefinition) Validate(parameters map[string]DataParameterDefinition) error {
@@ -245,4 +252,170 @@ func unmarshalCollectionScalar(data []byte) (any, error) {
 	default:
 		return nil, fmt.Errorf("must be a scalar string, int, or bool")
 	}
+}
+
+func ParseMaterializationPathTemplate(value string) (MaterializationPathTemplate, error) {
+	if value == "" {
+		return MaterializationPathTemplate{}, fmt.Errorf("path_template is required")
+	}
+	var clean strings.Builder
+	placeholders := []string{}
+	for i := 0; i < len(value); {
+		if strings.HasPrefix(value[i:], `\${`) {
+			end := strings.IndexByte(value[i+3:], '}')
+			if end < 0 {
+				clean.WriteString("${")
+				i += len(`\${`)
+				continue
+			}
+			clean.WriteString(value[i+1 : i+3+end+1])
+			i += 3 + end + 1
+			continue
+		}
+		if value[i] == '\\' {
+			return MaterializationPathTemplate{}, fmt.Errorf("path_template must use forward slashes")
+		}
+		if strings.HasPrefix(value[i:], "${") {
+			end := strings.IndexByte(value[i+2:], '}')
+			if end < 0 {
+				return MaterializationPathTemplate{}, fmt.Errorf("unterminated interpolation")
+			}
+			expression := value[i+2 : i+2+end]
+			if strings.Contains(expression, "${") || strings.ContainsAny(expression, "{}") {
+				return MaterializationPathTemplate{}, fmt.Errorf("nested or malformed interpolation %q", expression)
+			}
+			if !strings.HasPrefix(expression, "asset.") {
+				return MaterializationPathTemplate{}, fmt.Errorf("placeholder %q must use asset.<parameter>", expression)
+			}
+			name := strings.TrimPrefix(expression, "asset.")
+			if err := validateDataName(name, "materialization path_template parameter"); err != nil {
+				return MaterializationPathTemplate{}, err
+			}
+			placeholders = append(placeholders, name)
+			clean.WriteString("${asset.")
+			clean.WriteString(name)
+			clean.WriteByte('}')
+			i += 2 + end + 1
+			continue
+		}
+		if value[i] == '{' || value[i] == '}' {
+			return MaterializationPathTemplate{}, fmt.Errorf("unsupported interpolation syntax")
+		}
+		clean.WriteByte(value[i])
+		i++
+	}
+	cleanValue := clean.String()
+	if _, err := ValidateArtifactRelativePath(cleanValue); err != nil {
+		return MaterializationPathTemplate{}, err
+	}
+	return MaterializationPathTemplate{
+		Value:        value,
+		Clean:        cleanValue,
+		Placeholders: placeholders,
+	}, nil
+}
+
+func ValidateMaterializationPathTemplate(
+	value string,
+	parameters map[string]DataParameterDefinition,
+	collection *DataAssetCollectionDefinition,
+) error {
+	parsed, err := ParseMaterializationPathTemplate(value)
+	if err != nil {
+		return err
+	}
+	referenced := make(map[string]struct{}, len(parsed.Placeholders))
+	for _, name := range parsed.Placeholders {
+		if _, ok := parameters[name]; !ok {
+			return fmt.Errorf("references undeclared parameter %q", name)
+		}
+		referenced[name] = struct{}{}
+	}
+	if collection != nil {
+		for _, dimension := range collection.Dimensions {
+			if _, ok := referenced[dimension.Parameter]; !ok {
+				return fmt.Errorf("omits collection dimension %q", dimension.Parameter)
+			}
+		}
+	}
+	return nil
+}
+
+func (definition DataInputDefinition) CollectionOutputPathTemplate(fixedParameters map[string]any) (string, []string, error) {
+	if definition.Collection == nil {
+		return "", nil, fmt.Errorf("collection is required")
+	}
+	if err := ValidateMaterializationPathTemplate(
+		definition.Binding.Materialization.PathTemplate,
+		definition.Parameters,
+		definition.Collection,
+	); err != nil {
+		return "", nil, err
+	}
+	collectionDimensions := make(map[string]struct{}, len(definition.Collection.Dimensions))
+	for _, dimension := range definition.Collection.Dimensions {
+		collectionDimensions[dimension.Parameter] = struct{}{}
+	}
+	filteredFixed := make(map[string]any, len(fixedParameters))
+	for name, value := range fixedParameters {
+		if _, isDimension := collectionDimensions[name]; isDimension {
+			continue
+		}
+		filteredFixed[name] = value
+	}
+	path, required, err := NormalizeMaterializationOutputPathTemplate(definition.Binding.Materialization.PathTemplate, filteredFixed)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, name := range required {
+		if _, ok := collectionDimensions[name]; !ok {
+			return "", nil, fmt.Errorf("fixed parameter %q is not bound", name)
+		}
+	}
+	return path, required, nil
+}
+
+func NormalizeMaterializationOutputPathTemplate(value string, fixedParameters map[string]any) (string, []string, error) {
+	parsed, err := ParseMaterializationPathTemplate(value)
+	if err != nil {
+		return "", nil, err
+	}
+	_ = parsed
+	var output strings.Builder
+	required := []string{}
+	seenRequired := map[string]struct{}{}
+	for i := 0; i < len(value); {
+		if strings.HasPrefix(value[i:], `\${`) {
+			end := strings.IndexByte(value[i+3:], '}')
+			if end < 0 {
+				output.WriteString("${")
+				i += len(`\${`)
+				continue
+			}
+			output.WriteString(value[i+1 : i+3+end+1])
+			i += 3 + end + 1
+			continue
+		}
+		if strings.HasPrefix(value[i:], "${") {
+			end := strings.IndexByte(value[i+2:], '}')
+			expression := value[i+2 : i+2+end]
+			name := strings.TrimPrefix(expression, "asset.")
+			if fixed, ok := fixedParameters[name]; ok {
+				output.WriteString(fmt.Sprint(fixed))
+			} else {
+				output.WriteString("${")
+				output.WriteString(name)
+				output.WriteByte('}')
+				if _, exists := seenRequired[name]; !exists {
+					required = append(required, name)
+					seenRequired[name] = struct{}{}
+				}
+			}
+			i += 2 + end + 1
+			continue
+		}
+		output.WriteByte(value[i])
+		i++
+	}
+	return output.String(), required, nil
 }
