@@ -1,6 +1,6 @@
 # 007 Collection Step Output Synthesis
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
