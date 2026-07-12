@@ -103,6 +103,9 @@ func persistenceRecordsFromCompiledStageResults(
 	memberships := make([]compiledStageWorkItemMembership, 0)
 	resourceConstraints := make([]persistence.WorkItemResourceConstraintRecord, 0)
 	nextWorkItemIndexByStage := make(map[int]int, len(stageResults))
+	currentStageWorkItemIDs := map[string]struct{}{}
+	payloadsByPersistedID := map[string]model.WorkItem{}
+	membershipsByPersistedID := map[string]compiledStageWorkItemMembership{}
 
 	workflowID := ""
 	if len(stageResults) != 0 {
@@ -175,18 +178,14 @@ func persistenceRecordsFromCompiledStageResults(
 				CreatedAt:            timestamp,
 			}
 			persistenceItems = append(persistenceItems, record)
-			if len(itemPayload.DependsOn) == 0 {
-				queued = append(queued, persistence.QueuedWorkRecord{
-					WorkItemRecord: record,
-					QueuedAt:       timestamp,
-				})
-				if itemPayload.Type != model.WorkItemTypeCacheData {
-					memberships = append(memberships, compiledStageWorkItemMembership{
-						stageIndex:    item.StageIndex,
-						stepIndex:     item.StepIndex,
-						workItemID:    id,
-						workItemIndex: workItemIndex,
-					})
+			currentStageWorkItemIDs[id] = struct{}{}
+			payloadsByPersistedID[id] = itemPayload
+			if itemPayload.Type != model.WorkItemTypeCacheData {
+				membershipsByPersistedID[id] = compiledStageWorkItemMembership{
+					stageIndex:    item.StageIndex,
+					stepIndex:     item.StepIndex,
+					workItemID:    id,
+					workItemIndex: workItemIndex,
 				}
 			}
 			for _, constraint := range item.ResourceConstraints {
@@ -200,7 +199,30 @@ func persistenceRecordsFromCompiledStageResults(
 		}
 	}
 
+	for _, record := range persistenceItems {
+		payload := payloadsByPersistedID[record.ID]
+		if hasCurrentStageDependency(payload.DependsOn, currentStageWorkItemIDs) {
+			continue
+		}
+		queued = append(queued, persistence.QueuedWorkRecord{
+			WorkItemRecord: record,
+			QueuedAt:       timestamp,
+		})
+		if membership, ok := membershipsByPersistedID[record.ID]; ok {
+			memberships = append(memberships, membership)
+		}
+	}
+
 	return persistenceItems, queued, memberships, resourceConstraints, nil
+}
+
+func hasCurrentStageDependency(dependsOn []string, currentStageWorkItemIDs map[string]struct{}) bool {
+	for _, dependencyID := range dependsOn {
+		if _, ok := currentStageWorkItemIDs[dependencyID]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func persistenceResourceConstraintRecords(constraints []model.WorkItemResourceConstraint) []persistence.WorkItemResourceConstraintRecord {

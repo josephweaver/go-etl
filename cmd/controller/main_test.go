@@ -4012,6 +4012,81 @@ func TestSubmitWorkflowHandlerAdmitsCanonicalInlineWorkflowDocument(t *testing.T
 	}
 }
 
+func TestSubmitWorkflowHandlerAdmitsCanonicalCrossproductWorkflowDocument(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	layout, err := reposource.NewCacheLayout(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewCacheLayout() error = %v", err)
+	}
+	controller.repoCacheLayout = layout
+
+	request := httptest.NewRequest(http.MethodPost, "/workflow", bytes.NewBufferString(`{
+		"project": {
+			"api_version": "goet/v1alpha1",
+			"kind": "Project",
+			"id": "canonical-project",
+			"variables": {}
+		},
+		"workflow": {
+			"api_version": "goet/v1alpha1",
+			"kind": "Workflow",
+			"id": "crossproduct-workflow",
+			"variables": {
+				"years": [2024, 2025],
+				"tiles": ["h18v07", "h23v08"],
+				"pairs": {
+					"$type": "list",
+					"$call": "list.crossproduct",
+					"$args": [
+						{"$ref": "years"},
+						{"$ref": "tiles"}
+					]
+				}
+			},
+			"steps": [
+				{
+					"id": "write-pair",
+					"fan_out": {
+						"over": "${workflow.pairs[*]}",
+						"as": "pair",
+						"id": "${pair[0]}-${pair[1]}",
+						"output": "${pair[1]}-${pair[0]}"
+					},
+					"work": {
+						"type": "write_demo_output",
+						"output_prefix": "pair",
+						"output_extension": ".txt"
+					}
+				}
+			]
+		}
+	}`))
+	response := httptest.NewRecorder()
+
+	controller.submitWorkflowHandler(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status code = %d, want 202: %s", response.Code, response.Body.String())
+	}
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 4 {
+		t.Fatalf("queued work count = %d, want 4", len(queued))
+	}
+	var first model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &first); err != nil {
+		t.Fatalf("decode queued work: %v", err)
+	}
+	if first.ID != "write-pair-2024-h18v07" || first.OutputFilename != "pair-h18v07-2024.txt" {
+		t.Fatalf("first queued item = %+v", first)
+	}
+}
+
 func TestDecodeWorkflowSourceSubmissionRejectsCanonicalLegacyWorkflowWrapper(t *testing.T) {
 	_, err := decodeWorkflowSourceSubmission([]byte(`{
 		"api_version": "goet/v1alpha1",

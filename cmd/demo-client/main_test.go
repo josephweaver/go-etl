@@ -336,6 +336,76 @@ func TestExecuteSubmitCommandPostsLoadedInputs(t *testing.T) {
 	}
 }
 
+func TestExecuteSubmitCommandPostsCanonicalInlineWorkflow(t *testing.T) {
+	var received inlineSubmitPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusNoContent)
+		case "/workflow":
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode workflow submission: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(model.SubmissionAcknowledgement{
+				SubmissionID:         "run-ack-001",
+				WorkflowID:           "crossproduct-caretaker-scale",
+				InitialWorkItemCount: 16,
+			}); err != nil {
+				t.Fatalf("encode submission acknowledgement: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	projectPath := writeMainTestFile(t, dir, "project.json", `{"id":"go-etl-demo"}`)
+	workflowPath := writeMainTestFile(t, dir, "workflow.json", `{
+		"api_version": "goet/v1alpha1",
+		"kind": "Workflow",
+		"id": "crossproduct-caretaker-scale",
+		"variables": {
+			"years": [2024, 2025],
+			"tiles": ["h18v07", "h23v08"],
+			"pairs": {
+				"$type": "list",
+				"$call": "list.crossproduct",
+				"$args": [
+					{"$ref": "years"},
+					{"$ref": "tiles"}
+				]
+			}
+		},
+		"steps": []
+	}`)
+
+	err := executeCommand(cliCommand{
+		Kind:          commandSubmit,
+		ControllerURL: server.URL,
+		ProjectPath:   projectPath,
+		WorkflowPath:  workflowPath,
+	}, server.Client())
+	if err != nil {
+		t.Fatalf("executeCommand() error = %v", err)
+	}
+
+	var receivedWorkflow map[string]any
+	if err := json.Unmarshal(received.Workflow, &receivedWorkflow); err != nil {
+		t.Fatalf("decode embedded workflow: %v", err)
+	}
+	if receivedWorkflow["id"] != "crossproduct-caretaker-scale" {
+		t.Fatalf("received workflow id = %v", receivedWorkflow["id"])
+	}
+	if _, ok := receivedWorkflow["variables"].(map[string]any); !ok {
+		t.Fatalf("received workflow variables = %T, want object", receivedWorkflow["variables"])
+	}
+	if len(received.Files) != 0 {
+		t.Fatalf("inline file count = %d, want 0", len(received.Files))
+	}
+}
+
 func TestExecuteSubmitCommandPostsInlineSourceManifestFiles(t *testing.T) {
 	var received inlineSubmitPayload
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

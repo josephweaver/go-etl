@@ -156,7 +156,9 @@ func (c *Controller) compileActivationStage(ctx context.Context, runID string, p
 	if err != nil {
 		return workflow.CompileStageResult{}, variable.Resolver{}, "", err
 	}
-	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope, generatedWorkflowScope), variable.ResolverConfig{})
+	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope, generatedWorkflowScope), variable.ResolverConfig{
+		FunctionRegistry: variable.DefaultFunctionRegistry(),
+	})
 	codeVersion, err := controllerCodeVersion(resolver)
 	if err != nil {
 		return workflow.CompileStageResult{}, variable.Resolver{}, "", err

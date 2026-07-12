@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -431,6 +432,70 @@ func TestPersistenceRecordsFromCompiledStageResultsQueuesCacheDataBeforeCompute(
 	}
 	if len(computePayload.DependsOn) != 1 || computePayload.DependsOn[0] != queued[0].ID {
 		t.Fatalf("compute depends_on = %+v, want queued cache_data id %s", computePayload.DependsOn, queued[0].ID)
+	}
+}
+
+func TestPersistenceRecordsFromCompiledStageResultsQueuesPriorStageDependency(t *testing.T) {
+	stageResult := workflow.CompileStageResult{
+		WorkflowID: "cdl",
+		StageIndex: 5,
+		WorkItems: []workflow.CompileStageWorkItem{
+			{
+				WorkflowID:    "cdl",
+				StageIndex:    5,
+				StepIndex:     5,
+				StepID:        "publish-delivery",
+				WorkItemIndex: 0,
+				WorkItem: model.WorkItem{
+					ID:             "publish-delivery-delivery",
+					Type:           model.WorkItemTypeCommitData,
+					OutputFilename: "publish-delivery-delivery.json",
+					DependsOn:      []string{"package-delivery-delivery"},
+					Parameters: model.Parameters{
+						"target_environment_id": {Type: "string", Value: "target-local"},
+						"commit_data": {
+							Type: "commit_data",
+							Value: model.CommitDataWorkItemPayload{
+								Operator:            string(model.WorkItemTypeCommitData),
+								TargetEnvironmentID: "target-local",
+								Source: model.CommitDataSource{
+									FromWorkItemID: "package-delivery-delivery",
+									FromArtifact:   "delivery_package",
+								},
+								PublishTarget: model.BoundPublishTarget{
+									Name:         "delivery_package",
+									FromArtifact: "delivery_package",
+									TargetName:   "delivery_package",
+									Location: model.DataAssetLocation{
+										Type:         model.DataProviderRegisteredLocation,
+										LocationName: "published_data",
+										Path:         "delivery/package.zip",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	records, queued, memberships, _, err := persistenceRecordsFromCompiledStageResults("run-001", []workflow.CompileStageResult{stageResult}, "v1", time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("persistenceRecordsFromCompiledStageResults() error = %v", err)
+	}
+	if len(records) != 1 || len(queued) != 1 {
+		t.Fatalf("records=%d queued=%d, want prior-stage dependent work queued", len(records), len(queued))
+	}
+	if len(memberships) != 1 {
+		t.Fatalf("membership count = %d, want 1", len(memberships))
+	}
+	var queuedPayload model.WorkItem
+	if err := json.Unmarshal([]byte(queued[0].WorkerPayloadJSON), &queuedPayload); err != nil {
+		t.Fatalf("decode queued payload: %v", err)
+	}
+	if got, want := queuedPayload.DependsOn, []string{"run-001:package-delivery-delivery"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("depends_on = %+v, want %+v", got, want)
 	}
 }
 

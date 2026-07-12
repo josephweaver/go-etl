@@ -334,11 +334,13 @@ func submitPayload(command cliCommand) (any, error) {
 }
 
 func readInlineSourceManifestFiles(workflow json.RawMessage) ([]inlineFilePayload, error) {
-	var submission client.WorkflowSubmission
-	if err := json.Unmarshal(workflow, &submission); err != nil {
+	var envelope struct {
+		SourceManifest reposource.SourceManifestDeclaration `json:"source_manifest,omitempty"`
+	}
+	if err := json.Unmarshal(workflow, &envelope); err != nil {
 		return nil, fmt.Errorf("decode workflow source_manifest: %w", err)
 	}
-	declared, err := submission.SourceManifest.DeclaredSourceFiles()
+	declared, err := envelope.SourceManifest.DeclaredSourceFiles()
 	if err != nil {
 		return nil, err
 	}

@@ -1729,7 +1729,9 @@ func (c *Controller) submitAdmittedWorkflowReadsToStore(ctx context.Context, sub
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
 	}
-	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope), variable.ResolverConfig{})
+	resolver := variable.NewResolver(variable.NewSet(workflowScope, sourceSubmissionScope, runSubmissionScope), variable.ResolverConfig{
+		FunctionRegistry: variable.DefaultFunctionRegistry(),
+	})
 	codeVersion, err := controllerCodeVersion(resolver)
 	if err != nil {
 		return model.SubmissionAcknowledgement{}, err
