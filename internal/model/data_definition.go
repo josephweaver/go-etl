@@ -15,6 +15,7 @@ type DataInputDefinition struct {
 	Kind       string                             `json:"kind"`
 	Format     string                             `json:"format,omitempty"`
 	Parameters map[string]DataParameterDefinition `json:"parameters,omitempty"`
+	Collection *DataAssetCollectionDefinition     `json:"collection,omitempty"`
 	Files      map[string]DataFileRoleDefinition  `json:"files,omitempty"`
 	Select     []string                           `json:"select,omitempty"`
 	Binding    DataInputBindingDefinition         `json:"binding,omitempty"`
@@ -136,6 +137,9 @@ func (definition DataInputDefinition) ProviderTemplate(name string, selection []
 	if err != nil {
 		return DataProviderTemplate{}, err
 	}
+	if err := definition.validateCollection(); err != nil {
+		return DataProviderTemplate{}, err
+	}
 	if err := definition.validateFileRoles(); err != nil {
 		return DataProviderTemplate{}, err
 	}
@@ -224,6 +228,23 @@ func (definition DataInputDefinition) parameterNames() ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+func (definition DataInputDefinition) validateCollection() error {
+	if definition.Collection == nil {
+		return nil
+	}
+	if err := definition.Collection.Validate(definition.Parameters); err != nil {
+		return fmt.Errorf("collection: %w", err)
+	}
+	return nil
+}
+
+func (definition DataInputDefinition) CollectionCardinality() (uint64, error) {
+	if definition.Collection == nil {
+		return 1, nil
+	}
+	return definition.Collection.Cardinality(definition.Parameters)
 }
 
 func (definition DataOutputDefinition) parameterNames() ([]string, error) {

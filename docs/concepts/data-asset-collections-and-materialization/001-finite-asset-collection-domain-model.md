@@ -1,6 +1,6 @@
 # 001 Finite Asset Collection Domain Model
 
-Status: proposed
+Status: Implemented pending review
 
 ## Objective
 
@@ -160,3 +160,12 @@ Do not read worker, controller, persistence, scheduler, transport, provider-adap
 - Do not route range evaluation through the expression-function registry.
 - A later concept may add submission-time narrowing or provider-discovered values; those should not be anticipated in this model.
 - Suggested HCI: `EC-3 / operational slice / files(2)+test+doc+newfile`.
+
+## Implementation Note
+
+Implemented in `internal/model/data_definition.go` and `internal/model/data_asset_collection.go`.
+The model now carries an optional `collection` field on `DataInputDefinition`,
+validates ordered finite dimensions against existing asset parameters, reports
+collection cardinality with overflow detection, and preserves scalar JSON value
+types for explicit dimension values. Focused coverage lives in
+`internal/model/data_asset_collection_test.go`.
