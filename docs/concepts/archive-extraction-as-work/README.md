@@ -262,8 +262,8 @@ The current proposed order is:
 
 1. [Archive Operation Contracts](001-archive-operation-contracts.md) - define
    `archive.extract` and `archive.create` authored-work and work-item contracts.
-2. Implement worker-side ZIP extraction for `archive.extract` using generated
-   tiny ZIP fixtures.
+2. [Worker ZIP Archive Extract](002-worker-zip-archive-extract.md) - implement
+   worker-side single-file ZIP extraction for `archive.extract`.
 3. Implement worker-side ZIP creation for `archive.create` using generated tiny
    fixture files and directories.
 4. Wire controller dependency, hydration, and result recording for archive
