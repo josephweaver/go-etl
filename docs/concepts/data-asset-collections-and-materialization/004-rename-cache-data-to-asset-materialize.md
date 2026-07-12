@@ -1,6 +1,6 @@
 # 004 Rename `cache_data` to `asset.materialize`
 
-Status: proposed
+Status: implemented pending review
 
 ## Objective
 
@@ -198,6 +198,13 @@ Classify each match as production, test, fixture, current documentation, or hist
 - No duplicate old/new implementation files remain.
 - Focused package tests pass.
 - `go test ./...` passes.
+
+## Implementation Notes
+
+- `WorkItemTypeAssetMaterialize` now serializes as `asset.materialize`.
+- Existing payload and parameter transport remains `asset_materialize`.
+- Old `cache_data` and near-miss `asset.materialization` canonical work types are rejected with focused diagnostics.
+- Implementation files and tests were moved from `cache_data` filenames to `asset_materialize` filenames.
 
 ## Notes
 

@@ -50,9 +50,17 @@ func instantiateDataAssetWithContext(
 	if err != nil {
 		return DataAssetInstance{}, err
 	}
+	asset.DefinitionName = definitionName
 	key, err := CanonicalDataAssetInstanceKey(definitionName, effectiveSelection, asset)
 	if err != nil {
 		return DataAssetInstance{}, err
+	}
+	destination, err := concreteDestinationRelativePathFromParameters(definition, parameters)
+	if err != nil {
+		return DataAssetInstance{}, err
+	}
+	if destination != "" {
+		asset.Materialization.PathTemplate = destination
 	}
 	return DataAssetInstance{
 		DefinitionName: definitionName,

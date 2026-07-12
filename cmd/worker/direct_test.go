@@ -213,7 +213,7 @@ func TestRunDirectCommandExecutesSummaryItem(t *testing.T) {
 }
 
 func TestRunDirectCommandPassesManifestOperationsToWorkerRun(t *testing.T) {
-	for _, itemType := range []model.WorkItemType{model.WorkItemTypeCacheData, model.WorkItemTypeCommitData} {
+	for _, itemType := range []model.WorkItemType{model.WorkItemTypeAssetMaterialize, model.WorkItemTypeCommitData} {
 		t.Run(string(itemType), func(t *testing.T) {
 			fixture := newDirectTestFixture(t, "")
 			itemPath := writeDirectWorkItem(t, fixture.root, model.WorkItem{
@@ -228,6 +228,9 @@ func TestRunDirectCommandPassesManifestOperationsToWorkerRun(t *testing.T) {
 			}
 			result := readDirectResult(t, fixture.resultPath)
 			want := string(itemType) + " parameter is required"
+			if itemType == model.WorkItemTypeAssetMaterialize {
+				want = "asset_materialize parameter is required"
+			}
 			if !strings.Contains(result.Error, want) {
 				t.Fatalf("result error = %q, want %q", result.Error, want)
 			}

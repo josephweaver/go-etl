@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -240,6 +241,8 @@ func aggregateStepOutputJSON(step model.WorkflowDependencyStep) (string, string,
 
 	seenIndexes := make(map[int]bool, len(ordered))
 	outputs := make([]variable.ResolvedValue, 0, len(ordered))
+	collectionOutputs := make([]materializedCollectionMemberOutput, 0, len(ordered))
+	collectionCandidateCount := 0
 	for _, item := range ordered {
 		if seenIndexes[item.WorkItemIndex] {
 			return "", "", fmt.Errorf("step %d has duplicate work item index %d", step.StepIndex, item.WorkItemIndex)
@@ -257,6 +260,14 @@ func aggregateStepOutputJSON(step model.WorkflowDependencyStep) (string, string,
 		if err := validateCompletedWorkOutputJSONSize(item.OutputJSON); err != nil {
 			return "", "", fmt.Errorf("step %d work item %s: %w", step.StepIndex, item.WorkItemID, err)
 		}
+		if collectionOutput, found, err := materializedCollectionMemberOutputFromJSON(item); err != nil {
+			return "", "", fmt.Errorf("step %d work item %s: %w", step.StepIndex, item.WorkItemID, err)
+		} else if found {
+			collectionCandidateCount++
+			if collectionOutput.asset.CollectionMember != nil {
+				collectionOutputs = append(collectionOutputs, collectionOutput)
+			}
+		}
 
 		output, err := resolvedOutputFromJSON(item.OutputJSON)
 		if err != nil {
@@ -266,6 +277,24 @@ func aggregateStepOutputJSON(step model.WorkflowDependencyStep) (string, string,
 			return "", "", fmt.Errorf("step %d work item %s output has type %s, want object", step.StepIndex, item.WorkItemID, output.Type)
 		}
 		outputs = append(outputs, output)
+	}
+
+	if len(collectionOutputs) > 0 {
+		if len(collectionOutputs) != len(ordered) || collectionCandidateCount != len(ordered) {
+			return "", "", fmt.Errorf("step %d mixes collection materialization outputs with ordinary outputs", step.StepIndex)
+		}
+		manifest, err := aggregateMaterializedCollectionOutput(collectionOutputs)
+		if err != nil {
+			return "", "", fmt.Errorf("step %d: %w", step.StepIndex, err)
+		}
+		outputJSON, outputJSONSHA256, err := canonicalOutputJSONFromAny(manifest)
+		if err != nil {
+			return "", "", err
+		}
+		if err := validateLogicalStepOutputJSONSize(outputJSON); err != nil {
+			return "", "", err
+		}
+		return outputJSON, outputJSONSHA256, nil
 	}
 
 	if len(outputs) == 1 {
@@ -286,6 +315,314 @@ func aggregateStepOutputJSON(step model.WorkflowDependencyStep) (string, string,
 		return "", "", err
 	}
 	return outputJSON, outputJSONSHA256, nil
+}
+
+type materializedCollectionMemberOutput struct {
+	workItemID    string
+	workItemIndex int
+	manifest      model.MaterializedDataAssetManifest
+	asset         model.MaterializedDataAsset
+}
+
+func materializedCollectionMemberOutputFromJSON(item model.WorkflowDependencyWorkItemMembership) (materializedCollectionMemberOutput, bool, error) {
+	decoder := json.NewDecoder(strings.NewReader(item.OutputJSON))
+	decoder.UseNumber()
+	var decoded map[string]any
+	if err := decoder.Decode(&decoded); err != nil {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("decode materialized asset output candidate: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("output JSON must contain one JSON document")
+	}
+	if decoded["schema"] != model.MaterializedDataAssetManifestSchemaV1 {
+		return materializedCollectionMemberOutput{}, false, nil
+	}
+	data, err := json.Marshal(decoded)
+	if err != nil {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("encode materialized asset output candidate: %w", err)
+	}
+	var manifest model.MaterializedDataAssetManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("decode materialized data asset manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("materialized data asset manifest: %w", err)
+	}
+	if len(manifest.Assets) != 1 {
+		return materializedCollectionMemberOutput{}, false, fmt.Errorf("collection materialization output must contain exactly one asset, got %d", len(manifest.Assets))
+	}
+	return materializedCollectionMemberOutput{
+		workItemID:    item.WorkItemID,
+		workItemIndex: item.WorkItemIndex,
+		manifest:      manifest,
+		asset:         manifest.Assets[0],
+	}, true, nil
+}
+
+func aggregateMaterializedCollectionOutput(outputs []materializedCollectionMemberOutput) (model.MaterializedAssetCollectionManifest, error) {
+	if len(outputs) == 0 {
+		return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection outputs are required")
+	}
+	sort.Slice(outputs, func(i, j int) bool {
+		left := outputs[i].asset.CollectionMember.MemberIndex
+		right := outputs[j].asset.CollectionMember.MemberIndex
+		if left == right {
+			return outputs[i].workItemID < outputs[j].workItemID
+		}
+		return left < right
+	})
+
+	firstAsset := outputs[0].asset
+	firstMember := firstAsset.CollectionMember
+	if firstMember.MemberCount <= 0 {
+		return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection member_count must be positive")
+	}
+	if len(outputs) != firstMember.MemberCount {
+		return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection member count = %d, want %d", len(outputs), firstMember.MemberCount)
+	}
+
+	root, relativeTemplate, err := collectionPathTemplate(firstAsset)
+	if err != nil {
+		return model.MaterializedAssetCollectionManifest{}, err
+	}
+	dimensions := map[string]model.MaterializedAssetCollectionDimension{}
+	dimensionValueKeys := map[string]map[string]struct{}{}
+	memberEvidence := make([]any, 0, len(outputs))
+	seenIndexes := map[int]struct{}{}
+	seenMaterializationKeys := map[string]string{}
+	seenDestinations := map[string]string{}
+	var pathTemplateIdentity string
+
+	for _, output := range outputs {
+		asset := output.asset
+		member := asset.CollectionMember
+		if member == nil {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("work item %s is missing collection member metadata", output.workItemID)
+		}
+		if _, exists := seenIndexes[member.MemberIndex]; exists {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("duplicate collection member index %d", member.MemberIndex)
+		}
+		seenIndexes[member.MemberIndex] = struct{}{}
+		if member.MemberIndex < 0 || member.MemberIndex >= firstMember.MemberCount {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection member index %d out of range", member.MemberIndex)
+		}
+		if asset.BindingName != firstAsset.BindingName {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection asset mismatch: %s != %s", asset.BindingName, firstAsset.BindingName)
+		}
+		if asset.MaterializationDomainID != firstAsset.MaterializationDomainID {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection materialization domain mismatch: %s != %s", asset.MaterializationDomainID, firstAsset.MaterializationDomainID)
+		}
+		if member.CollectionFingerprint != firstMember.CollectionFingerprint {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection fingerprint mismatch: %s != %s", member.CollectionFingerprint, firstMember.CollectionFingerprint)
+		}
+		if !sameStrings(member.DimensionOrder, firstMember.DimensionOrder) {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection dimension order mismatch: %v != %v", member.DimensionOrder, firstMember.DimensionOrder)
+		}
+		if member.MemberCount != firstMember.MemberCount {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection member_count mismatch: %d != %d", member.MemberCount, firstMember.MemberCount)
+		}
+		if asset.DestinationRelativePath == "" || asset.DestinationRelativePath != member.DestinationRelativePath {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection destination mismatch for member %d", member.MemberIndex)
+		}
+		if asset.MaterializationKey == "" {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection member %d missing materialization key", member.MemberIndex)
+		}
+		if previous, exists := seenMaterializationKeys[asset.MaterializationKey]; exists {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("duplicate collection materialization key %s for %s and %s", asset.MaterializationKey, previous, output.workItemID)
+		}
+		seenMaterializationKeys[asset.MaterializationKey] = output.workItemID
+		if previous, exists := seenDestinations[asset.DestinationRelativePath]; exists {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("duplicate collection destination %s for %s and %s", asset.DestinationRelativePath, previous, output.workItemID)
+		}
+		seenDestinations[asset.DestinationRelativePath] = output.workItemID
+		if pathTemplateIdentity == "" {
+			pathTemplateIdentity = member.PathTemplateIdentity
+		} else if member.PathTemplateIdentity != "" && member.PathTemplateIdentity != pathTemplateIdentity {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection path template identity mismatch")
+		}
+
+		memberRoot, memberTemplate, err := collectionPathTemplate(asset)
+		if err != nil {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("member %d: %w", member.MemberIndex, err)
+		}
+		if memberRoot != root {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection materialization root mismatch: %s != %s", memberRoot, root)
+		}
+		if memberTemplate != relativeTemplate {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("collection destination template mismatch: %s != %s", memberTemplate, relativeTemplate)
+		}
+		rendered, err := renderCollectionRelativeTemplate(relativeTemplate, member.DimensionOrder, member.MemberBindings)
+		if err != nil {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("member %d: %w", member.MemberIndex, err)
+		}
+		if rendered != asset.DestinationRelativePath {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("member %d destination %s does not conform to template %s", member.MemberIndex, asset.DestinationRelativePath, relativeTemplate)
+		}
+
+		for _, name := range member.DimensionOrder {
+			value := member.MemberBindings[name]
+			valueType, valueKey, err := collectionDimensionValue(value)
+			if err != nil {
+				return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("member %d binding %s: %w", member.MemberIndex, name, err)
+			}
+			dimension := dimensions[name]
+			if dimension.Type == "" {
+				dimension.Type = valueType
+				dimensionValueKeys[name] = map[string]struct{}{}
+			} else if dimension.Type != valueType {
+				return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("dimension %s type mismatch: %s != %s", name, valueType, dimension.Type)
+			}
+			if _, exists := dimensionValueKeys[name][valueKey]; !exists {
+				dimension.Values = append(dimension.Values, value)
+				dimensionValueKeys[name][valueKey] = struct{}{}
+			}
+			dimensions[name] = dimension
+		}
+
+		evidence := map[string]any{
+			"member_index":              member.MemberIndex,
+			"materialization_key":       asset.MaterializationKey,
+			"destination_relative_path": asset.DestinationRelativePath,
+			"destination_sha256":        asset.DestinationSHA256,
+			"member_bindings":           member.MemberBindings,
+		}
+		if asset.DestinationSizeBytes != nil {
+			evidence["destination_size_bytes"] = *asset.DestinationSizeBytes
+		}
+		memberEvidence = append(memberEvidence, evidence)
+	}
+	for index := 0; index < firstMember.MemberCount; index++ {
+		if _, exists := seenIndexes[index]; !exists {
+			return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("missing collection member index %d", index)
+		}
+	}
+
+	_, membersSHA256, err := fp.CanonicalJSONSHA256(memberEvidence)
+	if err != nil {
+		return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("hash collection member evidence: %w", err)
+	}
+	manifest := model.MaterializedAssetCollectionManifest{
+		Schema:                  model.MaterializedAssetCollectionManifestSchemaV1,
+		Asset:                   firstAsset.BindingName,
+		MaterializationDomainID: firstAsset.MaterializationDomainID,
+		DimensionOrder:          append([]string{}, firstMember.DimensionOrder...),
+		Dimensions:              dimensions,
+		Path:                    root + relativeTemplate,
+		RequiredBindings:        append([]string{}, firstMember.DimensionOrder...),
+		MemberCount:             firstMember.MemberCount,
+		MembersSHA256:           "sha256:" + membersSHA256,
+		CollectionFingerprint:   firstMember.CollectionFingerprint,
+	}
+	if err := manifest.Validate(); err != nil {
+		return model.MaterializedAssetCollectionManifest{}, fmt.Errorf("materialized asset collection manifest: %w", err)
+	}
+	return manifest, nil
+}
+
+func collectionPathTemplate(asset model.MaterializedDataAsset) (string, string, error) {
+	member := asset.CollectionMember
+	if member == nil {
+		return "", "", fmt.Errorf("collection member metadata is required")
+	}
+	if asset.DestinationRelativePath == "" {
+		return "", "", fmt.Errorf("destination_relative_path is required")
+	}
+	localPath := filepath.ToSlash(asset.LocalPath)
+	destination := filepath.ToSlash(asset.DestinationRelativePath)
+	if !strings.HasSuffix(localPath, destination) {
+		return "", "", fmt.Errorf("local_path %s does not end with destination_relative_path %s", asset.LocalPath, asset.DestinationRelativePath)
+	}
+	root := strings.TrimSuffix(localPath, destination)
+	if root == "" {
+		return "", "", fmt.Errorf("materialization root is required")
+	}
+	relativeTemplate := destination
+	for _, name := range member.DimensionOrder {
+		value, ok := member.MemberBindings[name]
+		if !ok {
+			return "", "", fmt.Errorf("member binding %q is required", name)
+		}
+		_, valueKey, err := collectionDimensionValue(value)
+		if err != nil {
+			return "", "", fmt.Errorf("member binding %s: %w", name, err)
+		}
+		if valueKey == "" || !strings.Contains(relativeTemplate, valueKey) {
+			return "", "", fmt.Errorf("destination_relative_path %s does not contain binding %s value %s", asset.DestinationRelativePath, name, valueKey)
+		}
+		relativeTemplate = strings.ReplaceAll(relativeTemplate, valueKey, "${"+name+"}")
+	}
+	for _, name := range member.DimensionOrder {
+		if !strings.Contains(relativeTemplate, "${"+name+"}") {
+			return "", "", fmt.Errorf("destination template %s is missing binding %s", relativeTemplate, name)
+		}
+	}
+	return root, relativeTemplate, nil
+}
+
+func renderCollectionRelativeTemplate(template string, order []string, bindings map[string]any) (string, error) {
+	rendered := template
+	for _, name := range order {
+		value, ok := bindings[name]
+		if !ok {
+			return "", fmt.Errorf("member binding %q is required", name)
+		}
+		_, valueKey, err := collectionDimensionValue(value)
+		if err != nil {
+			return "", err
+		}
+		rendered = strings.ReplaceAll(rendered, "${"+name+"}", valueKey)
+	}
+	if strings.Contains(rendered, "${") {
+		return "", fmt.Errorf("destination template has unresolved bindings")
+	}
+	return rendered, nil
+}
+
+func collectionDimensionValue(value any) (string, string, error) {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return "", "", fmt.Errorf("string binding must not be empty")
+		}
+		return "string", typed, nil
+	case int:
+		return "int", strconv.Itoa(typed), nil
+	case bool:
+		return "bool", strconv.FormatBool(typed), nil
+	case json.Number:
+		integer, err := strconv.Atoi(typed.String())
+		if err != nil {
+			return "", "", fmt.Errorf("number binding must be an int")
+		}
+		return "int", strconv.Itoa(integer), nil
+	default:
+		return "", "", fmt.Errorf("unsupported binding type %T", value)
+	}
+}
+
+func sameStrings(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalOutputJSONFromAny(value any) (string, string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", "", fmt.Errorf("encode output: %w", err)
+	}
+	resolved, err := resolvedOutputFromJSON(string(data))
+	if err != nil {
+		return "", "", err
+	}
+	return canonicalOutputJSONFromResolved(resolved)
 }
 
 func workflowStepScope(plan model.WorkflowDependencyPlan, beforeStepIndex int) (variable.Scope, error) {
@@ -317,7 +654,7 @@ func workflowStepScope(plan model.WorkflowDependencyPlan, beforeStepIndex int) (
 		if err != nil {
 			return nil, fmt.Errorf("workflow step %d: %w", step.StepIndex, err)
 		}
-		expression, err := variable.TypedExpressionFromResolved(output)
+		expression, err := outputTypedExpressionFromResolved(output)
 		if err != nil {
 			return nil, fmt.Errorf("workflow step %d: %w", step.StepIndex, err)
 		}
@@ -334,6 +671,51 @@ func workflowStepScope(plan model.WorkflowDependencyPlan, beforeStepIndex int) (
 			Expression: stepOutputs,
 		},
 	})
+}
+
+func outputTypedExpressionFromResolved(value variable.ResolvedValue) (variable.TypedExpression, error) {
+	switch value.Type {
+	case variable.TypeString, variable.TypePath, variable.TypeDatetime:
+		text, ok := value.Value.(string)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid %s value", value.Type)
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: strings.ReplaceAll(text, "${", `\${`)}, nil
+	case variable.TypeBool:
+		boolean, ok := value.Value.(bool)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid bool value")
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: boolean}, nil
+	case variable.TypeInt:
+		integer, ok := value.Value.(int)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid int value")
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: integer}, nil
+	case variable.TypeObject:
+		fields := make(map[string]variable.TypedExpression, len(value.Object))
+		for name, field := range value.Object {
+			expression, err := outputTypedExpressionFromResolved(field)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("convert object field %s: %w", name, err)
+			}
+			fields[name] = expression
+		}
+		return variable.TypedExpression{Type: variable.TypeObject, Expression: fields}, nil
+	case variable.TypeList:
+		items := make([]variable.TypedExpression, 0, len(value.List))
+		for index, item := range value.List {
+			expression, err := outputTypedExpressionFromResolved(item)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("convert list item %d: %w", index, err)
+			}
+			items = append(items, expression)
+		}
+		return variable.TypedExpression{Type: variable.TypeList, Expression: items}, nil
+	default:
+		return variable.TypedExpression{}, fmt.Errorf("unsupported resolved value type: %s", value.Type)
+	}
 }
 
 func flattenDependencySteps(plan model.WorkflowDependencyPlan) []model.WorkflowDependencyStep {

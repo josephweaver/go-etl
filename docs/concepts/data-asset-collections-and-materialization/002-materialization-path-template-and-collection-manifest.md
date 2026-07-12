@@ -1,6 +1,6 @@
 # 002 Materialization Path Template and Collection Manifest
 
-Status: proposed
+Status: Implemented pending review
 
 ## Objective
 
@@ -197,3 +197,17 @@ Do not read worker acquisition, controller persistence, scheduler, transport, or
 - The logical output becomes absolute only after successful worker materialization establishes one common root.
 - Do not overload artifact paths or source-manifest path validation with unresolved placeholders; use a dedicated template validator that validates literal segments around recognized placeholders.
 - Suggested HCI: `EC-3 / operational slice / files(4)+test+doc+newfile`.
+
+## Implementation Note
+
+Implemented in `internal/model/data_definition.go`,
+`internal/model/data_asset_collection.go`,
+`internal/model/data_asset.go`, and
+`internal/model/materialized_asset_collection.go`.
+Collection data inputs now require a safe `materialization.path_template`;
+the template parser accepts only `${asset.<parameter>}` placeholders, reports
+ordered placeholder references, and can normalize fixed parameters while leaving
+collection dimensions deferred as `${name}`. The compact
+`goet/materialized-asset-collection/v1` manifest and bounded concrete-member
+metadata now validate as model contracts. No compiler, controller, or worker
+behavior is changed by this slice.

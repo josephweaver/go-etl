@@ -44,7 +44,8 @@ A step maps an asset to a local alias, such as `field_segments`. Computation acc
 
 ## D-011 No hidden work items
 
-`cache_data` and `commit_data` are authored workflow steps. Legacy automatic planning is temporary migration behavior only.
+`asset.materialize` and `commit_data` are authored workflow steps. Legacy
+automatic planning has been removed.
 
 ## D-012 Shared and worker scopes are stable vocabulary
 
@@ -52,7 +53,9 @@ Both values parse and pass definition validation. Only `shared` passes supported
 
 ## D-013 Shared materialization uses explicit work-item constraints
 
-Provider/cache resource constraints belong to the explicit `cache_data` work item and end when that work completes. Compute does not hold the acquisition constraint.
+Provider/cache resource constraints belong to the explicit `asset.materialize`
+work item and end when that work completes. Compute does not hold the
+acquisition constraint.
 
 ## D-014 Worker scope is deferred
 

@@ -3,6 +3,7 @@ package variable
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestVariableValidate(t *testing.T) {
@@ -94,6 +95,42 @@ func TestResolvedListAllowsEmptyList(t *testing.T) {
 	value := ResolvedList(nil)
 	if value.Type != TypeList || len(value.List) != 0 {
 		t.Fatalf("unexpected empty list: %#v", value)
+	}
+}
+
+func TestCreateAutoInfersType(t *testing.T) {
+	startedAt := time.Now().UTC()
+
+	value, err := Create(NamespaceRuntime, "controller_started_at", startedAt)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if value.Name.Namespace != NamespaceRuntime || value.Name.Key != "controller_started_at" {
+		t.Fatalf("unexpected variable name: %s.%s", value.Name.Namespace, value.Name.Key)
+	}
+	if value.Type != TypeDatetime {
+		t.Fatalf("unexpected variable type: %s", value.Type)
+	}
+	text, ok := value.Expression.(string)
+	if !ok {
+		t.Fatalf("expression = %#v, want string", value.Expression)
+	}
+	if text != startedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("expression %s is not a datetime based on %s", text, startedAt.Format(time.RFC3339Nano))
+	}
+}
+
+func TestCreateWithTypeValidatesType(t *testing.T) {
+	if _, err := Create(NamespaceRuntime, "enabled", "true", TypeBool); err == nil {
+		t.Fatal("expected an error for non-bool value")
+	}
+}
+
+func TestCreateOptionalSensitive(t *testing.T) {
+	if value, err := Create(NamespaceRuntime, "secret", "api-token", true); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	} else if value.Sensitive != true {
+		t.Fatal("expected sensitive variable")
 	}
 }
 

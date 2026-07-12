@@ -127,6 +127,24 @@ func TestInstantiateDataAssetCanResolveWorkflowParameterReference(t *testing.T) 
 	}
 }
 
+func TestInstantiateDataAssetCarriesDefinitionNameAndConcreteMaterializationPath(t *testing.T) {
+	definition := testScalarMaterializedDefinition("cdl/${asset.year}.tif")
+	resolver := variable.NewResolver(variable.NewSet(), variable.ResolverConfig{})
+
+	instance, err := InstantiateDataAsset(resolver, variable.ResolvedValue{}, "cdl", definition, nil, map[string]variable.TypedExpression{
+		"year": {Type: variable.TypeInt, Expression: 2024},
+	})
+	if err != nil {
+		t.Fatalf("InstantiateDataAsset() error = %v", err)
+	}
+	if instance.BoundAsset.DefinitionName != "cdl" {
+		t.Fatalf("definition_name = %q, want cdl", instance.BoundAsset.DefinitionName)
+	}
+	if instance.BoundAsset.Materialization.PathTemplate != "cdl/2024.tif" {
+		t.Fatalf("materialization path = %q, want concrete destination", instance.BoundAsset.Materialization.PathTemplate)
+	}
+}
+
 func testYanRoyInstanceDefinition() model.DataInputDefinition {
 	required := true
 	immutable := true

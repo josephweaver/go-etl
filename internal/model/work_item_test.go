@@ -440,7 +440,7 @@ func TestCommitDataWorkItemPayloadValidate(t *testing.T) {
 		name   string
 		mutate func(*CommitDataWorkItemPayload)
 	}{
-		{name: "wrong operator", mutate: func(payload *CommitDataWorkItemPayload) { payload.Operator = "cache_data" }},
+		{name: "wrong operator", mutate: func(payload *CommitDataWorkItemPayload) { payload.Operator = "asset_materialize" }},
 		{name: "missing source work item", mutate: func(payload *CommitDataWorkItemPayload) { payload.Source.FromWorkItemID = "" }},
 		{name: "target artifact mismatch", mutate: func(payload *CommitDataWorkItemPayload) { payload.PublishTarget.FromArtifact = "other" }},
 		{name: "invalid constraint", mutate: func(payload *CommitDataWorkItemPayload) { payload.ResourceConstraints[0].RequestedUnits = 0 }},

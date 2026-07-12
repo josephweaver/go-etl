@@ -4,6 +4,14 @@ Status: Phase 1 implemented; explicit data-operator fixture smoke implemented
 Cadence: CSxIx
 Revision: 2026-07-07 data-operator model revision
 
+Supersession note, 2026-07-12: the follow-on
+[`Data Asset Collections and Explicit Materialization`](../data-asset-collections-and-materialization/README.md)
+concept renames the inbound explicit data operator from `cache_data` to
+`asset.materialize` and removes legacy hidden materialization planning.
+Historical Phase 1 text below may still use `cache_data` for slices 014 through
+018; current public authoring and active examples should use
+`asset.materialize -> compute -> commit_data`.
+
 ## Purpose
 
 Add the GOET boundary for workflows that read large external data assets and produce materialized file or directory outputs without putting those bytes in the repository-source cache, SQLite logical-output fields, or the developer's local workstation.
@@ -49,7 +57,7 @@ Phase 1 is implemented for the core orchestration boundary around large data:
 - `gdrive_rclone` acquisition through a configured external `rclone` executable and fake-rclone tests, not native Google Drive API support;
 - Python argv binding for `${data.<alias>.local_path}` and `${artifact_dir}` after materialization;
 - copy-to-named-location publication of selected promoted artifacts with compact `published_assets` evidence;
-- explicit `cache_data -> compute -> commit_data` fixture smoke coverage with source-transfer and publish-write resource mutexes;
+- explicit `asset.materialize -> compute -> commit_data` fixture smoke coverage with source-transfer and publish-write resource mutexes;
 - fake-HPCC data-assets smoke coverage using local fake Slurm fixtures;
 - CDL/Yan/Roy fixture pipeline coverage using tiny CSV/ZIP inputs in the sibling `../go-etl-demo-project`.
 
@@ -79,18 +87,16 @@ promote declared artifacts
 publish selected artifacts    ~= put_data infrastructure
 ```
 
-Explicit `cache_data` and `commit_data` work item operators are now implemented
-through the follow-on addendum and slices `014` through `018` for shared large-run
-data movement. Phase 1 keeps workflow business logic focused on the plugin
-operation while the worker handles fixture-sized compatibility data plumbing
-around that operation.
+Explicit `asset.materialize` and `commit_data` work item operators are now
+implemented for shared large-run data movement. The earlier `cache_data` name
+was superseded by the data-asset collections concept.
 
 ### Revised decision: explicit data movement operators
 
 For shared or fan-out workflows, ordinary compute work items must not implicitly
 download common inputs or publish durable outputs.
 
-The compiler/planner should produce `cache_data` work items for resolved input
+The compiler should produce `asset.materialize` work items for resolved input
 data assets and `commit_data` work items for publish bindings. These work items
 are scheduled by the same dependency-aware workflow and resource-admission
 machinery as ordinary compute work.
@@ -98,21 +104,21 @@ machinery as ordinary compute work.
 The preferred large-run shape is explicit:
 
 ```text
-cache_data -> compute -> commit_data
+asset.materialize -> compute -> commit_data
 ```
 
 Worker-internal materialization may remain as a compatibility path for small
 single-step fixtures. The target state for CDL/Yan/Roy-scale runs is the
 explicit DAG structure above.
 
-`cache_data` is inbound. `commit_data` is outbound. Internal cache promotion is
-a `cache_data` phase, not `commit_data`. Resource constraints bound concurrent
-transfers and writes. Provider transfer limits bound one admitted transfer when
-supported.
+`asset.materialize` is inbound. `commit_data` is outbound. Internal cache
+promotion is an `asset.materialize` phase, not `commit_data`. Resource
+constraints bound concurrent transfers and writes. Provider transfer limits
+bound one admitted transfer when supported.
 
-`cache_data` and `commit_data` are GOET-owned data movement operators. They are
-not generic user-authored shell steps, and they should not become an escape hatch
-for arbitrary file commands.
+`asset.materialize` and `commit_data` are GOET-owned data movement operators.
+They are not generic user-authored shell steps, and they should not become an
+escape hatch for arbitrary file commands.
 
 ### Provider decision
 
@@ -234,7 +240,7 @@ The worker remains the enforcement point for local filesystem paths. Python scri
 The data-operator revision distinguishes three operator families.
 
 ```text
-cache_data:
+asset.materialize:
   inbound data movement
   external source or configured named location -> target-local materialized input
 
@@ -251,12 +257,12 @@ Data assets are immutable logical inputs. Materialized asset instances are
 target-scoped cached realizations of those inputs. Published data assets are
 durable outbound realizations of workflow-produced artifacts.
 
-`cache_data` and `commit_data` are first-class work-item operators when data
+`asset.materialize` and `commit_data` are first-class work-item operators when data
 movement crosses a shared target or storage boundary.
 
-### `cache_data`
+### `asset.materialize`
 
-A `cache_data` work item materializes one resolved bound data asset for one
+An `asset.materialize` work item materializes one resolved bound data asset for one
 target environment. It is an inbound operation. It may:
 
 - reference an already-mounted `registered_location`;
@@ -267,7 +273,7 @@ target environment. It is an inbound operation. It may:
 - verify expected and observed evidence;
 - emit a `goet/materialized-data-assets/v1` manifest.
 
-Internal cache finalization belongs to `cache_data`, not `commit_data`:
+Internal cache finalization belongs to `asset.materialize`, not `commit_data`:
 
 ```text
 acquire -> stage -> verify -> promote_cache -> emit manifest
@@ -564,13 +570,13 @@ project:
   define field_cdl_composition_tile(year,tile) publish target
 
 stage 0:
-  cache_data(cdl_zip, year)
-  cache_data(yanroy_release, year, tile)
-  cache_data(crop_lookup)
+  asset.materialize(cdl_zip, year)
+  asset.materialize(yanroy_release, year, tile)
+  asset.materialize(crop_lookup)
 
 stage 1:
   compute(field_cdl_composition, year, tile)
-    depends on completed cache_data inputs
+    depends on completed asset.materialize inputs
 
 stage 2:
   compute(merge per-tile field/year/crop composition artifacts)
@@ -1104,9 +1110,9 @@ Algorithmic shape:
 ```text
 for each target year:
   for each Yan/Roy field-id tile:
-    cache_data materializes CDL year asset from HTTP cache or fixture
-    cache_data materializes Yan/Roy tile/release asset from local_file, registered_location, or gdrive_rclone
-    cache_data extracts selected files when the source is an archive
+    asset.materialize materializes CDL year asset from HTTP cache or fixture
+    asset.materialize materializes Yan/Roy tile/release asset from local_file, registered_location, or gdrive_rclone
+    asset.materialize extracts selected files when the source is an archive
     read the matching CDL window or fixture window
     read field_id values from the field raster
     ignore background/nodata field IDs
@@ -1239,7 +1245,7 @@ Explicit data-operator follow-on slices:
 - Python command arguments can receive resolved worker-local data paths without shell expansion.
 - Selected artifacts can be copied to predeclared named publish locations with conservative overwrite policy and post-copy evidence.
 - Downstream dependency-aware stages can receive upstream artifact/published-asset manifests as ordinary typed logical outputs.
-- Explicit data-operator smoke coverage proves `cache_data -> compute -> commit_data` with tiny fixture assets, completed terminal evidence for all three operator families, materialized input manifest hydration into compute, compact artifact evidence, compact published-asset evidence, source download capacity serialization, and published-location write serialization.
+- Explicit data-operator smoke coverage proves `asset.materialize -> compute -> commit_data` with tiny fixture assets, completed terminal evidence for all three operator families, materialized input manifest hydration into compute, compact artifact evidence, compact published-asset evidence, source download capacity serialization, and published-location write serialization.
 - Fake HPCC fixture smoke proves data binding, materialization, archive extraction, artifact promotion, and publication through a local fake Slurm boundary.
 - No default test or smoke path downloads CDL, contacts Google Drive, or requires multi-GB public data.
 - Documentation explains how the later CDL/Yan/Roy full-data run should move to real HPCC without committing site-specific configuration.
@@ -1261,6 +1267,6 @@ Explicit data-operator follow-on slices:
 - Whether provider templates belong only in project documents or can also be declared/overridden in workflow documents.
 - Whether compiled work items should carry only concrete bound data assets or also retain provider-template names for status/debugging.
 - Whether `${data.<alias>}` should be a shorthand for `${data.<alias>.local_path}` or whether all data references should require explicit `.local_path`.
-- Whether small local-only workflows may keep implicit worker materialization as a compatibility path, or whether all data bindings should compile through `cache_data` immediately.
+- Whether small local-only workflows may keep implicit worker materialization as a compatibility path, or whether all data bindings should compile through `asset.materialize` immediately.
 - Whether the first real Yan/Roy workflow should consume a manually downloaded `local_file` `ReleaseData.7z`, a `gdrive_rclone` download, or an already-extracted `registered_location` tile set.
 - Whether 7z extraction should be implemented immediately in the worker container image or deferred until the first real Yan/Roy runbook.

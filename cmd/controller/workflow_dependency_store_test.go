@@ -1023,6 +1023,56 @@ func TestRecordCompletedWorkItemOutputKeepsFanoutOrderStable(t *testing.T) {
 	}
 }
 
+func TestRecordCompletedWorkItemOutputPersistsCollectionDescriptorFact(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close workflow execution store: %v", err)
+		}
+	})
+	controller := newController()
+	controller.workflowStore = store
+	ctx := context.Background()
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+	workIDs := []string{"materialize-cdl--year-2008", "materialize-cdl--year-2009", "materialize-cdl--year-2010"}
+	createTwoStageFanoutDependencyPlan(t, ctx, controller, run.ID, run.WorkflowID, workIDs)
+	outputs := collectionStep(2008, 2009, 2010).WorkItems
+
+	for index, workID := range workIDs {
+		completeDependencyWorkItemForTest(t, ctx, store, controller, run.ID, workID, 0, index, outputs[index].OutputJSON)
+	}
+
+	reloaded := newController()
+	reloaded.workflowStore = store
+	step, found, err := reloaded.ReadStepState(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("ReadStepState() error = %v", err)
+	}
+	if !found {
+		t.Fatal("step not found after reload")
+	}
+	var manifest model.MaterializedAssetCollectionManifest
+	if err := json.Unmarshal([]byte(step.OutputJSON), &manifest); err != nil {
+		t.Fatalf("decode step output: %v", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("step collection manifest Validate() error = %v", err)
+	}
+	if manifest.Path != "/mnt/cache/assets/cdl/${year}.tif" || manifest.MemberCount != 3 {
+		t.Fatalf("collection descriptor = %+v", manifest)
+	}
+	fact, found, err := store.GetWorkflowStepOutputFact(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatalf("GetWorkflowStepOutputFact() error = %v", err)
+	}
+	if !found {
+		t.Fatal("collection output fact missing")
+	}
+	if fact.OutputJSON != step.OutputJSON || fact.OutputKind != "aggregate" {
+		t.Fatalf("collection output fact = %+v, want retained aggregate descriptor", fact)
+	}
+}
+
 func TestRecordCompletedWorkItemOutputDoesNotLeakAcrossSubmissions(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	t.Cleanup(func() {

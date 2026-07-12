@@ -387,7 +387,7 @@ Required Python parameters:
 | `python_entrypoint` | `string` or `path` | Wrapper script path inside admitted source                            |
 | `python_args`       | `list`             | Wrapper arguments; may include supported data/artifact interpolations |
 
-Data inputs should be declared through workflow `data` sections and explicit `cache_data` steps. Wrapper arguments may reference materialized paths with `${data.<binding>.path[0]}` or named file-role paths such as `${data.<binding>.files.<role>.path}`.
+Data inputs should be declared through workflow `data` sections and explicit `asset.materialize` steps. Wrapper arguments may reference materialized paths with `${data.<binding>.path[0]}` or named file-role paths such as `${data.<binding>.files.<role>.path}`.
 
 Wrapper output JSON example:
 

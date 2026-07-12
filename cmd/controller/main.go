@@ -477,15 +477,15 @@ func controllerConfigPath(explicitPath string, executablePath func() (string, er
 
 func parseControllerStartupOptions(args []string) (controllerStartupOptions, error) {
 	var options controllerStartupOptions
-	var configSet bool
+	var hasConfig bool
 
 	flags := flag.NewFlagSet("controller", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Func("config", "controller configuration path", func(value string) error {
-		if configSet {
+		if hasConfig {
 			return fmt.Errorf("--config may be specified only once")
 		}
-		configSet = true
+		hasConfig = true
 		options.ConfigPath = value
 		return nil
 	})
@@ -545,35 +545,28 @@ func newStartupRuntimeScope(processID int, instanceID string, startedAt time.Tim
 		return nil, fmt.Errorf("runtime.controller_build_version is required")
 	}
 
+	controllerProcessID, err := variable.Create(variable.NamespaceRuntime, "controller_process_id", processID, variable.TypeInt)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_process_id: %w", err)
+	}
+	controllerInstanceID, err := variable.Create(variable.NamespaceRuntime, "controller_instance_id", instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_instance_id: %w", err)
+	}
+	controllerStartedAt, err := variable.Create(variable.NamespaceRuntime, "controller_started_at", startedAt, variable.TypeDatetime)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_started_at: %w", err)
+	}
+	controllerBuildVersion, err := variable.Create(variable.NamespaceRuntime, "controller_build_version", buildVersion)
+	if err != nil {
+		return nil, fmt.Errorf("runtime.controller_build_version: %w", err)
+	}
+
 	return variable.NewScope(
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_process_id"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeInt,
-				Expression: processID,
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_instance_id"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeString,
-				Expression: instanceID,
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_started_at"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeDatetime,
-				Expression: startedAt.UTC().Format(time.RFC3339Nano),
-			},
-		},
-		variable.Variable{
-			Name: variable.Name{Namespace: variable.NamespaceRuntime, Key: "controller_build_version"},
-			TypedExpression: variable.TypedExpression{
-				Type:       variable.TypeString,
-				Expression: buildVersion,
-			},
-		},
+		controllerProcessID,
+		controllerInstanceID,
+		controllerStartedAt,
+		controllerBuildVersion,
 	)
 }
 
@@ -703,15 +696,8 @@ func acquireControllerDatabaseOwnershipForPath(path string) (func() error, error
 	}
 
 	lockPath := path + ".controller.lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, fmt.Errorf("controller startup database ownership: database is already owned")
-		}
-		return nil, fmt.Errorf("controller startup database ownership: create lock file: %w", err)
-	}
-	if err := lockFile.Close(); err != nil {
-		return nil, fmt.Errorf("controller startup database ownership: close lock file: %w", err)
+	if err := createControllerDatabaseLockFile(lockPath, path); err != nil {
+		return nil, err
 	}
 
 	return func() error {
@@ -720,6 +706,103 @@ func acquireControllerDatabaseOwnershipForPath(path string) (func() error, error
 		}
 		return nil
 	}, nil
+}
+
+type controllerDatabaseLockMetadata struct {
+	PID          int    `json:"pid"`
+	DatabasePath string `json:"database_path"`
+	CreatedAt    string `json:"created_at"`
+}
+
+var controllerDatabaseLockOwnerActive = controllerDatabaseLockOwnerProcessActive
+
+func createControllerDatabaseLockFile(lockPath string, databasePath string) error {
+	if err := writeControllerDatabaseLockFile(lockPath, databasePath); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("controller startup database ownership: create lock file: %w", err)
+		}
+
+		removed, removeErr := removeStaleControllerDatabaseLockFile(lockPath)
+		if removeErr != nil {
+			return removeErr
+		}
+		if !removed {
+			return fmt.Errorf("controller startup database ownership: database is already owned")
+		}
+		if err := writeControllerDatabaseLockFile(lockPath, databasePath); err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("controller startup database ownership: database is already owned")
+			}
+			return fmt.Errorf("controller startup database ownership: create lock file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func writeControllerDatabaseLockFile(lockPath string, databasePath string) error {
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+
+	closed := false
+	defer func() {
+		if !closed {
+			_ = lockFile.Close()
+		}
+	}()
+	removeAfterClose := func() {
+		if !closed {
+			_ = lockFile.Close()
+			closed = true
+		}
+		_ = os.Remove(lockPath)
+	}
+
+	metadata := controllerDatabaseLockMetadata{
+		PID:          os.Getpid(),
+		DatabasePath: databasePath,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := json.NewEncoder(lockFile).Encode(metadata); err != nil {
+		removeAfterClose()
+		return err
+	}
+	if err := lockFile.Close(); err != nil {
+		closed = true
+		_ = os.Remove(lockPath)
+		return err
+	}
+	closed = true
+	return nil
+}
+
+func removeStaleControllerDatabaseLockFile(lockPath string) (bool, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("controller startup database ownership: read existing lock file: %w", err)
+	}
+
+	var metadata controllerDatabaseLockMetadata
+	if err := json.Unmarshal(bytes.TrimSpace(data), &metadata); err != nil || metadata.PID <= 0 {
+		return false, nil
+	}
+
+	active, err := controllerDatabaseLockOwnerActive(metadata.PID)
+	if err != nil {
+		return false, fmt.Errorf("controller startup database ownership: inspect lock owner pid %d: %w", metadata.PID, err)
+	}
+	if active {
+		return false, nil
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("controller startup database ownership: remove stale lock file: %w", err)
+	}
+	return true, nil
 }
 
 func resolveControllerFilesystemPaths(resolver variable.Resolver, workingDirectory string) (controllerFilesystemPaths, error) {
@@ -3294,7 +3377,7 @@ func (c *Controller) failPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "failed work item not found", http.StatusInternalServerError)
 		return
 	}
-	if err := c.failCacheDataDependents(r.Context(), workItem, failure.Error); err != nil {
+	if err := c.failAssetMaterializeDependents(r.Context(), workItem, failure.Error); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3355,13 +3438,13 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, "decode completed worker payload", http.StatusInternalServerError)
 		return
 	}
-	if completedPayload.Type == model.WorkItemTypeCacheData {
-		if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+	if completedPayload.Type == model.WorkItemTypeAssetMaterialize {
+		if err := c.enqueueReadyAssetMaterializeDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		c.signalCareTaker("work_completed")
-		fmt.Println("persisted cache_data work item completed:", completion.ID, completion.AttemptID)
+		fmt.Println("persisted asset_materialize work item completed:", completion.ID, completion.AttemptID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -3388,7 +3471,7 @@ func (c *Controller) completePersistedWorkHandler(w http.ResponseWriter, r *http
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := c.enqueueReadyCacheDataDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
+	if err := c.enqueueReadyAssetMaterializeDependents(r.Context(), workItem, activationTimeFromCompletedWork(completed)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3706,10 +3789,10 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if item.Type != model.WorkItemTypeCacheData && item.Type != model.WorkItemTypeCommitData {
-		item, err = c.hydrateCacheDataDependentWorkItem(r.Context(), claim, item)
+	if item.Type != model.WorkItemTypeAssetMaterialize && item.Type != model.WorkItemTypeCommitData {
+		item, err = c.hydrateAssetMaterializeDependentWorkItem(r.Context(), claim, item)
 		if err != nil {
-			http.Error(w, "hydrate cache_data dependent work item", http.StatusInternalServerError)
+			http.Error(w, "hydrate asset_materialize dependent work item", http.StatusInternalServerError)
 			return
 		}
 	}

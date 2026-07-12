@@ -91,7 +91,7 @@ func TestCanonicalJSONAndYAMLWorkflowCompileEquivalently(t *testing.T) {
 					}
 				},
 				"work": {
-					"type": "cache_data",
+					"type": "asset.materialize",
 					"parameters": {
 						"target_environment_id": "target-local"
 					}
@@ -204,7 +204,7 @@ steps:
           with:
             year: ${fanout}
     work:
-      type: cache_data
+      type: asset.materialize
       parameters:
         target_environment_id: target-local
   - id: build-report
@@ -256,8 +256,8 @@ steps:
 	for _, item := range jsonCompiled {
 		counts[item.Type]++
 	}
-	if counts[model.WorkItemTypeCacheData] != 1 || counts[model.WorkItemTypePythonScript] != 1 || counts[model.WorkItemTypeCommitData] != 1 {
-		t.Fatalf("compiled type counts = %+v, want one cache_data, one python_script, one commit_data", counts)
+	if counts[model.WorkItemTypeAssetMaterialize] != 1 || counts[model.WorkItemTypePythonScript] != 1 || counts[model.WorkItemTypeCommitData] != 1 {
+		t.Fatalf("compiled type counts = %+v, want one asset_materialize, one python_script, one commit_data", counts)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1361,6 +1362,20 @@ func TestAcquireControllerDatabaseOwnershipCreatesAndReleasesLock(t *testing.T) 
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("expected lock file: %v", err)
 	}
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock file: %v", err)
+	}
+	var metadata controllerDatabaseLockMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode lock file: %v", err)
+	}
+	if metadata.PID != os.Getpid() {
+		t.Fatalf("lock pid = %d, want %d", metadata.PID, os.Getpid())
+	}
+	if metadata.DatabasePath != path {
+		t.Fatalf("lock database path = %q, want %q", metadata.DatabasePath, path)
+	}
 
 	if err := release(); err != nil {
 		t.Fatalf("release ownership: %v", err)
@@ -1382,6 +1397,100 @@ func TestAcquireControllerDatabaseOwnershipRejectsExistingLock(t *testing.T) {
 	if err := os.WriteFile(lockPath, []byte("owned"), 0600); err != nil {
 		t.Fatalf("write lock file: %v", err)
 	}
+
+	release, err := acquireControllerDatabaseOwnership(db)
+	if err == nil || !strings.Contains(err.Error(), "already owned") {
+		t.Fatalf("error = %v, want already owned", err)
+	}
+	if release != nil {
+		t.Fatal("release = non-nil, want nil")
+	}
+}
+
+func TestAcquireControllerDatabaseOwnershipRemovesStalePIDLock(t *testing.T) {
+	db := testSQLiteMainDatabase(t)
+	defer db.Close()
+
+	var path string
+	if err := db.QueryRowContext(context.Background(), `PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		t.Fatalf("query database path: %v", err)
+	}
+	lockPath := path + ".controller.lock"
+	staleLock := controllerDatabaseLockMetadata{
+		PID:          987654,
+		DatabasePath: path,
+		CreatedAt:    time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(staleLock)
+	if err != nil {
+		t.Fatalf("marshal stale lock: %v", err)
+	}
+	if err := os.WriteFile(lockPath, data, 0600); err != nil {
+		t.Fatalf("write stale lock file: %v", err)
+	}
+
+	previous := controllerDatabaseLockOwnerActive
+	controllerDatabaseLockOwnerActive = func(pid int) (bool, error) {
+		if pid != staleLock.PID {
+			t.Fatalf("inspected pid = %d, want %d", pid, staleLock.PID)
+		}
+		return false, nil
+	}
+	defer func() {
+		controllerDatabaseLockOwnerActive = previous
+	}()
+
+	release, err := acquireControllerDatabaseOwnership(db)
+	if err != nil {
+		t.Fatalf("acquireControllerDatabaseOwnership() error = %v", err)
+	}
+	defer release()
+
+	data, err = os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read replacement lock file: %v", err)
+	}
+	var metadata controllerDatabaseLockMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("decode replacement lock file: %v", err)
+	}
+	if metadata.PID != os.Getpid() {
+		t.Fatalf("replacement lock pid = %d, want %d", metadata.PID, os.Getpid())
+	}
+}
+
+func TestAcquireControllerDatabaseOwnershipKeepsActivePIDLock(t *testing.T) {
+	db := testSQLiteMainDatabase(t)
+	defer db.Close()
+
+	var path string
+	if err := db.QueryRowContext(context.Background(), `PRAGMA database_list`).Scan(new(int), new(string), &path); err != nil {
+		t.Fatalf("query database path: %v", err)
+	}
+	lockPath := path + ".controller.lock"
+	activeLock := controllerDatabaseLockMetadata{
+		PID:          os.Getpid(),
+		DatabasePath: path,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(activeLock)
+	if err != nil {
+		t.Fatalf("marshal active lock: %v", err)
+	}
+	if err := os.WriteFile(lockPath, data, 0600); err != nil {
+		t.Fatalf("write active lock file: %v", err)
+	}
+
+	previous := controllerDatabaseLockOwnerActive
+	controllerDatabaseLockOwnerActive = func(pid int) (bool, error) {
+		if pid != activeLock.PID {
+			t.Fatalf("inspected pid = %d, want %d", pid, activeLock.PID)
+		}
+		return true, nil
+	}
+	defer func() {
+		controllerDatabaseLockOwnerActive = previous
+	}()
 
 	release, err := acquireControllerDatabaseOwnership(db)
 	if err == nil || !strings.Contains(err.Error(), "already owned") {

@@ -67,6 +67,6 @@ go test ./...
 
 - 2026-07-11: `internal/workflow/function_fanout_test.go` proves a canonical JSON/YAML structured function call can produce a workflow list variable consumed by normal `${workflow.pairs[*]}` fan-out.
 - 2026-07-11: The proof uses `list.flatten` to produce object pair values because the existing canonical fan-out and asset-binding surfaces support `fanout.<field>` accessors without adding new function-call syntax to fan-out.
-- 2026-07-11: JSON and YAML variants compile to equivalent ordered cache work identities, pair-field bindings, selected archive members, and deterministic asset keys.
-- 2026-07-11: The proof includes visible `cache_data` work whose data-asset parameters come from function-produced fan-out values; no hidden cache work path is used.
+- 2026-07-11: JSON and YAML variants compile to equivalent ordered materialization work identities, pair-field bindings, selected archive members, and deterministic asset keys.
+- 2026-07-12: The proof now uses visible `asset.materialize` work whose data-asset parameters come from function-produced fan-out values; no hidden materialization path is used.
 - 2026-07-11: Ordinary literal-list fan-out remains covered in the same proof file.

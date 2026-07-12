@@ -18,7 +18,7 @@ The boundary must:
 - compose named project, workflow, and submission data trees with workflow-over-project precedence;
 - move data acquisition and publication declarations out of compute work-item parameters;
 - support parameterized data assets instantiated after fan-out values are known;
-- keep `cache_data` and `commit_data` as explicit authored work items rather than hidden generated work;
+- keep `asset.materialize` and `commit_data` as explicit authored work items rather than hidden generated work;
 - resolve materialized paths through a step-local `data` namespace;
 - retain `materialization.scope: shared | worker`, implementing `shared` first and rejecting `worker` with a recognized not-implemented error;
 - normalize structured function-call authoring syntax into the internal expression model without teaching `internal/variable` about `$expr` JSON containers.
@@ -53,7 +53,7 @@ This SC supersedes or narrows the following proposed directions:
 1. The placeholder **Canonical JSON Variable Loading** concept is absorbed and expanded to cover YAML, workflow normalization, named data trees, and assignment-time data projections.
 2. `expression-function-framework/001-expression-container-forms.md` is retired. `$expr` and `type: expression` must not become part of `internal/variable.TypedExpression` JSON decoding.
 3. The remaining expression-function idea is retained through a structured semantic function-call model and canonical-loader directives.
-4. The implemented data-operator runtime remains valuable, but the current planner behavior that discovers `data_assets` or `publish` inside compute parameters and silently generates operator work is a legacy authoring path. The target model requires visible `cache_data` and `commit_data` steps.
+4. The implemented data-operator runtime remains valuable, but the current planner behavior that discovers `data_assets` or `publish` inside compute parameters and silently generates operator work is a legacy authoring path. The target model requires visible `asset.materialize` and `commit_data` steps.
 
 ## Current Repository State
 
@@ -64,8 +64,8 @@ The repository already has most of the low-level runtime pieces:
 - `workflow.Workflow` exposes internal `[]variable.Variable` and Go-shaped step fields directly to current workflow JSON.
 - controller startup documents still require explicit serialized `[]variable.Variable` entries.
 - `internal/model/data_asset.go` defines step bindings, bound assets, cache/integrity/archive/materialization fields, and materialized-data manifests.
-- `internal/workflow/cache_data_plan.go` currently scans compute parameters and generates `cache_data` and `commit_data` work items.
-- `cmd/controller/cache_data_hydration.go` hydrates compute work from completed dependency manifests.
+- `internal/workflow/asset_materialize_plan.go` currently scans compute parameters and generates `asset.materialize` and `commit_data` work items.
+- `cmd/controller/asset_materialize_hydration.go` hydrates compute work from completed dependency manifests.
 - worker code already performs data acquisition, archive extraction, cache promotion, Python argument binding, and publication.
 
 The missing boundary is not provider execution. It is a coherent public document and ownership model.
@@ -196,7 +196,7 @@ The compiler must not silently introduce data movement because a compute paramet
 Inbound and outbound operations are visible authored steps:
 
 ```text
-cache_data -> compute -> commit_data
+asset.materialize -> compute -> commit_data
 ```
 
 The compiler may normalize, validate, fingerprint, attach constraints, and compile these explicit steps. It may not invent them.
@@ -363,7 +363,7 @@ steps:
             tile: "${fanout.tile}"
 
     work:
-      type: cache_data
+      type: asset.materialize
 
   - id: analyze-field-segment-headers
 
@@ -434,8 +434,8 @@ For `tile=h18v07` and `select=[header]`, assignment-time resolution exposes an e
 8. Bind asset parameters into the temporary `asset` scope.
 9. Resolve file templates and effective selection.
 10. Compute canonical asset-instance identity.
-11. Compile the authored cache_data or compute work item.
-12. cache_data materializes into the shared domain and emits a manifest.
+11. Compile the authored `asset.materialize` or compute work item.
+12. `asset.materialize` materializes into the shared domain and emits a manifest.
 13. A later compute assignment finds the matching manifest by asset identity and domain.
 14. Build the assignment-local `data` scope.
 15. Resolve `${data.<alias>.path[...]}` and named file-role paths.
@@ -476,7 +476,7 @@ Aliases do not affect physical asset identity. Two step aliases may point to the
 
 ## Shared Materialization Contract
 
-An explicit `cache_data` step must:
+An explicit `asset.materialize` step must:
 
 1. receive a fully resolved asset instance;
 2. acquire any provider resource constraint attached to that work item;

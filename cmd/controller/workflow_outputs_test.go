@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -210,6 +211,152 @@ func TestAggregateStepOutputFanoutStoresOutputsByWorkItemIndex(t *testing.T) {
 	}
 }
 
+func TestAggregateStepOutputCollectionStoresCompactDescriptor(t *testing.T) {
+	output, _, err := aggregateStepOutputJSON(collectionStep(2008, 2009, 2010))
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	if strings.HasPrefix(output, "[") {
+		t.Fatalf("output = %s, want compact object", output)
+	}
+	var manifest model.MaterializedAssetCollectionManifest
+	if err := json.Unmarshal([]byte(output), &manifest); err != nil {
+		t.Fatalf("decode collection output: %v", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("collection output Validate() error = %v", err)
+	}
+	if manifest.Schema != model.MaterializedAssetCollectionManifestSchemaV1 {
+		t.Fatalf("schema = %q", manifest.Schema)
+	}
+	if manifest.Asset != "cdl" || manifest.MaterializationDomainID != "target-local" {
+		t.Fatalf("identity = %+v", manifest)
+	}
+	if manifest.Path != "/mnt/cache/assets/cdl/${year}.tif" {
+		t.Fatalf("path = %q", manifest.Path)
+	}
+	if manifest.MemberCount != 3 || manifest.MembersSHA256 == "" {
+		t.Fatalf("member evidence = %+v", manifest)
+	}
+	values := manifest.Dimensions["year"].Values
+	if len(values) != 3 || values[0] != 2008 || values[1] != 2009 || values[2] != 2010 {
+		t.Fatalf("year values = %#v", values)
+	}
+}
+
+func TestAggregateStepOutputScalarAssetMaterializeStoresSingleObject(t *testing.T) {
+	output := materializedAssetOutputJSON(t, model.MaterializedDataAsset{
+		BindingName:             "cdl",
+		ProviderType:            model.DataProviderHTTP,
+		Kind:                    "raster",
+		LocalPath:               "/mnt/cache/assets/cdl/current.tif",
+		MaterializationKey:      "sha256:" + strings.Repeat("1", 64),
+		MaterializationDomainID: "target-local",
+		DestinationRelativePath: "cdl/current.tif",
+		DestinationSHA256:       strings.Repeat("a", 64),
+	})
+	got, _, err := aggregateStepOutputJSON(model.WorkflowDependencyStep{
+		StepIndex: 0,
+		WorkItems: []model.WorkflowDependencyWorkItemMembership{
+			completedOutputMembership("work-0", 0, output),
+		},
+	})
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	if strings.HasPrefix(got, "[") {
+		t.Fatalf("output = %s, want scalar object", got)
+	}
+	var manifest model.MaterializedDataAssetManifest
+	if err := json.Unmarshal([]byte(got), &manifest); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if manifest.Schema != model.MaterializedDataAssetManifestSchemaV1 {
+		t.Fatalf("schema = %q", manifest.Schema)
+	}
+}
+
+func TestAggregateStepOutputCollectionRejectsMissingMemberIndex(t *testing.T) {
+	step := collectionStep(2008, 2009, 2010)
+	step.WorkItems = append(step.WorkItems[:1], step.WorkItems[2:]...)
+	_, _, err := aggregateStepOutputJSON(step)
+	if err == nil || !strings.Contains(err.Error(), "member count") {
+		t.Fatalf("error = %v, want missing member count/index failure", err)
+	}
+}
+
+func TestAggregateStepOutputCollectionRejectsDuplicateMemberIndex(t *testing.T) {
+	step := collectionStep(2008, 2009, 2010)
+	step.WorkItems[1].OutputJSON = collectionMemberOutputJSON(t, 0, 3, 2009, "target-local", collectionFingerprintForTest(), "/mnt/cache/assets")
+	_, _, err := aggregateStepOutputJSON(step)
+	if err == nil || !strings.Contains(err.Error(), "duplicate collection member index") {
+		t.Fatalf("error = %v, want duplicate member index failure", err)
+	}
+}
+
+func TestAggregateStepOutputCollectionRejectsMismatchedFingerprint(t *testing.T) {
+	step := collectionStep(2008, 2009, 2010)
+	step.WorkItems[2].OutputJSON = collectionMemberOutputJSON(t, 2, 3, 2010, "target-local", "sha256:"+strings.Repeat("b", 64), "/mnt/cache/assets")
+	_, _, err := aggregateStepOutputJSON(step)
+	if err == nil || !strings.Contains(err.Error(), "collection fingerprint mismatch") {
+		t.Fatalf("error = %v, want fingerprint mismatch", err)
+	}
+}
+
+func TestAggregateStepOutputCollectionRejectsMismatchedDomainAndRoot(t *testing.T) {
+	t.Run("domain", func(t *testing.T) {
+		step := collectionStep(2008, 2009, 2010)
+		step.WorkItems[1].OutputJSON = collectionMemberOutputJSON(t, 1, 3, 2009, "other-domain", collectionFingerprintForTest(), "/mnt/cache/assets")
+		_, _, err := aggregateStepOutputJSON(step)
+		if err == nil || !strings.Contains(err.Error(), "materialization domain mismatch") {
+			t.Fatalf("error = %v, want domain mismatch", err)
+		}
+	})
+	t.Run("root", func(t *testing.T) {
+		step := collectionStep(2008, 2009, 2010)
+		step.WorkItems[1].OutputJSON = collectionMemberOutputJSON(t, 1, 3, 2009, "target-local", collectionFingerprintForTest(), "/other/cache")
+		_, _, err := aggregateStepOutputJSON(step)
+		if err == nil || !strings.Contains(err.Error(), "materialization root mismatch") {
+			t.Fatalf("error = %v, want root mismatch", err)
+		}
+	})
+}
+
+func TestAggregateStepOutputCollectionRejectsTemplateMismatch(t *testing.T) {
+	step := collectionStep(2008, 2009, 2010)
+	step.WorkItems[1].OutputJSON = collectionMemberOutputJSONWithDestination(t, 1, 3, 2009, "cdl/2009-extra.tif")
+	_, _, err := aggregateStepOutputJSON(step)
+	if err == nil || !strings.Contains(err.Error(), "destination template mismatch") {
+		t.Fatalf("error = %v, want destination template mismatch", err)
+	}
+}
+
+func TestAggregateStepOutputCollectionRejectsDuplicateDestination(t *testing.T) {
+	step := collectionStep(2008, 2009, 2010)
+	step.WorkItems[1].OutputJSON = collectionMemberOutputJSONWithDestination(t, 1, 3, 2009, "cdl/2008.tif")
+	_, _, err := aggregateStepOutputJSON(step)
+	if err == nil || !strings.Contains(err.Error(), "duplicate collection destination") {
+		t.Fatalf("error = %v, want duplicate destination", err)
+	}
+}
+
+func TestAggregateStepOutputCollectionDescriptorStaysBoundedForSixteenMembers(t *testing.T) {
+	years := make([]int, 0, 16)
+	for year := 2008; year <= 2023; year++ {
+		years = append(years, year)
+	}
+	output, _, err := aggregateStepOutputJSON(collectionStep(years...))
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	if len([]byte(output)) >= maxLogicalStepOutputJSONBytes {
+		t.Fatalf("output bytes = %d, want below logical limit", len([]byte(output)))
+	}
+	if strings.Contains(output, "materialized-data-assets") {
+		t.Fatalf("output should not embed member manifests: %s", output)
+	}
+}
+
 func TestAggregateStepOutputFanoutIgnoresCompletionOrder(t *testing.T) {
 	left, _, err := aggregateStepOutputJSON(fanoutStepInCompletionOrder())
 	if err != nil {
@@ -330,6 +477,44 @@ func TestWorkflowStepScopeResolvesCompletedPriorStep(t *testing.T) {
 	}
 	if label.Type != variable.TypeString || label.Value != "done" {
 		t.Fatalf("label = %#v, want string done", label)
+	}
+}
+
+func TestWorkflowStepScopeExposesCollectionDimensionValuesAsInts(t *testing.T) {
+	output, _, err := aggregateStepOutputJSON(collectionStep(2008, 2009, 2010))
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	scope, err := workflowStepScope(model.WorkflowDependencyPlan{
+		RunID:      "run-1",
+		WorkflowID: "workflow-1",
+		State:      model.WorkflowStateRunning,
+		Stages: []model.WorkflowDependencyStage{{
+			StageIndex: 0,
+			State:      model.WorkflowStageStateCompleted,
+			Steps: []model.WorkflowDependencyStep{{
+				StageIndex: 0,
+				StepIndex:  0,
+				StepID:     "materialize-cdl",
+				State:      model.WorkflowStepStateCompleted,
+				OutputJSON: output,
+			}},
+		}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("workflowStepScope() error = %v", err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	step, err := resolver.Resolve(variable.Reference{Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "step"}, Qualified: true})
+	if err != nil {
+		t.Fatalf("Resolve(workflow.step) error = %v", err)
+	}
+	year, err := variable.ApplyAccessor(step, "[0].dimensions.year.values[1]")
+	if err != nil {
+		t.Fatalf("ApplyAccessor(year) error = %v", err)
+	}
+	if year.Type != variable.TypeInt || year.Value != 2009 {
+		t.Fatalf("year = %#v, want int 2009", year)
 	}
 }
 
@@ -544,6 +729,82 @@ func completedOutputMembership(id string, index int, outputJSON string) model.Wo
 		State:         model.WorkItemMembershipStateCompleted,
 		OutputJSON:    outputJSON,
 	}
+}
+
+func collectionStep(years ...int) model.WorkflowDependencyStep {
+	fingerprint := collectionFingerprintForTest()
+	items := make([]model.WorkflowDependencyWorkItemMembership, 0, len(years))
+	for index, year := range years {
+		items = append(items, completedOutputMembership(
+			fmt.Sprintf("materialize-cdl--year-%d", year),
+			index,
+			collectionMemberOutputJSON(nil, index, len(years), year, "target-local", fingerprint, "/mnt/cache/assets"),
+		))
+	}
+	return model.WorkflowDependencyStep{
+		StepIndex: 0,
+		WorkItems: items,
+	}
+}
+
+func collectionMemberOutputJSON(t *testing.T, index int, count int, year int, domain string, fingerprint string, root string) string {
+	if t != nil {
+		t.Helper()
+	}
+	return materializedAssetOutputJSON(t, collectionMemberAsset(index, count, year, domain, fingerprint, root, fmt.Sprintf("cdl/%d.tif", year)))
+}
+
+func collectionMemberOutputJSONWithDestination(t *testing.T, index int, count int, year int, destination string) string {
+	t.Helper()
+	return materializedAssetOutputJSON(t, collectionMemberAsset(index, count, year, "target-local", collectionFingerprintForTest(), "/mnt/cache/assets", destination))
+}
+
+func collectionMemberAsset(index int, count int, year int, domain string, fingerprint string, root string, destination string) model.MaterializedDataAsset {
+	size := int64(12 + index)
+	return model.MaterializedDataAsset{
+		BindingName:             "cdl",
+		ProviderType:            model.DataProviderHTTP,
+		Kind:                    "raster",
+		LocalPath:               root + "/" + destination,
+		MaterializationKey:      "sha256:" + fmt.Sprintf("%064x", year),
+		MaterializationDomainID: domain,
+		DestinationRelativePath: destination,
+		DestinationSizeBytes:    &size,
+		DestinationSHA256:       fmt.Sprintf("%064x", year+1000),
+		CollectionMember: &model.MaterializedDataAssetCollectionMember{
+			CollectionFingerprint:   fingerprint,
+			MemberIndex:             index,
+			MemberCount:             count,
+			DimensionOrder:          []string{"year"},
+			MemberBindings:          map[string]any{"year": year},
+			DestinationRelativePath: destination,
+			PathTemplateIdentity:    "sha256:" + strings.Repeat("c", 64),
+		},
+	}
+}
+
+func materializedAssetOutputJSON(t *testing.T, asset model.MaterializedDataAsset) string {
+	if t != nil {
+		t.Helper()
+	}
+	manifest := model.MaterializedDataAssetManifest{
+		Schema:              model.MaterializedDataAssetManifestSchemaV1,
+		AssetKey:            "sha256:" + strings.Repeat("d", 64),
+		TargetEnvironmentID: "target-local",
+		Assets:              []model.MaterializedDataAsset{asset},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		if t != nil {
+			t.Fatalf("marshal materialized asset output: %v", err)
+		}
+		panic(err)
+	}
+	return string(data)
+}
+
+func collectionFingerprintForTest() string {
+	return "sha256:" + strings.Repeat("a", 64)
 }
 
 func fanoutStepInCompletionOrder() model.WorkflowDependencyStep {

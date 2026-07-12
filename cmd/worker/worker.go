@@ -101,7 +101,7 @@ func (w Worker) runWorkItem(item model.WorkItem) (WorkEvidence, error) {
 		return w.runPythonScript(item)
 	case model.WorkItemTypeWriteDemoOutput,
 		model.WorkItemTypeSummarizeInputFile,
-		model.WorkItemTypeCacheData,
+		model.WorkItemTypeAssetMaterialize,
 		model.WorkItemTypeCommitData:
 	default:
 		return WorkEvidence{}, fmt.Errorf("unsupported work item type: %s", item.Type)
@@ -117,8 +117,8 @@ func (w Worker) runWorkItem(item model.WorkItem) (WorkEvidence, error) {
 		return w.writeDemoOutput(operation)
 	case model.WorkItemTypeSummarizeInputFile:
 		return w.summarizeInputFile(operation)
-	case model.WorkItemTypeCacheData:
-		return w.cacheData(operation)
+	case model.WorkItemTypeAssetMaterialize:
+		return w.AssetMaterialize(operation)
 	case model.WorkItemTypeCommitData:
 		return w.commitData(operation)
 	default:

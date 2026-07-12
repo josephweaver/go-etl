@@ -78,7 +78,7 @@ func TestDecodeStrictWorkflowReferenceExample(t *testing.T) {
 					}
 				},
 				"work": {
-					"type": "cache_data"
+					"type": "asset.materialize"
 				}
 			},
 			{
@@ -133,7 +133,7 @@ func TestDecodeStrictWorkflowReferenceExample(t *testing.T) {
 		t.Fatalf("decoded steps = %+v", document.Steps)
 	}
 	assertRawJSONEqual(t, document.Variables["tiles"], `["h18v07","h18v08"]`)
-	assertRawJSONContains(t, document.Steps[0].Work, "cache_data")
+	assertRawJSONContains(t, document.Steps[0].Work, "asset.materialize")
 	assertRawJSONContains(t, document.SourceManifest, "python_entrypoint")
 }
 

@@ -1,6 +1,6 @@
 # 006 Worker Deterministic Destination Materialization
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

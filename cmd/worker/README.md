@@ -82,8 +82,8 @@ and failed executions overwrite the path with
 
 Direct mode accepts every operation dispatched by `Worker.Run`; it does not
 maintain a separate operation allow-list. `write_demo_output`,
-`summarize_input_file`, `cache_data`, and `commit_data` use their normal inputs
-and provider configuration. `python_script` additionally requires
+`summarize_input_file`, `asset.materialize`, and `commit_data` use their normal
+inputs and provider configuration. `python_script` additionally requires
 `--source-bundle`; missing source run and manifest bookkeeping receives
 `direct-run-dummy` and `source-manifest.json`. The local ZIP passes through the
 same validation and extraction code used in controller mode.

@@ -11,6 +11,7 @@ Concept link for its authoritative scope.
 - [Controller Resilience](controller-resilience/README.md) - Define controller process identity and restart behavior for work, reports, and orchestration state.
 - [Controller Retention and Cleanup](controller-retention-cleanup/README.md) - Bound controller-owned disk and database growth without deleting data still needed for active work, recovery, or audit.
 - [Canonical JSON Variable Loading](canonical-json-variable-loading/README.md) - Load controller, project, workflow, and override JSON into implicit typed namespaces using canonical JSON value shapes.
+- [Data Asset Collections and Explicit Materialization](data-asset-collections-and-materialization/README.md) - Ready for implementation review; adds finite data-asset collections, explicit `asset.materialize`, compact collection outputs, and downstream member hydration.
 - [Execution Events](execution-events/README.md) - Replace specialized worker messages with a shared typed event model while keeping orchestration state controller-owned.
 - [Enhanced Python Worker](enhanced-python-worker/README.md) - Add a Python worker runtime with common dependencies, Data Assets-backed `.venv` materialization, and explicit `python-create-env` work items.
 - [Geospatial Worker Plugins](geospatial-worker-plugins/README.md) - Add GDAL-backed geospatial operations and fixture smoke coverage for CDL/Yan/Roy-style raster workflows.

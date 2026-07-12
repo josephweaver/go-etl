@@ -180,7 +180,7 @@ func persistenceRecordsFromCompiledStageResults(
 			persistenceItems = append(persistenceItems, record)
 			currentStageWorkItemIDs[id] = struct{}{}
 			payloadsByPersistedID[id] = itemPayload
-			if itemPayload.Type != model.WorkItemTypeCacheData {
+			if itemPayload.Type != model.WorkItemTypeAssetMaterialize {
 				membershipsByPersistedID[id] = compiledStageWorkItemMembership{
 					stageIndex:    item.StageIndex,
 					stepIndex:     item.StepIndex,

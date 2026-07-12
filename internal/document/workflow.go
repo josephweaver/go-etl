@@ -202,14 +202,6 @@ func canonicalWorkflowStep(fields map[string]any, index int) (CanonicalWorkflowS
 	if err != nil {
 		return CanonicalWorkflowStep{}, err
 	}
-	fanOutFields, err := requiredObject(fields, "fan_out", context)
-	if err != nil {
-		return CanonicalWorkflowStep{}, err
-	}
-	fanOut, err := canonicalFanOut(fanOutFields, context+".fan_out")
-	if err != nil {
-		return CanonicalWorkflowStep{}, err
-	}
 	workFields, err := requiredObject(fields, "work", context)
 	if err != nil {
 		return CanonicalWorkflowStep{}, err
@@ -217,6 +209,20 @@ func canonicalWorkflowStep(fields map[string]any, index int) (CanonicalWorkflowS
 	work, err := canonicalWork(workFields, context+".work")
 	if err != nil {
 		return CanonicalWorkflowStep{}, err
+	}
+	fanOutFields, hasFanOut := fields["fan_out"]
+	fanOut := CanonicalFanOut{}
+	if hasFanOut {
+		fanOutObject, ok := fanOutFields.(map[string]any)
+		if !ok {
+			return CanonicalWorkflowStep{}, fmt.Errorf("%s fan_out must be an object", context)
+		}
+		fanOut, err = canonicalFanOut(fanOutObject, context+".fan_out")
+		if err != nil {
+			return CanonicalWorkflowStep{}, err
+		}
+	} else if work.Type != "asset.materialize" {
+		return CanonicalWorkflowStep{}, fmt.Errorf("%s fan_out is required", context)
 	}
 	dataSection, err := optionalObject(fields, "data", context)
 	if err != nil {

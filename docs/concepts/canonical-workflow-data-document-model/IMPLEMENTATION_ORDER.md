@@ -57,6 +57,6 @@ Each list function remains one Operational Slice.
 1. JSON/YAML semantic-equivalence tests pass before workflow migration.
 2. Project/workflow precedence tests pass before data asset migration.
 3. `scope: worker` recognized-not-implemented tests pass before shared materialization changes.
-4. Explicit `cache_data` smoke passes before legacy automatic cache planning is removed.
+4. Explicit `asset.materialize` smoke passes before legacy automatic cache planning is removed.
 5. Explicit `commit_data` smoke passes before legacy publish planning is removed.
 6. Full `go test ./...` passes at OS-013 and OS-020.

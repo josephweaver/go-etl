@@ -2817,14 +2817,14 @@ func TestStoreClaimNextWorkSecondClaimSeesFirstRunningResourceUsage(t *testing.T
 	}
 }
 
-func TestStoreClaimNextWorkCacheDataSourceMutexAdmitsOnlyOne(t *testing.T) {
+func TestStoreClaimNextWorkAssetMaterializeSourceMutexAdmitsOnlyOne(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
 	defer store.Close()
 	run := insertTestRunWithStage(t, ctx, store)
 	resourceKey := "provider:http:example.invalid/download"
-	first := testWorkItemRecord("cache-data-first", run.ID, 0, 0)
-	second := testWorkItemRecord("cache-data-second", run.ID, 0, 1)
+	first := testWorkItemRecord("asset-materialize-first", run.ID, 0, 0)
+	second := testWorkItemRecord("asset-materialize-second", run.ID, 0, 1)
 	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
 		WorkItems: []WorkItemRecord{first, second},
 		ResourceConstraints: []WorkItemResourceConstraintRecord{
@@ -2905,15 +2905,15 @@ func TestStoreClaimNextWorkCommitDataPublishedLocationMutexAdmitsOnlyOne(t *test
 	assertQueuedWork(t, ctx, store, second.ID, "2026-07-03T00:00:02Z")
 }
 
-func TestStoreClaimNextWorkCacheDataSourceCapacityAdmitsTwoButNotThree(t *testing.T) {
+func TestStoreClaimNextWorkAssetMaterializeSourceCapacityAdmitsTwoButNotThree(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
 	defer store.Close()
 	run := insertTestRunWithStage(t, ctx, store)
 	resourceKey := "provider:http:example.invalid/download"
-	first := testWorkItemRecord("cache-data-first", run.ID, 0, 0)
-	second := testWorkItemRecord("cache-data-second", run.ID, 0, 1)
-	third := testWorkItemRecord("cache-data-third", run.ID, 0, 2)
+	first := testWorkItemRecord("asset-materialize-first", run.ID, 0, 0)
+	second := testWorkItemRecord("asset-materialize-second", run.ID, 0, 1)
+	third := testWorkItemRecord("asset-materialize-third", run.ID, 0, 2)
 	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
 		WorkItems: []WorkItemRecord{first, second, third},
 		ResourceConstraints: []WorkItemResourceConstraintRecord{
@@ -2954,13 +2954,13 @@ func TestStoreClaimNextWorkCacheDataSourceCapacityAdmitsTwoButNotThree(t *testin
 	assertQueuedWork(t, ctx, store, third.ID, "2026-07-03T00:00:03Z")
 }
 
-func TestStoreClaimNextWorkCacheDataIndependentSourcesDoNotBlockEachOther(t *testing.T) {
+func TestStoreClaimNextWorkAssetMaterializeIndependentSourcesDoNotBlockEachOther(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
 	defer store.Close()
 	run := insertTestRunWithStage(t, ctx, store)
-	first := testWorkItemRecord("cache-data-http", run.ID, 0, 0)
-	second := testWorkItemRecord("cache-data-drive", run.ID, 0, 1)
+	first := testWorkItemRecord("asset-materialize-http", run.ID, 0, 0)
+	second := testWorkItemRecord("asset-materialize-drive", run.ID, 0, 1)
 	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
 		WorkItems: []WorkItemRecord{first, second},
 		ResourceConstraints: []WorkItemResourceConstraintRecord{
@@ -2994,17 +2994,17 @@ func TestStoreClaimNextWorkComputeWithoutDataTransferConstraintRemainsSchedulabl
 	defer store.Close()
 	run := insertTestRunWithStage(t, ctx, store)
 	resourceKey := "provider:http:example.invalid/download"
-	running := testWorkItemRecord("cache-data-running", run.ID, 0, 0)
-	blockedCacheData := testWorkItemRecord("cache-data-blocked", run.ID, 0, 1)
+	running := testWorkItemRecord("asset-materialize-running", run.ID, 0, 0)
+	blockedAssetMaterialize := testWorkItemRecord("asset-materialize-blocked", run.ID, 0, 1)
 	compute := testWorkItemRecord("compute-work", run.ID, 0, 2)
-	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running-cache-data", resourceKey, 1)
+	insertTestRunningWorkWithResourceConstraint(t, ctx, store, running, "attempt-running-asset-materialize", resourceKey, 1)
 	if err := store.QueueWorkItems(ctx, QueueWorkItemsRequest{
-		WorkItems: []WorkItemRecord{blockedCacheData, compute},
+		WorkItems: []WorkItemRecord{blockedAssetMaterialize, compute},
 		ResourceConstraints: []WorkItemResourceConstraintRecord{
-			testResourceConstraintRecord(blockedCacheData.ID, 0, resourceKey, 1, "<=", 1),
+			testResourceConstraintRecord(blockedAssetMaterialize.ID, 0, resourceKey, 1, "<=", 1),
 		},
 		QueuedWork: []QueuedWorkRecord{
-			{WorkItemRecord: blockedCacheData, QueuedAt: "2026-07-03T00:00:01Z"},
+			{WorkItemRecord: blockedAssetMaterialize, QueuedAt: "2026-07-03T00:00:01Z"},
 			{WorkItemRecord: compute, QueuedAt: "2026-07-03T00:00:02Z"},
 		},
 	}); err != nil {
@@ -3019,7 +3019,7 @@ func TestStoreClaimNextWorkComputeWithoutDataTransferConstraintRemainsSchedulabl
 	if !found || claimed.WorkItem.ID != compute.ID {
 		t.Fatalf("ClaimNextWork() = %+v found %v, want unconstrained compute %s", claimed, found, compute.ID)
 	}
-	assertQueuedWork(t, ctx, store, blockedCacheData.ID, "2026-07-03T00:00:01Z")
+	assertQueuedWork(t, ctx, store, blockedAssetMaterialize.ID, "2026-07-03T00:00:01Z")
 }
 
 func TestStoreClaimNextWorkAppliesAllResourceOperators(t *testing.T) {

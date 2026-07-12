@@ -12,24 +12,24 @@ import (
 )
 
 type FanOutWorkItemTemplate struct {
-	FanOutExpression     string
-	FanOutAlias          string
-	IDTemplate           string
-	OutputTemplate       string
-	TokenAccessor        string
-	IDTokenAccessor      string
-	OutputAccessor       string
-	Type                 model.WorkItemType
-	IDPrefix             string
-	OutputPrefix         string
-	OutputExtension      string
-	Parameters           model.Parameters
-	ParameterExpressions map[string]variable.TypedExpression
-	ParameterAccessors   map[string]string
-	ResourceConstraints  []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
-	DataInputs           []ExplicitDataInputTemplate
-	ExplicitCacheData    *ExplicitCacheDataTemplate  `json:"explicit_cache_data,omitempty"`
-	ExplicitCommitData   *ExplicitCommitDataTemplate `json:"explicit_commit_data,omitempty"`
+	FanOutExpression         string
+	FanOutAlias              string
+	IDTemplate               string
+	OutputTemplate           string
+	TokenAccessor            string
+	IDTokenAccessor          string
+	OutputAccessor           string
+	Type                     model.WorkItemType
+	IDPrefix                 string
+	OutputPrefix             string
+	OutputExtension          string
+	Parameters               model.Parameters
+	ParameterExpressions     map[string]variable.TypedExpression
+	ParameterAccessors       map[string]string
+	ResourceConstraints      []ResourceConstraintDeclaration `json:"resource_constraints,omitempty"`
+	DataInputs               []ExplicitDataInputTemplate
+	ExplicitAssetMaterialize *ExplicitAssetMaterializeTemplate `json:"explicit_asset_materialize,omitempty"`
+	ExplicitCommitData       *ExplicitCommitDataTemplate       `json:"explicit_commit_data,omitempty"`
 }
 
 type ResourceConstraintDeclaration struct {
@@ -107,6 +107,14 @@ func CompileFanOutWorkItems(resolver variable.Resolver, template FanOutWorkItemT
 }
 
 func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWorkItemTemplate) ([]CompiledFanOutWorkItem, error) {
+	if template.FanOutExpression == "" {
+		if template.Type == model.WorkItemTypeAssetMaterialize && template.ExplicitAssetMaterialize != nil {
+			return compileStandaloneExplicitAssetMaterializeWorkItems(resolver, template)
+		}
+	}
+	if err := rejectCollectionAssetMaterializeFanOut(template); err != nil {
+		return nil, err
+	}
 	values, err := resolver.ResolveFanOutExpression(template.FanOutExpression)
 	if err != nil {
 		return nil, err
@@ -152,12 +160,15 @@ func CompileFanOutWorkItemResults(resolver variable.Resolver, template FanOutWor
 		if err := bindParameterAccessors(item.Parameters, value, template.ParameterAccessors); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
 		}
+		if err := rejectLegacyHiddenPlannerParameters(item.Parameters); err != nil {
+			return nil, fmt.Errorf("compile fan-out item %d parameters: %w", index, err)
+		}
 		if err := compileExplicitDataInputs(resolver, context, &item, template.DataInputs); err != nil {
 			return nil, fmt.Errorf("compile fan-out item %d data inputs: %w", index, err)
 		}
-		explicitConstraints, err := compileExplicitCacheDataWorkItem(resolver, context, &item, template.ExplicitCacheData)
+		explicitConstraints, err := compileExplicitAssetMaterializeWorkItem(resolver, context, &item, template.ExplicitAssetMaterialize)
 		if err != nil {
-			return nil, fmt.Errorf("compile fan-out item %d explicit cache_data: %w", index, err)
+			return nil, fmt.Errorf("compile fan-out item %d explicit asset_materialize: %w", index, err)
 		}
 		explicitCommitConstraints, err := compileExplicitCommitDataWorkItem(resolver, context, idToken, &item, template.ExplicitCommitData)
 		if err != nil {
@@ -501,6 +512,18 @@ func validateFanOutRenderedToken(token string, name string) error {
 	for _, char := range token {
 		if unicode.IsControl(char) {
 			return fmt.Errorf("%s token must not contain control characters", name)
+		}
+	}
+	return nil
+}
+
+func rejectLegacyHiddenPlannerParameters(parameters model.Parameters) error {
+	for name := range parameters {
+		switch name {
+		case "data_assets":
+			return fmt.Errorf("legacy work parameter %q is not allowed; use step.data.inputs with a prior explicit asset.materialize step", name)
+		case "publish", "publish_targets":
+			return fmt.Errorf("legacy work parameter %q is not allowed; use an explicit commit_data step with data.outputs", name)
 		}
 	}
 	return nil

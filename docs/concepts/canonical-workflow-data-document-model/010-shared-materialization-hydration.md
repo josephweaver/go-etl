@@ -15,16 +15,16 @@ Primary: `GPT-5.5`, `High` reasoning. First escalation or review: `GPT-5.6-Terra
 Read:
 
 - OS-009
-- `cmd/controller/cache_data_hydration.go`
-- `cmd/controller/cache_data_dependencies.go`
+- `cmd/controller/asset_materialize_hydration.go`
+- `cmd/controller/asset_materialize_dependencies.go`
 - workflow stage activation/queue files
 - persistence terminal-attempt and step-output APIs
 - workflow-compilation-resolution concept
 
 ## Allowed Production Files
 
-- `cmd/controller/cache_data_hydration.go`
-- `cmd/controller/cache_data_dependencies.go`
+- `cmd/controller/asset_materialize_hydration.go`
+- `cmd/controller/asset_materialize_dependencies.go`
 - `cmd/controller/workflow_stage_queue.go` or focused new helper
 - persistence model only if existing output facts are insufficient
 
@@ -36,7 +36,7 @@ Read:
 ## Data State Transition
 
 ```text
-completed explicit cache_data manifests
+completed explicit asset.materialize manifests
     -> index by asset key + domain
 compute asset requirements
     -> match prior completed manifest
@@ -54,7 +54,7 @@ compute asset requirements
 - Preserve binding aliases by projecting one physical manifest under each consumer alias.
 - Use durable completed output facts so restart reconstruction works.
 - Do not create a global mutable catalog.
-- Permit cache_data to verify an already-ready physical cache and emit a fresh run-scoped manifest.
+- Permit `asset.materialize` to verify an already-ready physical materialization and emit a fresh run-scoped manifest.
 
 ## Out of Scope
 

@@ -1,6 +1,6 @@
 # 003 Collection Member Expansion and Identity
 
-Status: proposed
+Status: Implemented pending review
 
 ## Objective
 
@@ -146,3 +146,15 @@ Do not read worker, controller, persistence, transport, scheduler, or provider a
 - Include destination path in the materialization identity, not the source asset key.
 - Do not derive identity from human-readable work-item IDs.
 - Suggested HCI: `EC-3 / operational slice / files(4)+test+doc+newfile`.
+
+## Implementation Note
+
+Implemented in `internal/workflow/data_collection.go` with focused coverage in
+`internal/workflow/data_collection_test.go`. The workflow layer can now expand a
+scalar asset into one member or a finite collection into deterministic members
+using declared dimension order. Each member reuses the existing asset
+instantiation path, resolves a concrete destination-relative path, and receives
+a materialization identity distinct from the source asset key. The collection
+plan also records fixed parameters, dimension values, the normalized logical
+path template, and one collection fingerprint. This slice does not compile work
+items and does not change controller or worker execution.
