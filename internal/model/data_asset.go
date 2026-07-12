@@ -20,6 +20,7 @@ type StepDataBinding struct {
 }
 
 type BoundDataAsset struct {
+	DefinitionName  string                   `json:"definition_name,omitempty"`
 	BindingName     string                   `json:"binding_name"`
 	ProviderName    string                   `json:"provider_name"`
 	Kind            string                   `json:"kind"`
@@ -138,6 +139,11 @@ func (binding StepDataBinding) Validate() error {
 }
 
 func (asset BoundDataAsset) Validate() error {
+	if asset.DefinitionName != "" {
+		if err := validateDataName(asset.DefinitionName, "bound data asset definition_name"); err != nil {
+			return err
+		}
+	}
 	if err := validateDataName(asset.BindingName, "bound data asset binding_name"); err != nil {
 		return err
 	}

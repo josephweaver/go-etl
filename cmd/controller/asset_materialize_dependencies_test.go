@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -451,6 +452,107 @@ func TestHydrateAssetMaterializeDependentWorkItemProjectsOneSharedMaterializatio
 	}
 }
 
+func TestHydrateAssetMaterializeDependentWorkItemSelectsCollectionMemberByMaterializationIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	required := testSharedCollectionHydrationAsset("cdl_compute", 2009)
+	physical := required
+	physical.BindingName = "cdl_materialize"
+	assetKey, err := workflow.CanonicalDataAssetInstanceKey("cdl", nil, physical)
+	if err != nil {
+		t.Fatalf("CanonicalDataAssetInstanceKey() error = %v", err)
+	}
+	materializationKey, err := workflow.MaterializationIdentityKey(assetKey, "target-local", "cdl/2009.tif")
+	if err != nil {
+		t.Fatalf("MaterializationIdentityKey() error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "materialize-cdl-2009", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationDestinationManifestJSON(
+		t,
+		assetKey,
+		"target-local",
+		"cdl_materialize",
+		"/target/cache/cdl/2009.tif",
+		"cdl/2009.tif",
+		materializationKey,
+		2009,
+	))
+
+	computeItem := testSharedHydrationComputeItem("compute-cdl-2009", "target-local", []model.BoundDataAsset{required})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-cdl-2009",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-cdl-2009", RunID: run.ID, StageIndex: 1},
+	}
+	hydrated, err := controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
+	if err != nil {
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v", err)
+	}
+	manifest := materializedHydrationParameter(t, hydrated)
+	if len(manifest.Assets) != 1 {
+		t.Fatalf("manifest assets = %+v, want one", manifest.Assets)
+	}
+	if manifest.Assets[0].BindingName != "cdl_compute" {
+		t.Fatalf("hydrated binding = %q, want compute alias", manifest.Assets[0].BindingName)
+	}
+	if manifest.Assets[0].LocalPath != "/target/cache/cdl/2009.tif" || manifest.Assets[0].DestinationRelativePath != "cdl/2009.tif" {
+		t.Fatalf("hydrated asset = %+v, want 2009 destination", manifest.Assets[0])
+	}
+	projections, err := model.MaterializedDataProjections(manifest)
+	if err != nil {
+		t.Fatalf("MaterializedDataProjections() error = %v", err)
+	}
+	if got := projections["cdl_compute"].Path; len(got) != 1 || got[0] != "/target/cache/cdl/2009.tif" {
+		t.Fatalf("projection path = %+v, want concrete 2009 destination", got)
+	}
+}
+
+func TestHydrateAssetMaterializeDependentWorkItemRejectsWrongCollectionMemberDestination(t *testing.T) {
+	ctx := context.Background()
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	run := insertTestPersistenceRunWithStage(t, ctx, store)
+
+	required := testSharedCollectionHydrationAsset("cdl_compute", 2009)
+	physical := required
+	physical.BindingName = "cdl_materialize"
+	assetKey, err := workflow.CanonicalDataAssetInstanceKey("cdl", nil, physical)
+	if err != nil {
+		t.Fatalf("CanonicalDataAssetInstanceKey() error = %v", err)
+	}
+	wrongKey, err := workflow.MaterializationIdentityKey(assetKey, "target-local", "cdl/2010.tif")
+	if err != nil {
+		t.Fatalf("MaterializationIdentityKey() error = %v", err)
+	}
+	cacheRecord := testHydrationCacheRecord(t, run.ID, "materialize-cdl-2010", 0)
+	completeHydrationCacheRecord(t, ctx, store, cacheRecord, testHydrationDestinationManifestJSON(
+		t,
+		assetKey,
+		"target-local",
+		"cdl_materialize",
+		"/target/cache/cdl/2010.tif",
+		"cdl/2010.tif",
+		wrongKey,
+		2010,
+	))
+
+	computeItem := testSharedHydrationComputeItem("compute-cdl-2009", "target-local", []model.BoundDataAsset{required})
+	claim := persistence.ClaimedWorkRecord{
+		AttemptID: "attempt-compute-cdl-2009",
+		WorkItem:  persistence.WorkItemRecord{ID: run.ID + ":compute-cdl-2009", RunID: run.ID, StageIndex: 1},
+	}
+	_, err = controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
+	if err == nil || !strings.Contains(err.Error(), `no completed shared materialization found for data asset "cdl_compute"`) {
+		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v, want missing 2009 member", err)
+	}
+}
+
 func TestHydrateAssetMaterializeDependentWorkItemRejectsDuplicateSharedMaterializationMatches(t *testing.T) {
 	ctx := context.Background()
 	store := openTestWorkflowExecutionStore(t)
@@ -478,6 +580,36 @@ func TestHydrateAssetMaterializeDependentWorkItemRejectsDuplicateSharedMateriali
 	_, err = controller.hydrateAssetMaterializeDependentWorkItem(ctx, claim, computeItem)
 	if err == nil || !strings.Contains(err.Error(), `multiple completed shared materializations found for data asset "field_tile_fixture"`) {
 		t.Fatalf("hydrateAssetMaterializeDependentWorkItem() error = %v, want duplicate materialization match", err)
+	}
+}
+
+func testSharedCollectionHydrationAsset(bindingName string, year int) model.BoundDataAsset {
+	return model.BoundDataAsset{
+		DefinitionName: "cdl",
+		BindingName:    bindingName,
+		ProviderName:   "cdl_provider",
+		Kind:           "raster",
+		Format:         "tif",
+		Provider:       model.DataProviderHTTP,
+		Location: model.DataAssetLocation{
+			Type: model.DataProviderHTTP,
+			URI:  "https://example.invalid/cdl/" + strconv.Itoa(year) + ".zip",
+		},
+		Cache: model.DataAssetCache{
+			Strategy: model.DataAssetCacheStrategyWorkerCache,
+			CacheKey: "cdl/" + strconv.Itoa(year) + "/source.zip",
+		},
+		Archive: &model.DataAssetArchive{
+			Type:   model.DataAssetArchiveTypeZip,
+			Select: []model.DataAssetArchiveSelect{{Member: strconv.Itoa(year) + "_30m_cdls.tif", As: "cdl.tif"}},
+			Expose: model.DataAssetArchiveExposeSelectedPath,
+		},
+		Materialization: model.DataAssetMaterialization{
+			Scope:        model.DataMaterializationScopeShared,
+			Strategy:     model.DataAssetCacheStrategyWorkerCache,
+			PathTemplate: "cdl/" + strconv.Itoa(year) + ".tif",
+		},
+		Parameters: map[string]any{"year": year},
 	}
 }
 
@@ -567,6 +699,53 @@ func testHydrationManifestJSON(t *testing.T, assetKey string, targetEnvironmentI
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("marshal materialized manifest: %v", err)
+	}
+	return string(data)
+}
+
+func testHydrationDestinationManifestJSON(
+	t *testing.T,
+	assetKey string,
+	targetEnvironmentID string,
+	bindingName string,
+	localPath string,
+	destinationRelativePath string,
+	materializationKey string,
+	year int,
+) string {
+	t.Helper()
+	size := int64(12)
+	manifest := model.MaterializedDataAssetManifest{
+		Schema:              model.MaterializedDataAssetManifestSchemaV1,
+		AssetKey:            assetKey,
+		TargetEnvironmentID: targetEnvironmentID,
+		Assets: []model.MaterializedDataAsset{
+			{
+				BindingName:             bindingName,
+				ProviderName:            "cdl_provider",
+				ProviderType:            model.DataProviderHTTP,
+				Kind:                    "raster",
+				Format:                  "tif",
+				LocalPath:               localPath,
+				MaterializationKey:      materializationKey,
+				MaterializationDomainID: targetEnvironmentID,
+				DestinationRelativePath: destinationRelativePath,
+				DestinationSizeBytes:    &size,
+				DestinationSHA256:       strings.Repeat("a", 64),
+				CollectionMember: &model.MaterializedDataAssetCollectionMember{
+					CollectionFingerprint:   "sha256:" + strings.Repeat("b", 64),
+					MemberIndex:             year - 2008,
+					MemberCount:             16,
+					DimensionOrder:          []string{"year"},
+					MemberBindings:          map[string]any{"year": year},
+					DestinationRelativePath: destinationRelativePath,
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal destination materialized manifest: %v", err)
 	}
 	return string(data)
 }

@@ -480,6 +480,44 @@ func TestWorkflowStepScopeResolvesCompletedPriorStep(t *testing.T) {
 	}
 }
 
+func TestWorkflowStepScopeExposesCollectionDimensionValuesAsInts(t *testing.T) {
+	output, _, err := aggregateStepOutputJSON(collectionStep(2008, 2009, 2010))
+	if err != nil {
+		t.Fatalf("aggregateStepOutputJSON() error = %v", err)
+	}
+	scope, err := workflowStepScope(model.WorkflowDependencyPlan{
+		RunID:      "run-1",
+		WorkflowID: "workflow-1",
+		State:      model.WorkflowStateRunning,
+		Stages: []model.WorkflowDependencyStage{{
+			StageIndex: 0,
+			State:      model.WorkflowStageStateCompleted,
+			Steps: []model.WorkflowDependencyStep{{
+				StageIndex: 0,
+				StepIndex:  0,
+				StepID:     "materialize-cdl",
+				State:      model.WorkflowStepStateCompleted,
+				OutputJSON: output,
+			}},
+		}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("workflowStepScope() error = %v", err)
+	}
+	resolver := variable.NewResolver(variable.NewSet(scope), variable.ResolverConfig{})
+	step, err := resolver.Resolve(variable.Reference{Name: variable.Name{Namespace: variable.NamespaceWorkflow, Key: "step"}, Qualified: true})
+	if err != nil {
+		t.Fatalf("Resolve(workflow.step) error = %v", err)
+	}
+	year, err := variable.ApplyAccessor(step, "[0].dimensions.year.values[1]")
+	if err != nil {
+		t.Fatalf("ApplyAccessor(year) error = %v", err)
+	}
+	if year.Type != variable.TypeInt || year.Value != 2009 {
+		t.Fatalf("year = %#v, want int 2009", year)
+	}
+}
+
 func TestWorkflowStepScopeStillResolvesBeforePrune(t *testing.T) {
 	scope, err := workflowStepScope(planWithStepOutput("run-1", `{"answer":42}`), 1)
 	if err != nil {

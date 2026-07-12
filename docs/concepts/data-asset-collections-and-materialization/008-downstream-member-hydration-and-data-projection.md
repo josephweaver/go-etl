@@ -1,6 +1,6 @@
 # 008 Downstream Member Hydration and Data Projection
 
-Status: proposed
+Status: implemented
 
 ## Objective
 

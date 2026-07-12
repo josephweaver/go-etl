@@ -105,9 +105,11 @@ func (c *Controller) hydrateAssetMaterializeDependentWorkItem(ctx context.Contex
 }
 
 type sharedMaterializationRequirement struct {
-	BindingName string
-	AssetKeys   []string
-	Domain      model.MaterializationDomain
+	BindingName             string
+	AssetKeys               []string
+	Domain                  model.MaterializationDomain
+	DestinationRelativePath string
+	MaterializationKeys     []string
 }
 
 type completedMaterializationCandidate struct {
@@ -146,10 +148,16 @@ func sharedMaterializationRequirements(item model.WorkItem) ([]sharedMaterializa
 			if err != nil {
 				return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
 			}
+			materializationKeys, err := materializationKeyCandidates(assetKeys, domain.ID, asset.Materialization.PathTemplate)
+			if err != nil {
+				return nil, fmt.Errorf("shared materialization data_assets[%d]: %w", i, err)
+			}
 			requirements = append(requirements, sharedMaterializationRequirement{
-				BindingName: asset.BindingName,
-				AssetKeys:   assetKeys,
-				Domain:      domain,
+				BindingName:             asset.BindingName,
+				AssetKeys:               assetKeys,
+				Domain:                  domain,
+				DestinationRelativePath: asset.Materialization.PathTemplate,
+				MaterializationKeys:     materializationKeys,
 			})
 		case model.DataMaterializationScopeWorker:
 			return nil, fmt.Errorf("%w: %s", model.ErrMaterializationScopeNotImplemented, model.DataMaterializationScopeWorker)
@@ -207,7 +215,11 @@ func stringParameterValue(parameters model.Parameters, name string) (string, err
 
 func materializationAssetKeyCandidates(asset model.BoundDataAsset, targetEnvironmentID string) ([]string, error) {
 	candidates := []string{}
-	canonicalKey, err := workflow.CanonicalDataAssetInstanceKey(asset.BindingName, nil, asset)
+	definitionName := asset.DefinitionName
+	if definitionName == "" {
+		definitionName = asset.BindingName
+	}
+	canonicalKey, err := workflow.CanonicalDataAssetInstanceKey(definitionName, nil, asset)
 	if err != nil {
 		return nil, err
 	}
@@ -260,6 +272,24 @@ func completedPriorMaterializationCandidates(terminals []persistence.TerminalAtt
 	return candidates, nil
 }
 
+func materializationKeyCandidates(assetKeys []string, materializationDomainID string, destinationRelativePath string) ([]string, error) {
+	if strings.TrimSpace(destinationRelativePath) == "" {
+		return nil, nil
+	}
+	if _, err := model.ValidateArtifactRelativePath(destinationRelativePath); err != nil {
+		return nil, fmt.Errorf("materialization destination_relative_path: %w", err)
+	}
+	keys := make([]string, 0, len(assetKeys))
+	for _, assetKey := range assetKeys {
+		key, err := workflow.MaterializationIdentityKey(assetKey, materializationDomainID, destinationRelativePath)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
 func projectSharedMaterializationRequirements(requirements []sharedMaterializationRequirement, candidates []completedMaterializationCandidate) (model.MaterializedDataAssetManifest, error) {
 	combined := model.MaterializedDataAssetManifest{
 		Schema: model.MaterializedDataAssetManifestSchemaV1,
@@ -276,6 +306,14 @@ func projectSharedMaterializationRequirements(requirements []sharedMaterializati
 			}
 			if candidate.Domain != requirement.Domain {
 				wrongDomains = append(wrongDomains, candidate.Domain)
+				continue
+			}
+			if len(candidate.Manifest.Assets) != 1 {
+				matches = append(matches, candidate)
+				continue
+			}
+			candidateAsset := candidate.Manifest.Assets[0]
+			if !materializedCandidateSatisfiesIdentity(requirement, candidateAsset) {
 				continue
 			}
 			matches = append(matches, candidate)
@@ -314,6 +352,22 @@ func projectSharedMaterializationRequirements(requirements []sharedMaterializati
 		return model.MaterializedDataAssetManifest{}, fmt.Errorf("validate shared materialized data assets: %w", err)
 	}
 	return combined, nil
+}
+
+func materializedCandidateSatisfiesIdentity(requirement sharedMaterializationRequirement, asset model.MaterializedDataAsset) bool {
+	if asset.MaterializationDomainID != "" && asset.MaterializationDomainID != requirement.Domain.ID {
+		return false
+	}
+	if requirement.DestinationRelativePath != "" && asset.DestinationRelativePath != requirement.DestinationRelativePath {
+		return false
+	}
+	if len(requirement.MaterializationKeys) > 0 {
+		if asset.MaterializationKey == "" {
+			return false
+		}
+		return containsString(requirement.MaterializationKeys, asset.MaterializationKey)
+	}
+	return true
 }
 
 func materializationDomainLabel(domain model.MaterializationDomain) string {

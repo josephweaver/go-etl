@@ -254,11 +254,14 @@ func expandedMemberBindings(
 }
 
 func concreteDestinationRelativePath(definition model.DataInputDefinition, bindings map[string]variable.ResolvedValue) (string, error) {
+	return concreteDestinationRelativePathFromParameters(definition, resolvedValueMapAny(bindings))
+}
+
+func concreteDestinationRelativePathFromParameters(definition model.DataInputDefinition, parameters map[string]any) (string, error) {
 	template := definition.Binding.Materialization.PathTemplate
 	if template == "" {
 		return "", nil
 	}
-	parameters := resolvedValueMapAny(bindings)
 	path, required, err := model.NormalizeMaterializationOutputPathTemplate(template, parameters)
 	if err != nil {
 		return "", err

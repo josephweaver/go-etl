@@ -654,7 +654,7 @@ func workflowStepScope(plan model.WorkflowDependencyPlan, beforeStepIndex int) (
 		if err != nil {
 			return nil, fmt.Errorf("workflow step %d: %w", step.StepIndex, err)
 		}
-		expression, err := variable.TypedExpressionFromResolved(output)
+		expression, err := outputTypedExpressionFromResolved(output)
 		if err != nil {
 			return nil, fmt.Errorf("workflow step %d: %w", step.StepIndex, err)
 		}
@@ -671,6 +671,51 @@ func workflowStepScope(plan model.WorkflowDependencyPlan, beforeStepIndex int) (
 			Expression: stepOutputs,
 		},
 	})
+}
+
+func outputTypedExpressionFromResolved(value variable.ResolvedValue) (variable.TypedExpression, error) {
+	switch value.Type {
+	case variable.TypeString, variable.TypePath, variable.TypeDatetime:
+		text, ok := value.Value.(string)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid %s value", value.Type)
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: strings.ReplaceAll(text, "${", `\${`)}, nil
+	case variable.TypeBool:
+		boolean, ok := value.Value.(bool)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid bool value")
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: boolean}, nil
+	case variable.TypeInt:
+		integer, ok := value.Value.(int)
+		if !ok {
+			return variable.TypedExpression{}, fmt.Errorf("invalid int value")
+		}
+		return variable.TypedExpression{Type: value.Type, Expression: integer}, nil
+	case variable.TypeObject:
+		fields := make(map[string]variable.TypedExpression, len(value.Object))
+		for name, field := range value.Object {
+			expression, err := outputTypedExpressionFromResolved(field)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("convert object field %s: %w", name, err)
+			}
+			fields[name] = expression
+		}
+		return variable.TypedExpression{Type: variable.TypeObject, Expression: fields}, nil
+	case variable.TypeList:
+		items := make([]variable.TypedExpression, 0, len(value.List))
+		for index, item := range value.List {
+			expression, err := outputTypedExpressionFromResolved(item)
+			if err != nil {
+				return variable.TypedExpression{}, fmt.Errorf("convert list item %d: %w", index, err)
+			}
+			items = append(items, expression)
+		}
+		return variable.TypedExpression{Type: variable.TypeList, Expression: items}, nil
+	default:
+		return variable.TypedExpression{}, fmt.Errorf("unsupported resolved value type: %s", value.Type)
+	}
 }
 
 func flattenDependencySteps(plan model.WorkflowDependencyPlan) []model.WorkflowDependencyStep {
