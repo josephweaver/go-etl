@@ -80,6 +80,54 @@ func (r Resolver) String(referenceText string) (string, error) {
 	return text, nil
 }
 
+func (r Resolver) Int(referenceText string) (int, error) {
+	value, err := r.requiredType(referenceText, TypeInt)
+	if err != nil {
+		return 0, err
+	}
+	number, ok := value.Value.(int)
+	if !ok {
+		return 0, fmt.Errorf("%s must be an int", referenceText)
+	}
+	return number, nil
+}
+
+func (r Resolver) OptionalInt(referenceText string) (int, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypeInt)
+	if err != nil || !ok {
+		return 0, ok, err
+	}
+	number, ok := value.Value.(int)
+	if !ok {
+		return 0, false, fmt.Errorf("%s must be an int", referenceText)
+	}
+	return number, true, nil
+}
+
+func (r Resolver) Bool(referenceText string) (bool, error) {
+	value, err := r.requiredType(referenceText, TypeBool)
+	if err != nil {
+		return false, err
+	}
+	flag, ok := value.Value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s must be a bool", referenceText)
+	}
+	return flag, nil
+}
+
+func (r Resolver) OptionalBool(referenceText string) (bool, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypeBool)
+	if err != nil || !ok {
+		return false, ok, err
+	}
+	flag, ok := value.Value.(bool)
+	if !ok {
+		return false, false, fmt.Errorf("%s must be a bool", referenceText)
+	}
+	return flag, true, nil
+}
+
 func (r Resolver) OptionalString(referenceText string) (string, bool, error) {
 	value, ok, err := r.optionalType(referenceText, TypeString)
 	if err != nil || !ok {
@@ -90,6 +138,30 @@ func (r Resolver) OptionalString(referenceText string) (string, bool, error) {
 		return "", false, fmt.Errorf("%s is required", referenceText)
 	}
 	return text, true, nil
+}
+
+func (r Resolver) Path(referenceText string) (string, error) {
+	value, err := r.requiredType(referenceText, TypePath)
+	if err != nil {
+		return "", err
+	}
+	path, ok := value.Value.(string)
+	if !ok || path == "" {
+		return "", fmt.Errorf("%s is required", referenceText)
+	}
+	return path, nil
+}
+
+func (r Resolver) OptionalPath(referenceText string) (string, bool, error) {
+	value, ok, err := r.optionalType(referenceText, TypePath)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	path, ok := value.Value.(string)
+	if !ok || path == "" {
+		return "", false, fmt.Errorf("%s is required", referenceText)
+	}
+	return path, true, nil
 }
 
 func (r Resolver) PathOrString(referenceText string) (string, error) {

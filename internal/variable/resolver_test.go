@@ -248,6 +248,8 @@ func TestResolverTypedAccessors(t *testing.T) {
 		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "name"}, TypedExpression: TypedExpression{Type: TypeString, Expression: "goetl"}},
 
 		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "root"}, TypedExpression: TypedExpression{Type: TypePath, Expression: "/data/goetl"}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "enabled"}, TypedExpression: TypedExpression{Type: TypeBool, Expression: true}},
+		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "retries"}, TypedExpression: TypedExpression{Type: TypeInt, Expression: 3}},
 
 		Variable{Name: Name{Namespace: NamespaceWorkflow, Key: "settings"}, TypedExpression: TypedExpression{Type: TypeObject, Expression: map[string]TypedExpression{
 			"script_path": {Type: TypePath, Expression: "/tmp/worker.slurm"},
@@ -263,6 +265,15 @@ func TestResolverTypedAccessors(t *testing.T) {
 
 	if got, err := resolver.String("name"); err != nil || got != "goetl" {
 		t.Fatalf("String = %q err %v, want goetl nil", got, err)
+	}
+	if got, err := resolver.Bool("enabled"); err != nil || got != true {
+		t.Fatalf("Bool = %v err %v, want true nil", got, err)
+	}
+	if got, err := resolver.Int("retries"); err != nil || got != 3 {
+		t.Fatalf("Int = %d err %v, want 3 nil", got, err)
+	}
+	if got, err := resolver.Path("root"); err != nil || got != "/data/goetl" {
+		t.Fatalf("Path = %q err %v, want path nil", got, err)
 	}
 	if got, err := resolver.PathOrString("root"); err != nil || got != "/data/goetl" {
 		t.Fatalf("PathOrString = %q err %v, want path nil", got, err)

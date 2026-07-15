@@ -116,7 +116,7 @@ func TestCreateAutoInfersType(t *testing.T) {
 		t.Fatalf("expression = %#v, want string", value.Expression)
 	}
 	if text != startedAt.Format(time.RFC3339Nano) {
-		t.Fatalf("expression %s is not a datetime based on %s", text, startedAt.Format(time.RFC3339Nano))
+		t.Fatalf("expression %s, want %s", text, startedAt.Format(time.RFC3339Nano))
 	}
 }
 

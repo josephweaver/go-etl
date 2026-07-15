@@ -85,7 +85,7 @@ func createWithType(namespace Namespace, key string, value any, valueType Type, 
 func inferVariableType(value any) (Type, any, error) {
 	switch typed := value.(type) {
 	case time.Time:
-		return TypeDatetime, typed.UTC().Format(time.RFC3339), nil
+		return TypeDatetime, typed.UTC().Format(time.RFC3339Nano), nil
 	case string:
 		return TypeString, typed, nil
 	case bool:
@@ -112,7 +112,7 @@ func normalizeVariableExpression(expression any, expressionType Type) (any, erro
 	}
 	switch value := expression.(type) {
 	case time.Time:
-			return value.UTC().Format(time.RFC3339), nil
+		return value.UTC().Format(time.RFC3339Nano), nil
 	default:
 		return nil, fmt.Errorf("datetime expression must be string or time")
 	}

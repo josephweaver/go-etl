@@ -77,3 +77,54 @@ The smoke path uses the sibling `../go-etl-demo-project` local source provider, 
 - `internal/variable` for runtime configuration and submission variables.
 - `internal/ledger` for durable attempt recording and prior-attempt lookup.
 - `os/exec` for local worker startup.
+
+## Bootup Sequence
+
+main() (main.go)
+├── buildControllerServer
+|   ├── parseControllerStartupOptions - get config path, override options
+|   ├── controllerConfigPath - choose explict config, or default config
+|   ├── loadControllerStartupSources - constructs config/default
+|   |   ├── loadControllerConfig - reads config file, convert to json, validate envelope, validate config
+|   |   |   ├── ControllerConfig.validateEnvelope()
+|   |   |   ├── ControllerConfig.Validate()
+|   |   |   └── return ControllerConfig()
+|   |   ├── defaultsPathForControllerConfig() - resolve path for defaults.json
+|   |   ├── loadDefaultsDocument() - reads config file, convert to json, validate envelope, validate config
+|   |   |   ├── DefaultsDocument.validateEnvelope()
+|   |   |   ├── DefaultsDocument.Validate()
+|   |   |   └── return DefaultsDocument()
+|   |   └── controllerStartupSources()
+|   ├── parseControllerStartupOverrides - converts overrides to override scope.
+|   ├── newStartupRuntimeScope - defines processID, instanceID, startedAt, buildVersion 
+|   |   └── variable.Create()
+|   ├── newControllerStartupResolver - creates a variable resolver
+|   |   ├── variable.NewSet(defaultScope, controllerScope, overrideScope, runtimeScope)
+|   |   ├── variable.ResolverConfig
+|   |   └── return variable.NewResolver()
+|   ├── resolveControllerHTTPSettings - convert config to HttpSettings
+|   |   ├── resolveStringPolicy
+|   |   ├── resolvePositiveIntPolicy
+|   |   └── controllerHTTPSettings
+|   ├── resolveControllerAuthSettings
+|   |   ├── authValue <- Resolve("authentication")
+|   |   ├── authConfig <- controllerauth.ConfigFromResolved(authValue)
+|   |   ├── resolveBoolPolicy(resolver)
+|   |   |   ├── 
+|   |   ├── validateControllerAuthStartup()
+|   |   ├── controllerauth.LoadCredentials(authConfig, sources)
+|   |   └── return controllerAuthSettings
+|   ├── initWorkflowExecutionStore
+|   ├── acquireControllerDatabaseOwnershipForPath
+|   ├── getwd()
+|   ├── resolveControllerFilesystemPaths
+|   ├── resolveControllerOperationalPolicy
+|   ├── initConfiguredExecutionEnvironment
+|   └── return newController()
+
+...
+
+    controller.completeStartupRecovery
+    caretakerConfig<-controllerCareTakerConfig
+    return server
+
