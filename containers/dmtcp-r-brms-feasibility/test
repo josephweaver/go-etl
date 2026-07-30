@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+image="${GOETL_BRMS_IMAGE:-goetl/dmtcp-r-brms:os003}"
+
+docker build \
+  --tag "${image}" \
+  --file "${script_dir}/Dockerfile" \
+  "${repo_root}"
+
+version="$(
+  docker run --rm \
+    --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+    "${image}" \
+    --version \
+    | sed -n '1p'
+)"
+test "${version}" = "dmtcp_launch (DMTCP) 4.2.0"
+
+docker run --rm \
+  --entrypoint /usr/local/bin/Rscript \
+  "${image}" \
+  -e '
+    stopifnot(as.character(packageVersion("tidyverse")) == "2.0.0")
+    stopifnot(as.character(packageVersion("brms")) == "2.23.0")
+    stopifnot(as.character(packageVersion("rstan")) == "2.32.7")
+    stopifnot(as.character(packageVersion("cmdstanr")) == "0.9.0")
+    cmdstanr::set_cmdstan_path(Sys.getenv("CMDSTAN"))
+    stopifnot(as.character(cmdstanr::cmdstan_version()) == "2.39.0")
+  '
+
+backends="${GOETL_BRMS_BACKENDS:-rstan cmdstanr}"
+evidence_root="$(
+  if [[ -n "${GOETL_BRMS_EVIDENCE_DIR:-}" ]]; then
+    printf '%s\n' "${GOETL_BRMS_EVIDENCE_DIR}"
+  else
+    mktemp -d "${GOETL_BRMS_EVIDENCE_PARENT:-/var/tmp}/goetl-os003-matrix.XXXXXX"
+  fi
+)"
+mkdir -p "${evidence_root}"
+chmod 0700 "${evidence_root}"
+
+failed=0
+for backend in ${backends}; do
+  if ! GOETL_BRMS_BACKEND="${backend}" \
+    GOETL_BRMS_IMAGE="${image}" \
+    GOETL_BRMS_EVIDENCE_DIR="${evidence_root}/${backend}" \
+    "${script_dir}/dmtcp-smoke"; then
+    failed=1
+  fi
+done
+
+python3 - "${evidence_root}" ${backends} <<'PY'
+import json
+import os
+import sys
+
+root = sys.argv[1]
+backends = sys.argv[2:]
+support = {}
+for backend in backends:
+    path = os.path.join(root, backend, "summary.json")
+    if not os.path.isfile(path):
+        support[backend] = {
+            "result": "smoke_error",
+            "detail": "backend summary was not produced",
+        }
+        continue
+    with open(path, encoding="utf-8") as handle:
+        support[backend] = json.load(handle)
+
+payload = {
+    "schema": "goetl/dmtcp-r-brms-support-matrix/v1",
+    "result": (
+        "pass"
+        if support and all(item.get("result") == "pass" for item in support.values())
+        else "fail"
+    ),
+    "backends": support,
+}
+with open(os.path.join(root, "summary.json"), "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+
+printf 'OS-003 support matrix: %s/summary.json\n' "${evidence_root}"
+exit "${failed}"

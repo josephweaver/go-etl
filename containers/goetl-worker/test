@@ -21,3 +21,23 @@ case "${output}" in
     exit 1
     ;;
 esac
+
+criu_version="$(
+  docker run --rm \
+    --entrypoint /usr/local/sbin/criu \
+    "${image}" \
+    --version
+)"
+if [[ "${criu_version}" != "Version: 4.2.1" ]]; then
+  printf 'expected CRIU 4.2.1, got: %s\n' "${criu_version}" >&2
+  exit 1
+fi
+printf '%s\n' "${criu_version}"
+
+GOETL_WORKER_IMAGE="${image}" \
+GOETL_CRIU_DOCKER_PRIVILEGED="${GOETL_CRIU_DOCKER_PRIVILEGED:-1}" \
+  bash "${script_dir}/criu-smoke"
+
+if [[ "${GOETL_RUN_DMTCP_BLOCKED_SMOKE:-0}" == "1" ]]; then
+  GOETL_WORKER_IMAGE="${image}" bash "${script_dir}/dmtcp-smoke"
+fi

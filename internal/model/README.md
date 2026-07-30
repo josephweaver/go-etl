@@ -8,6 +8,8 @@ It is not the place for controller scheduling, workflow compilation, worker exec
 
 - `work_item.go` owns the shared work assignment, completion, failure, parameter, and controller status shapes.
 - `log_observation.go` owns the shared structured log-observation transport and level helper behavior.
+- `resume_artifact.go` owns the immutable, sensitive resume-artifact manifest,
+  reference, compatibility, file-inventory, and typed strategy payload shapes.
 
 Test files in this directory describe expected behavior but do not own production concepts.
 
@@ -19,6 +21,7 @@ Test files in this directory describe expected behavior but do not own productio
 - Controller status summary shape.
 - Shared structural validity rules for work assignments.
 - Shared structured log-observation validation and level comparison rules.
+- Shared DMTCP, native-tool, and manual-Go resume-artifact document validation.
 
 ## Concepts Owned Elsewhere
 
@@ -36,6 +39,9 @@ Test files in this directory describe expected behavior but do not own productio
 - Work-item IDs, types, and output filenames are required for executable assignments.
 - Output filenames are filenames only; directory ownership belongs to runtime configuration and worker storage paths.
 - Runtime identity and fingerprint fields mirror controller-generated metadata and should not become a separate configuration system.
+- Resume artifacts use clean relative paths under a separately configured
+  protected shared root and are not ordinary workflow output artifacts.
+- Exactly one typed resume payload must match the selected pause strategy.
 
 ## Major Dependencies
 

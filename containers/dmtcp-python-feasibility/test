@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+image="${GOETL_PYTHON_IMAGE:-goetl/dmtcp-python:os004}"
+
+docker build \
+  --platform linux/amd64 \
+  --tag "${image}" \
+  --file "${script_dir}/Dockerfile" \
+  "${repo_root}"
+
+version="$(
+  docker run --rm \
+    --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+    "${image}" \
+    --version \
+    | sed -n '1p'
+)"
+test "${version}" = "dmtcp_launch (DMTCP) 4.2.0"
+
+docker run --rm \
+  --entrypoint /usr/local/bin/python \
+  "${image}" \
+  -c '
+import platform
+import numpy
+
+assert platform.python_version() == "3.11.15"
+assert numpy.__version__ == "2.4.6"
+'
+
+GOETL_PYTHON_IMAGE="${image}" \
+  "${script_dir}/dmtcp-smoke"

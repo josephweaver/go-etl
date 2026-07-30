@@ -1,0 +1,20 @@
+{
+  "id": "dmtcp-checkpoint-001",
+  "attempt_id": "dmtcp-attempt-001",
+  "type": "python_script",
+  "output_filename": "dmtcp-checkpoint-result.json",
+  "parameters": {
+    "python_entrypoint": {
+      "type": "path",
+      "value": "main.py"
+    },
+    "python_args": {
+      "type": "list",
+      "value": [
+        "/checkpoint-test/control/continue",
+        "/checkpoint-test/markers/pre-checkpoint.log",
+        "/checkpoint-test/markers/post-resume.log"
+      ]
+    }
+  }
+}

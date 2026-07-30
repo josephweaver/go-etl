@@ -1,0 +1,604 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${GOETL_PYTHON_IMAGE:-goetl/dmtcp-python:os004}"
+runtime="${GOETL_PYTHON_RUNTIME:-docker}"
+singularity_image="${GOETL_PYTHON_SIF:-}"
+matrix_size="${GOETL_PYTHON_MATRIX_SIZE:-2200}"
+repetitions="${GOETL_PYTHON_REPETITIONS:-12}"
+seed="${GOETL_PYTHON_SEED:-8102026}"
+checkpoint_signal="${GOETL_DMTCP_CKPT_SIGNAL:-12}"
+control_only="${GOETL_PYTHON_CONTROL_ONLY:-0}"
+container_root="/checkpoint-test"
+fixture="/opt/goetl-os004/fixture.py"
+
+case "${runtime}" in
+  docker) ;;
+  singularity)
+    if [[ -z "${singularity_image}" || ! -f "${singularity_image}" ]]; then
+      printf 'GOETL_PYTHON_SIF must name an existing SIF\n' >&2
+      exit 2
+    fi
+    ;;
+  *)
+    printf 'unsupported runtime: %s\n' "${runtime}" >&2
+    exit 2
+    ;;
+esac
+
+if [[ -n "${GOETL_PYTHON_EVIDENCE_DIR:-}" ]]; then
+  test_root="${GOETL_PYTHON_EVIDENCE_DIR}"
+  mkdir -p "${test_root}"
+else
+  test_root="$(
+    mktemp -d "${GOETL_PYTHON_EVIDENCE_PARENT:-/var/tmp}/goetl-os004-python.XXXXXX"
+  )"
+fi
+chmod 0700 "${test_root}"
+
+test_id="$(basename "${test_root}" | tr -c '[:alnum:]_.-' '-')"
+control_initial="${test_id}-control-initial"
+control_restart="${test_id}-control-restart"
+python_initial="${test_id}-python-initial"
+python_restart="${test_id}-python-restart"
+container_user="$(id -u):$(id -g)"
+initial_pid=""
+restart_pid=""
+active_initial=""
+active_restart=""
+active_root=""
+phase="environment"
+result="smoke_error"
+detail=""
+client_list=""
+
+for root_name in control python; do
+  mkdir -p \
+    "${test_root}/${root_name}/checkpoints" \
+    "${test_root}/${root_name}/coordinator" \
+    "${test_root}/${root_name}/dmtcp-tmp" \
+    "${test_root}/${root_name}/home" \
+    "${test_root}/${root_name}/markers" \
+    "${test_root}/${root_name}/output" \
+    "${test_root}/${root_name}/state"
+done
+mkdir -p "${test_root}/environment"
+
+write_summary() {
+  python3 - \
+    "${test_root}/summary.json" \
+    "${result}" \
+    "${phase}" \
+    "${runtime}" \
+    "${detail}" \
+    "${test_root}" <<'PY'
+import json
+import os
+import sys
+
+path, result, phase, runtime, detail, evidence = sys.argv[1:]
+payload = {
+    "schema": "goetl/dmtcp-python-smoke-result/v1",
+    "result": result,
+    "phase": phase,
+    "runtime": runtime,
+    "detail": detail,
+    "evidence_dir": evidence,
+    "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+    "slurm_node": os.environ.get(
+        "SLURMD_NODENAME", os.environ.get("HOSTNAME", "")
+    ),
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+}
+
+cleanup() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker rm --force \
+      "${control_initial}" \
+      "${control_restart}" \
+      "${python_initial}" \
+      "${python_restart}" \
+      >/dev/null 2>&1 || true
+  else
+    [[ -z "${initial_pid}" ]] || kill "${initial_pid}" >/dev/null 2>&1 || true
+    [[ -z "${restart_pid}" ]] || kill "${restart_pid}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fail() {
+  result="$1"
+  phase="$2"
+  shift 2
+  detail="$*"
+  write_summary
+  printf 'OS-004 Python smoke failed [%s/%s]: %s\n' \
+    "${result}" "${phase}" "${detail}" >&2
+  if [[ -n "${client_list}" ]]; then
+    printf '\nDMTCP client list:\n%s\n' "${client_list}" >&2
+  fi
+  find "${test_root}" -maxdepth 5 -type f -printf '%p %s bytes\n' >&2 || true
+  exit 1
+}
+
+wait_for_file() {
+  local path="$1"
+  local description="$2"
+  local timeout="${3:-300}"
+  local deadline=$((SECONDS + timeout))
+  while [[ ! -s "${path}" ]]; do
+    if (( SECONDS >= deadline )); then
+      fail "smoke_error" "${phase}" "timed out waiting for ${description}: ${path}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_checkpoints() {
+  local directory="$1"
+  local expected="$2"
+  local classification="$3"
+  local description="$4"
+  local timeout="${5:-600}"
+  local deadline=$((SECONDS + timeout))
+  local final_count
+  local temp_count
+  while true; do
+    final_count="$(
+      find "${directory}" -maxdepth 1 -type f -name 'ckpt_*.dmtcp' | wc -l
+    )"
+    temp_count="$(
+      find "${directory}" -maxdepth 1 -type f -name 'ckpt_*.dmtcp.temp' | wc -l
+    )"
+    if (( final_count >= expected && temp_count == 0 )); then
+      return
+    fi
+    if (( SECONDS >= deadline )); then
+      fail "${classification}" "${phase}" \
+        "timed out waiting for ${description}: ${final_count}/${expected} finalized, ${temp_count} temporary"
+    fi
+    sleep 0.5
+  done
+}
+
+wait_for_docker_stop() {
+  local name="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 180))
+  while [[ "$(docker inspect --format '{{.State.Running}}' "${name}")" == "true" ]]; do
+    if (( SECONDS >= deadline )); then
+      fail "blocked_restore" "${phase}" "timed out waiting for ${description}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_process_stop() {
+  local pid="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 180))
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      fail "blocked_restore" "${phase}" "timed out waiting for ${description}"
+    fi
+    sleep 0.2
+  done
+}
+
+thread_environment=(
+  --env "MKL_NUM_THREADS=1"
+  --env "NUMEXPR_NUM_THREADS=1"
+  --env "OMP_NUM_THREADS=1"
+  --env "OPENBLAS_NUM_THREADS=1"
+)
+
+docker_options=(
+  --cap-add SYS_PTRACE
+  "${thread_environment[@]}"
+  --env "USER=goetl"
+  --hostname "goetl-os004"
+  --mount "type=bind,src=${test_root},dst=${container_root}"
+  --pid host
+  --security-opt seccomp=unconfined
+  --user "${container_user}"
+)
+
+runtime_python() {
+  local run_name="$1"
+  local root_name="$2"
+  shift 2
+  local root="${container_root}/${root_name}"
+  local input="${root}/state/${run_name}.input.json"
+  local output="${root}/output/${run_name}.parent.json"
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --rm \
+      "${docker_options[@]}" \
+      --env "HOME=${root}/home" \
+      --env "GOET_INPUT_JSON=${input}" \
+      --env "GOET_OUTPUT_JSON=${output}" \
+      --env "GOETL_PYTHON_RUN=${run_name}" \
+      --env "GOETL_PYTHON_TEST_ROOT=${root}" \
+      --entrypoint /usr/local/bin/python \
+      "${image}" \
+      "${fixture}" "$@"
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      --env "HOME=${root}/home" \
+      --env "MKL_NUM_THREADS=1" \
+      --env "NUMEXPR_NUM_THREADS=1" \
+      --env "OMP_NUM_THREADS=1" \
+      --env "OPENBLAS_NUM_THREADS=1" \
+      --env "GOET_INPUT_JSON=${input}" \
+      --env "GOET_OUTPUT_JSON=${output}" \
+      --env "GOETL_PYTHON_RUN=${run_name}" \
+      --env "GOETL_PYTHON_TEST_ROOT=${root}" \
+      "${singularity_image}" \
+      /usr/local/bin/python "${fixture}" "$@"
+  fi
+}
+
+run_dmtcp_command() {
+  local port="$1"
+  shift
+  if [[ "${runtime}" == "docker" ]]; then
+    docker exec "${active_initial}" \
+      /opt/dmtcp/bin/dmtcp_command \
+      --coord-host 127.0.0.1 \
+      --coord-port "${port}" \
+      "$@"
+  else
+    singularity exec \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_command \
+      --coord-host 127.0.0.1 \
+      --coord-port "${port}" \
+      "$@"
+  fi
+}
+
+start_initial() {
+  local name="$1"
+  local run_name="$2"
+  local root_name="$3"
+  local mode="$4"
+  local root="${container_root}/${root_name}"
+  local log_path="${root}/sample.log"
+  local input="${root}/state/${run_name}.input.json"
+  local output="${root}/output/${run_name}.parent.json"
+  local payload
+  printf -v payload \
+    'exec /usr/local/bin/python %q %q >>%q 2>&1' \
+    "${fixture}" "${mode}" "${log_path}"
+  local launch_args=(
+    --new-coordinator
+    --port-file "${root}/coordinator/initial.port"
+    --ckptdir "${root}/checkpoints"
+    --tmpdir "${root}/dmtcp-tmp"
+    --no-gzip
+    --ckpt-open-files
+    --allow-file-overwrite
+    --ckpt-signal "${checkpoint_signal}"
+    /bin/bash -lc "${payload}"
+  )
+  active_initial="${name}"
+  active_root="${root_name}"
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${name}" \
+      "${docker_options[@]}" \
+      --env "HOME=${root}/home" \
+      --env "GOET_INPUT_JSON=${input}" \
+      --env "GOET_OUTPUT_JSON=${output}" \
+      --env "GOETL_PYTHON_RUN=${run_name}" \
+      --env "GOETL_PYTHON_TEST_ROOT=${root}" \
+      --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+      "${image}" \
+      "${launch_args[@]}" \
+      >/dev/null
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      --env "HOME=${root}/home" \
+      --env "MKL_NUM_THREADS=1" \
+      --env "NUMEXPR_NUM_THREADS=1" \
+      --env "OMP_NUM_THREADS=1" \
+      --env "OPENBLAS_NUM_THREADS=1" \
+      --env "GOET_INPUT_JSON=${input}" \
+      --env "GOET_OUTPUT_JSON=${output}" \
+      --env "GOETL_PYTHON_RUN=${run_name}" \
+      --env "GOETL_PYTHON_TEST_ROOT=${root}" \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_launch \
+      "${launch_args[@]}" \
+      >"${test_root}/${root_name}/launcher.log" 2>&1 &
+    initial_pid="$!"
+  fi
+}
+
+stop_initial() {
+  local port="$1"
+  local root_name="$2"
+  run_dmtcp_command "${port}" --kill >/dev/null 2>&1 || true
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_docker_stop "${active_initial}" "original computation termination"
+    docker logs "${active_initial}" \
+      >"${test_root}/${root_name}/launcher.log" 2>&1 || true
+    docker rm "${active_initial}" >/dev/null
+  else
+    wait_for_process_stop "${initial_pid}" "original computation termination"
+    wait "${initial_pid}" >/dev/null 2>&1 || true
+    initial_pid=""
+  fi
+  printf 'terminated\n' >"${test_root}/${root_name}/original-terminated.txt"
+  active_initial=""
+  active_root=""
+}
+
+start_restart() {
+  local name="$1"
+  local root_name="$2"
+  shift 2
+  local root="${container_root}/${root_name}"
+  local restart_args=(
+    --new-coordinator
+    --port-file "${root}/coordinator/restart.port"
+    --ckptdir "${root}/checkpoints"
+    --tmpdir "${root}/dmtcp-tmp"
+  )
+  local checkpoint
+  for checkpoint in "$@"; do
+    restart_args+=("${root}/checkpoints/$(basename "${checkpoint}")")
+  done
+  active_restart="${name}"
+  active_root="${root_name}"
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${name}" \
+      "${docker_options[@]}" \
+      --entrypoint /opt/dmtcp/bin/dmtcp_restart \
+      "${image}" \
+      "${restart_args[@]}" \
+      >/dev/null
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_restart \
+      "${restart_args[@]}" \
+      >"${test_root}/${root_name}/restart.log" 2>&1 &
+    restart_pid="$!"
+  fi
+}
+
+wait_restart_stop() {
+  local root_name="$1"
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_docker_stop "${active_restart}" "restored computation completion"
+    local exit_code
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${active_restart}")"
+    docker logs "${active_restart}" \
+      >"${test_root}/${root_name}/restart.log" 2>&1 || true
+    [[ "${exit_code}" == "0" ]] \
+      || fail "blocked_restore" "${phase}" "restart exited with ${exit_code}"
+    docker rm "${active_restart}" >/dev/null
+  else
+    wait_for_process_stop "${restart_pid}" "restored computation completion"
+    local exit_code=0
+    wait "${restart_pid}" || exit_code="$?"
+    restart_pid=""
+    [[ "${exit_code}" == "0" ]] \
+      || fail "blocked_restore" "${phase}" "restart exited with ${exit_code}"
+  fi
+  printf 'exit_status=0\n' >"${test_root}/${root_name}/restore-exit.txt"
+  active_restart=""
+  active_root=""
+}
+
+record_checkpoint_hashes() {
+  local root_name="$1"
+  (
+    cd "${test_root}/${root_name}/checkpoints"
+    sha256sum ckpt_*.dmtcp
+  ) >"${test_root}/${root_name}/checkpoint-sha256.txt"
+}
+
+phase="environment"
+{
+  printf 'host_uname='
+  uname -a
+  printf 'runtime=%s\nmatrix_size=%s\nrepetitions=%s\nseed=%s\n' \
+    "${runtime}" "${matrix_size}" "${repetitions}" "${seed}"
+  printf 'slurm_job_id=%s\nslurm_node=%s\n' \
+    "${SLURM_JOB_ID:-}" "${SLURMD_NODENAME:-${HOSTNAME:-}}"
+} >"${test_root}/environment/host.txt"
+
+if [[ "${runtime}" == "docker" ]]; then
+  docker image inspect "${image}" >"${test_root}/environment/image-inspect.json"
+  docker run --rm \
+    --entrypoint /bin/bash \
+    "${image}" \
+    -lc '/opt/dmtcp/bin/dmtcp_launch --version | head -1; python --version; python -m pip --version; python -c '\''import numpy; print("numpy", numpy.__version__); numpy.show_config()'\''; g++ --version | head -1; ldd --version | head -1; cat /proc/self/status' \
+    >"${test_root}/environment/container.txt"
+  docker run --rm \
+    --entrypoint /usr/local/bin/python \
+    "${image}" \
+    -m pip freeze --all \
+    >"${test_root}/environment/python-packages.txt"
+else
+  sha256sum "${singularity_image}" >"${test_root}/environment/sif.sha256"
+  singularity version >"${test_root}/environment/singularity.txt"
+  singularity exec \
+    "${singularity_image}" \
+    /bin/bash -lc '/opt/dmtcp/bin/dmtcp_launch --version | head -1; python --version; python -m pip --version; python -c '\''import numpy; print("numpy", numpy.__version__); numpy.show_config()'\''; g++ --version | head -1; ldd --version | head -1; cat /proc/self/status' \
+    >"${test_root}/environment/container.txt"
+  singularity exec \
+    "${singularity_image}" \
+    /usr/local/bin/python -m pip freeze --all \
+    >"${test_root}/environment/python-packages.txt"
+fi
+
+phase="control_launch"
+start_initial "${control_initial}" "control" "control" "control"
+wait_for_file "${test_root}/control/coordinator/initial.port" "control coordinator port"
+wait_for_file "${test_root}/control/markers/control.control-ready" "control ready marker"
+control_port="$(tr -d '[:space:]' <"${test_root}/control/coordinator/initial.port")"
+client_list="$(run_dmtcp_command "${control_port}" --list 2>&1)" \
+  || fail "blocked_dmtcp_python_control" "${phase}" "could not list control clients"
+printf '%s\n' "${client_list}" >"${test_root}/control/client-list.txt"
+grep -q 'WorkerState::RUNNING' "${test_root}/control/client-list.txt" \
+  || fail "blocked_dmtcp_python_control" "${phase}" "Python control did not enroll"
+
+phase="control_checkpoint"
+run_dmtcp_command "${control_port}" --bcheckpoint \
+  >"${test_root}/control/checkpoint-command.log" 2>&1 \
+  || fail "blocked_dmtcp_python_control" "${phase}" "control checkpoint command failed"
+wait_for_checkpoints \
+  "${test_root}/control/checkpoints" \
+  1 \
+  "blocked_dmtcp_python_control" \
+  "finalized control checkpoint"
+mapfile -d '' control_checkpoints < <(
+  find "${test_root}/control/checkpoints" -maxdepth 1 -type f \
+    -name 'ckpt_*.dmtcp' -print0 | sort -z
+)
+(( ${#control_checkpoints[@]} >= 1 )) \
+  || fail "blocked_dmtcp_python_control" "${phase}" "control produced no image"
+record_checkpoint_hashes "control"
+stop_initial "${control_port}" "control"
+
+phase="control_restore"
+start_restart "${control_restart}" "control" "${control_checkpoints[@]}"
+wait_for_file "${test_root}/control/coordinator/restart.port" "control restart port"
+touch "${test_root}/control/state/control.release"
+wait_for_file \
+  "${test_root}/control/markers/control.control-complete" \
+  "control completion marker"
+wait_restart_stop "control"
+[[ "$(grep -c '^before-checkpoint$' "${test_root}/control/state/control.control-progress.txt")" == "1" ]] \
+  || fail "blocked_restore" "${phase}" "control pre-checkpoint marker was duplicated"
+[[ "$(grep -c '^after-resume$' "${test_root}/control/state/control.control-progress.txt")" == "1" ]] \
+  || fail "blocked_restore" "${phase}" "control post-resume marker was not singular"
+
+if [[ "${control_only}" == "1" ]]; then
+  result="pass"
+  phase="control_complete"
+  detail="pure-Python control checkpoint and fresh-invocation restore passed"
+  write_summary
+  printf 'OS-004 Python control smoke passed; evidence: %s\n' "${test_root}"
+  exit 0
+fi
+
+cat >"${test_root}/python/state/baseline.input.json" <<JSON
+{"matrix_size": ${matrix_size}, "repetitions": ${repetitions}, "seed": ${seed}}
+JSON
+cp "${test_root}/python/state/baseline.input.json" \
+  "${test_root}/python/state/resumed.input.json"
+
+touch \
+  "${test_root}/python/state/baseline.child.release" \
+  "${test_root}/python/state/baseline.parent.release"
+
+phase="python_baseline"
+runtime_python "baseline" "python" "parent" \
+  >"${test_root}/python/baseline.log" 2>&1 \
+  || fail "fixture_error" "${phase}" "uninterrupted Python baseline failed"
+wait_for_file "${test_root}/python/output/baseline.parent.json" "baseline parent output"
+wait_for_file "${test_root}/python/output/baseline.child.json" "baseline child output"
+
+phase="python_launch"
+start_initial "${python_initial}" "resumed" "python" "parent"
+wait_for_file "${test_root}/python/coordinator/initial.port" "Python coordinator port"
+wait_for_file \
+  "${test_root}/python/markers/resumed.parent-native-start" \
+  "NumPy native-work start marker" \
+  600
+wait_for_file \
+  "${test_root}/python/markers/resumed.child-ready" \
+  "Python descendant ready marker" \
+  600
+if [[ -e "${test_root}/python/markers/resumed.parent-complete" \
+   || -e "${test_root}/python/markers/resumed.child-complete" ]]; then
+  fail "fixture_too_short" "${phase}" \
+    "Python fixture completed before checkpoint enrollment was inspected"
+fi
+
+python_port="$(tr -d '[:space:]' <"${test_root}/python/coordinator/initial.port")"
+client_list="$(run_dmtcp_command "${python_port}" --list 2>&1)" \
+  || fail "smoke_error" "${phase}" "could not list Python clients"
+printf '%s\n' "${client_list}" >"${test_root}/python/client-list.txt"
+client_count="$(grep -c 'WorkerState::RUNNING' "${test_root}/python/client-list.txt")"
+if (( client_count < 2 )); then
+  fail "blocked_descendant_enrollment" "${phase}" \
+    "expected Python parent and descendant, found ${client_count}"
+fi
+
+completed_repetitions="$(
+  grep -c '^native-repetition-' \
+    "${test_root}/python/state/resumed.parent-progress.txt" 2>/dev/null || true
+)"
+if (( completed_repetitions >= repetitions )); then
+  fail "fixture_too_short" "${phase}" \
+    "NumPy native workload completed before checkpoint request"
+fi
+
+phase="python_checkpoint"
+run_dmtcp_command "${python_port}" --bcheckpoint \
+  >"${test_root}/python/checkpoint-command.log" 2>&1 \
+  || fail "blocked_python_checkpoint" "${phase}" "Python checkpoint command failed"
+wait_for_checkpoints \
+  "${test_root}/python/checkpoints" \
+  2 \
+  "blocked_python_checkpoint" \
+  "finalized Python parent and descendant checkpoints"
+mapfile -d '' python_checkpoints < <(
+  find "${test_root}/python/checkpoints" -maxdepth 1 -type f \
+    -name 'ckpt_*.dmtcp' -print0 | sort -z
+)
+(( ${#python_checkpoints[@]} >= 2 )) \
+  || fail "blocked_python_checkpoint" "${phase}" \
+    "expected two checkpoint images, found ${#python_checkpoints[@]}"
+record_checkpoint_hashes "python"
+stop_initial "${python_port}" "python"
+
+phase="python_restore"
+start_restart "${python_restart}" "python" "${python_checkpoints[@]}"
+wait_for_file "${test_root}/python/coordinator/restart.port" "Python restart port"
+touch \
+  "${test_root}/python/state/resumed.child.release" \
+  "${test_root}/python/state/resumed.parent.release"
+wait_for_file \
+  "${test_root}/python/markers/resumed.child-complete" \
+  "restored child completion" \
+  600
+wait_for_file \
+  "${test_root}/python/markers/resumed.parent-complete" \
+  "restored parent completion" \
+  600
+wait_restart_stop "python"
+
+phase="python_compare"
+runtime_python "compare" "python" "compare" baseline resumed \
+  >"${test_root}/python/compare.log" 2>&1 \
+  || fail "blocked_restore" "${phase}" \
+    "resumed Python parent/child output differs from baseline"
+
+for marker in parent-native-start child-ready parent-complete child-complete; do
+  marker_count="$(
+    find "${test_root}/python/markers" -maxdepth 1 \
+      -type f -name "resumed.${marker}" | wc -l
+  )"
+  [[ "${marker_count}" == "1" ]] \
+    || fail "blocked_restore" "${phase}" \
+      "expected exactly one resumed.${marker} marker"
+done
+
+result="pass"
+phase="complete"
+detail="direct Python, NumPy native work, descendant checkpoint, fresh-invocation restore, and baseline comparison passed"
+write_summary
+printf 'OS-004 Python smoke passed; evidence: %s\n' "${test_root}"

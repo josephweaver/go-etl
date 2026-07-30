@@ -1,6 +1,6 @@
 # Test And Smoke Status
 
-Last updated: 2026-07-11
+Last updated: 2026-07-30
 
 This file preserves the moved test coverage and smoke-test status section from the pre-split root state file.
 
@@ -67,6 +67,441 @@ Current coverage includes:
   stdout/stderr, failure results, and zero controller HTTP requests.
 
 Norton antivirus may briefly lock Go's temporary test executables after tests finish. If that happens, assertions still report `PASS`, but Go may print a cleanup error. Re-running the command usually succeeds.
+
+## DMTCP Work-Item Feasibility Gate
+
+Recorded on 2026-07-28 on branch
+`concept/dmtcp-work-item-checkpoint-resume`.
+
+Pinned build identity:
+
+```text
+DMTCP release: v4.2.0
+DMTCP commit: f8009ce7b4ad211311ca2f72a929b975e4aa1155
+Source archive SHA-256: 3b240c78804bbf1e9354ee3da5c8760c3c952045f71773e9ed490846b15adce0
+Version output: dmtcp_launch (DMTCP) 4.2.0
+Worker linking: dynamic, libc.so.6
+Local Docker image ID: sha256:2ed1d0dd3042e8255fbeda596b222361f2b8e9be422e2806f28755ad34c18608
+```
+
+The image build succeeded and its existing missing-config assertion remained
+green:
+
+```text
+invalid config: read config file /missing-worker-config.json:
+open /missing-worker-config.json: no such file or directory
+```
+
+The full Docker test command was:
+
+```bash
+containers/goetl-worker/test
+```
+
+The image build and missing-config assertion passed. The DMTCP phase failed at
+the required checkpoint-set assertion:
+
+```text
+DMTCP smoke failed: expected checkpoint images for the Go worker and Python descendant
+
+Client List:
+1, goetl-worker[40000:<real-pid>]@goetl-dmtcp-smoke, ..., WorkerState::RUNNING
+```
+
+The fixture's Python process had already written the durable
+`pre-checkpoint.log`, proving that it was running, but it was absent from the
+coordinator client list. A blocking `dmtcp_command --bcheckpoint` returned and
+the checkpoint directory remained empty. The DMTCP worker log also reported:
+
+```text
+Application trying to use DMTCP's signal for it's own use.
+```
+
+Using DMTCP-internal test signal `35` instead of its default `SIGUSR2` did not
+change the result.
+
+A control process under the same image and Docker runtime settings succeeded:
+
+```text
+Client List:
+1, sleep[40000:<real-pid>]@<container>, ..., WorkerState::RUNNING
+
+ckpt_sleep_<identity>.dmtcp 20520960 bytes
+```
+
+Docker required `--pid host`. Without it, DMTCP exited during initialization
+with:
+
+```text
+Unable to open /proc/self/stat
+```
+
+The image was exported and exercised through the installed Singularity
+runtime:
+
+```text
+singularity-ce version 4.1.2-jammy
+WSL host: Ubuntu 24.04.4 LTS
+SIF SHA-256: fc593f8ed3d7c33e7ba6742f3f18cbd79e3596786e3e0b64ad63a9711ca7edf3
+```
+
+Command:
+
+```bash
+GOETL_DMTCP_RUNTIME=singularity \
+GOETL_WORKER_SIF=/tmp/goetl-worker-dmtcp-os1.sif \
+  bash containers/goetl-worker/dmtcp-smoke
+```
+
+Singularity produced the same single-client list, signal-handler warning, empty
+checkpoint directory, and nonzero smoke result. This proves the local
+`4.1.2-jammy` package behavior, but the WSL host is Ubuntu 24.04 rather than the
+institutional Ubuntu Jammy host.
+
+Result: the feasibility gate is blocked. No checkpoint restart or completed
+direct result could be tested because no Go/Python checkpoint set existed.
+Later DMTCP supervisor, signaling, persistence, and resume slices were not
+started.
+
+## CRIU Work-Item Feasibility Gate
+
+Local and institutional validation was recorded on 2026-07-29 on branch
+`concept/dmtcp-work-item-checkpoint-resume`.
+
+Pinned build identity:
+
+```text
+CRIU release: v4.2.1
+CRIU commit: f3e4ef5389601ed0893820d5eef1a769a5eee901
+Source archive SHA-256: fbe32da7dec8d8443f162b81ff28dae1e75195fd78ca502d94c478504798e5fe
+Version output: Version: 4.2.1
+Local Docker image ID: sha256:22ce410d4e4f584ae4b4a8ff0fdcf70da5669dad1883691d5a9921fdfb1f193b
+```
+
+The complete standard worker-image test passed:
+
+```bash
+containers/goetl-worker/test
+```
+
+It retained the missing-config assertion, verified the exact CRIU version, and
+ran the control and actual GOET probes with explicit local Docker test
+privilege. The probe environment used:
+
+```text
+WSL kernel: 6.18.33.2-microsoft-standard-WSL2
+Docker: --privileged --pid host --security-opt seccomp=unconfined
+CapEff: 000001ffffffffff
+NoNewPrivs: 0
+Seccomp: 0
+ptrace_scope: 1
+scope: local_only
+```
+
+The control process completed dump, original-process termination,
+fresh-container restore, and one post-resume marker. The actual
+`goetl-worker execute` root and Python descendant also produced non-empty CRIU
+images, terminated before restore, resumed in a fresh container invocation,
+and completed the validated `gorc/worker-direct-result/v1` document. The
+durable fixture markers were exactly:
+
+```text
+before-checkpoint
+after-resume
+```
+
+`criu check --all` returned status `1` in this privileged local environment
+even though both actual dump/restore probes passed. This confirms that
+`criu check` is retained as diagnostic evidence rather than used as the gate.
+
+The same image was converted through a Docker archive and exercised without
+privilege elevation under the installed local Singularity package:
+
+```text
+singularity-ce version 4.1.2-jammy
+SIF SHA-256: 06c0fa4e6180ed9661aac41c009abf346f7be1789baadb6ec8b7d3b6e729de1e
+UID/GID: 1000/1000
+CapPrm/CapEff/CapBnd/CapAmb: all zero
+NoNewPrivs: 1
+ptrace_scope: 1
+scope: local_only
+```
+
+The normal-user Singularity run stopped at the control dump and emitted:
+
+```json
+{
+  "schema": "goetl/criu-smoke-result/v1",
+  "result": "blocked_host_capability",
+  "phase": "control_dump",
+  "exit_status": 1,
+  "runtime": "singularity",
+  "scope": "local_only"
+}
+```
+
+CRIU reported that effective capability 40 (`CAP_CHECKPOINT_RESTORE`) and
+capability 21 (`CAP_SYS_ADMIN`) were both missing. The GOET probe correctly did
+not run after this control failure. That WSL result did not decide the gate.
+
+The SIF and exact smoke files were staged on institutional shared scratch and
+their hashes verified. A normal-account development-node run on `dev-amd20`
+reproduced `blocked_host_capability` at the control dump. The required Slurm
+run then executed with no `sudo`, `--fakeroot`, capability grant, or test-only
+security override:
+
+```text
+Slurm job: 13875979
+Partition: general-short
+State/exit: FAILED / 1:0
+Elapsed: 00:00:08
+Compute node: skl-010
+Host OS: Ubuntu 22.04.5 LTS (Jammy)
+Kernel: 5.15.0-173-generic
+Cgroup filesystem: cgroup2fs
+SingularityCE: 4.1.2-jammy
+CRIU: 4.2.1
+SIF SHA-256: 06c0fa4e6180ed9661aac41c009abf346f7be1789baadb6ec8b7d3b6e729de1e
+Runtime UID/GID: 6123447/2024
+CapInh/CapPrm/CapEff/CapBnd/CapAmb: all zero
+NoNewPrivs: 1
+Seccomp: 0
+CRIU check status: 1
+```
+
+The institutional result document was:
+
+```json
+{
+  "schema": "goetl/criu-smoke-result/v1",
+  "result": "blocked_host_capability",
+  "phase": "control_dump",
+  "command": "criu dump --tree CONTROL_PID",
+  "exit_status": 1,
+  "runtime": "singularity",
+  "scope": "institutional_hpcc"
+}
+```
+
+The control process wrote its durable pre-checkpoint marker. CRIU then reported
+that effective capabilities 40 and 21 were missing and produced no checkpoint
+image. The GOET probe did not run, as required by the ordered gate.
+
+Complete institutional evidence remains at:
+
+```text
+/mnt/scratch/weave151/etl/runtime/os002-criu/evidence/slurm-13875979
+```
+
+Result: OS-002 is blocked by the current institutional normal-user capability
+policy before CRIU reaches a Go-specific operation. Privileged local evidence
+shows the exact Go-plus-Python tree can restore, but later CRIU runner,
+signaling, persistence, and resume slices must not proceed without a new
+backend decision or an explicitly approved institutional capability change.
+
+## Direct-R DMTCP BRMS Feasibility Gate
+
+Local and institutional validation was recorded on 2026-07-30 on branch
+`concept/dmtcp-work-item-checkpoint-resume`.
+
+Pinned runtime identity:
+
+```text
+Base image digest: sha256:d6684038a67fc65864c958151d76162a8f005e87f3bc861153e3d3c905f7dbdb
+R: 4.4.3
+Posit package snapshot: 2026-05-20
+tidyverse: 2.0.0
+brms: 2.23.0
+rstan: 2.32.7
+cmdstanr: 0.9.0
+CmdStan: 2.39.0
+DMTCP: 4.2.0
+SIF SHA-256: 9de8dee8678b98de0524d8a55b9814ef1d3ce882bd6f83e19fb46447215a236a
+```
+
+The smoke also records a sorted `environment/r-packages.tsv`; the exact SIF
+produced 218 installed-package records plus the header.
+
+The full local Docker `cmdstanr` smoke passed under WSL. It checkpointed the R
+parent and live compiled Stan descendant, terminated the original computation,
+restored in a fresh container invocation, and compared 2,000 resumed posterior
+draws with the uninterrupted baseline:
+
+```json
+{
+  "backend": "cmdstanr",
+  "draws": 2000,
+  "parameters": 27,
+  "max_absolute_difference": 0,
+  "match": true
+}
+```
+
+Local normal-user SingularityCE 4.1.2 also passed the direct-R control
+checkpoint using the exact SIF. A complete local RStan checkpoint run was not
+repeated because the WSL environment had about 4 GiB of RAM; model preparation
+and uninterrupted RStan sampling were verified locally before the full
+institutional proof.
+
+Two normal-account jobs then ran in actual institutional Slurm allocations
+without `sudo`, `--fakeroot`, a capability grant, nested Slurm submission, or a
+site security change:
+
+| Backend | Slurm job | Node | State/exit | Elapsed | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| `cmdstanr` | `13946899` | `skl-032` | `COMPLETED / 0:0` | `00:01:49` | `764252K` |
+| `rstan` | `13947170` | `skl-001` | `COMPLETED / 0:0` | `00:02:41` | `3609488K` |
+
+The institutional host/runtime facts included:
+
+```text
+Host kernel: Ubuntu Jammy 5.15.0-173-generic
+SingularityCE: 4.1.2-jammy
+Runtime UID/GID: normal institutional account
+CapInh/CapPrm/CapEff/CapBnd/CapAmb: all zero
+NoNewPrivs: 1
+Seccomp: 0
+```
+
+RStan enrolled one R client and produced one 722,812,229-byte checkpoint image.
+CmdStanR enrolled both the R client and the live compiled Stan executable and
+produced a 614,485,317-byte R image plus a 24,588,288-byte Stan image. Both
+restores used a fresh Singularity invocation and the same stable shared bind
+destination. Both completed BRMS fits and reported:
+
+```json
+{
+  "draws": 2000,
+  "parameters": 27,
+  "max_absolute_difference": 0,
+  "match": true
+}
+```
+
+Complete evidence remains at:
+
+```text
+/mnt/scratch/weave151/etl/runtime/os003-dmtcp-r-brms/evidence/slurm-13946899-cmdstanr
+/mnt/scratch/weave151/etl/runtime/os003-dmtcp-r-brms/evidence/rstan-institutional-20260730
+/mnt/scratch/weave151/etl/runtime/os003-dmtcp-r-brms/evidence/package-manifest-control-20260730
+```
+
+The probe found one required runtime constraint: R/OpenBLAS startup under DMTCP
+must explicitly limit native thread pools to one for this execution shape. The
+smoke sets OpenBLAS, OpenMP, MKL, NumExpr, RcppParallel, and TBB thread limits.
+It also waits for finalized checkpoint images rather than trusting only the
+checkpoint-command return, and restores checkpointed regular files with
+explicit overwrite permission.
+
+Result: OS-003 passes for direct, single-chain, single-core RStan and CmdStanR
+under the institutional runtime. This permits an R-specific external-supervisor
+Operational Slice while leaving Go outside DMTCP. It does not approve universal
+work-item checkpointing, parallel chains, threaded Stan, or arbitrary R
+packages.
+
+## Direct-Python DMTCP Feasibility Gate
+
+Local and institutional validation was recorded on 2026-07-30 on branch
+`concept/dmtcp-work-item-checkpoint-resume`.
+
+Pinned runtime identity:
+
+```text
+Base image: python:3.11.15-slim-bookworm
+amd64 manifest: sha256:28255a3ace7eb4c48bc1b57b90af29e1bc82b4fd6c60614a8e3dce61b87ff941
+Python: 3.11.15
+NumPy: 2.4.6
+NumPy wheel SHA-256: 89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93
+DMTCP: 4.2.0
+SIF SHA-256: 48c58538c53e6cd5c007362f87f4659783ef1ff675320a050775032d3402a6d7
+```
+
+The full local WSL Docker smoke passed. Its ordered pure-Python control
+checkpointed live interpreter state and an open regular file, terminated the
+original computation, restored in a new container invocation, and produced
+singular before-checkpoint and after-resume markers. The complete probe then:
+
+- ran an uninterrupted fixed-input baseline;
+- launched CPython directly under DMTCP;
+- started one Python child from the parent;
+- entered repeated NumPy matrix multiplication with native thread pools
+  limited to one;
+- required both processes in the DMTCP client list while native work was
+  active;
+- produced two finalized checkpoint images;
+- killed the original DMTCP computation;
+- restored both images from a fresh container invocation; and
+- required exact parent and child JSON equality with the baseline.
+
+The same complete smoke passed locally as an ordinary WSL user under
+SingularityCE 4.1.2-jammy with the exact SIF.
+
+The decisive normal-account institutional allocation used no `sudo`,
+`--fakeroot`, capability grant, nested Slurm command, or site security change:
+
+```text
+Slurm job: 13966757
+Partition: general-short
+State/exit: COMPLETED / 0:0
+Elapsed: 00:00:30
+Compute node: skl-132
+Allocated CPUs: 2
+Requested memory: 8G
+SingularityCE: 4.1.2-jammy
+```
+
+The institutional DMTCP coordinator listed the direct parent and its child as
+two running `python3.11` clients. The parent image was 251,256,862 bytes and
+the child image was 37,035,748 bytes. The restore used a new Singularity
+invocation with the same SIF and bind destination. Both baseline/resumed pairs
+were byte-identical, and the semantic comparison reported:
+
+```json
+{
+  "actual_run": "resumed",
+  "expected_run": "baseline",
+  "match": true,
+  "native_repetitions": 12,
+  "schema": "goetl/dmtcp-python-compare/v1"
+}
+```
+
+Complete evidence remains at:
+
+```text
+/mnt/scratch/weave151/etl/runtime/os004-dmtcp-python/evidence/goetl-os004-python.cTJp2Y
+```
+
+Result: OS-004 passes for the tested direct CPython 3.11, NumPy 2.4.6,
+one-native-thread, one-Python-descendant execution shape. It permits design of
+the common external R/Python DMTCP supervisor while the Go worker remains
+outside the checkpoint. It does not approve arbitrary Python environments,
+native extensions, descendants, parallel numerical execution, or universal
+work-item checkpointing.
+
+## Resume-Artifact Contract Model
+
+OS-005 focused verification recorded on 2026-07-30:
+
+```powershell
+go test ./internal/model -count=1
+```
+
+Result:
+
+```text
+ok  	goetl/internal/model
+```
+
+The tests validate JSON round trips for DMTCP, native-tool, and manual-Go
+resume manifests and reject unsupported schema/strategy values, missing
+identity or compatibility facts, invalid timestamps and generations, unsafe
+relative paths, malformed or uppercase SHA-256 values, duplicate or missing
+files, ambiguous strategy payloads, and invalid controller-facing references.
+
+This is model-level evidence only. It does not prove filesystem manifest
+writing, controller acceptance/persistence, worker adapter dispatch, Slurm
+drain behavior, or actual resume execution.
 
 ## Direct Worker Development Execution Evidence
 

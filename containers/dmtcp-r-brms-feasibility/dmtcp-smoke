@@ -1,0 +1,601 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${GOETL_BRMS_IMAGE:-goetl/dmtcp-r-brms:os003}"
+runtime="${GOETL_BRMS_RUNTIME:-docker}"
+singularity_image="${GOETL_BRMS_SIF:-}"
+backend="${GOETL_BRMS_BACKEND:-cmdstanr}"
+iterations="${GOETL_BRMS_ITER:-4000}"
+warmup="${GOETL_BRMS_WARMUP:-2000}"
+checkpoint_signal="${GOETL_DMTCP_CKPT_SIGNAL:-12}"
+control_only="${GOETL_BRMS_CONTROL_ONLY:-0}"
+container_root="/checkpoint-test"
+fixture="/opt/goetl-os003/fixture.R"
+
+case "${backend}" in
+  rstan|cmdstanr) ;;
+  *)
+    printf 'unsupported BRMS backend: %s\n' "${backend}" >&2
+    exit 2
+    ;;
+esac
+
+case "${runtime}" in
+  docker) ;;
+  singularity)
+    if [[ -z "${singularity_image}" || ! -f "${singularity_image}" ]]; then
+      printf 'GOETL_BRMS_SIF must name an existing SIF\n' >&2
+      exit 2
+    fi
+    ;;
+  *)
+    printf 'unsupported runtime: %s\n' "${runtime}" >&2
+    exit 2
+    ;;
+esac
+
+if [[ -n "${GOETL_BRMS_EVIDENCE_DIR:-}" ]]; then
+  test_root="${GOETL_BRMS_EVIDENCE_DIR}"
+  mkdir -p "${test_root}"
+else
+  test_root="$(mktemp -d "${GOETL_BRMS_EVIDENCE_PARENT:-/var/tmp}/goetl-os003-${backend}.XXXXXX")"
+fi
+chmod 0700 "${test_root}"
+
+test_id="$(basename "${test_root}" | tr -c '[:alnum:]_.-' '-')"
+control_initial="${test_id}-${backend}-control-initial"
+control_restart="${test_id}-${backend}-control-restart"
+backend_initial="${test_id}-${backend}-initial"
+backend_restart="${test_id}-${backend}-restart"
+container_user="$(id -u):$(id -g)"
+initial_pid=""
+restart_pid=""
+active_initial=""
+active_restart=""
+phase="environment"
+result="smoke_error"
+detail=""
+client_list=""
+
+mkdir -p \
+  "${test_root}/environment" \
+  "${test_root}/control/checkpoints" \
+  "${test_root}/control/coordinator" \
+  "${test_root}/control/dmtcp-tmp" \
+  "${test_root}/control/markers" \
+  "${test_root}/${backend}/checkpoints" \
+  "${test_root}/${backend}/coordinator" \
+  "${test_root}/${backend}/dmtcp-tmp" \
+  "${test_root}/${backend}/home" \
+  "${test_root}/${backend}/markers" \
+  "${test_root}/${backend}/output" \
+  "${test_root}/${backend}/state"
+
+write_summary() {
+  python3 - \
+    "${test_root}/summary.json" \
+    "${result}" \
+    "${phase}" \
+    "${backend}" \
+    "${runtime}" \
+    "${detail}" \
+    "${test_root}" <<'PY'
+import json
+import os
+import sys
+
+path, result, phase, backend, runtime, detail, evidence = sys.argv[1:]
+payload = {
+    "schema": "goetl/dmtcp-r-brms-smoke-result/v1",
+    "result": result,
+    "phase": phase,
+    "backend": backend,
+    "runtime": runtime,
+    "detail": detail,
+    "evidence_dir": evidence,
+    "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+    "slurm_node": os.environ.get("SLURMD_NODENAME", os.environ.get("HOSTNAME", "")),
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+}
+
+diagnose_container() {
+  local name="$1"
+  if docker inspect "${name}" >/dev/null 2>&1; then
+    printf '\ncontainer %s:\n' "${name}" >&2
+    docker inspect --format '{{json .State}}' "${name}" >&2 || true
+    docker logs "${name}" >&2 || true
+  fi
+}
+
+cleanup() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker rm --force \
+      "${control_initial}" \
+      "${control_restart}" \
+      "${backend_initial}" \
+      "${backend_restart}" \
+      >/dev/null 2>&1 || true
+  else
+    [[ -z "${initial_pid}" ]] || kill "${initial_pid}" >/dev/null 2>&1 || true
+    [[ -z "${restart_pid}" ]] || kill "${restart_pid}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fail() {
+  result="$1"
+  phase="$2"
+  shift 2
+  detail="$*"
+  write_summary
+  printf 'OS-003 %s smoke failed [%s/%s]: %s\n' \
+    "${backend}" "${result}" "${phase}" "${detail}" >&2
+  if [[ -n "${client_list}" ]]; then
+    printf '\nDMTCP client list:\n%s\n' "${client_list}" >&2
+  fi
+  find "${test_root}" -maxdepth 5 -type f -printf '%p %s bytes\n' >&2 || true
+  if [[ "${runtime}" == "docker" ]]; then
+    [[ -z "${active_initial}" ]] || diagnose_container "${active_initial}"
+    [[ -z "${active_restart}" ]] || diagnose_container "${active_restart}"
+  fi
+  exit 1
+}
+
+wait_for_file() {
+  local path="$1"
+  local description="$2"
+  local timeout="${3:-180}"
+  local deadline=$((SECONDS + timeout))
+  while [[ ! -s "${path}" ]]; do
+    if [[ "${runtime}" == "docker" && -n "${active_restart}" ]] \
+      && docker inspect "${active_restart}" >/dev/null 2>&1 \
+      && [[ "$(docker inspect --format '{{.State.Running}}' "${active_restart}")" == "false" ]]; then
+      [[ -s "${path}" ]] && return
+      local restart_exit
+      restart_exit="$(docker inspect --format '{{.State.ExitCode}}' "${active_restart}")"
+      fail "blocked_restore" "${phase}" \
+        "restart exited with ${restart_exit} while waiting for ${description}"
+    fi
+    if (( SECONDS >= deadline )); then
+      fail "smoke_error" "${phase}" "timed out waiting for ${description}: ${path}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_pattern() {
+  local path="$1"
+  local pattern="$2"
+  local description="$3"
+  local completed_marker="$4"
+  local timeout="${5:-300}"
+  local deadline=$((SECONDS + timeout))
+  while ! grep -Eq "${pattern}" "${path}" 2>/dev/null; do
+    if [[ -s "${completed_marker}" ]]; then
+      fail "fixture_too_short" "${phase}" \
+        "${description} completed before checkpoint evidence was observed"
+    fi
+    if (( SECONDS >= deadline )); then
+      fail "smoke_error" "${phase}" "timed out waiting for ${description}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_checkpoints() {
+  local directory="$1"
+  local expected="$2"
+  local classification="$3"
+  local description="$4"
+  local timeout="${5:-600}"
+  local deadline=$((SECONDS + timeout))
+  local final_count
+  local temp_count
+  while true; do
+    final_count="$(
+      find "${directory}" -maxdepth 1 -type f -name 'ckpt_*.dmtcp' | wc -l
+    )"
+    temp_count="$(
+      find "${directory}" -maxdepth 1 -type f -name 'ckpt_*.dmtcp.temp' | wc -l
+    )"
+    if (( final_count >= expected && temp_count == 0 )); then
+      return
+    fi
+    if (( SECONDS >= deadline )); then
+      fail "${classification}" "${phase}" \
+        "timed out waiting for ${description}: ${final_count}/${expected} finalized, ${temp_count} temporary"
+    fi
+    sleep 0.5
+  done
+}
+
+wait_for_docker_stop() {
+  local name="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 180))
+  while [[ "$(docker inspect --format '{{.State.Running}}' "${name}")" == "true" ]]; do
+    if (( SECONDS >= deadline )); then
+      fail "blocked_restore" "${phase}" "timed out waiting for ${description}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_process_stop() {
+  local pid="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 180))
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      fail "blocked_restore" "${phase}" "timed out waiting for ${description}"
+    fi
+    sleep 0.2
+  done
+}
+
+docker_options=(
+  --cap-add SYS_PTRACE
+  --env "HOME=${container_root}/${backend}/home"
+  --env "MKL_NUM_THREADS=1"
+  --env "NUMEXPR_NUM_THREADS=1"
+  --env "OMP_NUM_THREADS=1"
+  --env "OPENBLAS_NUM_THREADS=1"
+  --env "RCPP_PARALLEL_NUM_THREADS=1"
+  --env "TBB_NUM_THREADS=1"
+  --env "USER=goetl"
+  --hostname "goetl-os003"
+  --mount "type=bind,src=${test_root},dst=${container_root}"
+  --pid host
+  --security-opt seccomp=unconfined
+  --user "${container_user}"
+)
+
+runtime_r() {
+  local run_name="$1"
+  shift
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --rm \
+      "${docker_options[@]}" \
+      --env "GOETL_BRMS_TEST_ROOT=${container_root}/${backend}" \
+      --env "GOETL_BRMS_RUN=${run_name}" \
+      --env "GOETL_BRMS_ITER=${iterations}" \
+      --env "GOETL_BRMS_WARMUP=${warmup}" \
+      --entrypoint /usr/local/bin/Rscript \
+      "${image}" \
+      "${fixture}" "$@"
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      --env "HOME=${container_root}/${backend}/home" \
+      --env "MKL_NUM_THREADS=1" \
+      --env "NUMEXPR_NUM_THREADS=1" \
+      --env "OMP_NUM_THREADS=1" \
+      --env "OPENBLAS_NUM_THREADS=1" \
+      --env "RCPP_PARALLEL_NUM_THREADS=1" \
+      --env "TBB_NUM_THREADS=1" \
+      --env "GOETL_BRMS_TEST_ROOT=${container_root}/${backend}" \
+      --env "GOETL_BRMS_RUN=${run_name}" \
+      --env "GOETL_BRMS_ITER=${iterations}" \
+      --env "GOETL_BRMS_WARMUP=${warmup}" \
+      "${singularity_image}" \
+      /usr/local/bin/Rscript "${fixture}" "$@"
+  fi
+}
+
+run_dmtcp_command() {
+  local port="$1"
+  shift
+  if [[ "${runtime}" == "docker" ]]; then
+    docker exec "${active_initial}" \
+      /opt/dmtcp/bin/dmtcp_command \
+      --coord-host 127.0.0.1 \
+      --coord-port "${port}" \
+      "$@"
+  else
+    singularity exec \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_command \
+      --coord-host 127.0.0.1 \
+      --coord-port "${port}" \
+      "$@"
+  fi
+}
+
+start_initial() {
+  local name="$1"
+  local run_name="$2"
+  local root_name="$3"
+  shift 3
+  local log_path="${container_root}/${root_name}/sample.log"
+  local payload
+  printf -v payload \
+    'exec /usr/local/bin/Rscript %q %s >>%q 2>&1' \
+    "${fixture}" "$*" "${log_path}"
+  local launch_args=(
+    --new-coordinator
+    --port-file "${container_root}/${root_name}/coordinator/initial.port"
+    --ckptdir "${container_root}/${root_name}/checkpoints"
+    --tmpdir "${container_root}/${root_name}/dmtcp-tmp"
+    --no-gzip
+    --ckpt-open-files
+    --allow-file-overwrite
+    --ckpt-signal "${checkpoint_signal}"
+    /bin/bash -lc "${payload}"
+  )
+  active_initial="${name}"
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${name}" \
+      "${docker_options[@]}" \
+      --env "GOETL_BRMS_TEST_ROOT=${container_root}/${root_name}" \
+      --env "GOETL_BRMS_RUN=${run_name}" \
+      --env "GOETL_BRMS_ITER=${iterations}" \
+      --env "GOETL_BRMS_WARMUP=${warmup}" \
+      --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+      "${image}" \
+      "${launch_args[@]}" \
+      >/dev/null
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      --env "HOME=${container_root}/${backend}/home" \
+      --env "MKL_NUM_THREADS=1" \
+      --env "NUMEXPR_NUM_THREADS=1" \
+      --env "OMP_NUM_THREADS=1" \
+      --env "OPENBLAS_NUM_THREADS=1" \
+      --env "RCPP_PARALLEL_NUM_THREADS=1" \
+      --env "TBB_NUM_THREADS=1" \
+      --env "GOETL_BRMS_TEST_ROOT=${container_root}/${root_name}" \
+      --env "GOETL_BRMS_RUN=${run_name}" \
+      --env "GOETL_BRMS_ITER=${iterations}" \
+      --env "GOETL_BRMS_WARMUP=${warmup}" \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_launch \
+      "${launch_args[@]}" \
+      >"${test_root}/${root_name}/launcher.log" 2>&1 &
+    initial_pid="$!"
+  fi
+}
+
+stop_initial() {
+  local port="$1"
+  run_dmtcp_command "${port}" --kill >/dev/null 2>&1 || true
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_docker_stop "${active_initial}" "original computation termination"
+    docker rm "${active_initial}" >/dev/null
+  else
+    wait_for_process_stop "${initial_pid}" "original computation termination"
+    wait "${initial_pid}" >/dev/null 2>&1 || true
+    initial_pid=""
+  fi
+  active_initial=""
+}
+
+start_restart() {
+  local name="$1"
+  local root_name="$2"
+  shift 2
+  local restart_args=(
+    --new-coordinator
+    --port-file "${container_root}/${root_name}/coordinator/restart.port"
+    --ckptdir "${container_root}/${root_name}/checkpoints"
+    --tmpdir "${container_root}/${root_name}/dmtcp-tmp"
+  )
+  local checkpoint
+  for checkpoint in "$@"; do
+    restart_args+=("${container_root}/${root_name}/checkpoints/$(basename "${checkpoint}")")
+  done
+  active_restart="${name}"
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${name}" \
+      "${docker_options[@]}" \
+      --entrypoint /opt/dmtcp/bin/dmtcp_restart \
+      "${image}" \
+      "${restart_args[@]}" \
+      >/dev/null
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_restart \
+      "${restart_args[@]}" \
+      >"${test_root}/${root_name}/restart.log" 2>&1 &
+    restart_pid="$!"
+  fi
+}
+
+wait_restart_stop() {
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_docker_stop "${active_restart}" "restored computation completion"
+    local exit_code
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${active_restart}")"
+    [[ "${exit_code}" == "0" ]] \
+      || fail "blocked_restore" "${phase}" "restart exited with ${exit_code}"
+    docker rm "${active_restart}" >/dev/null
+  else
+    wait_for_process_stop "${restart_pid}" "restored computation completion"
+    local exit_code=0
+    wait "${restart_pid}" || exit_code="$?"
+    restart_pid=""
+    [[ "${exit_code}" == "0" ]] \
+      || fail "blocked_restore" "${phase}" "restart exited with ${exit_code}"
+  fi
+  active_restart=""
+}
+
+phase="environment"
+{
+  printf 'host_uname='
+  uname -a
+  printf 'runtime=%s\nbackend=%s\niterations=%s\nwarmup=%s\n' \
+    "${runtime}" "${backend}" "${iterations}" "${warmup}"
+  printf 'slurm_job_id=%s\nslurm_node=%s\n' \
+    "${SLURM_JOB_ID:-}" "${SLURMD_NODENAME:-${HOSTNAME:-}}"
+} >"${test_root}/environment/host.txt"
+
+if [[ "${runtime}" == "docker" ]]; then
+  docker image inspect "${image}" >"${test_root}/environment/image-inspect.json"
+  docker run --rm \
+    --entrypoint /bin/bash \
+    "${image}" \
+    -lc 'dmtcp_launch --version | head -1; Rscript --version; Rscript -e '\''for (p in c("tidyverse","brms","rstan","cmdstanr")) cat(p, as.character(packageVersion(p)), "\n"); cmdstanr::set_cmdstan_path(Sys.getenv("CMDSTAN")); cat("cmdstan", as.character(cmdstanr::cmdstan_version()), "\n")'\''; g++ --version | head -1; ldd --version | head -1; cat /proc/self/status' \
+    >"${test_root}/environment/container.txt"
+  docker run --rm \
+    --entrypoint /usr/local/bin/Rscript \
+    "${image}" \
+    -e 'packages <- as.data.frame(installed.packages()[, c("Package", "Version", "Built"), drop = FALSE]); packages <- packages[order(packages$Package), ]; write.table(packages, row.names = FALSE, sep = "\t", quote = FALSE)' \
+    >"${test_root}/environment/r-packages.tsv"
+else
+  sha256sum "${singularity_image}" >"${test_root}/environment/sif.sha256"
+  singularity version >"${test_root}/environment/singularity.txt"
+  singularity exec \
+    "${singularity_image}" \
+    /bin/bash -lc 'dmtcp_launch --version | head -1; Rscript --version; Rscript -e '\''for (p in c("tidyverse","brms","rstan","cmdstanr")) cat(p, as.character(packageVersion(p)), "\n"); cmdstanr::set_cmdstan_path(Sys.getenv("CMDSTAN")); cat("cmdstan", as.character(cmdstanr::cmdstan_version()), "\n")'\''; g++ --version | head -1; ldd --version | head -1; cat /proc/self/status' \
+    >"${test_root}/environment/container.txt"
+  singularity exec \
+    "${singularity_image}" \
+    /usr/local/bin/Rscript \
+    -e 'packages <- as.data.frame(installed.packages()[, c("Package", "Version", "Built"), drop = FALSE]); packages <- packages[order(packages$Package), ]; write.table(packages, row.names = FALSE, sep = "\t", quote = FALSE)' \
+    >"${test_root}/environment/r-packages.tsv"
+fi
+
+phase="control_launch"
+start_initial "${control_initial}" "control" "control" control
+wait_for_file "${test_root}/control/coordinator/initial.port" "control coordinator port"
+wait_for_file "${test_root}/control/markers/control.control-ready" "control ready marker"
+control_port="$(tr -d '[:space:]' <"${test_root}/control/coordinator/initial.port")"
+client_list="$(run_dmtcp_command "${control_port}" --list 2>&1)" \
+  || fail "blocked_dmtcp_r_control" "${phase}" "could not list control clients"
+printf '%s\n' "${client_list}" >"${test_root}/control/client-list.txt"
+grep -q 'WorkerState::RUNNING' "${test_root}/control/client-list.txt" \
+  || fail "blocked_dmtcp_r_control" "${phase}" "R control did not enroll"
+
+phase="control_checkpoint"
+run_dmtcp_command "${control_port}" --bcheckpoint \
+  >"${test_root}/control/checkpoint-command.log" 2>&1 \
+  || fail "blocked_dmtcp_r_control" "${phase}" "control checkpoint command failed"
+wait_for_checkpoints \
+  "${test_root}/control/checkpoints" \
+  1 \
+  "blocked_dmtcp_r_control" \
+  "finalized control checkpoint"
+mapfile -d '' control_checkpoints < <(
+  find "${test_root}/control/checkpoints" -maxdepth 1 -type f \
+    -name 'ckpt_*.dmtcp' -print0 | sort -z
+)
+(( ${#control_checkpoints[@]} >= 1 )) \
+  || fail "blocked_dmtcp_r_control" "${phase}" "control produced no checkpoint image"
+stop_initial "${control_port}"
+
+phase="control_restore"
+start_restart "${control_restart}" "control" "${control_checkpoints[@]}"
+wait_for_file "${test_root}/control/coordinator/restart.port" "control restart port"
+touch "${test_root}/control/control.release"
+wait_for_file "${test_root}/control/markers/control.control-complete" \
+  "control completion marker"
+wait_restart_stop
+
+if [[ "${control_only}" == "1" ]]; then
+  result="pass"
+  phase="control_complete"
+  detail="R/tidyverse control checkpoint and restore passed with signal ${checkpoint_signal}"
+  write_summary
+  printf 'OS-003 R control smoke passed; evidence: %s\n' "${test_root}"
+  exit 0
+fi
+
+phase="${backend}_prepare"
+runtime_r "prepare" prepare "${backend}" \
+  >"${test_root}/${backend}/prepare.log" 2>&1 \
+  || fail "fixture_error" "${phase}" "${backend} preparation failed"
+
+phase="${backend}_baseline"
+runtime_r "baseline" sample "${backend}" \
+  >"${test_root}/${backend}/baseline.log" 2>&1 \
+  || fail "fixture_error" "${phase}" "${backend} baseline failed"
+wait_for_file "${test_root}/${backend}/output/baseline.${backend}.fit.rds" \
+  "${backend} baseline fit"
+
+phase="${backend}_launch"
+start_initial "${backend_initial}" "resumed" "${backend}" sample "${backend}"
+wait_for_file "${test_root}/${backend}/coordinator/initial.port" \
+  "${backend} coordinator port"
+wait_for_file \
+  "${test_root}/${backend}/markers/resumed.${backend}-sampling-called" \
+  "${backend} sampling marker" \
+  600
+wait_for_pattern \
+  "${test_root}/${backend}/sample.log" \
+  'Iteration:[[:space:]]+[0-9]+[[:space:]]+/[[:space:]]*[0-9]+' \
+  "${backend} active sampling" \
+  "${test_root}/${backend}/markers/resumed.${backend}-complete" \
+  300
+
+backend_port="$(tr -d '[:space:]' <"${test_root}/${backend}/coordinator/initial.port")"
+client_list="$(run_dmtcp_command "${backend_port}" --list 2>&1)" \
+  || fail "smoke_error" "${phase}" "could not list ${backend} clients"
+printf '%s\n' "${client_list}" >"${test_root}/${backend}/client-list.txt"
+client_count="$(grep -c 'WorkerState::RUNNING' "${test_root}/${backend}/client-list.txt")"
+if [[ "${backend}" == "cmdstanr" && "${client_count}" -lt 2 ]]; then
+  fail "blocked_cmdstanr_enrollment" "${phase}" \
+    "expected R and CmdStan clients, found ${client_count}"
+fi
+if [[ "${backend}" == "rstan" && "${client_count}" -lt 1 ]]; then
+  fail "blocked_rstan_checkpoint" "${phase}" "R did not enroll"
+fi
+
+phase="${backend}_checkpoint"
+run_dmtcp_command "${backend_port}" --bcheckpoint \
+  >"${test_root}/${backend}/checkpoint-command.log" 2>&1 \
+  || fail "blocked_${backend}_checkpoint" "${phase}" \
+    "${backend} checkpoint command failed"
+expected_images=1
+[[ "${backend}" == "cmdstanr" ]] && expected_images=2
+wait_for_checkpoints \
+  "${test_root}/${backend}/checkpoints" \
+  "${expected_images}" \
+  "blocked_${backend}_checkpoint" \
+  "finalized ${backend} checkpoint"
+mapfile -d '' backend_checkpoints < <(
+  find "${test_root}/${backend}/checkpoints" -maxdepth 1 -type f \
+    -name 'ckpt_*.dmtcp' -print0 | sort -z
+)
+(( ${#backend_checkpoints[@]} >= expected_images )) \
+  || fail "blocked_${backend}_checkpoint" "${phase}" \
+    "expected ${expected_images} checkpoint images, found ${#backend_checkpoints[@]}"
+stop_initial "${backend_port}"
+
+phase="${backend}_restore"
+start_restart "${backend_restart}" "${backend}" "${backend_checkpoints[@]}"
+wait_for_file "${test_root}/${backend}/coordinator/restart.port" \
+  "${backend} restart port"
+wait_for_file \
+  "${test_root}/${backend}/markers/resumed.${backend}-complete" \
+  "${backend} restored completion" \
+  600
+wait_restart_stop
+
+phase="${backend}_compare"
+runtime_r "compare" compare "${backend}" baseline resumed \
+  >"${test_root}/${backend}/compare.log" 2>&1 \
+  || fail "blocked_restore" "${phase}" \
+    "${backend} resumed draws differ from the baseline"
+
+pre_count="$(find "${test_root}/${backend}/markers" -maxdepth 1 \
+  -type f -name 'resumed.*-sampling-called' | wc -l)"
+post_count="$(find "${test_root}/${backend}/markers" -maxdepth 1 \
+  -type f -name 'resumed.*-complete' | wc -l)"
+[[ "${pre_count}" == "1" && "${post_count}" == "1" ]] \
+  || fail "blocked_restore" "${phase}" \
+    "expected one sampling and one completion marker"
+
+result="pass"
+phase="complete"
+detail="${backend} checkpoint, fresh-invocation restore, and baseline comparison passed"
+write_summary
+printf 'OS-003 %s smoke passed; evidence: %s\n' "${backend}" "${test_root}"

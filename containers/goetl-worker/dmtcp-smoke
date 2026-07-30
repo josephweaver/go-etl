@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+fixture_dir="${repo_root}/cmd/worker/testdata/dmtcp-checkpoint"
+
+image="${GOETL_WORKER_IMAGE:-goetl/worker:dev}"
+runtime="${GOETL_DMTCP_RUNTIME:-docker}"
+singularity_image="${GOETL_WORKER_SIF:-}"
+
+case "${runtime}" in
+  docker) ;;
+  singularity)
+    if [[ -z "${singularity_image}" || ! -f "${singularity_image}" ]]; then
+      printf 'GOETL_WORKER_SIF must name an existing SIF for the Singularity smoke\n' >&2
+      exit 2
+    fi
+    ;;
+  *)
+    printf 'unsupported GOETL_DMTCP_RUNTIME: %s\n' "${runtime}" >&2
+    exit 2
+    ;;
+esac
+
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/goetl-dmtcp-smoke.XXXXXX")"
+test_id="$(basename "${test_root}")"
+initial_container="${test_id}-initial"
+restart_container="${test_id}-restart"
+container_hostname="goetl-dmtcp-smoke"
+container_root="/checkpoint-test"
+container_user="$(id -u):$(id -g)"
+client_list=""
+initial_pid=""
+restart_pid=""
+
+diagnose_container() {
+  local container="$1"
+  if docker inspect "${container}" >/dev/null 2>&1; then
+    printf '\n%s logs:\n' "${container}" >&2
+    docker logs "${container}" >&2 || true
+    printf '\n%s state:\n' "${container}" >&2
+    docker inspect --format '{{json .State}}' "${container}" >&2 || true
+  fi
+}
+
+cleanup() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker rm --force "${initial_container}" "${restart_container}" >/dev/null 2>&1 || true
+  else
+    for port_file in \
+      "${test_root}/control/initial.port" \
+      "${test_root}/control/restart.port"; do
+      if [[ -s "${port_file}" ]]; then
+        singularity exec "${singularity_image}" \
+          /opt/dmtcp/bin/dmtcp_command \
+          --coord-host 127.0.0.1 \
+          --coord-port "$(tr -d '[:space:]' <"${port_file}")" \
+          --kill \
+          >/dev/null 2>&1 || true
+      fi
+    done
+    [[ -z "${initial_pid}" ]] || kill "${initial_pid}" >/dev/null 2>&1 || true
+    [[ -z "${restart_pid}" ]] || kill "${restart_pid}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${GOETL_DMTCP_SMOKE_KEEP_STATE:-0}" == "1" ]]; then
+    printf 'retained DMTCP smoke state: %s\n' "${test_root}" >&2
+    return
+  fi
+  case "${test_root}" in
+    "${TMPDIR:-/tmp}"/goetl-dmtcp-smoke.*)
+      if [[ "${runtime}" == "docker" ]]; then
+        docker run --rm \
+          --mount "type=bind,src=${test_root},dst=${container_root}" \
+          --entrypoint /bin/rm \
+          "${image}" \
+          -rf -- "${container_root}/dmtcp-tmp" \
+          >/dev/null 2>&1 || true
+      fi
+      rm -rf -- "${test_root}"
+      ;;
+    *)
+      printf 'refusing to remove unexpected smoke directory: %s\n' "${test_root}" >&2
+      ;;
+  esac
+}
+trap cleanup EXIT
+
+fail() {
+  printf 'DMTCP smoke failed: %s\n' "$*" >&2
+  if [[ -n "${client_list}" ]]; then
+    printf '\ncoordinator client list:\n%s\n' "${client_list}" >&2
+  fi
+  if [[ -d "${test_root}" ]]; then
+    printf '\nsmoke state files:\n' >&2
+    find "${test_root}" -maxdepth 5 -printf '%y %p %s bytes\n' >&2 || true
+    while IFS= read -r dmtcp_log; do
+      printf '\n%s:\n' "${dmtcp_log}" >&2
+      sed -n '1,260p' "${dmtcp_log}" >&2 || true
+    done < <(find "${test_root}/dmtcp-tmp" -type f -name 'dmtcpworker.*.log' 2>/dev/null)
+  fi
+  if [[ "${runtime}" == "docker" ]]; then
+    diagnose_container "${initial_container}"
+    diagnose_container "${restart_container}"
+  else
+    for runtime_log in "${test_root}"/singularity-*.log; do
+      if [[ -f "${runtime_log}" ]]; then
+        printf '\n%s:\n' "${runtime_log}" >&2
+        sed -n '1,260p' "${runtime_log}" >&2 || true
+      fi
+    done
+  fi
+  exit 1
+}
+
+wait_for_file() {
+  local path="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 90))
+  while [[ ! -s "${path}" ]]; do
+    if (( SECONDS >= deadline )); then
+      fail "timed out waiting for ${description}: ${path}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_container_stop() {
+  local container="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 90))
+  while [[ "$(docker inspect --format '{{.State.Running}}' "${container}")" == "true" ]]; do
+    if (( SECONDS >= deadline )); then
+      fail "timed out waiting for ${description}: ${container}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_process_stop() {
+  local pid="$1"
+  local description="$2"
+  local deadline=$((SECONDS + 90))
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      fail "timed out waiting for ${description}: PID ${pid}"
+    fi
+    sleep 0.2
+  done
+}
+
+run_dmtcp_command() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker exec "${initial_container}" /opt/dmtcp/bin/dmtcp_command "$@"
+  else
+    singularity exec "${singularity_image}" /opt/dmtcp/bin/dmtcp_command "$@"
+  fi
+}
+
+if [[ "${runtime}" == "docker" ]]; then
+  version_output="$(
+    docker run --rm \
+      --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+      "${image}" \
+      --version
+  )"
+  link_output="$(
+    docker run --rm \
+      --entrypoint /usr/bin/ldd \
+      "${image}" \
+      /goetl/goetl-worker
+  )"
+else
+  version_output="$(
+    singularity exec "${singularity_image}" \
+      /opt/dmtcp/bin/dmtcp_launch --version
+  )"
+  link_output="$(
+    singularity exec "${singularity_image}" \
+      /usr/bin/ldd /goetl/goetl-worker
+  )"
+fi
+version_line="$(printf '%s\n' "${version_output}" | sed -n '1p')"
+if [[ "${version_line}" != "dmtcp_launch (DMTCP) 4.2.0" ]]; then
+  fail "unexpected DMTCP version line: ${version_line}"
+fi
+
+if ! grep -q 'libc\.so' <<<"${link_output}"; then
+  fail "worker is not dynamically linked to libc: ${link_output}"
+fi
+
+mkdir -p \
+  "${test_root}/checkpoints" \
+  "${test_root}/control" \
+  "${test_root}/markers" \
+  "${test_root}/runtime/data" \
+  "${test_root}/runtime/log" \
+  "${test_root}/runtime/tmp" \
+  "${test_root}/dmtcp-tmp"
+
+cp "${fixture_dir}/work-item.json" "${test_root}/work-item.json"
+python3 - "${fixture_dir}/source/main.py" "${test_root}/source-bundle.zip" <<'PY'
+import sys
+import zipfile
+
+source_path, bundle_path = sys.argv[1:]
+with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+    bundle.write(source_path, "main.py")
+PY
+
+cat >"${test_root}/worker.json" <<'JSON'
+{
+  "log_dir": "/checkpoint-test/runtime/log",
+  "tmp_dir": "/checkpoint-test/runtime/tmp",
+  "data_dir": "/checkpoint-test/runtime/data",
+  "controller_url": "http://controller.invalid",
+  "python_executable": "python3"
+}
+JSON
+
+runtime_options=(
+  --cap-add SYS_PTRACE
+  --env "HOME=${container_root}"
+  --env "USER=goetl"
+  --pid host
+  --security-opt seccomp=unconfined
+  --hostname "${container_hostname}"
+  --mount "type=bind,src=${test_root},dst=${container_root}"
+  --user "${container_user}"
+)
+
+launch_arguments=(
+  --new-coordinator \
+  --port-file "${container_root}/control/initial.port" \
+  --ckptdir "${container_root}/checkpoints" \
+  --tmpdir "${container_root}/dmtcp-tmp" \
+  --no-gzip \
+  --ckpt-open-files \
+  --ckpt-signal 35 \
+  /goetl/goetl-worker execute \
+  --config "${container_root}/worker.json" \
+  --work-item "${container_root}/work-item.json" \
+  --source-bundle "${container_root}/source-bundle.zip" \
+  --result "${container_root}/worker-result.json"
+)
+
+if [[ "${runtime}" == "docker" ]]; then
+  docker run --detach \
+    --name "${initial_container}" \
+    "${runtime_options[@]}" \
+    --entrypoint /opt/dmtcp/bin/dmtcp_launch \
+    "${image}" \
+    "${launch_arguments[@]}" \
+    >/dev/null
+else
+  singularity exec \
+    --bind "${test_root}:${container_root}" \
+    "${singularity_image}" \
+    /opt/dmtcp/bin/dmtcp_launch \
+    "${launch_arguments[@]}" \
+    >"${test_root}/singularity-initial.log" 2>&1 &
+  initial_pid="$!"
+fi
+
+wait_for_file "${test_root}/control/initial.port" "initial coordinator port"
+wait_for_file "${test_root}/markers/pre-checkpoint.log" "pre-checkpoint marker"
+
+initial_port="$(tr -d '[:space:]' <"${test_root}/control/initial.port")"
+if [[ ! "${initial_port}" =~ ^[0-9]+$ ]] || [[ "${initial_port}" == "7779" ]]; then
+  fail "coordinator did not choose an isolated dynamic port: ${initial_port}"
+fi
+
+if ! client_list="$(
+  run_dmtcp_command \
+    --coord-host 127.0.0.1 \
+    --coord-port "${initial_port}" \
+    --list 2>&1
+)"; then
+  fail "could not list coordinator clients: ${client_list}"
+fi
+
+if ! checkpoint_command_output="$(
+  run_dmtcp_command \
+    --coord-host 127.0.0.1 \
+    --coord-port "${initial_port}" \
+    --bcheckpoint 2>&1
+)"; then
+  fail "coordinator checkpoint request failed: ${checkpoint_command_output}"
+fi
+
+mapfile -d '' checkpoint_files < <(
+  find "${test_root}/checkpoints" \
+    -maxdepth 1 \
+    -type f \
+    -name 'ckpt_*.dmtcp' \
+    -print0 \
+    | sort -z
+)
+if (( ${#checkpoint_files[@]} < 2 )); then
+  fail "expected checkpoint images for the Go worker and Python descendant"
+fi
+
+checkpoint_names="$(printf '%s\n' "${checkpoint_files[@]##*/}")"
+if ! grep -q 'goetl-worker' <<<"${checkpoint_names}"; then
+  fail "checkpoint set has no goetl-worker image: ${checkpoint_names}"
+fi
+if ! grep -q 'python' <<<"${checkpoint_names}"; then
+  fail "checkpoint set has no Python image: ${checkpoint_names}"
+fi
+
+run_dmtcp_command \
+  --coord-host 127.0.0.1 \
+  --coord-port "${initial_port}" \
+  --kill \
+  >/dev/null 2>&1 || true
+
+if [[ "${runtime}" == "docker" ]]; then
+  wait_for_container_stop "${initial_container}" "original computation termination"
+  if [[ "$(docker inspect --format '{{.State.Running}}' "${initial_container}")" != "false" ]]; then
+    fail "original computation is still running"
+  fi
+  docker rm "${initial_container}" >/dev/null
+else
+  wait_for_process_stop "${initial_pid}" "original computation termination"
+  wait "${initial_pid}" >/dev/null 2>&1 || true
+  initial_pid=""
+fi
+
+restart_arguments=(
+  --new-coordinator
+  --port-file "${container_root}/control/restart.port"
+  --ckptdir "${container_root}/checkpoints"
+  --tmpdir "${container_root}/dmtcp-tmp"
+)
+for checkpoint_file in "${checkpoint_files[@]}"; do
+  restart_arguments+=(
+    "${container_root}/checkpoints/$(basename "${checkpoint_file}")"
+  )
+done
+
+if [[ "${runtime}" == "docker" ]]; then
+  docker run --detach \
+    --name "${restart_container}" \
+    "${runtime_options[@]}" \
+    --entrypoint /opt/dmtcp/bin/dmtcp_restart \
+    "${image}" \
+    "${restart_arguments[@]}" \
+    >/dev/null
+else
+  singularity exec \
+    --bind "${test_root}:${container_root}" \
+    "${singularity_image}" \
+    /opt/dmtcp/bin/dmtcp_restart \
+    "${restart_arguments[@]}" \
+    >"${test_root}/singularity-restart.log" 2>&1 &
+  restart_pid="$!"
+fi
+
+wait_for_file "${test_root}/control/restart.port" "restart coordinator port"
+touch "${test_root}/control/continue"
+wait_for_file "${test_root}/worker-result.json" "completed direct result"
+
+if [[ "${runtime}" == "docker" ]]; then
+  wait_for_container_stop "${restart_container}" "restarted computation completion"
+  restart_exit="$(docker inspect --format '{{.State.ExitCode}}' "${restart_container}")"
+else
+  wait_for_process_stop "${restart_pid}" "restarted computation completion"
+  set +e
+  wait "${restart_pid}"
+  restart_exit="$?"
+  set -e
+  restart_pid=""
+fi
+if [[ "${restart_exit}" != "0" ]]; then
+  fail "restarted container exited with status ${restart_exit}"
+fi
+
+python3 - \
+  "${test_root}/worker-result.json" \
+  "${test_root}/markers/pre-checkpoint.log" \
+  "${test_root}/markers/post-resume.log" <<'PY'
+import json
+import sys
+
+result_path, pre_path, post_path = sys.argv[1:]
+with open(result_path, "r", encoding="utf-8") as handle:
+    result = json.load(handle)
+
+assert result["schema"] == "gorc/worker-direct-result/v1", result
+assert result["status"] == "completed", result
+assert result["work_item_id"] == "dmtcp-checkpoint-001", result
+assert result["attempt_id"] == "dmtcp-attempt-001", result
+
+evidence = result.get("evidence")
+assert evidence and evidence.get("output_json"), result
+output_evidence = json.loads(evidence["output_json"])
+logical_output = output_evidence["logical_output"]
+assert logical_output["checkpoint_fixture"] == "resumed", logical_output
+assert logical_output["input_work_item_id"] == "dmtcp-checkpoint-001", logical_output
+
+for path, expected in (
+    (pre_path, "before-checkpoint"),
+    (post_path, "after-resume"),
+):
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = [line.rstrip("\n") for line in handle]
+    assert lines == [expected], (path, lines)
+PY
+
+printf '%s\n' "${version_line}"
+printf '%s\n' "${link_output}"
+printf 'DMTCP checkpoint/restart smoke passed with %d checkpoint images.\n' \
+  "${#checkpoint_files[@]}"

@@ -1,0 +1,791 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+fixture_dir="${repo_root}/cmd/worker/testdata/dmtcp-checkpoint"
+
+image="${GOETL_WORKER_IMAGE:-goetl/worker:dev}"
+runtime="${GOETL_CRIU_RUNTIME:-docker}"
+singularity_image="${GOETL_WORKER_SIF:-}"
+docker_privileged="${GOETL_CRIU_DOCKER_PRIVILEGED:-0}"
+container_root="/checkpoint-test"
+timeout_seconds="${GOETL_CRIU_TIMEOUT_SECONDS:-90}"
+
+case "${runtime}" in
+  docker)
+    scope="local_only"
+    ;;
+  singularity)
+    if [[ -z "${singularity_image}" || ! -f "${singularity_image}" ]]; then
+      printf 'GOETL_WORKER_SIF must name an existing SIF for the Singularity smoke\n' >&2
+      exit 2
+    fi
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+      scope="institutional_hpcc"
+    else
+      scope="local_only"
+    fi
+    ;;
+  *)
+    printf 'unsupported GOETL_CRIU_RUNTIME: %s\n' "${runtime}" >&2
+    exit 2
+    ;;
+esac
+
+umask 077
+test_root="${GOETL_CRIU_EVIDENCE_DIR:-}"
+if [[ -z "${test_root}" ]]; then
+  test_root="$(mktemp -d "${TMPDIR:-/tmp}/goetl-criu-smoke.XXXXXX")"
+else
+  mkdir -p "${test_root}"
+  test_root="$(cd "${test_root}" && pwd)"
+fi
+
+test_id="$(basename "${test_root}")"
+initial_container="${test_id}-initial"
+restore_container="${test_id}-restore"
+summary_path="${test_root}/summary.json"
+initial_invocation_pid=""
+restore_invocation_pid=""
+active_phase="setup"
+
+docker_options=(
+  --hostname goetl-criu-smoke
+  --mount "type=bind,src=${test_root},dst=${container_root}"
+)
+if [[ "${docker_privileged}" == "1" ]]; then
+  docker_options+=(
+    --privileged
+    --pid host
+    --security-opt seccomp=unconfined
+  )
+fi
+
+cleanup() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker rm --force \
+      "${initial_container}" \
+      "${restore_container}" \
+      >/dev/null 2>&1 || true
+  else
+    if [[ -n "${initial_invocation_pid}" ]]; then
+      kill -TERM -- "-${initial_invocation_pid}" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${restore_invocation_pid}" ]]; then
+      kill -TERM -- "-${restore_invocation_pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap cleanup EXIT
+
+write_summary() {
+  local result="$1"
+  local phase="$2"
+  local command="$3"
+  local status="$4"
+  local log_path="$5"
+
+  python3 - \
+    "${summary_path}" \
+    "${result}" \
+    "${phase}" \
+    "${command}" \
+    "${status}" \
+    "${log_path}" \
+    "${runtime}" \
+    "${scope}" \
+    "${test_root}" <<'PY'
+import json
+import sys
+
+(
+    path,
+    result,
+    phase,
+    command,
+    status,
+    log_path,
+    runtime,
+    scope,
+    evidence_dir,
+) = sys.argv[1:]
+
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "schema": "goetl/criu-smoke-result/v1",
+            "result": result,
+            "phase": phase,
+            "command": command,
+            "exit_status": int(status),
+            "log_path": log_path,
+            "runtime": runtime,
+            "scope": scope,
+            "evidence_dir": evidence_dir,
+        },
+        handle,
+        indent=2,
+    )
+    handle.write("\n")
+PY
+}
+
+unexpected_error() {
+  local status="$?"
+  local log_path="${test_root}/unexpected-error.log"
+
+  trap - ERR
+  printf 'unexpected command failure during %s: %s\n' \
+    "${active_phase}" \
+    "${BASH_COMMAND}" \
+    >"${log_path}"
+  write_summary \
+    "smoke_error" \
+    "${active_phase}" \
+    "${BASH_COMMAND}" \
+    "${status}" \
+    "${log_path}"
+  printf 'CRIU smoke error during %s; evidence: %s\n' \
+    "${active_phase}" \
+    "${test_root}" >&2
+  exit "${status}"
+}
+trap unexpected_error ERR
+
+classification_for_log() {
+  local phase="$1"
+  local log_path="$2"
+
+  if grep -Eqi \
+    'seccomp|ptrace|yama|denied by policy|permission denied' \
+    "${log_path}" 2>/dev/null; then
+    printf 'blocked_security_policy'
+  elif grep -Eqi \
+    'operation not permitted|capability|cap_checkpoint_restore|cap_sys_admin' \
+    "${log_path}" 2>/dev/null; then
+    printf 'blocked_host_capability'
+  elif grep -Eqi \
+    'kernel.*(unsupported|not supported)|unsupported.*kernel|feature.*missing' \
+    "${log_path}" 2>/dev/null; then
+    printf 'blocked_kernel_feature'
+  elif [[ "${runtime}" == "singularity" ]] \
+    && grep -Eqi 'namespace|mount|mnt_id|root.*different' \
+      "${log_path}" 2>/dev/null; then
+    printf 'blocked_singularity_namespace'
+  elif [[ "${phase}" == goet_restore* ]]; then
+    printf 'blocked_go_process_restore'
+  else
+    printf 'blocked_criu_process_resource'
+  fi
+}
+
+block() {
+  local phase="$1"
+  local command="$2"
+  local status="$3"
+  local log_path="$4"
+  local classification
+
+  classification="$(classification_for_log "${phase}" "${log_path}")"
+  write_summary \
+    "${classification}" \
+    "${phase}" \
+    "${command}" \
+    "${status}" \
+    "${log_path}"
+  printf 'CRIU smoke blocked: %s during %s\n' \
+    "${classification}" \
+    "${phase}" >&2
+  printf 'evidence: %s\n' "${test_root}" >&2
+  [[ ! -f "${log_path}" ]] || sed -n '1,260p' "${log_path}" >&2
+  exit 1
+}
+
+smoke_error() {
+  local message="$1"
+  local log_path="${test_root}/smoke-error.log"
+
+  printf '%s\n' "${message}" >"${log_path}"
+  write_summary "smoke_error" "${active_phase}" "" 1 "${log_path}"
+  printf 'CRIU smoke error: %s\n' "${message}" >&2
+  printf 'evidence: %s\n' "${test_root}" >&2
+  exit 1
+}
+
+wait_for_file() {
+  local path="$1"
+  local description="$2"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while [[ ! -s "${path}" ]]; do
+    if (( SECONDS >= deadline )); then
+      smoke_error "timed out waiting for ${description}: ${path}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_host_process_stop() {
+  local pid="$1"
+  local description="$2"
+  local deadline=$((SECONDS + timeout_seconds))
+  local state=""
+
+  while [[ -r "/proc/${pid}/stat" ]]; do
+    state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null || true)"
+    [[ "${state}" != "Z" ]] || break
+    if (( SECONDS >= deadline )); then
+      smoke_error "timed out waiting for ${description}: PID ${pid}"
+    fi
+    sleep 0.2
+  done
+}
+
+wait_for_container_stop() {
+  local name="$1"
+  local description="$2"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while [[ "$(docker inspect --format '{{.State.Running}}' "${name}")" == "true" ]]; do
+    if (( SECONDS >= deadline )); then
+      smoke_error "timed out waiting for ${description}: ${name}"
+    fi
+    sleep 0.2
+  done
+}
+
+runtime_probe() {
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --rm \
+      "${docker_options[@]}" \
+      --entrypoint /bin/sh \
+      "${image}" \
+      -c "$1"
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      /bin/sh -c "$1"
+  fi
+}
+
+run_criu_dump() {
+  local target_pid="$1"
+  local images_dir="$2"
+  local log_file="$3"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    docker exec "${initial_container}" \
+      /usr/local/sbin/criu dump \
+      --tree "${target_pid}" \
+      --images-dir "${container_root}/${images_dir}" \
+      --log-file "${container_root}/${log_file}" \
+      --verbosity=4 \
+      --shell-job
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      /usr/local/sbin/criu dump \
+      --tree "${target_pid}" \
+      --images-dir "${container_root}/${images_dir}" \
+      --log-file "${container_root}/${log_file}" \
+      --verbosity=4 \
+      --shell-job
+  fi
+}
+
+launch_restore() {
+  local images_dir="$1"
+  local log_file="$2"
+  local pid_file="$3"
+  local runtime_log="$4"
+  local command
+
+  command="/usr/local/sbin/criu restore"
+  command+=" --images-dir ${container_root}/${images_dir}"
+  command+=" --log-file ${container_root}/${log_file}"
+  command+=" --verbosity=4 --shell-job --restore-detached"
+  command+=" --pidfile ${container_root}/${pid_file}"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${restore_container}" \
+      "${docker_options[@]}" \
+      --entrypoint /bin/sh \
+      "${image}" \
+      -c "${command}; status=\$?; if [ \${status} -ne 0 ]; then exit \${status}; fi; while kill -0 \$(cat ${container_root}/${pid_file}) 2>/dev/null; do sleep 0.2; done" \
+      >"${runtime_log}"
+  else
+    setsid singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      /bin/sh -c \
+      "${command}; status=\$?; if [ \${status} -ne 0 ]; then exit \${status}; fi; while kill -0 \$(cat ${container_root}/${pid_file}) 2>/dev/null; do sleep 0.2; done" \
+      >"${runtime_log}" 2>&1 &
+    restore_invocation_pid="$!"
+  fi
+}
+
+record_environment() {
+  {
+    printf 'recorded_utc='
+    date -u +%Y-%m-%dT%H:%M:%SZ
+    printf 'runtime=%s\n' "${runtime}"
+    printf 'scope=%s\n' "${scope}"
+    printf 'slurm_job_id=%s\n' "${SLURM_JOB_ID:-}"
+    printf 'slurm_node_name=%s\n' "${SLURMD_NODENAME:-${HOSTNAME:-}}"
+    uname -a
+    id
+    printf 'cgroup_filesystem='
+    stat -fc '%T' /sys/fs/cgroup 2>/dev/null || true
+    if [[ -r /etc/os-release ]]; then
+      cat /etc/os-release
+    fi
+  } >"${test_root}/host-environment.txt"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    docker image inspect \
+      --format 'image_id={{.Id}} repo_digests={{json .RepoDigests}}' \
+      "${image}" \
+      >"${test_root}/image-identity.txt"
+  else
+    sha256sum "${singularity_image}" >"${test_root}/image-identity.txt"
+    singularity version >"${test_root}/singularity-version.txt"
+  fi
+
+  runtime_probe '
+    printf "uid_gid="; id
+    printf "kernel="; uname -a
+    printf "criu="; /usr/local/sbin/criu --version | sed -n "1p"
+    printf "status:\n"; grep -E "^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs|Seccomp|Seccomp_filters):" /proc/self/status
+    printf "namespaces:\n"
+    for namespace in user pid mnt cgroup; do
+      printf "%s=" "${namespace}"
+      readlink "/proc/self/ns/${namespace}"
+    done
+    printf "ptrace_scope="
+    cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || printf "unavailable\n"
+    printf "cgroup_filesystem="
+    stat -fc "%T" /sys/fs/cgroup 2>/dev/null || true
+  ' >"${test_root}/probe-environment.txt"
+
+  set +e
+  runtime_probe \
+    '/usr/local/sbin/criu check --all --verbosity=4' \
+    >"${test_root}/criu-check.log" 2>&1
+  check_status="$?"
+  set -e
+  printf '%s\n' "${check_status}" >"${test_root}/criu-check.status"
+}
+
+prepare_fixture() {
+  mkdir -p \
+    "${test_root}/control/checkpoints" \
+    "${test_root}/control/files" \
+    "${test_root}/goet/checkpoints" \
+    "${test_root}/goet/files/control" \
+    "${test_root}/goet/files/markers" \
+    "${test_root}/runtime/data" \
+    "${test_root}/runtime/log" \
+    "${test_root}/runtime/tmp"
+
+  cp "${fixture_dir}/work-item.json" "${test_root}/work-item.json"
+  python3 - "${fixture_dir}/source/main.py" "${test_root}/source-bundle.zip" <<'PY'
+import sys
+import zipfile
+
+source_path, bundle_path = sys.argv[1:]
+with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+    bundle.write(source_path, "main.py")
+PY
+
+  python3 - "${test_root}/work-item.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    item = json.load(handle)
+args = item["parameters"]["python_args"]["value"]
+for index, value in enumerate(args):
+    args[index] = value.replace("/checkpoint-test/", "/checkpoint-test/goet/files/")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(item, handle, indent=2)
+    handle.write("\n")
+PY
+
+  cat >"${test_root}/control-probe.py" <<'PY'
+import os
+import sys
+import time
+
+continuation, pid_path, pre_path, post_path = sys.argv[1:]
+
+with open(pid_path, "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+
+with open(pre_path, "w", encoding="utf-8") as handle:
+    handle.write("before-checkpoint\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+
+while not os.path.exists(continuation):
+    time.sleep(0.1)
+
+with open(post_path, "w", encoding="utf-8") as handle:
+    handle.write("after-resume\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+
+  python3 - "${test_root}/worker.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "log_dir": "/checkpoint-test/runtime/log",
+            "tmp_dir": "/checkpoint-test/runtime/tmp",
+            "data_dir": "/checkpoint-test/runtime/data",
+            "controller_url": "http://controller.invalid",
+            "python_executable": "python3",
+        },
+        handle,
+        indent=2,
+    )
+    handle.write("\n")
+PY
+}
+
+run_control_probe() {
+  active_phase="control_launch"
+  local command=(
+    python3
+    "${container_root}/control-probe.py"
+    "${container_root}/control/files/continue"
+    "${container_root}/control/files/root.pid"
+    "${container_root}/control/files/pre.log"
+    "${container_root}/control/files/post.log"
+  )
+
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${initial_container}" \
+      "${docker_options[@]}" \
+      --entrypoint "${command[0]}" \
+      "${image}" \
+      "${command[@]:1}" \
+      >"${test_root}/control-initial-runtime.log"
+  else
+    setsid singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      "${command[@]}" \
+      >"${test_root}/control-initial-runtime.log" 2>&1 &
+    initial_invocation_pid="$!"
+  fi
+
+  wait_for_file "${test_root}/control/files/root.pid" "control root PID"
+  wait_for_file "${test_root}/control/files/pre.log" "control pre-checkpoint marker"
+  control_pid="$(tr -d '[:space:]' <"${test_root}/control/files/root.pid")"
+  [[ "${control_pid}" =~ ^[0-9]+$ ]] \
+    || smoke_error "invalid control root PID: ${control_pid}"
+
+  active_phase="control_dump"
+  set +e
+  run_criu_dump \
+    "${control_pid}" \
+    "control/checkpoints" \
+    "control/dump.log" \
+    >"${test_root}/control-dump-command.log" 2>&1
+  dump_status="$?"
+  set -e
+  if [[ "${dump_status}" != "0" ]]; then
+    cat "${test_root}/control/dump.log" \
+      >>"${test_root}/control-dump-command.log" 2>/dev/null || true
+    block \
+      "${active_phase}" \
+      "criu dump --tree CONTROL_PID" \
+      "${dump_status}" \
+      "${test_root}/control-dump-command.log"
+  fi
+
+  if ! find "${test_root}/control/checkpoints" -type f -size +0c \
+    | grep -q .; then
+    smoke_error "control dump produced no non-empty checkpoint images"
+  fi
+
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_container_stop \
+      "${initial_container}" \
+      "dumped control process termination"
+    docker rm "${initial_container}" >/dev/null
+  else
+    wait_for_host_process_stop \
+      "${control_pid}" \
+      "dumped control process termination"
+    wait "${initial_invocation_pid}" >/dev/null 2>&1 || true
+    initial_invocation_pid=""
+  fi
+
+  active_phase="control_restore"
+  launch_restore \
+    "control/checkpoints" \
+    "control/restore.log" \
+    "control/files/restored.pid" \
+    "${test_root}/control-restore-runtime.log"
+  wait_for_file \
+    "${test_root}/control/files/restored.pid" \
+    "restored control PID"
+  touch "${test_root}/control/files/continue"
+  wait_for_file \
+    "${test_root}/control/files/post.log" \
+    "control post-resume marker"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_container_stop \
+      "${restore_container}" \
+      "restored control process completion"
+    restore_status="$(docker inspect --format '{{.State.ExitCode}}' "${restore_container}")"
+    docker rm "${restore_container}" >/dev/null
+  else
+    wait_for_host_process_stop \
+      "${restore_invocation_pid}" \
+      "control restore invocation completion"
+    set +e
+    wait "${restore_invocation_pid}"
+    restore_status="$?"
+    set -e
+    restore_invocation_pid=""
+  fi
+  if [[ "${restore_status}" != "0" ]]; then
+    cat "${test_root}/control/restore.log" \
+      >>"${test_root}/control-restore-runtime.log" 2>/dev/null || true
+    block \
+      "${active_phase}" \
+      "criu restore CONTROL" \
+      "${restore_status}" \
+      "${test_root}/control-restore-runtime.log"
+  fi
+}
+
+find_python_child() {
+  local root_pid="$1"
+  local deadline=$((SECONDS + timeout_seconds))
+  local child=""
+
+  while [[ -z "${child}" ]]; do
+    child="$(
+      awk -v parent="${root_pid}" '
+        $4 == parent && ($2 == "(python3)" || $2 == "(python)") {
+          print $1
+          exit
+        }
+      ' /proc/[0-9]*/stat 2>/dev/null || true
+    )"
+    if (( SECONDS >= deadline )); then
+      smoke_error "timed out finding Python descendant of Go PID ${root_pid}"
+    fi
+    [[ -n "${child}" ]] || sleep 0.2
+  done
+  printf '%s' "${child}"
+}
+
+run_goet_probe() {
+  active_phase="goet_launch"
+  local command=(
+    /goetl/goetl-worker execute
+    --config "${container_root}/worker.json"
+    --work-item "${container_root}/work-item.json"
+    --source-bundle "${container_root}/source-bundle.zip"
+    --result "${container_root}/goet/worker-result.json"
+  )
+
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --detach \
+      --name "${initial_container}" \
+      "${docker_options[@]}" \
+      --entrypoint "${command[0]}" \
+      "${image}" \
+      "${command[@]:1}" \
+      >"${test_root}/goet-initial-runtime.log"
+    goet_host_pid="$(
+      docker inspect --format '{{.State.Pid}}' "${initial_container}"
+    )"
+    if [[ "${docker_privileged}" == "1" ]]; then
+      goet_criu_pid="${goet_host_pid}"
+    else
+      goet_criu_pid="1"
+    fi
+  else
+    setsid singularity exec \
+      --bind "${test_root}:${container_root}" \
+      "${singularity_image}" \
+      "${command[@]}" \
+      >"${test_root}/goet-initial-runtime.log" 2>&1 &
+    initial_invocation_pid="$!"
+    goet_host_pid="${initial_invocation_pid}"
+    goet_criu_pid="${goet_host_pid}"
+  fi
+
+  wait_for_file \
+    "${test_root}/goet/files/markers/pre-checkpoint.log" \
+    "GOET pre-checkpoint marker"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    goet_executable="$(
+      docker exec "${initial_container}" \
+        readlink "/proc/${goet_criu_pid}/exe" 2>/dev/null || true
+    )"
+    goet_command="$(
+      docker exec "${initial_container}" \
+        /bin/sh -c \
+        "tr '\\0' ' ' </proc/${goet_criu_pid}/cmdline" 2>/dev/null || true
+    )"
+  else
+    goet_executable="$(
+      readlink "/proc/${goet_host_pid}/exe" 2>/dev/null || true
+    )"
+    goet_command="$(
+      tr '\0' ' ' <"/proc/${goet_host_pid}/cmdline" 2>/dev/null || true
+    )"
+  fi
+  if [[ "${goet_executable}" != */goetl-worker ]] \
+    || [[ "${goet_command}" != *" execute "* ]]; then
+    smoke_error \
+      "GOET root PID ${goet_host_pid} is not goetl-worker execute: ${goet_executable} ${goet_command}"
+  fi
+
+  python_pid="$(find_python_child "${goet_host_pid}")"
+  printf 'go_root_pid=%s\npython_descendant_pid=%s\n' \
+    "${goet_host_pid}" \
+    "${python_pid}" \
+    >"${test_root}/goet/process-tree.txt"
+
+  active_phase="goet_dump"
+  set +e
+  run_criu_dump \
+    "${goet_criu_pid}" \
+    "goet/checkpoints" \
+    "goet/dump.log" \
+    >"${test_root}/goet-dump-command.log" 2>&1
+  dump_status="$?"
+  set -e
+  if [[ "${dump_status}" != "0" ]]; then
+    cat "${test_root}/goet/dump.log" \
+      >>"${test_root}/goet-dump-command.log" 2>/dev/null || true
+    block \
+      "${active_phase}" \
+      "criu dump --tree GOET_PID" \
+      "${dump_status}" \
+      "${test_root}/goet-dump-command.log"
+  fi
+
+  if ! find "${test_root}/goet/checkpoints" -type f -size +0c | grep -q .; then
+    smoke_error "GOET dump produced no non-empty checkpoint images"
+  fi
+
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_container_stop \
+      "${initial_container}" \
+      "dumped GOET process termination"
+    docker rm "${initial_container}" >/dev/null
+  else
+    wait_for_host_process_stop \
+      "${goet_host_pid}" \
+      "dumped GOET process termination"
+    wait "${initial_invocation_pid}" >/dev/null 2>&1 || true
+    initial_invocation_pid=""
+  fi
+
+  active_phase="goet_restore"
+  launch_restore \
+    "goet/checkpoints" \
+    "goet/restore.log" \
+    "goet/files/restored.pid" \
+    "${test_root}/goet-restore-runtime.log"
+  wait_for_file \
+    "${test_root}/goet/files/restored.pid" \
+    "restored GOET PID"
+  touch "${test_root}/goet/files/control/continue"
+  wait_for_file \
+    "${test_root}/goet/worker-result.json" \
+    "completed GOET direct result"
+
+  if [[ "${runtime}" == "docker" ]]; then
+    wait_for_container_stop \
+      "${restore_container}" \
+      "restored GOET process completion"
+    restore_status="$(docker inspect --format '{{.State.ExitCode}}' "${restore_container}")"
+    docker rm "${restore_container}" >/dev/null
+  else
+    wait_for_host_process_stop \
+      "${restore_invocation_pid}" \
+      "GOET restore invocation completion"
+    set +e
+    wait "${restore_invocation_pid}"
+    restore_status="$?"
+    set -e
+    restore_invocation_pid=""
+  fi
+  if [[ "${restore_status}" != "0" ]]; then
+    cat "${test_root}/goet/restore.log" \
+      >>"${test_root}/goet-restore-runtime.log" 2>/dev/null || true
+    block \
+      "${active_phase}" \
+      "criu restore GOET" \
+      "${restore_status}" \
+      "${test_root}/goet-restore-runtime.log"
+  fi
+
+  python3 - \
+    "${test_root}/goet/worker-result.json" \
+    "${test_root}/goet/files/markers/pre-checkpoint.log" \
+    "${test_root}/goet/files/markers/post-resume.log" <<'PY'
+import json
+import sys
+
+result_path, pre_path, post_path = sys.argv[1:]
+with open(result_path, "r", encoding="utf-8") as handle:
+    result = json.load(handle)
+
+assert result["schema"] == "gorc/worker-direct-result/v1", result
+assert result["status"] == "completed", result
+assert result["work_item_id"] == "dmtcp-checkpoint-001", result
+assert result["attempt_id"] == "dmtcp-attempt-001", result
+
+evidence = result.get("evidence")
+assert evidence and evidence.get("output_json"), result
+logical_output = json.loads(evidence["output_json"])["logical_output"]
+assert logical_output["checkpoint_fixture"] == "resumed", logical_output
+assert logical_output["input_work_item_id"] == "dmtcp-checkpoint-001", logical_output
+
+for path, expected in (
+    (pre_path, "before-checkpoint"),
+    (post_path, "after-resume"),
+):
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = [line.rstrip("\n") for line in handle]
+    assert lines == [expected], (path, lines)
+PY
+}
+
+active_phase="environment"
+record_environment
+prepare_fixture
+run_control_probe
+run_goet_probe
+
+write_summary \
+  "pass" \
+  "complete" \
+  "" \
+  0 \
+  ""
+printf 'CRIU smoke passed (%s); evidence: %s\n' "${scope}" "${test_root}"

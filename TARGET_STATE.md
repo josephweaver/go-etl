@@ -1,6 +1,6 @@
 # Target State
 
-Last updated: 2026-07-04
+Last updated: 2026-07-30
 
 ## Application Target
 
@@ -158,6 +158,57 @@ Each work item should have:
 - Enough parameters to run independently.
 
 Workflows should be idempotent by default. Running the same workflow with the same inputs, variables, code version, and backend configuration should produce the same final outputs. Early workers may overwrite an existing output with the same deterministic result. Later workers may skip execution only when correctness is verifiable, such as matching workflow identity, work-item identity, input fingerprints, parameters, code version, and a recorded prior success. An existing output filename alone is not sufficient proof that work can be skipped.
+
+## Work-Item Pause And Resume Direction
+
+Every work-item type should declare a pause/resume adapter so work can stop
+before an allocation ends and continue under a newly claimed attempt on another
+compatible worker. GOET should expose one controller lifecycle for all
+strategies:
+
+```text
+running attempt
+    -> validated resume artifact
+    -> suspended historical attempt
+    -> logical work pending with artifact reference
+    -> new linked attempt on a compatible worker
+    -> resumed execution
+```
+
+The new claim always creates a new `attempt_id` and retains the producing
+attempt plus a stable execution-lineage identity. The controller owns this
+state transition; Slurm supplies allocation-pressure signals but does not
+requeue work independently.
+
+The execution mechanism is work-item-specific:
+
+- Direct R and Python interpreters use DMTCP while the Go worker remains outside
+  the DMTCP computation. The RStan and CmdStanR single-chain/single-core shapes
+  have institutional evidence; direct Python requires its own target-runtime
+  proof before enablement.
+- Rclone-backed operations use native continuation. GOET terminates the owned
+  rclone process after preserving and validating its partial-transfer workspace,
+  then a replacement worker relaunches through the exact continuation behavior
+  proven for the configured rclone command and remote.
+- In-process Go operations implement manual continuation. A handler cooperates
+  with a pause request, writes versioned application-level progress at an atomic
+  safe boundary, and a later invocation loads that state. GOET does not attempt
+  to serialize Go runtime memory.
+- Other external or mixed operations explicitly select DMTCP, native
+  continuation, or manual continuation only after operation-specific evidence.
+
+All strategies produce a common resume-artifact envelope containing work-item,
+producing-attempt, execution-lineage, strategy, compatibility, storage,
+integrity, and retention facts. Strategy-specific state can contain DMTCP
+images, a native-tool workspace, or manual Go state without creating separate
+controller queues or attempt models.
+
+The worker receives one ten-minute Slurm warning, enters monotonic graceful
+drain, and owns the five-minute pause timer. If the active operation finishes
+during the first interval, it reports normally. Otherwise the worker invokes
+the selected adapter, reports only a validated artifact, and stops. Failed or
+timed-out pause creation falls back to existing lost-work recovery. Resume
+attempts consuming one accepted artifact have a configurable upper limit.
 
 ## Storage Direction
 
