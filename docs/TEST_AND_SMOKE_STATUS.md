@@ -503,6 +503,43 @@ This is model-level evidence only. It does not prove filesystem manifest
 writing, controller acceptance/persistence, worker adapter dispatch, Slurm
 drain behavior, or actual resume execution.
 
+## Checkpoint-Generation SQLite Persistence Lifecycle
+
+OS-006 schema, migration, and store-lifecycle verification recorded on
+2026-07-30:
+
+```powershell
+go test ./internal/persistence -count=1
+```
+
+Result:
+
+```text
+ok  	goetl/internal/persistence
+```
+
+SQLite schema version 7 adds immutable checkpoint generations, quantum or
+shutdown suspended-attempt history, pending-resume references, attempt lineage
+and resume-attempt fields, and generation/resume lookup indexes. The focused
+migration fixture proves that one transactional version 6 to version 7
+migration preserves representative queued, running, abandoned, completed, and
+failed records, initializes new nullable resume fields, reopens idempotently,
+and rejects an incomplete version 6 database without partial migration.
+
+The store tests prove exact manifest/reference persistence, immutable
+generation sequencing and replay, periodic confirmation without ownership
+loss, atomic quantum/final suspension, fallback suspension from the latest
+accepted generation, and rollback when the queue transition fails. Resume
+claims create a new attempt with predecessor, artifact, lineage, and
+per-artifact attempt-count metadata. Worker stop and expiry recover from the
+latest accepted checkpoint, while causal failure remains terminal. Invalid
+bundles, stale owners, and claims over the configured resume-attempt limit fail
+without mutating pending work.
+
+This is persistence-boundary evidence only. No controller HTTP transport,
+worker timer/adapter, filesystem checkpoint bundle creation and byte
+verification, or runtime resume path exists yet.
+
 ## Direct Worker Development Execution Evidence
 
 Recorded on 2026-07-11 on branch

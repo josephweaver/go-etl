@@ -2,11 +2,14 @@ package persistence
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 	"time"
 
 	"goetl/internal/model"
@@ -14,7 +17,7 @@ import (
 
 const (
 	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 6
+	SupportedSchemaVersion = 7
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -22,11 +25,22 @@ const (
 	WorkerSessionStatusActive  = "active"
 	WorkerSessionStatusStopped = "stopped"
 	WorkerSessionStatusDead    = "dead"
+
+	CheckpointCaptureKindPeriodic = "periodic"
+	CheckpointCaptureKindQuantum  = "quantum"
+	CheckpointCaptureKindFinal    = "final"
+
+	CheckpointDispositionContinue = "continue"
+	CheckpointDispositionSuspend  = "suspend"
+
+	SuspendReasonQuantum  = "quantum"
+	SuspendReasonShutdown = "shutdown"
 )
 
 var ErrWorkerSessionNotActive = errors.New("worker session is not active")
 var ErrWorkerSessionBusy = errors.New("worker session already owns running work")
 var ErrAssignmentNoLongerOwned = errors.New("assignment no longer owned")
+var ErrResumeAttemptLimitExceeded = errors.New("resume attempt limit exceeded")
 
 type Config struct {
 	Driver           string
@@ -146,7 +160,71 @@ type WorkflowStepOutputFactRecord struct {
 
 type QueuedWorkRecord struct {
 	WorkItemRecord
-	QueuedAt string
+	QueuedAt         string
+	ResumeArtifactID string
+}
+
+type ResumeArtifactRecord struct {
+	ID                   string
+	WorkItemID           string
+	ProducingAttemptID   string
+	ExecutionLineageID   string
+	ResumeGeneration     int
+	CaptureKind          string
+	PauseStrategy        model.PauseStrategy
+	ManifestJSON         string
+	ManifestSHA256       string
+	StorageScope         string
+	ManifestRelativePath string
+	CreatedAt            string
+	AcceptedAt           string
+	Manifest             model.ResumeArtifactManifest
+	Reference            model.ResumeArtifactReference
+}
+
+type SuspendedWorkRecord struct {
+	AttemptID        string
+	WorkItemID       string
+	ResumeArtifactID string
+	WorkerID         string
+	WorkerSessionID  string
+	QueuedAt         string
+	StartedAt        string
+	SuspendedAt      string
+	SuspendReason    string
+}
+
+type ConfirmCheckpointRequest struct {
+	AttemptID         string
+	WorkerID          string
+	WorkerSessionID   string
+	LiveSessionCutoff string
+	ManifestJSON      string
+	Reference         model.ResumeArtifactReference
+	CaptureKind       string
+	Disposition       string
+	AcceptedAt        string
+	SuspendedAt       string
+}
+
+type ConfirmCheckpointResult struct {
+	Artifact  ResumeArtifactRecord
+	Suspended *SuspendedWorkRecord
+}
+
+type SuspendFromLatestCheckpointRequest struct {
+	AttemptID         string
+	WorkerID          string
+	WorkerSessionID   string
+	LiveSessionCutoff string
+	SuspendedAt       string
+	SuspendReason     string
+}
+
+type SuspendFromLatestCheckpointResult struct {
+	Artifact  ResumeArtifactRecord
+	Suspended SuspendedWorkRecord
+	Found     bool
 }
 
 type QueueWorkItemsRequest struct {
@@ -288,22 +366,27 @@ type CompleteStageResult struct {
 }
 
 type ClaimWorkRequest struct {
-	AttemptID         string
-	WorkerID          string
-	WorkerSessionID   string
-	ExecutorType      string
-	StartedAt         string
-	LiveSessionCutoff string
+	AttemptID          string
+	WorkerID           string
+	WorkerSessionID    string
+	ExecutorType       string
+	StartedAt          string
+	LiveSessionCutoff  string
+	ResumeAttemptLimit int
 }
 
 type ClaimedWorkRecord struct {
-	AttemptID       string
-	WorkItem        WorkItemRecord
-	WorkerID        string
-	WorkerSessionID string
-	ExecutorType    string
-	QueuedAt        string
-	StartedAt       string
+	AttemptID            string
+	WorkItem             WorkItemRecord
+	WorkerID             string
+	WorkerSessionID      string
+	ExecutorType         string
+	QueuedAt             string
+	StartedAt            string
+	ResumedFromAttemptID string
+	ExecutionLineageID   string
+	ResumeAttemptNumber  int
+	ResumeArtifact       *ResumeArtifactRecord
 }
 
 type CompleteAttemptRequest struct {
@@ -549,7 +632,7 @@ func (s *Store) RecoverExpiredWorkerSessions(ctx context.Context, request Recove
 				return RecoverExpiredWorkerSessionsResult{}, err
 			}
 			result.AbandonedAttempts++
-			requeued, err := requeueAbandonedWork(ctx, tx, assignment.workItemID, request.RecoveredAt)
+			requeued, err := requeueAbandonedWork(ctx, tx, assignment.attemptID, assignment.workItemID, request.RecoveredAt)
 			if err != nil {
 				return RecoverExpiredWorkerSessionsResult{}, err
 			}
@@ -608,7 +691,7 @@ func (s *Store) StopWorkerSessionAndRecoverWork(ctx context.Context, request Sto
 			return StopWorkerSessionAndRecoverWorkResult{}, err
 		}
 		result.AbandonedAttempts++
-		requeued, err := requeueAbandonedWork(ctx, tx, assignment.workItemID, request.StoppedAt)
+		requeued, err := requeueAbandonedWork(ctx, tx, assignment.attemptID, assignment.workItemID, request.StoppedAt)
 		if err != nil {
 			return StopWorkerSessionAndRecoverWorkResult{}, err
 		}
@@ -1585,7 +1668,8 @@ func (s *Store) ListQueuedWorkItems(ctx context.Context) ([]QueuedWorkRecord, er
 		work_items.worker_payload_json,
 		work_items.resolved_inputs_sha256,
 		work_items.created_at,
-		queued_work.queued_at
+		queued_work.queued_at,
+		COALESCE(queued_work.resume_artifact_id, '')
 	FROM queued_work
 	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
 	ORDER BY queued_work.queued_at, queued_work.work_item_id`)
@@ -1820,6 +1904,215 @@ func (s *Store) CompleteStageIfReady(ctx context.Context, request CompleteStageR
 	return CompleteStageResult{Stage: stage, Found: true, Completed: true}, nil
 }
 
+func (s *Store) ConfirmCheckpoint(ctx context.Context, request ConfirmCheckpointRequest) (ConfirmCheckpointResult, error) {
+	if err := s.requireOpen(); err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	artifact, suspendReason, err := validateConfirmCheckpointRequest(request)
+	if err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ConfirmCheckpointResult{}, fmt.Errorf("begin confirm checkpoint: %w", err)
+	}
+	defer tx.Rollback()
+
+	existing, found, err := getResumeArtifact(ctx, tx, artifact.ID)
+	if err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	if found {
+		if !resumeArtifactMatchesConfirmation(existing, artifact) {
+			return ConfirmCheckpointResult{}, fmt.Errorf("checkpoint artifact %s conflicts with existing accepted artifact", artifact.ID)
+		}
+		return replayCheckpointConfirmation(ctx, tx, request, existing, suspendReason)
+	}
+
+	running, found, err := getRunningWork(ctx, tx, request.AttemptID)
+	if err != nil {
+		return ConfirmCheckpointResult{}, fmt.Errorf("get running work %s: %w", request.AttemptID, err)
+	}
+	if !found {
+		return ConfirmCheckpointResult{}, ErrAssignmentNoLongerOwned
+	}
+	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	if artifact.WorkItemID != running.workItemID || artifact.ProducingAttemptID != running.attemptID {
+		return ConfirmCheckpointResult{}, fmt.Errorf("checkpoint artifact identity does not match running assignment")
+	}
+	if err := validateNextCheckpointGeneration(ctx, tx, running, artifact); err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	if err := insertResumeArtifact(ctx, tx, artifact); err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	if err := assignAttemptExecutionLineage(ctx, tx, running.attemptID, artifact.ExecutionLineageID); err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+
+	result := ConfirmCheckpointResult{Artifact: artifact}
+	if request.Disposition == CheckpointDispositionSuspend {
+		suspended, err := suspendRunningWork(
+			ctx,
+			tx,
+			running,
+			artifact.ID,
+			request.SuspendedAt,
+			suspendReason,
+		)
+		if err != nil {
+			return ConfirmCheckpointResult{}, err
+		}
+		result.Suspended = &suspended
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ConfirmCheckpointResult{}, fmt.Errorf("commit confirm checkpoint: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) SuspendFromLatestCheckpoint(ctx context.Context, request SuspendFromLatestCheckpointRequest) (SuspendFromLatestCheckpointResult, error) {
+	if err := s.requireOpen(); err != nil {
+		return SuspendFromLatestCheckpointResult{}, err
+	}
+	if err := request.validate(); err != nil {
+		return SuspendFromLatestCheckpointResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SuspendFromLatestCheckpointResult{}, fmt.Errorf("begin suspend from latest checkpoint: %w", err)
+	}
+	defer tx.Rollback()
+
+	running, found, err := getRunningWork(ctx, tx, request.AttemptID)
+	if err != nil {
+		return SuspendFromLatestCheckpointResult{}, fmt.Errorf("get running work %s: %w", request.AttemptID, err)
+	}
+	if !found {
+		existing, suspended, err := getSuspendedWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return SuspendFromLatestCheckpointResult{}, err
+		}
+		if !suspended {
+			return SuspendFromLatestCheckpointResult{}, ErrAssignmentNoLongerOwned
+		}
+		if !suspendedWorkMatchesFallbackRequest(existing, request) {
+			return SuspendFromLatestCheckpointResult{}, fmt.Errorf("suspend attempt %s conflicts with existing suspended work", request.AttemptID)
+		}
+		artifact, found, err := getResumeArtifact(ctx, tx, existing.ResumeArtifactID)
+		if err != nil {
+			return SuspendFromLatestCheckpointResult{}, err
+		}
+		if !found {
+			return SuspendFromLatestCheckpointResult{}, fmt.Errorf("suspended attempt %s references missing artifact", request.AttemptID)
+		}
+		return SuspendFromLatestCheckpointResult{
+			Artifact:  artifact,
+			Suspended: existing,
+			Found:     true,
+		}, nil
+	}
+	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
+		return SuspendFromLatestCheckpointResult{}, err
+	}
+
+	artifact, found, err := latestAcceptedCheckpointForAttempt(ctx, tx, running.attemptID)
+	if err != nil {
+		return SuspendFromLatestCheckpointResult{}, err
+	}
+	if !found {
+		if err := tx.Commit(); err != nil {
+			return SuspendFromLatestCheckpointResult{}, fmt.Errorf("commit empty suspend from latest checkpoint: %w", err)
+		}
+		return SuspendFromLatestCheckpointResult{}, nil
+	}
+
+	suspended, err := suspendRunningWork(
+		ctx,
+		tx,
+		running,
+		artifact.ID,
+		request.SuspendedAt,
+		request.SuspendReason,
+	)
+	if err != nil {
+		return SuspendFromLatestCheckpointResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return SuspendFromLatestCheckpointResult{}, fmt.Errorf("commit suspend from latest checkpoint: %w", err)
+	}
+	return SuspendFromLatestCheckpointResult{
+		Artifact:  artifact,
+		Suspended: suspended,
+		Found:     true,
+	}, nil
+}
+
+func (s *Store) GetResumeArtifact(ctx context.Context, artifactID string) (ResumeArtifactRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return ResumeArtifactRecord{}, false, err
+	}
+	if artifactID == "" {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("resume artifact id is required")
+	}
+	return getResumeArtifact(ctx, s.db, artifactID)
+}
+
+func (s *Store) GetLatestAcceptedCheckpoint(ctx context.Context, executionLineageID string) (ResumeArtifactRecord, bool, error) {
+	if err := s.requireOpen(); err != nil {
+		return ResumeArtifactRecord{}, false, err
+	}
+	if executionLineageID == "" {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("execution lineage id is required")
+	}
+	return getLatestResumeArtifactForLineage(ctx, s.db, executionLineageID)
+}
+
+func (s *Store) ListSuspendedWorkForItem(ctx context.Context, workItemID string) ([]SuspendedWorkRecord, error) {
+	if err := s.requireOpen(); err != nil {
+		return nil, err
+	}
+	if workItemID == "" {
+		return nil, fmt.Errorf("work item id is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		resume_artifact_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		suspended_at,
+		suspend_reason
+	FROM suspended_work
+	WHERE work_item_id = ?
+	ORDER BY suspended_at, attempt_id`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("list suspended work for item %s: %w", workItemID, err)
+	}
+	defer rows.Close()
+
+	records := []SuspendedWorkRecord{}
+	for rows.Next() {
+		record, err := scanSuspendedWork(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list suspended work for item %s: %w", workItemID, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list suspended work for item %s: %w", workItemID, err)
+	}
+	return records, nil
+}
+
 func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (ClaimedWorkRecord, bool, error) {
 	if err := s.requireOpen(); err != nil {
 		return ClaimedWorkRecord{}, false, err
@@ -1863,20 +2156,58 @@ func (s *Store) ClaimNextWork(ctx context.Context, request ClaimWorkRequest) (Cl
 }
 
 func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, queued QueuedWorkRecord) (ClaimedWorkRecord, bool, error) {
+	var resumeArtifact *ResumeArtifactRecord
+	var resumedFromAttemptID string
+	var executionLineageID string
+	var resumeAttemptNumber int
+	if queued.ResumeArtifactID != "" {
+		if request.ResumeAttemptLimit <= 0 {
+			return ClaimedWorkRecord{}, false, fmt.Errorf("resume attempt limit must be positive for pending resume work")
+		}
+		artifact, found, err := getResumeArtifact(ctx, tx, queued.ResumeArtifactID)
+		if err != nil {
+			return ClaimedWorkRecord{}, false, err
+		}
+		if !found {
+			return ClaimedWorkRecord{}, false, fmt.Errorf("queued work %s references missing resume artifact", queued.ID)
+		}
+		if artifact.WorkItemID != queued.ID {
+			return ClaimedWorkRecord{}, false, fmt.Errorf("queued work %s resume artifact belongs to another work item", queued.ID)
+		}
+		resumeAttemptNumber, err = nextResumeAttemptNumber(ctx, tx, artifact.ID)
+		if err != nil {
+			return ClaimedWorkRecord{}, false, err
+		}
+		if resumeAttemptNumber > request.ResumeAttemptLimit {
+			return ClaimedWorkRecord{}, false, ErrResumeAttemptLimitExceeded
+		}
+		resumedFromAttemptID = artifact.ProducingAttemptID
+		executionLineageID = artifact.ExecutionLineageID
+		resumeArtifact = &artifact
+	}
+
 	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_attempts (
 		attempt_id,
 		work_item_id,
 		worker_id,
 		worker_session_id,
 		executor_type,
-		started_at
-	) VALUES (?, ?, ?, ?, ?, ?)`,
+		started_at,
+		resumed_from_attempt_id,
+		resume_artifact_id,
+		execution_lineage_id,
+		resume_attempt_number
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		request.AttemptID,
 		queued.ID,
 		nullString(request.WorkerID),
 		nullString(request.WorkerSessionID),
 		request.ExecutorType,
 		request.StartedAt,
+		nullString(resumedFromAttemptID),
+		nullString(queued.ResumeArtifactID),
+		nullString(executionLineageID),
+		nullPositiveInt(resumeAttemptNumber),
 	); err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("insert work item attempt %s: %w", request.AttemptID, err)
 	}
@@ -1912,13 +2243,17 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 	}
 
 	claimed := ClaimedWorkRecord{
-		AttemptID:       request.AttemptID,
-		WorkItem:        queued.WorkItemRecord,
-		WorkerID:        request.WorkerID,
-		WorkerSessionID: request.WorkerSessionID,
-		ExecutorType:    request.ExecutorType,
-		QueuedAt:        queued.QueuedAt,
-		StartedAt:       request.StartedAt,
+		AttemptID:            request.AttemptID,
+		WorkItem:             queued.WorkItemRecord,
+		WorkerID:             request.WorkerID,
+		WorkerSessionID:      request.WorkerSessionID,
+		ExecutorType:         request.ExecutorType,
+		QueuedAt:             queued.QueuedAt,
+		StartedAt:            request.StartedAt,
+		ResumedFromAttemptID: resumedFromAttemptID,
+		ExecutionLineageID:   executionLineageID,
+		ResumeAttemptNumber:  resumeAttemptNumber,
+		ResumeArtifact:       resumeArtifact,
 	}
 	if err := tx.Commit(); err != nil {
 		return ClaimedWorkRecord{}, false, fmt.Errorf("commit claim next work: %w", err)
@@ -1990,6 +2325,13 @@ func (s *Store) CompleteAttempt(ctx context.Context, request CompleteAttemptRequ
 				return CompletedWorkRecord{}, false, err
 			}
 			if abandoned {
+				return CompletedWorkRecord{}, false, ErrAssignmentNoLongerOwned
+			}
+			suspended, err := hasSuspendedWork(ctx, tx, request.AttemptID)
+			if err != nil {
+				return CompletedWorkRecord{}, false, err
+			}
+			if suspended {
 				return CompletedWorkRecord{}, false, ErrAssignmentNoLongerOwned
 			}
 		}
@@ -2089,6 +2431,13 @@ func (s *Store) FailAttempt(ctx context.Context, request FailAttemptRequest) (Fa
 			if abandoned {
 				return FailedWorkRecord{}, false, ErrAssignmentNoLongerOwned
 			}
+			suspended, err := hasSuspendedWork(ctx, tx, request.AttemptID)
+			if err != nil {
+				return FailedWorkRecord{}, false, err
+			}
+			if suspended {
+				return FailedWorkRecord{}, false, ErrAssignmentNoLongerOwned
+			}
 		}
 		return FailedWorkRecord{}, false, nil
 	}
@@ -2149,6 +2498,574 @@ type runningWorkRecord struct {
 	workerSessionID string
 	queuedAt        string
 	startedAt       string
+}
+
+type attemptResumeState struct {
+	executionLineageID string
+	resumeArtifactID   string
+}
+
+func validateConfirmCheckpointRequest(request ConfirmCheckpointRequest) (ResumeArtifactRecord, string, error) {
+	if request.AttemptID == "" {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint attempt id is required")
+	}
+	if request.WorkerID == "" || request.WorkerSessionID == "" {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint worker and session ids are required")
+	}
+	if request.LiveSessionCutoff != "" {
+		if err := validateTimestamp("checkpoint live session cutoff", request.LiveSessionCutoff); err != nil {
+			return ResumeArtifactRecord{}, "", err
+		}
+	}
+	if request.AcceptedAt == "" {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint accepted at is required")
+	}
+	if err := validateTimestamp("checkpoint accepted at", request.AcceptedAt); err != nil {
+		return ResumeArtifactRecord{}, "", err
+	}
+
+	var suspendReason string
+	switch {
+	case request.CaptureKind == CheckpointCaptureKindPeriodic &&
+		request.Disposition == CheckpointDispositionContinue:
+		if request.SuspendedAt != "" {
+			return ResumeArtifactRecord{}, "", fmt.Errorf("periodic checkpoint must not include suspended at")
+		}
+	case request.CaptureKind == CheckpointCaptureKindQuantum &&
+		request.Disposition == CheckpointDispositionSuspend:
+		suspendReason = SuspendReasonQuantum
+	case request.CaptureKind == CheckpointCaptureKindFinal &&
+		request.Disposition == CheckpointDispositionSuspend:
+		suspendReason = SuspendReasonShutdown
+	default:
+		return ResumeArtifactRecord{}, "", fmt.Errorf(
+			"unsupported checkpoint capture/disposition combination %s/%s",
+			request.CaptureKind,
+			request.Disposition,
+		)
+	}
+	if request.Disposition == CheckpointDispositionSuspend {
+		if request.SuspendedAt == "" {
+			return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint suspended at is required")
+		}
+		if err := validateTimestamp("checkpoint suspended at", request.SuspendedAt); err != nil {
+			return ResumeArtifactRecord{}, "", err
+		}
+	}
+	if request.ManifestJSON == "" {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest json is required")
+	}
+
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(request.ManifestJSON), &manifest); err != nil {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest json is invalid")
+	}
+	if err := manifest.Validate(); err != nil {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest validation: %w", err)
+	}
+	if err := request.Reference.Validate(); err != nil {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint reference validation: %w", err)
+	}
+	if manifest.ResumeArtifactID != request.Reference.ResumeArtifactID {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest and reference artifact ids do not match")
+	}
+	if manifest.StorageScope != request.Reference.StorageScope {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest and reference storage scopes do not match")
+	}
+	if manifest.ProducingAttemptID != request.AttemptID {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest producing attempt does not match request")
+	}
+	if !relativePathInside(request.Reference.ManifestRelativePath, manifest.StorageRelativePath) {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest path is outside artifact storage directory")
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(request.ManifestJSON)))
+	if digest != request.Reference.ManifestSHA256 {
+		return ResumeArtifactRecord{}, "", fmt.Errorf("checkpoint manifest sha256 does not match exact json")
+	}
+
+	return ResumeArtifactRecord{
+		ID:                   manifest.ResumeArtifactID,
+		WorkItemID:           manifest.WorkItemID,
+		ProducingAttemptID:   manifest.ProducingAttemptID,
+		ExecutionLineageID:   manifest.ExecutionLineageID,
+		ResumeGeneration:     manifest.ResumeGeneration,
+		CaptureKind:          request.CaptureKind,
+		PauseStrategy:        manifest.PauseStrategy,
+		ManifestJSON:         request.ManifestJSON,
+		ManifestSHA256:       request.Reference.ManifestSHA256,
+		StorageScope:         manifest.StorageScope,
+		ManifestRelativePath: request.Reference.ManifestRelativePath,
+		CreatedAt:            manifest.CreatedAt,
+		AcceptedAt:           request.AcceptedAt,
+		Manifest:             manifest,
+		Reference:            request.Reference,
+	}, suspendReason, nil
+}
+
+func relativePathInside(candidate string, directory string) bool {
+	return path.Dir(candidate) == directory || strings.HasPrefix(candidate, directory+"/")
+}
+
+func resumeArtifactMatchesConfirmation(existing ResumeArtifactRecord, requested ResumeArtifactRecord) bool {
+	return existing.ID == requested.ID &&
+		existing.WorkItemID == requested.WorkItemID &&
+		existing.ProducingAttemptID == requested.ProducingAttemptID &&
+		existing.ExecutionLineageID == requested.ExecutionLineageID &&
+		existing.ResumeGeneration == requested.ResumeGeneration &&
+		existing.CaptureKind == requested.CaptureKind &&
+		existing.PauseStrategy == requested.PauseStrategy &&
+		existing.ManifestJSON == requested.ManifestJSON &&
+		existing.ManifestSHA256 == requested.ManifestSHA256 &&
+		existing.StorageScope == requested.StorageScope &&
+		existing.ManifestRelativePath == requested.ManifestRelativePath &&
+		existing.CreatedAt == requested.CreatedAt
+}
+
+func replayCheckpointConfirmation(
+	ctx context.Context,
+	tx *sql.Tx,
+	request ConfirmCheckpointRequest,
+	artifact ResumeArtifactRecord,
+	suspendReason string,
+) (ConfirmCheckpointResult, error) {
+	if request.Disposition == CheckpointDispositionContinue {
+		running, found, err := getRunningWork(ctx, tx, request.AttemptID)
+		if err != nil {
+			return ConfirmCheckpointResult{}, err
+		}
+		if !found {
+			return ConfirmCheckpointResult{}, ErrAssignmentNoLongerOwned
+		}
+		if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
+			return ConfirmCheckpointResult{}, err
+		}
+		return ConfirmCheckpointResult{Artifact: artifact}, nil
+	}
+
+	suspended, found, err := getSuspendedWork(ctx, tx, request.AttemptID)
+	if err != nil {
+		return ConfirmCheckpointResult{}, err
+	}
+	if !found ||
+		suspended.ResumeArtifactID != artifact.ID ||
+		suspended.WorkerID != request.WorkerID ||
+		suspended.WorkerSessionID != request.WorkerSessionID ||
+		suspended.SuspendedAt != request.SuspendedAt ||
+		suspended.SuspendReason != suspendReason {
+		return ConfirmCheckpointResult{}, fmt.Errorf("checkpoint suspension %s conflicts with existing state", request.AttemptID)
+	}
+	return ConfirmCheckpointResult{Artifact: artifact, Suspended: &suspended}, nil
+}
+
+func validateNextCheckpointGeneration(
+	ctx context.Context,
+	tx *sql.Tx,
+	running runningWorkRecord,
+	artifact ResumeArtifactRecord,
+) error {
+	state, found, err := getAttemptResumeState(ctx, tx, running.attemptID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("checkpoint producing attempt %s does not exist", running.attemptID)
+	}
+	if state.executionLineageID != "" && state.executionLineageID != artifact.ExecutionLineageID {
+		return fmt.Errorf("checkpoint execution lineage does not match producing attempt")
+	}
+
+	latest, hasLatest, err := getLatestResumeArtifactForLineage(ctx, tx, artifact.ExecutionLineageID)
+	if err != nil {
+		return err
+	}
+	if !hasLatest {
+		if state.executionLineageID != "" || state.resumeArtifactID != "" {
+			return fmt.Errorf("checkpoint execution lineage has no accepted starting artifact")
+		}
+		if artifact.ResumeGeneration != 1 {
+			return fmt.Errorf("first checkpoint generation must be 1")
+		}
+		return nil
+	}
+	if latest.WorkItemID != running.workItemID {
+		return fmt.Errorf("checkpoint execution lineage belongs to another work item")
+	}
+	if state.executionLineageID == "" {
+		return fmt.Errorf("fresh attempt cannot join an existing execution lineage")
+	}
+	if artifact.ResumeGeneration != latest.ResumeGeneration+1 {
+		return fmt.Errorf(
+			"checkpoint generation %d is not next after accepted generation %d",
+			artifact.ResumeGeneration,
+			latest.ResumeGeneration,
+		)
+	}
+	return nil
+}
+
+func insertResumeArtifact(ctx context.Context, tx *sql.Tx, artifact ResumeArtifactRecord) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resume_artifacts (
+		resume_artifact_id,
+		work_item_id,
+		producing_attempt_id,
+		execution_lineage_id,
+		resume_generation,
+		capture_kind,
+		pause_strategy,
+		manifest_json,
+		manifest_sha256,
+		storage_scope,
+		manifest_relative_path,
+		created_at,
+		accepted_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		artifact.ID,
+		artifact.WorkItemID,
+		artifact.ProducingAttemptID,
+		artifact.ExecutionLineageID,
+		artifact.ResumeGeneration,
+		artifact.CaptureKind,
+		string(artifact.PauseStrategy),
+		artifact.ManifestJSON,
+		artifact.ManifestSHA256,
+		artifact.StorageScope,
+		artifact.ManifestRelativePath,
+		artifact.CreatedAt,
+		artifact.AcceptedAt,
+	); err != nil {
+		return fmt.Errorf("insert resume artifact %s: %w", artifact.ID, err)
+	}
+	return nil
+}
+
+func assignAttemptExecutionLineage(ctx context.Context, tx *sql.Tx, attemptID string, lineageID string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE work_item_attempts
+	SET execution_lineage_id = ?
+	WHERE attempt_id = ?
+		AND (execution_lineage_id IS NULL OR execution_lineage_id = ?)`,
+		lineageID,
+		attemptID,
+		lineageID,
+	)
+	if err != nil {
+		return fmt.Errorf("assign execution lineage to attempt %s: %w", attemptID, err)
+	}
+	updated, err := rowsAffected(result)
+	if err != nil {
+		return fmt.Errorf("assign execution lineage to attempt %s: %w", attemptID, err)
+	}
+	if !updated {
+		return fmt.Errorf("assign execution lineage to attempt %s: lineage conflict", attemptID)
+	}
+	return nil
+}
+
+func suspendRunningWork(
+	ctx context.Context,
+	tx *sql.Tx,
+	running runningWorkRecord,
+	artifactID string,
+	suspendedAt string,
+	suspendReason string,
+) (SuspendedWorkRecord, error) {
+	suspended := SuspendedWorkRecord{
+		AttemptID:        running.attemptID,
+		WorkItemID:       running.workItemID,
+		ResumeArtifactID: artifactID,
+		WorkerID:         running.workerID,
+		WorkerSessionID:  running.workerSessionID,
+		QueuedAt:         running.queuedAt,
+		StartedAt:        running.startedAt,
+		SuspendedAt:      suspendedAt,
+		SuspendReason:    suspendReason,
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO suspended_work (
+		attempt_id,
+		work_item_id,
+		resume_artifact_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		suspended_at,
+		suspend_reason
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		suspended.AttemptID,
+		suspended.WorkItemID,
+		suspended.ResumeArtifactID,
+		suspended.WorkerID,
+		suspended.WorkerSessionID,
+		suspended.QueuedAt,
+		suspended.StartedAt,
+		suspended.SuspendedAt,
+		suspended.SuspendReason,
+	); err != nil {
+		return SuspendedWorkRecord{}, fmt.Errorf("insert suspended work %s: %w", running.attemptID, err)
+	}
+	if err := deleteRunningWork(ctx, tx, running.attemptID); err != nil {
+		return SuspendedWorkRecord{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO queued_work (
+		work_item_id,
+		queued_at,
+		resume_artifact_id
+	) VALUES (?, ?, ?)`,
+		running.workItemID,
+		suspendedAt,
+		artifactID,
+	); err != nil {
+		return SuspendedWorkRecord{}, fmt.Errorf("queue suspended work %s: %w", running.attemptID, err)
+	}
+	return suspended, nil
+}
+
+func (request SuspendFromLatestCheckpointRequest) validate() error {
+	if request.AttemptID == "" {
+		return fmt.Errorf("suspend attempt id is required")
+	}
+	if request.WorkerID == "" || request.WorkerSessionID == "" {
+		return fmt.Errorf("suspend worker and session ids are required")
+	}
+	if request.LiveSessionCutoff != "" {
+		if err := validateTimestamp("suspend live session cutoff", request.LiveSessionCutoff); err != nil {
+			return err
+		}
+	}
+	if request.SuspendedAt == "" {
+		return fmt.Errorf("suspend suspended at is required")
+	}
+	if err := validateTimestamp("suspend suspended at", request.SuspendedAt); err != nil {
+		return err
+	}
+	if request.SuspendReason != SuspendReasonQuantum && request.SuspendReason != SuspendReasonShutdown {
+		return fmt.Errorf("unsupported suspend reason %q", request.SuspendReason)
+	}
+	return nil
+}
+
+func suspendedWorkMatchesFallbackRequest(existing SuspendedWorkRecord, request SuspendFromLatestCheckpointRequest) bool {
+	return existing.AttemptID == request.AttemptID &&
+		existing.WorkerID == request.WorkerID &&
+		existing.WorkerSessionID == request.WorkerSessionID &&
+		existing.SuspendedAt == request.SuspendedAt &&
+		existing.SuspendReason == request.SuspendReason
+}
+
+func getResumeArtifact(ctx context.Context, q queryer, artifactID string) (ResumeArtifactRecord, bool, error) {
+	record, err := scanResumeArtifact(q.QueryRowContext(ctx, `SELECT
+		resume_artifact_id,
+		work_item_id,
+		producing_attempt_id,
+		execution_lineage_id,
+		resume_generation,
+		capture_kind,
+		pause_strategy,
+		manifest_json,
+		manifest_sha256,
+		storage_scope,
+		manifest_relative_path,
+		created_at,
+		accepted_at
+	FROM resume_artifacts
+	WHERE resume_artifact_id = ?`, artifactID))
+	if err == sql.ErrNoRows {
+		return ResumeArtifactRecord{}, false, nil
+	}
+	if err != nil {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("get resume artifact %s: %w", artifactID, err)
+	}
+	record, err = validatePersistedResumeArtifact(record)
+	if err != nil {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("get resume artifact %s: %w", artifactID, err)
+	}
+	return record, true, nil
+}
+
+func getLatestResumeArtifactForLineage(ctx context.Context, q queryer, lineageID string) (ResumeArtifactRecord, bool, error) {
+	record, err := scanResumeArtifact(q.QueryRowContext(ctx, `SELECT
+		resume_artifact_id,
+		work_item_id,
+		producing_attempt_id,
+		execution_lineage_id,
+		resume_generation,
+		capture_kind,
+		pause_strategy,
+		manifest_json,
+		manifest_sha256,
+		storage_scope,
+		manifest_relative_path,
+		created_at,
+		accepted_at
+	FROM resume_artifacts
+	WHERE execution_lineage_id = ?
+	ORDER BY resume_generation DESC
+	LIMIT 1`, lineageID))
+	if err == sql.ErrNoRows {
+		return ResumeArtifactRecord{}, false, nil
+	}
+	if err != nil {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("get latest resume artifact for lineage %s: %w", lineageID, err)
+	}
+	record, err = validatePersistedResumeArtifact(record)
+	if err != nil {
+		return ResumeArtifactRecord{}, false, fmt.Errorf("get latest resume artifact for lineage %s: %w", lineageID, err)
+	}
+	return record, true, nil
+}
+
+func scanResumeArtifact(row scanner) (ResumeArtifactRecord, error) {
+	var record ResumeArtifactRecord
+	var pauseStrategy string
+	err := row.Scan(
+		&record.ID,
+		&record.WorkItemID,
+		&record.ProducingAttemptID,
+		&record.ExecutionLineageID,
+		&record.ResumeGeneration,
+		&record.CaptureKind,
+		&pauseStrategy,
+		&record.ManifestJSON,
+		&record.ManifestSHA256,
+		&record.StorageScope,
+		&record.ManifestRelativePath,
+		&record.CreatedAt,
+		&record.AcceptedAt,
+	)
+	record.PauseStrategy = model.PauseStrategy(pauseStrategy)
+	return record, err
+}
+
+func validatePersistedResumeArtifact(record ResumeArtifactRecord) (ResumeArtifactRecord, error) {
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(record.ManifestJSON), &manifest); err != nil {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted manifest json is invalid")
+	}
+	if err := manifest.Validate(); err != nil {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted manifest validation: %w", err)
+	}
+	reference := model.ResumeArtifactReference{
+		Schema:               manifest.Schema,
+		ResumeArtifactID:     record.ID,
+		StorageScope:         record.StorageScope,
+		ManifestRelativePath: record.ManifestRelativePath,
+		ManifestSHA256:       record.ManifestSHA256,
+	}
+	if err := reference.Validate(); err != nil {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted reference validation: %w", err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(record.ManifestJSON)))
+	if digest != record.ManifestSHA256 {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted manifest sha256 mismatch")
+	}
+	if manifest.ResumeArtifactID != record.ID ||
+		manifest.WorkItemID != record.WorkItemID ||
+		manifest.ProducingAttemptID != record.ProducingAttemptID ||
+		manifest.ExecutionLineageID != record.ExecutionLineageID ||
+		manifest.ResumeGeneration != record.ResumeGeneration ||
+		manifest.PauseStrategy != record.PauseStrategy ||
+		manifest.StorageScope != record.StorageScope ||
+		manifest.CreatedAt != record.CreatedAt {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted manifest identity mismatch")
+	}
+	if !relativePathInside(record.ManifestRelativePath, manifest.StorageRelativePath) {
+		return ResumeArtifactRecord{}, fmt.Errorf("persisted manifest path is outside artifact storage directory")
+	}
+	record.Manifest = manifest
+	record.Reference = reference
+	return record, nil
+}
+
+func getAttemptResumeState(ctx context.Context, q queryer, attemptID string) (attemptResumeState, bool, error) {
+	var state attemptResumeState
+	var executionLineageID sql.NullString
+	var resumeArtifactID sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT
+		execution_lineage_id,
+		resume_artifact_id
+	FROM work_item_attempts
+	WHERE attempt_id = ?`, attemptID).Scan(&executionLineageID, &resumeArtifactID)
+	if err == sql.ErrNoRows {
+		return attemptResumeState{}, false, nil
+	}
+	if err != nil {
+		return attemptResumeState{}, false, fmt.Errorf("get attempt resume state %s: %w", attemptID, err)
+	}
+	state.executionLineageID = executionLineageID.String
+	state.resumeArtifactID = resumeArtifactID.String
+	return state, true, nil
+}
+
+func latestAcceptedCheckpointForAttempt(ctx context.Context, q queryer, attemptID string) (ResumeArtifactRecord, bool, error) {
+	state, found, err := getAttemptResumeState(ctx, q, attemptID)
+	if err != nil || !found {
+		return ResumeArtifactRecord{}, false, err
+	}
+	if state.executionLineageID != "" {
+		artifact, found, err := getLatestResumeArtifactForLineage(ctx, q, state.executionLineageID)
+		if err != nil || found {
+			return artifact, found, err
+		}
+	}
+	if state.resumeArtifactID != "" {
+		return getResumeArtifact(ctx, q, state.resumeArtifactID)
+	}
+	return ResumeArtifactRecord{}, false, nil
+}
+
+func getSuspendedWork(ctx context.Context, q queryer, attemptID string) (SuspendedWorkRecord, bool, error) {
+	record, err := scanSuspendedWork(q.QueryRowContext(ctx, `SELECT
+		attempt_id,
+		work_item_id,
+		resume_artifact_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		suspended_at,
+		suspend_reason
+	FROM suspended_work
+	WHERE attempt_id = ?`, attemptID))
+	if err == sql.ErrNoRows {
+		return SuspendedWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return SuspendedWorkRecord{}, false, fmt.Errorf("get suspended work %s: %w", attemptID, err)
+	}
+	return record, true, nil
+}
+
+func scanSuspendedWork(row scanner) (SuspendedWorkRecord, error) {
+	var record SuspendedWorkRecord
+	err := row.Scan(
+		&record.AttemptID,
+		&record.WorkItemID,
+		&record.ResumeArtifactID,
+		&record.WorkerID,
+		&record.WorkerSessionID,
+		&record.QueuedAt,
+		&record.StartedAt,
+		&record.SuspendedAt,
+		&record.SuspendReason,
+	)
+	return record, err
+}
+
+func hasSuspendedWork(ctx context.Context, q queryer, attemptID string) (bool, error) {
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM suspended_work WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		return false, fmt.Errorf("count suspended work %s: %w", attemptID, err)
+	}
+	return count != 0, nil
+}
+
+func nextResumeAttemptNumber(ctx context.Context, q queryer, artifactID string) (int, error) {
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*)
+	FROM work_item_attempts
+	WHERE resume_artifact_id = ?`, artifactID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count resume attempts for artifact %s: %w", artifactID, err)
+	}
+	return count + 1, nil
 }
 
 func validateRunningAssignmentOwner(ctx context.Context, tx *sql.Tx, running runningWorkRecord, workerID string, sessionID string, cutoff string) error {
@@ -2327,12 +3244,21 @@ func abandonRunningWork(ctx context.Context, tx *sql.Tx, assignment runningWorkR
 	return nil
 }
 
-func requeueAbandonedWork(ctx context.Context, tx *sql.Tx, workItemID string, queuedAt string) (bool, error) {
+func requeueAbandonedWork(ctx context.Context, tx *sql.Tx, attemptID string, workItemID string, queuedAt string) (bool, error) {
+	artifact, found, err := latestAcceptedCheckpointForAttempt(ctx, tx, attemptID)
+	if err != nil {
+		return false, err
+	}
+	var resumeArtifactID string
+	if found {
+		resumeArtifactID = artifact.ID
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO queued_work (
 		work_item_id,
-		queued_at
-	) VALUES (?, ?)
-	ON CONFLICT(work_item_id) DO NOTHING`, workItemID, queuedAt)
+		queued_at,
+		resume_artifact_id
+	) VALUES (?, ?, ?)
+	ON CONFLICT(work_item_id) DO NOTHING`, workItemID, queuedAt, nullString(resumeArtifactID))
 	if err != nil {
 		return false, fmt.Errorf("requeue abandoned work %s: %w", workItemID, err)
 	}
@@ -2773,7 +3699,8 @@ func listQueuedWorkForClaim(ctx context.Context, tx *sql.Tx) ([]QueuedWorkRecord
 		work_items.worker_payload_json,
 		work_items.resolved_inputs_sha256,
 		work_items.created_at,
-		queued_work.queued_at
+		queued_work.queued_at,
+		COALESCE(queued_work.resume_artifact_id, '')
 	FROM queued_work
 	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
 	ORDER BY queued_work.queued_at, queued_work.work_item_id`)
@@ -3042,6 +3969,7 @@ func scanQueuedWork(row scanner) (QueuedWorkRecord, error) {
 		&item.ResolvedInputsSHA256,
 		&item.CreatedAt,
 		&item.QueuedAt,
+		&item.ResumeArtifactID,
 	)
 	return item, err
 }
@@ -3751,6 +4679,9 @@ func (r ClaimWorkRequest) validate() error {
 			return err
 		}
 	}
+	if r.ResumeAttemptLimit < 0 {
+		return fmt.Errorf("claim resume attempt limit must not be negative")
+	}
 	return nil
 }
 
@@ -4013,6 +4944,13 @@ func rowsAffected(result sql.Result) (bool, error) {
 
 func nullString(value string) any {
 	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullPositiveInt(value int) any {
+	if value <= 0 {
 		return nil
 	}
 	return value

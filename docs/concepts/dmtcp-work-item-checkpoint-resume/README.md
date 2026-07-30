@@ -15,6 +15,16 @@ Status: Active - per-work-item pause adapter strategy selected
 > corresponding direct-Python boundary with CPython 3.11, NumPy native work,
 > and one Python descendant. Native and manual adapters still require separate
 > implementation slices.
+>
+> Direction update, 2026-07-30: checkpoint creation is no longer only a
+> shutdown action. While a supported work item is running, the worker requests
+> a new immutable checkpoint generation at a configurable interval (initial
+> target: 300 seconds), validates it, and confirms its manifest/reference to
+> the controller. An accepted periodic checkpoint is a recovery point; the
+> current attempt keeps running. At shutdown escalation the worker requests a
+> final checkpoint and asks the controller to suspend and requeue the work from
+> that generation. If the final checkpoint cannot be accepted, the controller
+> may use the latest previously accepted periodic generation.
 
 ## Post-OS-001 Architecture Direction
 
@@ -84,12 +94,14 @@ native numerical thread, and one Python descendant.
 
 ## Authoritative Pause/Resume Strategy
 
-Decision recorded 2026-07-30: GOET has one controller-level pause/resume
-lifecycle and multiple work-item-owned pause adapters. A pause adapter converts
-one running attempt into a validated durable resume artifact. The controller
-accepts that artifact, records the producing attempt as suspended history,
-returns the logical work item to pending state, and creates a new linked
-`attempt_id` when another worker claims it.
+Decision recorded 2026-07-30: GOET has one controller-level checkpoint,
+pause, and resume lifecycle with multiple work-item-owned checkpoint adapters.
+An adapter converts one running attempt's durable progress into an immutable
+resume-artifact generation. Periodic generations may be accepted while the
+attempt remains running. A final shutdown generation, or the latest previously
+accepted generation used as fallback, lets the controller record the producing
+attempt as suspended history, return the logical work item to pending state,
+and create a new linked `attempt_id` when another worker claims it.
 
 The selected adapter depends on the operation:
 
@@ -122,6 +134,92 @@ deadline, existing lost-work recovery remains authoritative.
 Any historical section below that says every work item or one-shot Go child is
 inside DMTCP is superseded by this strategy.
 
+### Periodic and final checkpoint policy
+
+The worker provides DMTCP `--interval`-like behavior at the common adapter
+boundary. After a supported work item has run for
+`checkpoint_interval_seconds` (initial target: `300`), and after each later
+interval, the supervisor asks its selected adapter for the next immutable
+generation. The worker owns this timer instead of relying only on DMTCP's raw
+interval option because GOET must also support native/manual adapters, prevent
+overlapping checkpoints, validate each generation, and obtain controller
+acknowledgement.
+
+For every periodic generation, the worker:
+
+1. permits only one checkpoint operation to be in flight;
+2. quiesces the payload at the adapter's proven consistency boundary;
+3. writes strategy-specific process/state data in a new generation directory;
+4. while the payload remains quiesced, copies every registered mutable output
+   into that generation and records absent/present state;
+5. writes and validates the common manifest last;
+6. resumes the payload after the complete local bundle is durable; and
+7. confirms the small manifest/reference to the controller while checkpoint
+   and output-snapshot bytes remain on protected shared storage.
+
+Controller acceptance makes the generation an eligible recovery point but
+does not remove `running_work`, suspend the attempt, or requeue the logical
+work item. A failed or ambiguous confirmation never replaces the latest
+accepted generation. Generation numbers are monotonic across the execution
+lineage, including multiple checkpoints made by one attempt. The supervisor
+does not begin another generation until the preceding confirmation has a
+definite outcome, but controller latency does not keep the payload quiesced.
+
+At shutdown escalation, the supervisor requests a final generation and reports
+it with a suspend disposition. Acceptance of that report atomically records
+the artifact, suspends the attempt, and returns the work item to the ordinary
+pending queue. If final creation or confirmation fails, the owner-fenced
+shutdown transition may suspend from the latest already accepted periodic
+generation. This can discard execution since that recovery point, bounded in
+the normal case by the configured interval. If no accepted generation exists,
+existing lost-work recovery starts the work fresh.
+
+Periodic checkpointing is required only for work-item types whose DMTCP,
+native, or manual adapter has a proven repeatable snapshot contract. It does
+not imply that arbitrary Go memory or unsupported external effects can be
+checkpointed.
+
+### Checkpoint policy modes
+
+The runtime supports three policy modes over the same adapter and controller
+lifecycle:
+
+| Mode | Interval behavior | Shutdown behavior |
+| --- | --- | --- |
+| `shutdown` | No periodic capture | Final checkpoint and suspend on drain escalation |
+| `periodic` | Capture and confirm a recovery point, then continue the same attempt | Final checkpoint and suspend on drain escalation |
+| `yield` | At the execution quantum, capture and suspend the attempt; return the logical item to the FIFO queue | An earlier drain escalation uses the same suspend path |
+
+Names remain provisional until the configuration slice.
+
+In `yield` mode, every work item admitted to the runtime must have a proven
+resume adapter. After `work_item_execution_quantum` of active execution:
+
+1. the supervisor quiesces the operation and creates one consistent
+   process/state plus registered-output bundle;
+2. the controller accepts the generation with a quantum-yield suspend reason;
+3. the attempt becomes suspended history and the logical item is inserted at
+   the tail of the ordinary queue;
+4. the supervisor terminates the quiesced operation and coordinator; and
+5. the lightweight Go worker returns to accepting state and may claim another
+   item unless it is draining.
+
+The next claim creates a new attempt and resumes the accepted generation. Any
+eligible worker may claim it. The ordinary FIFO scheduler does not guarantee
+that it will be a physically different worker; enforcing worker anti-affinity
+would be a separate scheduling policy.
+
+Checkpoint-and-yield is cooperative time slicing, not Slurm preemption. It
+does not terminate or requeue the Slurm allocation and does not invoke
+`srun`, `sbatch`, or `scontrol`. A long logical execution may therefore span
+many attempt IDs and workers while retaining one execution lineage.
+
+The quantum is measured as active payload time, excluding time spent quiesced
+for checkpoint creation, controller confirmation, and restore. A quantum must
+be large enough to make useful progress relative to checkpoint/output-copy
+cost. The worker coalesces a quantum expiry with an already-started shutdown
+pause so only one suspend transition can win.
+
 Local OS-002 evidence distinguishes two results. Explicitly privileged
 WSL/Docker completed checkpoint, termination, fresh-container restore, and
 continuation for both a control process and the actual Go-plus-Python tree.
@@ -134,18 +232,22 @@ therefore stopped before the GOET probe, as designed.
 
 ## Purpose
 
-Allow a GOET worker running under Slurm and Apptainer/Singularity to react to a
-two-stage time-limit warning policy by:
+Allow a GOET worker running under Slurm and Apptainer/Singularity to preserve
+recoverable progress during normal execution and react to a two-stage
+time-limit warning policy by:
 
-1. entering graceful drain ten minutes before the allocation ends so it claims
+1. periodically creating, validating, and controller-confirming immutable
+   recovery points for supported long-running work;
+2. allowing the producing attempt to continue after each periodic checkpoint;
+3. entering graceful drain ten minutes before the allocation ends so it claims
    no more work while allowing the active work item to finish normally;
-2. escalating five minutes before allocation end if the work item is still
+4. escalating five minutes before allocation end if the work item is still
    running;
-3. asking the active work item's selected adapter to create a durable resume
-   artifact;
-4. stopping the active execution after that artifact is validated;
-5. reporting the durable resume artifact to the controller; and
-6. placing the logical work item back into pending state with a reference to
+5. asking the selected adapter for a final durable resume artifact, with the
+   latest accepted periodic artifact available as fallback;
+6. stopping the active execution after a usable artifact is selected;
+7. reporting the suspend transition to the controller; and
+8. placing the logical work item back into pending state with a reference to
    that artifact so a later claim creates a new attempt that resumes it.
 
 Every work item declares a worker-owned pause adapter. The common boundary is
@@ -162,13 +264,23 @@ mean leaving a process alive after the Slurm allocation ends.
   checkpointing the whole long-lived worker or controller.
 - Give every work-item type an explicit DMTCP, native-continuation, or
   manual-continuation adapter.
+- Give supported long-running adapters a configurable periodic checkpoint
+  interval, initially 300 seconds.
+- Validate and confirm each periodic generation without suspending or
+  requeueing the producing attempt.
+- Use a final generation at shutdown, or the latest controller-accepted
+  periodic generation when final checkpointing fails.
+- Optionally enforce an active-execution quantum that checkpoints, suspends,
+  and returns work to FIFO so long executions can migrate between workers and
+  share capacity with other pending items.
 - Configure a ten-minute Slurm warning and propagate it through the batch shell
   and foreground container process to the Go worker.
 - Put the worker into a one-way graceful-drain state at the ten-minute warning.
 - Escalate to the selected pause adapter at the five-minute threshold when the
   active work item has not completed.
-- Give each DMTCP attempt its own coordinator and checkpoint generation while
-  keeping DMTCP's internal signal separate from the Slurm drain signal.
+- Give each DMTCP attempt its own coordinator and a sequence of immutable
+  checkpoint generations while keeping DMTCP's internal signal separate from
+  the Slurm drain signal.
 - Persist enough strategy-specific resume metadata for another compatible
   worker allocation to validate and resume the work.
 - Preserve execution lineage while giving every resumed claim a new
@@ -250,9 +362,10 @@ never part of a DMTCP computation.
 
 ### Resume artifact
 
-One complete, immutable, validated set of state needed to continue an attempt's
-logical execution. Its common manifest identifies the strategy and carries
-strategy-specific references:
+One complete, immutable, validated generation of state needed to continue an
+attempt's logical execution. One attempt may produce multiple resume artifacts.
+Its common manifest identifies the strategy and carries strategy-specific
+references:
 
 - DMTCP checkpoint images and compatibility facts for R or Python;
 - a durable native-tool workspace and relaunch parameters for tools such as
@@ -261,9 +374,52 @@ strategy-specific references:
 
 ### DMTCP checkpoint generation
 
-The DMTCP-specific form of a resume artifact. A later pause after a resume
-creates a new generation. The controller may select only a complete, validated
-generation.
+The DMTCP-specific form of a resume artifact. A running attempt may create
+multiple periodic generations, and a resumed attempt continues the lineage's
+monotonic generation sequence. The controller may select only a complete,
+validated generation.
+
+### Periodic checkpoint
+
+A generation requested by the worker's interval timer while the producing
+attempt remains active. Controller acceptance makes it the lineage's newest
+eligible recovery point but does not suspend the attempt or queue the work
+item.
+
+### Final checkpoint
+
+A generation requested during pause escalation. Its controller confirmation
+uses a suspend disposition, so acceptance both records the generation and
+atomically transitions the work item from running to suspended/pending-resume.
+If it cannot be accepted, the latest accepted periodic checkpoint may be used
+for that transition.
+
+### Accepted checkpoint generation
+
+A validated resume artifact whose exact manifest/reference has been durably
+acknowledged by the controller. Merely writing checkpoint files or a local
+manifest does not make a generation eligible for automatic resume.
+
+### Registered mutable output
+
+A workspace-relative file or directory root declared before operation launch
+as state that must remain consistent with a process/state checkpoint. It is
+internal recovery state until ordinary successful completion promotes it
+through GOET's existing output/artifact path. Registration defines the narrow
+scope that a checkpoint may copy, replace, or remove during resume.
+
+### Execution quantum
+
+The configured amount of active payload time one attempt may consume in
+checkpoint-and-yield mode before it must create a new generation and release
+the logical work item. Checkpoint, confirmation, and restore overhead do not
+consume the next attempt's quantum.
+
+### Yielded attempt
+
+A suspended attempt whose transition was caused by execution-quantum expiry
+rather than allocation shutdown. It uses the same pending-resume queue state
+and new-attempt resume behavior as any other suspended attempt.
 
 ### Suspended attempt
 
@@ -412,12 +568,14 @@ progress across the loss of a Slurm allocation.
 
 ### Strategic level
 
-GOET has a controller-recognized suspended-attempt and pending-resume lifecycle.
-A worker can convert its running attempt into a durable resume artifact before
-its Slurm allocation ends. The controller returns the logical work item to
-pending state with that artifact reference. A compatible worker claim creates a
-new attempt that resumes through the work item's declared adapter and completes
-through the existing evidence and terminal-report path.
+GOET has a controller-recognized checkpoint, suspended-attempt, and
+pending-resume lifecycle. A worker can register multiple durable recovery
+points while its attempt continues running, then convert the attempt to
+suspended state before its Slurm allocation ends. The controller returns the
+logical work item to pending state with the selected artifact reference. A
+compatible worker claim creates a new attempt that resumes through the work
+item's declared adapter and completes through the existing evidence and
+terminal-report path.
 
 Every work item declares a DMTCP, native-continuation, or manual-continuation
 strategy. Pause/resume compatibility is part of the runtime contract for every
@@ -499,7 +657,8 @@ contract separates:
 prepare immutable execution request
     -> select the work-item pause adapter
     -> launch or resume the operation
-    -> wait for completion, failure, or a validated paused result
+    -> periodically capture and confirm validated recovery points
+    -> wait for completion, failure, or a validated final paused result
     -> report result to controller
 ```
 
@@ -511,6 +670,9 @@ The supervisor owns:
 - the durable resume-artifact workspace;
 - stdout and stderr files;
 - the current execution phase;
+- the checkpoint interval and next eligible generation;
+- one-at-a-time checkpoint capture and confirmation;
+- the latest controller-accepted generation;
 - completion/pause mutual exclusion;
 - pause and termination deadlines; and
 - production of the common resume-artifact manifest.
@@ -563,28 +725,48 @@ The operation writes or returns a versioned result envelope atomically. It
 contains ordinary `WorkEvidence`, a structured execution error, or a validated
 paused result. Only the worker uses that result to call controller APIs.
 
-#### Pause creation
+#### Checkpoint and pause creation
+
+At each configured interval, when work is still running, the supervisor:
+
+1. skips or defers the tick when another checkpoint capture/confirmation is
+   still in flight;
+2. invokes the work item's selected adapter;
+3. waits for the adapter to quiesce the payload and write its complete
+   strategy-specific state in a new immutable generation;
+4. while still quiesced, snapshots the registered mutable outputs;
+5. validates the process/state generation and output snapshot together;
+6. writes an immutable GOET resume-artifact manifest last;
+7. resumes the payload; and
+8. confirms the manifest/reference to the controller with a continue
+   disposition.
+
+The payload continues after a periodic capture. The supervisor does not start
+the next generation until the preceding confirmation has a definite outcome,
+and only controller acceptance advances its latest eligible recovery point.
 
 At the five-minute pause threshold, when work is still running, the supervisor:
 
 1. stops accepting an ordinary terminal transition;
-2. invokes the work item's selected pause adapter;
-3. waits for the adapter to reach a safe boundary and write its complete
-   strategy-specific state;
-4. validates the DMTCP generation, native workspace, or manual state;
-5. writes an immutable GOET resume-artifact manifest last;
-6. terminates any process that the adapter has not already stopped;
-7. reports the manifest to the controller using the current assignment owner;
-   and
-8. exits only after controller acknowledgement or after its bounded reporting
+2. requests and validates a final generation using the same adapter contract;
+3. reports it with a suspend disposition;
+4. if final creation or confirmation fails, asks the controller to suspend
+   from the latest accepted periodic generation;
+5. terminates any process that the adapter has not already stopped; and
+6. exits only after controller acknowledgement or after its bounded reporting
    policy is exhausted.
 
 For DMTCP, the supervisor requests a checkpoint, waits for finalized images,
-validates the complete client set, and explicitly terminates the computation
-and coordinator. For rclone, the adapter stops the process only at a defined
-durable partial-transfer boundary and records the validated workspace and
-relaunch inputs. For a Go handler, the handler returns only after atomically
-writing a complete manual state record.
+keeps the computation quiesced while registered output is copied, validates the
+complete client/output set, and then lets the computation continue after a
+periodic generation. The DMTCP adapter slice must prove the mechanism that
+holds the R/Python tree at this barrier; copying files after DMTCP has already
+resumed is not a consistent snapshot. The supervisor explicitly terminates the
+computation and coordinator only for the winning final/suspend transition.
+For rclone and manual Go adapters, repeated checkpoint support requires an
+operation-defined nonterminal snapshot boundary; an adapter that can only
+stop-and-record may be used for final pause but is not advertised as
+periodic-capable until that behavior is proven.
 
 The manifest-last rule makes a directory without a valid manifest incomplete
 and ineligible for resume.
@@ -604,10 +786,11 @@ under that mount:
 <shared_tmp>/goetl/resume/<resume-artifact-uuid>/
 ```
 
-`resume-artifact-uuid` is controller- or worker-generated random identity
-recorded in the manifest. Resume and work paths must not depend on a node-local
-`/tmp`. DMTCP-backed execution preserves the same Singularity bind destination
-so restored process memory and open file descriptors refer to valid locations.
+Each generation receives a new `resume-artifact-uuid`, including successive
+periodic generations produced by the same attempt. The identity is recorded in
+the manifest. Resume and work paths must not depend on a node-local `/tmp`.
+DMTCP-backed execution preserves the same Singularity bind destination so
+restored process memory and open file descriptors refer to valid locations.
 
 `asset.materialize` performs acquisition, partial download, archive extraction,
 and other incomplete work under the shared execution-lineage workspace. It
@@ -636,6 +819,7 @@ strategy-specific relative paths and compatibility facts
 size and SHA-256 for every required file
 execution workspace identity
 execution_lineage_id
+versioned output-snapshot index and immutable registered-output copies
 ```
 
 For DMTCP, strategy-specific facts include the exact DMTCP build, complete
@@ -662,10 +846,17 @@ validated manifest entries. It does not execute a generated restart shell
 script as an unvalidated command. Native and manual adapters likewise construct
 typed relaunch/resume inputs rather than evaluating stored shell commands.
 
-Retention keeps every controller-accepted generation referenced by pending
-resume work or an active resume attempt. Incomplete, superseded, completed,
-failed, or abandoned resume generations become cleanup candidates only after
-durable controller state no longer references them.
+The controller may mark a newer accepted generation as the preferred recovery
+point without immediately deleting older generations. Checkpoint bytes remain
+while selected by pending resume, consumed by an active resume attempt, or
+needed as the producing attempt's last accepted fallback. Historical attempts
+retain artifact identity, generation, digest, and lineage metadata but do not
+force large checkpoint/output bytes to remain forever. Once a newer generation
+is safely accepted and no pending/active state can select an older one, the
+older bytes become cleanup candidates while their history row remains.
+Completion never creates pending resume work and releases all unneeded lineage
+bytes through the later retention policy. This distinction is required for
+yield mode, where a long execution may create many generations.
 
 #### Runtime and image baseline
 
@@ -698,21 +889,54 @@ GOET terminates it, then write those bytes again after restart from the earlier
 file offset. Native and manual adapters instead record their own verified
 durable boundaries.
 
+Each checkpoint generation is therefore a consistency bundle:
+
+```text
+quiesced process/state snapshot
++ immutable copies of all registered mutable outputs at that boundary
++ versioned output-snapshot index
++ hashes and compatibility facts
++ manifest written last
+```
+
+Output registrations are fixed before payload launch and use paths relative to
+the shared execution-lineage workspace. While the payload is quiesced, the
+adapter expands registered directory roots into an index that records present
+regular files and explicitly absent registered paths. Snapshot copies live
+inside the immutable generation directory. Resume restores this registered
+scope to the indexed state before invoking `dmtcp_restart` or another adapter:
+present files are replaced from verified copies, absent paths are removed, and
+files created after that generation under a registered directory root are
+removed. Nothing outside the registered scope may be changed.
+
+The OS-005 `files` inventory can carry and hash the copied files plus a
+versioned adapter-owned output-snapshot index. The later adapter contract must
+define the index schema and fixed relative location. If implementation shows
+that controller-independent validation cannot fail closed with that index,
+the resume-artifact model receives a new schema version rather than silently
+changing `goet/resume-artifact/v1`.
+
 The initial policy is:
 
 - all mutable work-item files remain under the shared execution-lineage
   workspace until verified promotion;
-- the resume manifest records the path, size, and hash or safe length
-  boundary of mutable regular files at checkpoint completion;
+- every mutable output that must agree with restored memory is registered
+  before launch;
+- the payload remains quiesced from its process/state checkpoint boundary
+  until registered output copies and their index are durable;
+- the resume manifest inventories the output copies, index, strategy state,
+  sizes, and hashes as one generation;
 - resume reconciles only attempt-local mutable files according to the selected
-  adapter before restoration or relaunch;
+  registered scope before restoration or relaunch;
 - completed/promoted outputs and external destinations are never truncated as a
   generic restart action;
+- checkpoint output snapshots remain sensitive internal resume state and are
+  not controller-promoted workflow outputs;
 - the child result envelope is an atomic write performed only after execution
   completes; and
 - each DMTCP interpreter slice tests `--ckpt-open-files`, inherited
-  stdout/stderr offsets, and the duplicate-write boundary before production
-  enablement.
+  stdout/stderr offsets, output snapshot/restore, files created after an older
+  generation, and the duplicate-write boundary before production enablement.
 
 Operation-specific quiesce may still be required when a file cannot be safely
 reconciled from generic metadata.
@@ -728,22 +952,39 @@ queued
   v
 running attempt A, owner session 1
   |
-  | accepted pause report
+  +-- periodic generation 1 accepted --> attempt A keeps running
+  |
+  +-- periodic generation 2 accepted --> attempt A keeps running;
+  |                                     generation 2 is preferred recovery
+  |
+  +-- complete --> completed attempt A; no pending resume
+  |
+  +-- worker/session lost --> abandoned attempt A
+  |                           pending work -> latest accepted generation 2
+  |                           (fresh pending when none was accepted)
+  |
+  +-- execution quantum --> generation 3 accepted with suspend disposition
+  |                          attempt A yields to FIFO
+  |
+  | shutdown --> final generation 3 accepted with suspend disposition
   v
 suspended attempt A (historical)
-pending work item -> resume artifact N, execution lineage L
+pending work item -> resume artifact 3, execution lineage L
   |
   | resume claim
   v
 running attempt B, owner session 2
-resumed_from_attempt_id=A, resume artifact=N, execution lineage=L
+resumed_from_attempt_id=A, resume artifact=3, execution lineage=L
   |
   +-- complete --> completed attempt B
   |
   +-- fail with cause --> failed attempt B, no automatic causal retry
   |
-  +-- pause again --> suspended attempt B
-                      pending work -> resume artifact N+1, lineage L
+  +-- periodic/quantum/final checkpoint --> next lineage generations 4, 5, ...
+  |
+  +-- suspend again --> suspended attempt B
+                      pending work -> selected newest accepted artifact,
+                                      lineage L
                       later claim creates attempt C
 ```
 
@@ -766,7 +1007,20 @@ workspace, or serialized values. Its stable workspace and result evidence
 therefore use execution lineage L. The worker for attempt B reports
 `attempt_id=B`, `resumed_from_attempt_id=A`, and lineage L to the controller.
 
-The controller transaction that accepts a pause:
+The owner-fenced controller transaction that accepts a periodic checkpoint:
+
+1. verifies current assignment ownership;
+2. validates manifest identity and compatibility metadata shape;
+3. records the exact resume-artifact generation and strategy;
+4. advances the attempt/lineage's latest accepted recovery point; and
+5. leaves the current running owner and queue unchanged.
+
+The controller acknowledges only after commit. Repeating the exact same
+confirmation is idempotent; conflicting reuse of an artifact identity or
+generation fails. Multiple generations may have the same producing attempt.
+
+The controller transaction that accepts a quantum-yield or final checkpoint
+and suspend:
 
 1. verifies current assignment ownership;
 2. validates manifest identity and compatibility metadata shape;
@@ -776,6 +1030,16 @@ The controller transaction that accepts a pause:
 6. inserts the logical work item into pending state with the accepted
    resume-artifact reference and execution lineage; and
 7. signals the CareTaker after commit.
+
+Suspended history records whether execution-quantum expiry or shutdown caused
+the transition. Both reasons use identical pending-resume and FIFO claim
+semantics.
+
+When final generation creation fails, a separate owner-fenced transaction may
+perform steps 4 through 7 using the latest already accepted generation for the
+running attempt/lineage. Worker stop or session expiry follows the same
+selection rule: requeue from the latest accepted generation when one exists,
+otherwise preserve the existing fresh lost-work recovery behavior.
 
 Pending resume work contributes to ordinary worker demand. It receives no
 priority over fresh pending work; both use normal FIFO ordering. A claim creates
@@ -818,9 +1082,13 @@ GOET keeps its existing distinction:
 
 - a work-item failure with a reported cause is terminal and is not
   automatically retried;
-- loss of a worker/session remains lost-work recovery and may requeue work;
-- failure while creating a pause artifact falls back to existing lost-work
-  handling when the allocation ends; and
+- loss of a worker/session requeues from its latest accepted checkpoint when
+  one exists and otherwise uses fresh lost-work recovery;
+- failure while creating a periodic generation leaves the prior accepted
+  generation authoritative and does not fail the running work;
+- failure while creating a final generation first falls back to the latest
+  accepted periodic generation, then to fresh lost-work handling when none was
+  accepted; and
 - resume-launch/restart failures may retry the same accepted artifact only up
   to `resume_attempt_limit`.
 
@@ -900,16 +1168,18 @@ this rule.
 
 ## Core Invariants
 
-### Invariant 1: One selected pause adapter per active attempt
+### Invariant 1: One selected checkpoint adapter per active attempt
 
-An attempt has exactly one declared adapter and one isolated resume workspace.
-DMTCP attempts also have isolated coordinators and checkpoint directories.
+An attempt has exactly one declared adapter and one isolated resume workspace
+containing distinct immutable generation directories. DMTCP attempts also have
+isolated coordinators and checkpoint directories.
 
 ### Invariant 2: Every work-item type has a versioned pause contract
 
-The contract names the strategy, safe pause boundary, resume-artifact schema,
-compatibility checks, and fallback behavior. Manual Go handlers may run in the
-worker process; interpreter and native-tool adapters own their subprocesses.
+The contract names the strategy, periodic-checkpoint capability, safe snapshot
+and final-pause boundaries, resume-artifact schema, compatibility checks, and
+fallback behavior. Manual Go handlers may run in the worker process;
+interpreter and native-tool adapters own their subprocesses.
 
 ### Invariant 3: The Go worker remains outside DMTCP
 
@@ -925,8 +1195,10 @@ threshold, it never returns to ordinary execution for that attempt.
 
 ### Invariant 5: One winning transition
 
-For one active attempt, exactly one of completion, failure, pause, or
-controller abandonment may become authoritative. All later reports are fenced.
+For one active attempt, periodic checkpoint confirmation is nonterminal.
+Exactly one of completion, failure, suspension, or controller abandonment may
+become the authoritative terminal ownership transition. All later terminal
+reports are fenced.
 
 ### Invariant 6: Resume state is not usable before acknowledgement
 
@@ -964,6 +1236,26 @@ the controller decides whether an attempt is running, suspended, completed,
 failed, or abandoned and whether its logical work is pending fresh execution or
 pending resume from an accepted artifact.
 
+### Invariant 12: Checkpoint generations are serialized and monotonic
+
+At most one capture/confirmation is active for an attempt. Every accepted
+artifact has the next execution-lineage generation, and an older or
+unacknowledged generation never replaces the latest accepted recovery point.
+
+### Invariant 13: Process state and registered outputs share one boundary
+
+The payload remains quiesced between process/state capture and completion of
+the immutable registered-output snapshot. A generation is invalid unless both
+parts and their index validate. Resume reconciles only the registered workspace
+scope before restoring process/state.
+
+### Invariant 14: Yield mode admits only resumable work
+
+Every work-item type admitted to a checkpoint-and-yield runtime has a proven
+adapter for repeated suspend/resume. Quantum expiry creates one terminal
+attempt transition, places the logical item at ordinary FIFO tail, and never
+creates a second scheduler or an in-place attempt continuation.
+
 ## Failure and Race Behavior
 
 ### Signal while idle
@@ -992,12 +1284,32 @@ report ordinary completion from that attempt.
 The controller independently verifies ownership so only one durable transition
 wins.
 
+### Periodic checkpoint or confirmation fails
+
+The running attempt continues. The incomplete or unacknowledged generation is
+not eligible for automatic resume, the preceding accepted generation remains
+authoritative, and the supervisor retries only on a later interval according
+to bounded policy. An ambiguous controller response is resolved by replaying
+the same idempotent confirmation before allocating another generation.
+
+### Quantum-yield confirmation fails or is ambiguous
+
+The supervisor keeps the payload quiesced while it replays the exact idempotent
+suspend request or queries its outcome. It may resume the same attempt only
+after the controller definitively reports that suspension did not commit and
+the worker/session still owns the assignment. If the outcome cannot be
+resolved, the supervisor terminates the payload rather than risk running after
+ownership was released; normal session-loss recovery then selects the accepted
+generation when present.
+
 ### Pause succeeds but controller report fails
 
 The worker retries the report within the remaining drain budget while
-heartbeating if possible. If the controller never accepts it, the resume
-artifact is orphaned and must not be resumed automatically. Session expiry then
-uses the existing abandonment/fresh-retry path.
+heartbeating if possible. If the controller never accepts the final generation,
+the worker requests suspension from the latest previously accepted periodic
+generation. With no accepted generation, the final artifact is orphaned and
+must not be resumed automatically; session expiry then uses the existing fresh
+lost-work path.
 
 ### Controller accepts pause but worker does not exit
 
@@ -1021,9 +1333,10 @@ fresh retry.
 
 ### Repeated drain after resume
 
-The resumed attempt may create a new immutable generation. The controller
-switches its resume reference atomically only after validating and accepting
-the newer manifest.
+The resumed attempt continues the execution lineage's immutable generation
+sequence for both periodic and final checkpoints. The controller switches its
+preferred recovery reference only after validating and accepting the newer
+manifest.
 
 ## Configuration Direction
 
@@ -1034,6 +1347,11 @@ represent:
 Slurm warning signal
 Slurm graceful-drain lead time (initial target: 600 seconds)
 worker pause-before limit (initial target: 300 seconds before job end)
+checkpoint policy mode
+checkpoint interval (initial target: 300 seconds of active execution)
+work-item execution quantum for yield mode
+registered mutable output roots
+output snapshot copy strategy and local quiesce timeout
 work-item pause strategy and enablement
 DMTCP launch/command/restart paths for interpreter adapters
 native-tool relaunch configuration
@@ -1054,6 +1372,9 @@ names equivalent to:
 ```text
 --worker-drain-before=10m
 --worker-pause-before=5m
+--work-item-checkpoint-mode=periodic
+--work-item-checkpoint-interval=5m
+--work-item-execution-quantum=30m
 ```
 
 The first value generates Slurm's warning lead time. The worker derives its
@@ -1068,6 +1389,26 @@ normal-finish opportunity. The remaining time is a pause budget, not five full
 minutes for writing state: validation, controller reporting, and process
 termination require reserved time. Configuration validation rejects a pause
 timeout that consumes the entire remaining allocation window.
+
+The checkpoint interval is measured in active execution time from launch or
+the prior local capture boundary. It is separate from the five-minute shutdown
+threshold. If a tick arrives while the prior confirmation is unresolved, the
+worker coalesces it into one overdue checkpoint rather than starting concurrent
+generations; after resolution, that checkpoint may begin immediately. A
+work-item type may enable the interval only when its adapter declares and
+proves periodic capability; final-only adapters still participate in shutdown
+pause. Whether a zero interval disables periodic checkpointing is deferred to
+the configuration Operational Slice and runtime policy.
+
+In `yield` mode the execution quantum is required and positive. Runtime
+validation rejects work-item types without a proven resume adapter and rejects
+a quantum below the configured checkpoint/output-copy safety floor. The sample
+`30m` quantum is illustrative, not an agreed default.
+
+The initial portable output snapshot implementation uses verified file copies.
+A filesystem reflink or snapshot optimization may be enabled only after the
+target shared filesystem proves copy-on-write isolation; mutable hard links are
+not valid snapshots.
 
 Target HPCC nodes have 128 GiB of memory, so GOET must not assume every
 DMTCP image or other resume artifact fits within the default time budget. If
@@ -1152,37 +1493,62 @@ planning candidates until they receive an approved Operational Slice charter.
    - Defer the behavioral worker adapter interface until the worker-supervisor
      slice, where it will consume and produce this shared model.
 
-6. **Controller suspended-attempt and pending-resume lifecycle**
-   - Persist accepted resume artifacts, suspended attempt history, execution
-     lineage, predecessor links, and configurable resume-attempt limits.
+6. **Controller checkpoint-generation and pending-resume lifecycle**
+   - Operational Slice charter:
+     `006-checkpoint-generation-and-pending-resume-store-lifecycle.md`.
+   - Status: implemented.
+   - Persist multiple accepted generations from one running attempt and support
+     both confirm-and-continue and confirm-and-suspend transactions.
+   - Record quantum-yield versus shutdown suspension reasons without creating a
+     separate queue or attempt type.
+   - Select the latest accepted generation for final-checkpoint failure and
+     lost-worker recovery while retaining suspended history, lineage,
+     predecessor links, and configurable resume-attempt limits.
    - Create a new attempt for every resume claim while retaining one FIFO work
      queue and one controller state machine.
+   - Implement schema/migration and store transactions in separate
+     one-production-file prompts; HTTP transport remains a later slice.
 
-7. **Worker drain state and adapter supervisor**
-   - Add `SIGUSR1` drain handling, the worker-owned five-minute pause timer,
-     completion/pause mutual exclusion, bounded reporting, and administrative
-     drain control.
+7. **Controller checkpoint-confirmation and resume-assignment transport**
+   - Add owner-fenced checkpoint confirmation for continue and suspend
+     dispositions, plus suspension from the latest accepted generation.
+   - Return an acknowledgement naming the exact accepted artifact/generation;
+     wake the CareTaker only after a suspend transaction commits.
+   - Return predecessor, lineage, resume-attempt number, and the validated
+     artifact/reference on a pending-resume claim without changing fresh claim
+     transport.
+   - Convert resume-attempt-limit exhaustion into the agreed terminal
+     controller state rather than returning a generic worker error.
+
+8. **Worker drain state and adapter supervisor**
+   - Add the worker-owned periodic checkpoint timer, serialized
+     capture/confirmation, latest-accepted tracking, `SIGUSR1` drain handling,
+     the configurable execution quantum and yield transition, the five-minute
+     final-pause timer, completion/pause mutual exclusion, bounded reporting,
+     and administrative drain control.
    - Keep the worker outside DMTCP and dispatch pause/resume through the selected
      work-item adapter.
 
-8. **R and Python DMTCP adapter**
+9. **R and Python DMTCP adapter**
    - Launch supported interpreters under isolated DMTCP coordinators and restore
      validated generations from compatible images and stable mounts.
+   - Prove the quiesce barrier, registered-output copy/index protocol, and
+     workspace reconciliation before `dmtcp_restart`.
    - Enable only interpreter/package/process shapes with passing evidence.
 
-9. **Rclone native-continuation adapter**
+10. **Rclone native-continuation adapter**
    - Terminate the owned rclone process at pause, validate its durable partial
      workspace, and relaunch it through the exact continuation contract proven
      for each enabled command/backend.
    - Preserve provider idempotency and final verified promotion.
 
-10. **Manual Go continuation contract and work-item adoption**
+11. **Manual Go continuation contract and work-item adoption**
     - Add cooperative pause points and versioned manual state for in-process Go
       handlers without serializing Go memory.
     - Adopt work-item families one focused slice at a time, starting with a
       deterministic long-running reference handler.
 
-11. **Cross-worker compatibility, security, retention, and operations**
+12. **Cross-worker compatibility, security, retention, and operations**
     - Prove each enabled adapter across allocations and replacement workers.
     - Complete sensitive-state protection, cleanup, status, timeout, fallback,
       and operator documentation.
@@ -1278,8 +1644,8 @@ approves the tested direct CPython 3.11, NumPy 2.4.6, one-native-thread,
 one-descendant shape. OS-005 is implemented and defines the shared immutable
 resume-artifact manifest/reference model with typed DMTCP, native, and manual
 payloads. No pause adapter is wired into the production worker yet. The next
-candidate is the controller suspended-attempt and pending-resume lifecycle; it
-requires a separately reviewed charter before implementation.
+candidate is the controller checkpoint-generation and pending-resume
+lifecycle; it requires a separately reviewed charter before implementation.
 
 The selected implementation HCI specification is:
 
@@ -1321,9 +1687,9 @@ EC-3 / Operational Slice / file(1)+test+doc+newfile
 12. GOET has one controller-level resume lifecycle with DMTCP, native-tool, and
     manual-Go adapters. There is no separate controller queue or resumer for
     rclone.
-13. Status/events may expose `draining`, `pausing`, `suspended`,
-    `resuming`, and `resume_rejected`, backed by precise durable attempt and
-    pending-work state.
+13. Status/events may expose `draining`, `checkpointing`, `yielding`,
+    `pausing`, `suspended`, `resuming`, and `resume_rejected`, backed by
+    precise durable attempt and pending-work state.
 14. An authenticated administrative drain request is included so the same
     state machine can be tested or invoked operationally without waiting for a
     Slurm deadline.
@@ -1349,6 +1715,23 @@ EC-3 / Operational Slice / file(1)+test+doc+newfile
     terminates the owned process, retains validated partial state, and
     relaunches it. In-process Go operations implement manual application-level
     pause/resume state rather than process-memory checkpointing.
+21. Supported long-running adapters create a new immutable checkpoint
+    generation at a configurable interval, initially 300 seconds. Controller
+    confirmation of a periodic generation advances the accepted recovery point
+    without suspending the producing attempt. Shutdown requests a final
+    generation; if that fails, the latest accepted periodic generation is used
+    before falling back to fresh lost-work recovery.
+22. A generation snapshots registered mutable outputs while the payload remains
+    quiesced after process/state capture. Those copies and their versioned index
+    are sensitive resume state, not completed workflow artifacts. Resume
+    reconciles only the registered workspace scope before restoring memory or
+    application state.
+23. Checkpoint-and-yield mode gives every admitted work item an active
+    execution quantum. Quantum expiry checkpoints and suspends the current
+    attempt, queues the logical item at ordinary FIFO tail, terminates only the
+    work-item execution, and lets the lightweight worker claim again. A later
+    claim creates a new attempt on any eligible worker; different-worker
+    placement is allowed but not guaranteed.
 
 ## Remaining Validation Questions
 
@@ -1376,16 +1759,41 @@ EC-3 / Operational Slice / file(1)+test+doc+newfile
    operation, beginning with the first deterministic long-running reference
    handler?
 10. Which representative BRMS models, multiple-chain modes, or Stan threading
-   configurations can be added without violating the one-core OS-003 support
-   boundary?
+    configurations can be added without violating the one-core OS-003 support
+    boundary?
+11. Which DMTCP hook or supervisor protocol can prove that the interpreter tree
+    remains quiesced from memory-checkpoint completion through registered-output
+    copy completion before periodic execution resumes?
+12. What execution-quantum default and minimum checkpoint-to-progress ratio
+    provide useful fairness without spending excessive allocation time and
+    shared-filesystem bandwidth on checkpoint/output copies?
 
 ## Current Completion Criteria
 
 - The generated Slurm script requests and forwards the ten-minute warning; the
   worker enters monotonic drain and invokes its five-minute pause timer.
-- The controller persists one common resume-artifact model, suspended attempt
-  history, pending-resume state, execution lineage, predecessor links, and the
-  configurable resume-attempt limit.
+- Supported work items create serialized immutable checkpoint generations at
+  the configured interval and send each validated manifest/reference to the
+  controller.
+- Each accepted generation proves one quiesced consistency boundary across
+  process/application state and immutable copies of registered mutable outputs;
+  resume restores that registered scope before process/state restoration.
+- A controller-confirmed periodic checkpoint leaves the attempt running and
+  becomes its preferred recovery point; a final confirmation atomically
+  suspends and requeues the work.
+- In checkpoint-and-yield mode, quantum expiry creates a consistent generation,
+  suspends the attempt, queues the logical item at FIFO tail, terminates the
+  work-item execution, and permits any eligible worker to resume it as a new
+  attempt.
+- Yield mode fails configuration/admission before launch when any admitted
+  work-item type lacks a proven repeatable resume adapter.
+- Final-checkpoint failure and lost-worker recovery use the latest accepted
+  periodic generation when present, otherwise the existing fresh recovery
+  path.
+- The controller persists the common resume-artifact model, multiple
+  generations per producing attempt, suspended attempt history, pending-resume
+  state, execution lineage, predecessor links, and the configurable
+  resume-attempt limit.
 - Every resume claim creates a new fenced attempt and invokes exactly the
   strategy declared by the work-item type.
 - Direct R and Python run under isolated DMTCP coordinators with the Go worker
@@ -1402,8 +1810,9 @@ EC-3 / Operational Slice / file(1)+test+doc+newfile
   and prove DMTCP, native, or manual continuation.
 - All adapters use the same controller queue and attempt lifecycle, but retain
   strategy-specific compatibility and integrity facts.
-- Failed or timed-out pause creation falls back to existing lost-work recovery;
-  known causal work failures do not gain automatic retry.
+- Failed or timed-out periodic creation preserves the prior accepted recovery
+  point. Failed final creation falls back to that point and then to fresh
+  lost-work recovery; known causal work failures do not gain automatic retry.
 - Resume artifacts are owner-only, omitted from ordinary logs/public artifacts,
   retained while referenced, and safely cleaned when no durable state needs
   them.

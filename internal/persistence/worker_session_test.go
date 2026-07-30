@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestSQLiteSchemaVersionSix(t *testing.T) {
+func TestSQLiteSchemaVersionSeven(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
 	defer store.Close()
@@ -17,8 +17,8 @@ func TestSQLiteSchemaVersionSix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentSchemaVersion() error = %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("schema version = %d, want 6", version)
+	if version != SupportedSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, SupportedSchemaVersion)
 	}
 }
 

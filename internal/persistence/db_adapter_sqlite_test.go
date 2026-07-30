@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,9 +37,13 @@ func TestOpenStoreCreatesSQLiteDatabase(t *testing.T) {
 		"work_items",
 		"work_item_resource_constraints",
 		"workers",
+		"worker_sessions",
 		"work_item_attempts",
 		"queued_work",
 		"running_work",
+		"resume_artifacts",
+		"suspended_work",
+		"abandoned_work",
 		"completed_work",
 		"failed_work",
 	} {
@@ -76,6 +81,30 @@ func TestOpenStoreCreatesSQLiteDerivedRecoveryIndexes(t *testing.T) {
 			columns: []string{"started_at", "attempt_id"},
 		},
 		{
+			name:    "idx_resume_artifacts_producing_attempt_generation",
+			columns: []string{"producing_attempt_id", "resume_generation"},
+		},
+		{
+			name:    "idx_resume_artifacts_lineage_generation",
+			columns: []string{"execution_lineage_id", "resume_generation"},
+		},
+		{
+			name:    "idx_suspended_work_item_time",
+			columns: []string{"work_item_id", "suspended_at", "attempt_id"},
+		},
+		{
+			name:    "idx_work_item_attempts_resume_artifact_attempt",
+			columns: []string{"resume_artifact_id", "resume_attempt_number"},
+		},
+		{
+			name:    "idx_work_item_attempts_lineage_started",
+			columns: []string{"execution_lineage_id", "started_at", "attempt_id"},
+		},
+		{
+			name:    "idx_queued_work_resume_artifact",
+			columns: []string{"resume_artifact_id"},
+		},
+		{
 			name:    "idx_completed_work_item_completed_at",
 			columns: []string{"work_item_id", "completed_at", "attempt_id"},
 		},
@@ -93,6 +122,94 @@ func TestOpenStoreCreatesSQLiteDerivedRecoveryIndexes(t *testing.T) {
 		},
 	} {
 		assertSQLiteIndexColumns(t, ctx, store.db, index.name, index.columns)
+	}
+}
+
+func TestOpenStoreCreatesCheckpointGenerationConstraints(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+
+	insertMinimalStage(t, ctx, store.db)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO work_items (
+		work_item_id,
+		run_id,
+		stage_index,
+		work_item_index,
+		worker_payload_json,
+		resolved_inputs_sha256,
+		created_at
+	) VALUES ('work-item-001', 'run-001', 0, 0, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("insert work item: %v", err)
+	}
+	insertAttempt(t, ctx, store.db, "attempt-001", "work-item-001", ExecutorTypeWorker)
+
+	insertArtifact := func(artifactID string, generation int, captureKind string) error {
+		_, err := store.db.ExecContext(ctx, `INSERT INTO resume_artifacts (
+			resume_artifact_id,
+			work_item_id,
+			producing_attempt_id,
+			execution_lineage_id,
+			resume_generation,
+			capture_kind,
+			pause_strategy,
+			manifest_json,
+			manifest_sha256,
+			storage_scope,
+			manifest_relative_path,
+			created_at,
+			accepted_at
+		) VALUES (?, 'work-item-001', 'attempt-001', 'lineage-001', ?, ?, 'dmtcp', '{}', ?, 'shared_tmp', ?, '2026-07-03T00:01:00Z', '2026-07-03T00:01:01Z')`,
+			artifactID,
+			generation,
+			captureKind,
+			strings.Repeat("b", 64),
+			"goetl/resume/"+artifactID+"/manifest.json",
+		)
+		return err
+	}
+
+	if err := insertArtifact("artifact-001", 1, "periodic"); err != nil {
+		t.Fatalf("insert first generation: %v", err)
+	}
+	if err := insertArtifact("artifact-002", 2, "quantum"); err != nil {
+		t.Fatalf("insert second generation from same attempt: %v", err)
+	}
+	if err := insertArtifact("artifact-duplicate", 2, "final"); err == nil {
+		t.Fatal("expected duplicate lineage generation to fail")
+	}
+	if err := insertArtifact("artifact-invalid-kind", 3, "manual"); err == nil {
+		t.Fatal("expected invalid capture kind to fail")
+	}
+
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO suspended_work (
+		attempt_id,
+		work_item_id,
+		resume_artifact_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		suspended_at,
+		suspend_reason
+	) VALUES (
+		'attempt-001',
+		'work-item-001',
+		'artifact-002',
+		'worker-attempt-001',
+		'session-attempt-001',
+		'2026-07-03T00:00:00Z',
+		'2026-07-03T00:00:01Z',
+		'2026-07-03T00:30:00Z',
+		'quantum'
+	)`); err != nil {
+		t.Fatalf("insert quantum suspension: %v", err)
+	}
+
+	if _, err := store.db.ExecContext(ctx, `UPDATE suspended_work
+	SET suspend_reason = 'preempted'
+	WHERE attempt_id = 'attempt-001'`); err == nil {
+		t.Fatal("expected invalid suspend reason to fail")
 	}
 }
 
@@ -419,6 +536,145 @@ func TestOpenStoreAcceptsExistingSupportedSQLiteDatabase(t *testing.T) {
 	store = openTestStore(t, ctx, path)
 	defer store.Close()
 	assertSQLiteIndexColumns(t, ctx, store.db, "idx_queued_work_queued_at_work_item", []string{"queued_at", "work_item_id"})
+}
+
+func TestOpenStoreMigratesCompleteVersionSixDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	db := openRawSQLite(t, path)
+	loadSQLiteVersionSixFixture(t, ctx, db)
+	insertVersionSixMigrationRecords(t, ctx, db)
+	db.Close()
+
+	store := openTestStore(t, ctx, path)
+
+	var version int
+	if err := store.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("query migrated schema version: %v", err)
+	}
+	if version != SupportedSchemaVersion {
+		t.Fatalf("migrated version = %d, want %d", version, SupportedSchemaVersion)
+	}
+	for _, table := range []string{"resume_artifacts", "suspended_work"} {
+		assertSQLiteTableExists(t, ctx, store.db, table)
+	}
+	assertSQLiteTableColumns(t, ctx, store.db, "queued_work", []string{
+		"work_item_id",
+		"queued_at",
+		"resume_artifact_id",
+	})
+	assertSQLiteTableColumns(t, ctx, store.db, "work_item_attempts", []string{
+		"attempt_id",
+		"work_item_id",
+		"worker_id",
+		"worker_session_id",
+		"executor_type",
+		"started_at",
+		"resumed_from_attempt_id",
+		"resume_artifact_id",
+		"execution_lineage_id",
+		"resume_attempt_number",
+	})
+
+	for table, want := range map[string]int{
+		"queued_work":        1,
+		"running_work":       1,
+		"abandoned_work":     1,
+		"completed_work":     1,
+		"failed_work":        1,
+		"work_item_attempts": 4,
+	} {
+		var got int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&got); err != nil {
+			t.Fatalf("count migrated %s: %v", table, err)
+		}
+		if got != want {
+			t.Fatalf("migrated %s rows = %d, want %d", table, got, want)
+		}
+	}
+
+	var nonNullResumeRows int
+	if err := store.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM queued_work WHERE resume_artifact_id IS NOT NULL)
+		+
+		(SELECT COUNT(*) FROM work_item_attempts
+		 WHERE resumed_from_attempt_id IS NOT NULL
+		    OR resume_artifact_id IS NOT NULL
+		    OR execution_lineage_id IS NOT NULL
+		    OR resume_attempt_number IS NOT NULL)`).Scan(&nonNullResumeRows); err != nil {
+		t.Fatalf("query migrated resume columns: %v", err)
+	}
+	if nonNullResumeRows != 0 {
+		t.Fatalf("non-null migrated resume rows = %d, want 0", nonNullResumeRows)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close migrated store: %v", err)
+	}
+	store = openTestStore(t, ctx, path)
+	defer store.Close()
+	if err := store.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("query reopened schema version: %v", err)
+	}
+	if version != SupportedSchemaVersion {
+		t.Fatalf("reopened version = %d, want %d", version, SupportedSchemaVersion)
+	}
+}
+
+func TestOpenStoreRejectsIncompleteVersionSixDatabaseWithoutPartialMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	db := openRawSQLite(t, path)
+	loadSQLiteVersionSixFixture(t, ctx, db)
+	if _, err := db.ExecContext(ctx, `DROP TABLE failed_work`); err != nil {
+		t.Fatalf("damage version 6 fixture: %v", err)
+	}
+	db.Close()
+
+	store, err := OpenStore(ctx, Config{Driver: DriverSQLite, ConnectionString: path})
+	if err == nil || !strings.Contains(err.Error(), "version 6 is incomplete") {
+		t.Fatalf("OpenStore() error = %v, want incomplete version 6 error", err)
+	}
+	if store != nil {
+		t.Fatalf("OpenStore() store = %#v, want nil", store)
+	}
+
+	db = openRawSQLite(t, path)
+	defer db.Close()
+	var version int
+	if err := db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatalf("query rejected schema version: %v", err)
+	}
+	if version != sqlitePreviousSchemaVersion {
+		t.Fatalf("rejected schema version = %d, want %d", version, sqlitePreviousSchemaVersion)
+	}
+	var checkpointTables int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('resume_artifacts', 'suspended_work')`).Scan(&checkpointTables); err != nil {
+		t.Fatalf("count partially migrated tables: %v", err)
+	}
+	if checkpointTables != 0 {
+		t.Fatalf("partially migrated checkpoint tables = %d, want 0", checkpointTables)
+	}
+}
+
+func TestOpenStoreRejectsMalformedVersionSixDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "store.sqlite")
+	db := openRawSQLite(t, path)
+	loadSQLiteVersionSixFixture(t, ctx, db)
+	if _, err := db.ExecContext(ctx, `ALTER TABLE work_items RENAME COLUMN created_at TO unexpected_created_at`); err != nil {
+		t.Fatalf("malform version 6 fixture: %v", err)
+	}
+	db.Close()
+
+	store, err := OpenStore(ctx, Config{Driver: DriverSQLite, ConnectionString: path})
+	if err == nil || !strings.Contains(err.Error(), "work_items has unsupported columns") {
+		t.Fatalf("OpenStore() error = %v, want malformed work_items error", err)
+	}
+	if store != nil {
+		t.Fatalf("OpenStore() store = %#v, want nil", store)
+	}
 }
 
 func TestOpenStoreReplacesMetadataOnlySQLiteDevelopmentSchema(t *testing.T) {
@@ -758,6 +1014,169 @@ func assertSQLiteIndexColumns(t *testing.T, ctx context.Context, db *sql.DB, ind
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("index %s columns = %v, want %v", indexName, got, want)
+	}
+}
+
+func assertSQLiteTableColumns(t *testing.T, ctx context.Context, db *sql.DB, table string, want []string) {
+	t.Helper()
+
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		t.Fatalf("query table columns %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	got := []string{}
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatalf("scan table columns %s: %v", table, err)
+		}
+		got = append(got, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("query table columns %s: %v", table, err)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("table %s columns = %v, want %v", table, got, want)
+	}
+}
+
+func loadSQLiteVersionSixFixture(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	schema, err := os.ReadFile(filepath.Join("testdata", "schema-v6.sql"))
+	if err != nil {
+		t.Fatalf("read version 6 schema fixture: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, string(schema)); err != nil {
+		t.Fatalf("load version 6 schema fixture: %v", err)
+	}
+}
+
+func insertVersionSixMigrationRecords(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+
+	insertMinimalStage(t, ctx, db)
+	for index, workItemID := range []string{
+		"work-queued",
+		"work-running",
+		"work-abandoned",
+		"work-completed",
+		"work-failed",
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO work_items (
+			work_item_id,
+			run_id,
+			stage_index,
+			work_item_index,
+			worker_payload_json,
+			resolved_inputs_sha256,
+			created_at
+		) VALUES (?, 'run-001', 0, ?, '{"plugin":"demo","parameters":{}}', ?, '2026-07-03T00:00:00Z')`,
+			workItemID,
+			index,
+			strings.Repeat("a", 64),
+		); err != nil {
+			t.Fatalf("insert migration work item %s: %v", workItemID, err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `INSERT INTO queued_work (
+		work_item_id,
+		queued_at
+	) VALUES ('work-queued', '2026-07-03T00:00:00Z')`); err != nil {
+		t.Fatalf("insert migration queued work: %v", err)
+	}
+
+	insertAttempt(t, ctx, db, "attempt-running", "work-running", ExecutorTypeWorker)
+	if _, err := db.ExecContext(ctx, `INSERT INTO running_work (
+		attempt_id,
+		work_item_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at
+	) VALUES (
+		'attempt-running',
+		'work-running',
+		'worker-attempt-running',
+		'session-attempt-running',
+		'2026-07-03T00:00:00Z',
+		'2026-07-03T00:00:01Z'
+	)`); err != nil {
+		t.Fatalf("insert migration running work: %v", err)
+	}
+
+	insertAttempt(t, ctx, db, "attempt-abandoned", "work-abandoned", ExecutorTypeWorker)
+	if _, err := db.ExecContext(ctx, `INSERT INTO abandoned_work (
+		attempt_id,
+		work_item_id,
+		worker_id,
+		worker_session_id,
+		queued_at,
+		started_at,
+		abandoned_at,
+		reason
+	) VALUES (
+		'attempt-abandoned',
+		'work-abandoned',
+		'worker-attempt-abandoned',
+		'session-attempt-abandoned',
+		'2026-07-03T00:00:00Z',
+		'2026-07-03T00:00:01Z',
+		'2026-07-03T00:05:00Z',
+		'heartbeat_expired'
+	)`); err != nil {
+		t.Fatalf("insert migration abandoned work: %v", err)
+	}
+
+	insertAttempt(t, ctx, db, "attempt-completed", "work-completed", ExecutorTypeController)
+	if _, err := db.ExecContext(ctx, `INSERT INTO completed_work (
+		attempt_id,
+		work_item_id,
+		output_json,
+		output_json_sha256,
+		pre_state_sha256,
+		post_state_sha256,
+		queued_at,
+		started_at,
+		completed_at
+	) VALUES (
+		'attempt-completed',
+		'work-completed',
+		'[]',
+		?,
+		?,
+		?,
+		'2026-07-03T00:00:00Z',
+		'2026-07-03T00:00:01Z',
+		'2026-07-03T00:01:00Z'
+	)`,
+		strings.Repeat("b", 64),
+		strings.Repeat("c", 64),
+		strings.Repeat("d", 64),
+	); err != nil {
+		t.Fatalf("insert migration completed work: %v", err)
+	}
+
+	insertAttempt(t, ctx, db, "attempt-failed", "work-failed", ExecutorTypeController)
+	if _, err := db.ExecContext(ctx, `INSERT INTO failed_work (
+		attempt_id,
+		work_item_id,
+		error,
+		queued_at,
+		started_at,
+		failed_at
+	) VALUES (
+		'attempt-failed',
+		'work-failed',
+		'test failure',
+		'2026-07-03T00:00:00Z',
+		'2026-07-03T00:00:01Z',
+		'2026-07-03T00:01:00Z'
+	)`); err != nil {
+		t.Fatalf("insert migration failed work: %v", err)
 	}
 }
 

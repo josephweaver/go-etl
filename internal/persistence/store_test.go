@@ -2,11 +2,16 @@ package persistence
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"goetl/internal/model"
 )
 
 func TestOpenStoreRejectsInvalidConfig(t *testing.T) {
@@ -1694,6 +1699,492 @@ func TestStoreCompleteStageIfReadyRollsBackWhenReadyWorkPublicationFails(t *test
 	if !found || stage.State == "completed" {
 		t.Fatalf("stage = %+v found %v, want rollback to non-completed", stage, found)
 	}
+}
+
+func TestStoreConfirmPeriodicCheckpointContinuesAndAdvancesGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+
+	first := testConfirmCheckpointRequest(
+		work.ID,
+		claim.AttemptID,
+		claim.WorkerID,
+		claim.WorkerSessionID,
+		"lineage-001",
+		"artifact-001",
+		1,
+		CheckpointCaptureKindPeriodic,
+		CheckpointDispositionContinue,
+	)
+	result, err := store.ConfirmCheckpoint(ctx, first)
+	if err != nil {
+		t.Fatalf("ConfirmCheckpoint(first) error = %v", err)
+	}
+	if result.Suspended != nil || result.Artifact.ResumeGeneration != 1 {
+		t.Fatalf("ConfirmCheckpoint(first) result = %+v, want generation 1 continuing", result)
+	}
+	assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
+	assertQueuedWorkCount(t, ctx, store, work.ID, 0)
+
+	var lineage sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT execution_lineage_id
+	FROM work_item_attempts
+	WHERE attempt_id = ?`, claim.AttemptID).Scan(&lineage); err != nil {
+		t.Fatalf("query producing attempt lineage: %v", err)
+	}
+	if lineage.String != "lineage-001" {
+		t.Fatalf("producing attempt lineage = %q, want lineage-001", lineage.String)
+	}
+
+	replay := first
+	replay.AcceptedAt = "2026-07-03T00:02:00Z"
+	replayed, err := store.ConfirmCheckpoint(ctx, replay)
+	if err != nil {
+		t.Fatalf("ConfirmCheckpoint(replay) error = %v", err)
+	}
+	if replayed.Artifact.AcceptedAt != first.AcceptedAt {
+		t.Fatalf("replayed accepted_at = %q, want original %q", replayed.Artifact.AcceptedAt, first.AcceptedAt)
+	}
+
+	second := testConfirmCheckpointRequest(
+		work.ID,
+		claim.AttemptID,
+		claim.WorkerID,
+		claim.WorkerSessionID,
+		"lineage-001",
+		"artifact-002",
+		2,
+		CheckpointCaptureKindPeriodic,
+		CheckpointDispositionContinue,
+	)
+	if _, err := store.ConfirmCheckpoint(ctx, second); err != nil {
+		t.Fatalf("ConfirmCheckpoint(second) error = %v", err)
+	}
+	latest, found, err := store.GetLatestAcceptedCheckpoint(ctx, "lineage-001")
+	if err != nil || !found {
+		t.Fatalf("GetLatestAcceptedCheckpoint() found=%v error=%v", found, err)
+	}
+	if latest.ID != "artifact-002" || latest.ResumeGeneration != 2 {
+		t.Fatalf("latest artifact = %+v, want artifact-002 generation 2", latest)
+	}
+	if latest.Manifest.ResumeArtifactID != latest.ID || latest.Reference.ManifestSHA256 != latest.ManifestSHA256 {
+		t.Fatalf("latest hydrated contract = %+v", latest)
+	}
+
+	skipped := testConfirmCheckpointRequest(
+		work.ID,
+		claim.AttemptID,
+		claim.WorkerID,
+		claim.WorkerSessionID,
+		"lineage-001",
+		"artifact-004",
+		4,
+		CheckpointCaptureKindPeriodic,
+		CheckpointDispositionContinue,
+	)
+	if _, err := store.ConfirmCheckpoint(ctx, skipped); err == nil || !strings.Contains(err.Error(), "not next") {
+		t.Fatalf("ConfirmCheckpoint(skipped) error = %v, want generation rejection", err)
+	}
+	latest, found, err = store.GetLatestAcceptedCheckpoint(ctx, "lineage-001")
+	if err != nil || !found || latest.ID != "artifact-002" {
+		t.Fatalf("latest after rejected generation = %+v found=%v error=%v", latest, found, err)
+	}
+}
+
+func TestStoreConfirmCheckpointRejectsInvalidBundleAndOwner(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+
+	tests := []struct {
+		name   string
+		mutate func(*ConfirmCheckpointRequest)
+		want   string
+	}{
+		{
+			name: "digest mismatch",
+			mutate: func(request *ConfirmCheckpointRequest) {
+				request.Reference.ManifestSHA256 = strings.Repeat("0", 64)
+			},
+			want: "sha256",
+		},
+		{
+			name: "manifest outside artifact directory",
+			mutate: func(request *ConfirmCheckpointRequest) {
+				request.Reference.ManifestRelativePath = "goetl/resume/another/manifest.json"
+			},
+			want: "outside",
+		},
+		{
+			name: "invalid capture disposition",
+			mutate: func(request *ConfirmCheckpointRequest) {
+				request.CaptureKind = CheckpointCaptureKindPeriodic
+				request.Disposition = CheckpointDispositionSuspend
+				request.SuspendedAt = "2026-07-03T00:03:00Z"
+			},
+			want: "capture/disposition",
+		},
+		{
+			name: "wrong owner",
+			mutate: func(request *ConfirmCheckpointRequest) {
+				request.WorkerID = "worker-other"
+			},
+			want: ErrAssignmentNoLongerOwned.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := testConfirmCheckpointRequest(
+				work.ID,
+				claim.AttemptID,
+				claim.WorkerID,
+				claim.WorkerSessionID,
+				"lineage-001",
+				"artifact-"+strings.ReplaceAll(tt.name, " ", "-"),
+				1,
+				CheckpointCaptureKindPeriodic,
+				CheckpointDispositionContinue,
+			)
+			tt.mutate(&request)
+			_, err := store.ConfirmCheckpoint(ctx, request)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ConfirmCheckpoint() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	var artifacts int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM resume_artifacts`).Scan(&artifacts); err != nil {
+		t.Fatalf("count resume artifacts: %v", err)
+	}
+	if artifacts != 0 {
+		t.Fatalf("resume artifacts = %d, want rollback to zero", artifacts)
+	}
+	assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
+}
+
+func TestStoreConfirmCheckpointRollsBackWhenSuspendQueueInsertFails(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO queued_work (
+		work_item_id,
+		queued_at
+	) VALUES (?, '2026-07-03T00:20:00Z')`, work.ID); err != nil {
+		t.Fatalf("insert conflicting queued row: %v", err)
+	}
+
+	request := testConfirmCheckpointRequest(
+		work.ID,
+		claim.AttemptID,
+		claim.WorkerID,
+		claim.WorkerSessionID,
+		"lineage-001",
+		"artifact-001",
+		1,
+		CheckpointCaptureKindQuantum,
+		CheckpointDispositionSuspend,
+	)
+	request.SuspendedAt = "2026-07-03T00:30:00Z"
+	if _, err := store.ConfirmCheckpoint(ctx, request); err == nil || !strings.Contains(err.Error(), "queue suspended work") {
+		t.Fatalf("ConfirmCheckpoint() error = %v, want queue failure", err)
+	}
+
+	assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
+	for table := range map[string]struct{}{"resume_artifacts": {}, "suspended_work": {}} {
+		var count int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatalf("count %s after rollback: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after rollback = %d, want 0", table, count)
+		}
+	}
+	var lineage sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT execution_lineage_id
+	FROM work_item_attempts
+	WHERE attempt_id = ?`, claim.AttemptID).Scan(&lineage); err != nil {
+		t.Fatalf("query lineage after rollback: %v", err)
+	}
+	if lineage.Valid {
+		t.Fatalf("lineage after rollback = %q, want null", lineage.String)
+	}
+}
+
+func TestStoreConfirmCheckpointSuspendsQuantumAndShutdown(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		captureKind   string
+		suspendReason string
+	}{
+		{name: "quantum", captureKind: CheckpointCaptureKindQuantum, suspendReason: SuspendReasonQuantum},
+		{name: "shutdown", captureKind: CheckpointCaptureKindFinal, suspendReason: SuspendReasonShutdown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+			defer store.Close()
+			work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+
+			request := testConfirmCheckpointRequest(
+				work.ID,
+				claim.AttemptID,
+				claim.WorkerID,
+				claim.WorkerSessionID,
+				"lineage-001",
+				"artifact-001",
+				1,
+				tt.captureKind,
+				CheckpointDispositionSuspend,
+			)
+			request.SuspendedAt = "2026-07-03T00:30:00Z"
+			result, err := store.ConfirmCheckpoint(ctx, request)
+			if err != nil {
+				t.Fatalf("ConfirmCheckpoint() error = %v", err)
+			}
+			if result.Suspended == nil || result.Suspended.SuspendReason != tt.suspendReason {
+				t.Fatalf("suspended result = %+v, want reason %s", result.Suspended, tt.suspendReason)
+			}
+			assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 0)
+			assertQueuedResumeArtifact(t, ctx, store, work.ID, request.SuspendedAt, "artifact-001")
+
+			history, err := store.ListSuspendedWorkForItem(ctx, work.ID)
+			if err != nil || len(history) != 1 {
+				t.Fatalf("ListSuspendedWorkForItem() history=%+v error=%v", history, err)
+			}
+			if history[0].AttemptID != claim.AttemptID || history[0].SuspendReason != tt.suspendReason {
+				t.Fatalf("suspended history = %+v", history[0])
+			}
+
+			replay := request
+			replay.AcceptedAt = "2026-07-03T00:31:00Z"
+			replayed, err := store.ConfirmCheckpoint(ctx, replay)
+			if err != nil || replayed.Suspended == nil {
+				t.Fatalf("ConfirmCheckpoint(replay) result=%+v error=%v", replayed, err)
+			}
+			if replayed.Artifact.AcceptedAt != request.AcceptedAt {
+				t.Fatalf("replayed accepted_at = %q, want %q", replayed.Artifact.AcceptedAt, request.AcceptedAt)
+			}
+
+			complete := testCompleteAttemptRequest(claim.AttemptID)
+			complete.WorkerID = claim.WorkerID
+			complete.WorkerSessionID = claim.WorkerSessionID
+			if _, _, err := store.CompleteAttempt(ctx, complete); !errors.Is(err, ErrAssignmentNoLongerOwned) {
+				t.Fatalf("CompleteAttempt(suspended) error = %v", err)
+			}
+			fail := testFailAttemptRequest(claim.AttemptID)
+			fail.WorkerID = claim.WorkerID
+			fail.WorkerSessionID = claim.WorkerSessionID
+			if _, _, err := store.FailAttempt(ctx, fail); !errors.Is(err, ErrAssignmentNoLongerOwned) {
+				t.Fatalf("FailAttempt(suspended) error = %v", err)
+			}
+		})
+	}
+}
+
+func TestStoreExpiredSessionRecoveryQueuesLatestAcceptedCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+	periodic := testConfirmCheckpointRequest(
+		work.ID,
+		claim.AttemptID,
+		claim.WorkerID,
+		claim.WorkerSessionID,
+		"lineage-001",
+		"artifact-001",
+		1,
+		CheckpointCaptureKindPeriodic,
+		CheckpointDispositionContinue,
+	)
+	if _, err := store.ConfirmCheckpoint(ctx, periodic); err != nil {
+		t.Fatalf("ConfirmCheckpoint() error = %v", err)
+	}
+
+	result, err := store.RecoverExpiredWorkerSessions(ctx, RecoverExpiredWorkerSessionsRequest{
+		Cutoff:      "2026-07-03T00:00:01Z",
+		RecoveredAt: "2026-07-03T00:40:00Z",
+		Reason:      "heartbeat_expired",
+	})
+	if err != nil {
+		t.Fatalf("RecoverExpiredWorkerSessions() error = %v", err)
+	}
+	if result.ExpiredSessions != 1 || result.AbandonedAttempts != 1 || result.RequeuedWorkItems != 1 {
+		t.Fatalf("RecoverExpiredWorkerSessions() result = %+v", result)
+	}
+	assertQueuedResumeArtifact(t, ctx, store, work.ID, "2026-07-03T00:40:00Z", "artifact-001")
+}
+
+func TestStoreSuspendFromLatestCheckpoint(t *testing.T) {
+	t.Run("accepted periodic fallback", func(t *testing.T) {
+		ctx := context.Background()
+		store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+		defer store.Close()
+		work, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+		periodic := testConfirmCheckpointRequest(
+			work.ID,
+			claim.AttemptID,
+			claim.WorkerID,
+			claim.WorkerSessionID,
+			"lineage-001",
+			"artifact-001",
+			1,
+			CheckpointCaptureKindPeriodic,
+			CheckpointDispositionContinue,
+		)
+		if _, err := store.ConfirmCheckpoint(ctx, periodic); err != nil {
+			t.Fatalf("ConfirmCheckpoint() error = %v", err)
+		}
+
+		request := SuspendFromLatestCheckpointRequest{
+			AttemptID:         claim.AttemptID,
+			WorkerID:          claim.WorkerID,
+			WorkerSessionID:   claim.WorkerSessionID,
+			LiveSessionCutoff: "2026-07-03T00:00:00Z",
+			SuspendedAt:       "2026-07-03T00:30:00Z",
+			SuspendReason:     SuspendReasonShutdown,
+		}
+		result, err := store.SuspendFromLatestCheckpoint(ctx, request)
+		if err != nil {
+			t.Fatalf("SuspendFromLatestCheckpoint() error = %v", err)
+		}
+		if !result.Found || result.Artifact.ID != "artifact-001" {
+			t.Fatalf("SuspendFromLatestCheckpoint() result = %+v", result)
+		}
+		assertQueuedResumeArtifact(t, ctx, store, work.ID, request.SuspendedAt, "artifact-001")
+
+		replayed, err := store.SuspendFromLatestCheckpoint(ctx, request)
+		if err != nil || !replayed.Found || replayed.Artifact.ID != "artifact-001" {
+			t.Fatalf("SuspendFromLatestCheckpoint(replay) result=%+v error=%v", replayed, err)
+		}
+	})
+
+	t.Run("no accepted checkpoint", func(t *testing.T) {
+		ctx := context.Background()
+		store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+		defer store.Close()
+		_, claim := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+		result, err := store.SuspendFromLatestCheckpoint(ctx, SuspendFromLatestCheckpointRequest{
+			AttemptID:         claim.AttemptID,
+			WorkerID:          claim.WorkerID,
+			WorkerSessionID:   claim.WorkerSessionID,
+			LiveSessionCutoff: "2026-07-03T00:00:00Z",
+			SuspendedAt:       "2026-07-03T00:30:00Z",
+			SuspendReason:     SuspendReasonShutdown,
+		})
+		if err != nil {
+			t.Fatalf("SuspendFromLatestCheckpoint() error = %v", err)
+		}
+		if result.Found {
+			t.Fatalf("SuspendFromLatestCheckpoint() result = %+v, want no checkpoint", result)
+		}
+		assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
+	})
+}
+
+func TestStoreResumeClaimUsesLatestCheckpointAndPerArtifactLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, initial := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+
+	quantum := testConfirmCheckpointRequest(
+		work.ID,
+		initial.AttemptID,
+		initial.WorkerID,
+		initial.WorkerSessionID,
+		"lineage-001",
+		"artifact-001",
+		1,
+		CheckpointCaptureKindQuantum,
+		CheckpointDispositionSuspend,
+	)
+	quantum.SuspendedAt = "2026-07-03T00:30:00Z"
+	if _, err := store.ConfirmCheckpoint(ctx, quantum); err != nil {
+		t.Fatalf("ConfirmCheckpoint(quantum) error = %v", err)
+	}
+
+	insertWorkerSessionForTest(t, ctx, store, "worker-002", "session-002")
+	resumeBRequest := testWorkerClaimWorkRequest("attempt-002", "worker-002", "session-002")
+	resumeBRequest.ResumeAttemptLimit = 1
+	resumeB, found, err := store.ClaimNextWork(ctx, resumeBRequest)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(resume B) found=%v error=%v", found, err)
+	}
+	assertResumeClaim(t, resumeB, "attempt-001", "lineage-001", "artifact-001", 1)
+	assertResumeAttemptRow(t, ctx, store, resumeB, "attempt-001", "lineage-001", "artifact-001", 1)
+
+	second := testConfirmCheckpointRequest(
+		work.ID,
+		resumeB.AttemptID,
+		resumeB.WorkerID,
+		resumeB.WorkerSessionID,
+		"lineage-001",
+		"artifact-002",
+		2,
+		CheckpointCaptureKindPeriodic,
+		CheckpointDispositionContinue,
+	)
+	if _, err := store.ConfirmCheckpoint(ctx, second); err != nil {
+		t.Fatalf("ConfirmCheckpoint(second generation) error = %v", err)
+	}
+	if _, err := store.StopWorkerSessionAndRecoverWork(ctx, StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  resumeB.WorkerID,
+		SessionID: resumeB.WorkerSessionID,
+		StoppedAt: "2026-07-03T00:40:00Z",
+		Reason:    "test_stop",
+	}); err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() error = %v", err)
+	}
+	assertQueuedResumeArtifact(t, ctx, store, work.ID, "2026-07-03T00:40:00Z", "artifact-002")
+
+	insertWorkerSessionForTest(t, ctx, store, "worker-003", "session-003")
+	resumeCRequest := testWorkerClaimWorkRequest("attempt-003", "worker-003", "session-003")
+	resumeCRequest.ResumeAttemptLimit = 1
+	resumeC, found, err := store.ClaimNextWork(ctx, resumeCRequest)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(resume C) found=%v error=%v", found, err)
+	}
+	assertResumeClaim(t, resumeC, "attempt-002", "lineage-001", "artifact-002", 1)
+
+	if _, err := store.StopWorkerSessionAndRecoverWork(ctx, StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  resumeC.WorkerID,
+		SessionID: resumeC.WorkerSessionID,
+		StoppedAt: "2026-07-03T00:50:00Z",
+		Reason:    "test_stop",
+	}); err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork(second) error = %v", err)
+	}
+
+	insertWorkerSessionForTest(t, ctx, store, "worker-004", "session-004")
+	limited := testWorkerClaimWorkRequest("attempt-004", "worker-004", "session-004")
+	limited.ResumeAttemptLimit = 1
+	if _, found, err := store.ClaimNextWork(ctx, limited); !errors.Is(err, ErrResumeAttemptLimitExceeded) || found {
+		t.Fatalf("ClaimNextWork(limit) found=%v error=%v", found, err)
+	}
+	assertAttemptMissing(t, ctx, store, limited.AttemptID)
+	assertQueuedResumeArtifact(t, ctx, store, work.ID, "2026-07-03T00:50:00Z", "artifact-002")
+
+	limited.ResumeAttemptLimit = 2
+	resumeD, found, err := store.ClaimNextWork(ctx, limited)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(resume D) found=%v error=%v", found, err)
+	}
+	assertResumeClaim(t, resumeD, "attempt-002", "lineage-001", "artifact-002", 2)
+
+	fail := testFailAttemptRequest(resumeD.AttemptID)
+	fail.WorkerID = resumeD.WorkerID
+	fail.WorkerSessionID = resumeD.WorkerSessionID
+	if _, found, err := store.FailAttempt(ctx, fail); err != nil || !found {
+		t.Fatalf("FailAttempt(resumed) found=%v error=%v", found, err)
+	}
+	assertQueuedWorkCount(t, ctx, store, work.ID, 0)
 }
 
 func TestClaimWorkRequestValidate(t *testing.T) {
@@ -3455,6 +3946,239 @@ func insertQueuedClaimTestWork(t *testing.T, ctx context.Context, store *Store, 
 		t.Fatalf("EnqueueWorkItems() error = %v", err)
 	}
 	return work
+}
+
+func setupCheckpointRunningAttempt(
+	t *testing.T,
+	ctx context.Context,
+	store *Store,
+	workItemID string,
+	attemptID string,
+	workerID string,
+	sessionID string,
+) (WorkItemRecord, ClaimedWorkRecord) {
+	t.Helper()
+
+	work := insertQueuedClaimTestWork(t, ctx, store, workItemID)
+	insertWorkerSessionForTest(t, ctx, store, workerID, sessionID)
+	request := testWorkerClaimWorkRequest(attemptID, workerID, sessionID)
+	claimed, found, err := store.ClaimNextWork(ctx, request)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(setup) found=%v error=%v", found, err)
+	}
+	return work, claimed
+}
+
+func testConfirmCheckpointRequest(
+	workItemID string,
+	attemptID string,
+	workerID string,
+	sessionID string,
+	lineageID string,
+	artifactID string,
+	generation int,
+	captureKind string,
+	disposition string,
+) ConfirmCheckpointRequest {
+	storagePath := "goetl/resume/" + artifactID
+	manifest := model.ResumeArtifactManifest{
+		Schema:              model.ResumeArtifactSchemaV1,
+		ResumeArtifactID:    artifactID,
+		ResumeGeneration:    generation,
+		PauseStrategy:       model.PauseStrategyDMTCP,
+		WorkItemID:          workItemID,
+		WorkItemType:        model.WorkItemTypePythonScript,
+		ProducingAttemptID:  attemptID,
+		ExecutionLineageID:  lineageID,
+		InputFingerprint:    strings.Repeat("1", 64),
+		SourceVersion:       "source-v1",
+		CodeVersion:         "code-v1",
+		CreatedAt:           "2026-07-03T00:01:00Z",
+		StorageScope:        model.ResumeArtifactStorageScopeSharedTmp,
+		StorageRelativePath: storagePath,
+		RetentionPolicy:     model.ResumeArtifactRetentionWhileReferenced,
+		Compatibility: model.ResumeArtifactCompatibility{
+			AdapterID:                      "dmtcp-python",
+			AdapterVersion:                 "1",
+			WorkerExecutionContractVersion: "1",
+			WorkerVersion:                  "test",
+			ContainerImageIdentity:         "sha256:test",
+			OperatingSystem:                "linux",
+			Architecture:                   "amd64",
+			ContainerRuntime:               "singularity-ce-4.1.2",
+		},
+		Files: []model.ResumeArtifactFile{
+			{
+				Path:      "checkpoint/image.dmtcp",
+				SizeBytes: 123,
+				SHA256:    strings.Repeat("2", 64),
+			},
+		},
+		DMTCP: &model.DMTCPResumePayload{
+			BuildIdentity:   "dmtcp-v4.2.0-test",
+			CheckpointPaths: []string{"checkpoint/image.dmtcp"},
+		},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		panic(err)
+	}
+	digest := checkpointManifestSHA256(string(manifestJSON))
+	return ConfirmCheckpointRequest{
+		AttemptID:         attemptID,
+		WorkerID:          workerID,
+		WorkerSessionID:   sessionID,
+		LiveSessionCutoff: "2026-07-03T00:00:00Z",
+		ManifestJSON:      string(manifestJSON),
+		Reference: model.ResumeArtifactReference{
+			Schema:               model.ResumeArtifactSchemaV1,
+			ResumeArtifactID:     artifactID,
+			StorageScope:         model.ResumeArtifactStorageScopeSharedTmp,
+			ManifestRelativePath: storagePath + "/manifest.json",
+			ManifestSHA256:       digest,
+		},
+		CaptureKind: captureKind,
+		Disposition: disposition,
+		AcceptedAt:  "2026-07-03T00:01:01Z",
+	}
+}
+
+func checkpointManifestSHA256(manifestJSON string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(manifestJSON)))
+}
+
+func assertRunningAttemptCount(t *testing.T, ctx context.Context, store *Store, attemptID string, want int) {
+	t.Helper()
+
+	var got int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM running_work WHERE attempt_id = ?`, attemptID).Scan(&got); err != nil {
+		t.Fatalf("count running attempt %s: %v", attemptID, err)
+	}
+	if got != want {
+		t.Fatalf("running attempt %s count = %d, want %d", attemptID, got, want)
+	}
+}
+
+func assertQueuedWorkCount(t *testing.T, ctx context.Context, store *Store, workItemID string, want int) {
+	t.Helper()
+
+	var got int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queued_work WHERE work_item_id = ?`, workItemID).Scan(&got); err != nil {
+		t.Fatalf("count queued work %s: %v", workItemID, err)
+	}
+	if got != want {
+		t.Fatalf("queued work %s count = %d, want %d", workItemID, got, want)
+	}
+}
+
+func assertQueuedResumeArtifact(
+	t *testing.T,
+	ctx context.Context,
+	store *Store,
+	workItemID string,
+	wantQueuedAt string,
+	wantArtifactID string,
+) {
+	t.Helper()
+
+	var queuedAt string
+	var artifactID sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT
+		queued_at,
+		resume_artifact_id
+	FROM queued_work
+	WHERE work_item_id = ?`, workItemID).Scan(&queuedAt, &artifactID); err != nil {
+		t.Fatalf("query queued resume work %s: %v", workItemID, err)
+	}
+	if queuedAt != wantQueuedAt || artifactID.String != wantArtifactID {
+		t.Fatalf(
+			"queued resume work %s = queued_at %q artifact %q, want %q/%q",
+			workItemID,
+			queuedAt,
+			artifactID.String,
+			wantQueuedAt,
+			wantArtifactID,
+		)
+	}
+}
+
+func assertResumeClaim(
+	t *testing.T,
+	claim ClaimedWorkRecord,
+	wantPredecessor string,
+	wantLineage string,
+	wantArtifactID string,
+	wantAttemptNumber int,
+) {
+	t.Helper()
+
+	if claim.ResumedFromAttemptID != wantPredecessor ||
+		claim.ExecutionLineageID != wantLineage ||
+		claim.ResumeAttemptNumber != wantAttemptNumber ||
+		claim.ResumeArtifact == nil ||
+		claim.ResumeArtifact.ID != wantArtifactID {
+		t.Fatalf(
+			"resume claim = %+v artifact=%+v, want predecessor=%s lineage=%s artifact=%s attempt=%d",
+			claim,
+			claim.ResumeArtifact,
+			wantPredecessor,
+			wantLineage,
+			wantArtifactID,
+			wantAttemptNumber,
+		)
+	}
+}
+
+func assertResumeAttemptRow(
+	t *testing.T,
+	ctx context.Context,
+	store *Store,
+	claim ClaimedWorkRecord,
+	wantPredecessor string,
+	wantLineage string,
+	wantArtifactID string,
+	wantAttemptNumber int,
+) {
+	t.Helper()
+
+	var (
+		predecessorAttemptID string
+		executionLineageID   string
+		artifactID           string
+		resumeAttemptNumber  int
+	)
+	err := store.db.QueryRowContext(
+		ctx,
+		`SELECT resumed_from_attempt_id, execution_lineage_id,
+		        resume_artifact_id, resume_attempt_number
+		   FROM work_item_attempts
+		  WHERE attempt_id = ?`,
+		claim.AttemptID,
+	).Scan(
+		&predecessorAttemptID,
+		&executionLineageID,
+		&artifactID,
+		&resumeAttemptNumber,
+	)
+	if err != nil {
+		t.Fatalf("query resume attempt row %s: %v", claim.AttemptID, err)
+	}
+	if predecessorAttemptID != wantPredecessor ||
+		executionLineageID != wantLineage ||
+		artifactID != wantArtifactID ||
+		resumeAttemptNumber != wantAttemptNumber {
+		t.Fatalf(
+			"resume attempt row = predecessor=%q lineage=%q artifact=%q attempt=%d, want predecessor=%q lineage=%q artifact=%q attempt=%d",
+			predecessorAttemptID,
+			executionLineageID,
+			artifactID,
+			resumeAttemptNumber,
+			wantPredecessor,
+			wantLineage,
+			wantArtifactID,
+			wantAttemptNumber,
+		)
+	}
 }
 
 func testCompleteAttemptRequest(attemptID string) CompleteAttemptRequest {
