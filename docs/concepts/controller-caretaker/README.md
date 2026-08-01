@@ -49,6 +49,9 @@ Implementation order:
 6. `OS-005-exclusive-scheduler-cutover-and-state-change-wakes.md`
    - Remove API-triggered scheduling, signal the CareTaker after queue/running transitions, and prove it is the sole launch authority.
 
+7. `OS-006-expired-session-retry-ceiling.md`
+   - Bound expired-session recovery to three requeues per work item, then record a terminal failure instead of launching workers forever.
+
 ## Target branch
 
 ```text

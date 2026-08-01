@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	DriverSQLite           = "sqlite"
-	SupportedSchemaVersion = 6
+	DriverSQLite               = "sqlite"
+	SupportedSchemaVersion     = 6
+	expiredSessionRequeueLimit = 3
 
 	ExecutorTypeWorker     = "worker"
 	ExecutorTypeController = "controller"
@@ -549,7 +550,7 @@ func (s *Store) RecoverExpiredWorkerSessions(ctx context.Context, request Recove
 				return RecoverExpiredWorkerSessionsResult{}, err
 			}
 			result.AbandonedAttempts++
-			requeued, err := requeueAbandonedWork(ctx, tx, assignment.workItemID, request.RecoveredAt)
+			requeued, err := requeueExpiredSessionWork(ctx, tx, assignment, request.RecoveredAt, request.Reason)
 			if err != nil {
 				return RecoverExpiredWorkerSessionsResult{}, err
 			}
@@ -2341,6 +2342,43 @@ func requeueAbandonedWork(ctx context.Context, tx *sql.Tx, workItemID string, qu
 		return false, fmt.Errorf("requeue abandoned work %s: %w", workItemID, err)
 	}
 	return inserted, nil
+}
+
+func requeueExpiredSessionWork(ctx context.Context, tx *sql.Tx, assignment runningWorkRecord, queuedAt string, reason string) (bool, error) {
+	var abandonmentCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+		FROM abandoned_work
+		WHERE work_item_id = ?
+			AND reason = ?`, assignment.workItemID, reason).Scan(&abandonmentCount); err != nil {
+		return false, fmt.Errorf("count expired-session abandonments for work %s: %w", assignment.workItemID, err)
+	}
+	if abandonmentCount <= expiredSessionRequeueLimit {
+		return requeueAbandonedWork(ctx, tx, assignment.workItemID, queuedAt)
+	}
+
+	failureReason := fmt.Sprintf(
+		"expired-session retry ceiling reached after %d requeues: %s",
+		expiredSessionRequeueLimit,
+		reason,
+	)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO failed_work (
+		attempt_id,
+		work_item_id,
+		error,
+		queued_at,
+		started_at,
+		failed_at
+	) VALUES (?, ?, ?, ?, ?, ?)`,
+		assignment.attemptID,
+		assignment.workItemID,
+		failureReason,
+		assignment.queuedAt,
+		assignment.startedAt,
+		queuedAt,
+	); err != nil {
+		return false, fmt.Errorf("fail retry-exhausted work %s: %w", assignment.workItemID, err)
+	}
+	return false, nil
 }
 
 func hasAbandonedWork(ctx context.Context, tx *sql.Tx, attemptID string) (bool, error) {
