@@ -416,6 +416,8 @@ func registerControllerRoutes(mux *http.ServeMux, controller *Controller) {
 	mux.HandleFunc("/work/next", controller.nextWorkHandler)
 	mux.HandleFunc("/work/complete", controller.completeWorkHandler)
 	mux.HandleFunc("/work/fail", controller.failWorkHandler)
+	mux.HandleFunc("/work/checkpoint/confirm", controller.confirmCheckpointHandler)
+	mux.HandleFunc("/work/checkpoint/suspend-latest", controller.suspendLatestCheckpointHandler)
 	mux.HandleFunc("/workers/register", controller.registerWorkerHandler)
 	mux.HandleFunc("/workers/heartbeat", controller.heartbeatWorkerHandler)
 	mux.HandleFunc("/workers/stop", controller.stopWorkerHandler)
@@ -3309,6 +3311,228 @@ func (c *Controller) failWorkHandler(w http.ResponseWriter, r *http.Request) {
 	c.failPersistedWorkHandler(w, r, failure)
 }
 
+func (c *Controller) confirmCheckpointHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
+		return
+	}
+	identity, err := requiredWorkerSessionIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var confirmation model.WorkCheckpointConfirmation
+	if !c.decodeCheckpointRequest(w, r, &confirmation, "decode checkpoint confirmation") {
+		return
+	}
+	if err := confirmation.Validate(); err != nil {
+		http.Error(w, "invalid checkpoint confirmation", http.StatusBadRequest)
+		return
+	}
+	cutoff, acceptedAt, err := c.checkpointControllerTimes()
+	if err != nil {
+		http.Error(w, "worker heartbeat policy", http.StatusInternalServerError)
+		return
+	}
+
+	result, err := c.workflowStore.ConfirmCheckpoint(r.Context(), persistence.ConfirmCheckpointRequest{
+		AttemptID:         confirmation.AttemptID,
+		WorkerID:          identity.WorkerID,
+		WorkerSessionID:   identity.WorkerSessionID,
+		LiveSessionCutoff: cutoff,
+		ManifestJSON:      confirmation.ManifestJSON,
+		Reference:         confirmation.Reference,
+		CaptureKind:       string(confirmation.CaptureKind),
+		Disposition:       string(confirmation.Disposition),
+		AcceptedAt:        acceptedAt,
+		SuspendedAt:       confirmation.SuspendedAt,
+	})
+	if err != nil {
+		writeCheckpointPersistenceError(w, err)
+		return
+	}
+
+	acknowledgement := checkpointConfirmationAcknowledgement(result)
+	if err := acknowledgement.Validate(); err != nil {
+		http.Error(w, "build checkpoint acknowledgement", http.StatusInternalServerError)
+		return
+	}
+	if result.Transitioned {
+		c.signalCareTaker("checkpoint_suspended")
+	}
+	writeCheckpointAcknowledgement(w, acknowledgement)
+}
+
+func (c *Controller) suspendLatestCheckpointHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if c.workflowStore == nil {
+		http.Error(w, "workflow store required", http.StatusServiceUnavailable)
+		return
+	}
+	identity, err := requiredWorkerSessionIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var request model.WorkCheckpointSuspendLatest
+	if !c.decodeCheckpointRequest(w, r, &request, "decode checkpoint suspension") {
+		return
+	}
+	if err := request.Validate(); err != nil {
+		http.Error(w, "invalid checkpoint suspension", http.StatusBadRequest)
+		return
+	}
+	cutoff, _, err := c.checkpointControllerTimes()
+	if err != nil {
+		http.Error(w, "worker heartbeat policy", http.StatusInternalServerError)
+		return
+	}
+
+	result, err := c.workflowStore.SuspendFromLatestCheckpoint(r.Context(), persistence.SuspendFromLatestCheckpointRequest{
+		AttemptID:         request.AttemptID,
+		WorkerID:          identity.WorkerID,
+		WorkerSessionID:   identity.WorkerSessionID,
+		LiveSessionCutoff: cutoff,
+		SuspendedAt:       request.SuspendedAt,
+		SuspendReason:     string(request.SuspendReason),
+	})
+	if err != nil {
+		writeCheckpointPersistenceError(w, err)
+		return
+	}
+	if !result.Found {
+		http.Error(w, "no_accepted_checkpoint", http.StatusConflict)
+		return
+	}
+
+	acknowledgement := checkpointSuspendLatestAcknowledgement(result)
+	if err := acknowledgement.Validate(); err != nil {
+		http.Error(w, "build checkpoint acknowledgement", http.StatusInternalServerError)
+		return
+	}
+	if result.Transitioned {
+		c.signalCareTaker("checkpoint_suspended")
+	}
+	writeCheckpointAcknowledgement(w, acknowledgement)
+}
+
+func (c *Controller) decodeCheckpointRequest(w http.ResponseWriter, r *http.Request, target any, label string) bool {
+	body := r.Body
+	if c.maxRequestBytes > 0 {
+		if r.ContentLength > int64(c.maxRequestBytes) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		body = http.MaxBytesReader(w, r.Body, int64(c.maxRequestBytes))
+	}
+
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, label, http.StatusBadRequest)
+		return false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request body must be one JSON document", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func (c *Controller) checkpointControllerTimes() (string, string, error) {
+	policy, err := workerHeartbeatPolicyConfig(c.launchResolver, defaultWorkerHeartbeatPolicy())
+	if err != nil {
+		return "", "", err
+	}
+	now := time.Now().UTC()
+	return now.Add(-policy.DeadAfter).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), nil
+}
+
+func checkpointConfirmationAcknowledgement(result persistence.ConfirmCheckpointResult) model.WorkCheckpointAcknowledgement {
+	acknowledgement := checkpointAcknowledgementFromArtifact(result.Artifact)
+	acknowledgement.Operation = model.CheckpointOperationConfirmation
+	acknowledgement.Disposition = model.CheckpointDispositionContinue
+	if result.Suspended != nil {
+		acknowledgement.Disposition = model.CheckpointDispositionSuspend
+		acknowledgement.Suspended = true
+		acknowledgement.SuspendedAt = result.Suspended.SuspendedAt
+	}
+	return acknowledgement
+}
+
+func checkpointSuspendLatestAcknowledgement(result persistence.SuspendFromLatestCheckpointResult) model.WorkCheckpointAcknowledgement {
+	acknowledgement := checkpointAcknowledgementFromArtifact(result.Artifact)
+	acknowledgement.Operation = model.CheckpointOperationSuspendLatest
+	acknowledgement.Disposition = model.CheckpointDispositionSuspend
+	acknowledgement.Suspended = true
+	acknowledgement.SuspendedAt = result.Suspended.SuspendedAt
+	return acknowledgement
+}
+
+func checkpointAcknowledgementFromArtifact(artifact persistence.ResumeArtifactRecord) model.WorkCheckpointAcknowledgement {
+	return model.WorkCheckpointAcknowledgement{
+		ResumeArtifactID:   artifact.ID,
+		ExecutionLineageID: artifact.ExecutionLineageID,
+		ResumeGeneration:   artifact.ResumeGeneration,
+		Reference:          artifact.Reference,
+		CaptureKind:        model.CheckpointCaptureKind(artifact.CaptureKind),
+		AcceptedAt:         artifact.AcceptedAt,
+	}
+}
+
+func writeCheckpointAcknowledgement(w http.ResponseWriter, acknowledgement model.WorkCheckpointAcknowledgement) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(acknowledgement); err != nil {
+		http.Error(w, "encode checkpoint acknowledgement", http.StatusInternalServerError)
+	}
+}
+
+func writeCheckpointPersistenceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, persistence.ErrAssignmentNoLongerOwned) {
+		http.Error(w, "assignment_no_longer_owned", http.StatusConflict)
+		return
+	}
+	if isCheckpointPersistenceConflict(err) {
+		http.Error(w, "checkpoint_conflict", http.StatusConflict)
+		return
+	}
+	http.Error(w, "checkpoint persistence failure", http.StatusInternalServerError)
+}
+
+func isCheckpointPersistenceConflict(err error) bool {
+	message := err.Error()
+	for _, fragment := range []string{
+		"conflicts with",
+		"does not match running assignment",
+		"does not match producing attempt",
+		"has no accepted starting artifact",
+		"belongs to another work item",
+		"cannot join an existing execution lineage",
+		"is not next after accepted generation",
+		"lineage conflict",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) completeWorkHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3739,20 +3963,54 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "worker heartbeat policy: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	resumeAttemptLimit, err := resumeAttemptLimitConfig(c.launchResolver)
+	if err != nil {
+		http.Error(w, "resume attempt policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	now := time.Now().UTC()
+	attemptID := "attempt-" + randomHex(16)
+	var resumeLimitFailure *persistence.FailPendingResumeAttemptLimitResult
 
 	claim, found, err := func() (persistence.ClaimedWorkRecord, bool, error) {
 		c.claimMu.Lock()
 		defer c.claimMu.Unlock()
 
-		return c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
-			AttemptID:         "attempt-" + randomHex(16),
-			WorkerID:          identity.WorkerID,
-			WorkerSessionID:   identity.WorkerSessionID,
-			ExecutorType:      persistence.ExecutorTypeWorker,
-			StartedAt:         now.Format(time.RFC3339),
-			LiveSessionCutoff: now.Add(-policy.DeadAfter).Format(time.RFC3339Nano),
+		claim, found, err := c.workflowStore.ClaimNextWork(r.Context(), persistence.ClaimWorkRequest{
+			AttemptID:          attemptID,
+			WorkerID:           identity.WorkerID,
+			WorkerSessionID:    identity.WorkerSessionID,
+			ExecutorType:       persistence.ExecutorTypeWorker,
+			StartedAt:          now.Format(time.RFC3339),
+			LiveSessionCutoff:  now.Add(-policy.DeadAfter).Format(time.RFC3339Nano),
+			ResumeAttemptLimit: resumeAttemptLimit,
 		})
+		if err == nil {
+			return claim, found, nil
+		}
+
+		var limitError *persistence.ResumeAttemptLimitExceededError
+		if !errors.As(err, &limitError) {
+			return persistence.ClaimedWorkRecord{}, false, err
+		}
+		result, terminalError := c.workflowStore.FailPendingResumeAttemptLimit(
+			r.Context(),
+			persistence.FailPendingResumeAttemptLimitRequest{
+				AttemptID:               attemptID,
+				WorkItemID:              limitError.WorkItemID,
+				ResumeArtifactID:        limitError.ResumeArtifactID,
+				ExecutionLineageID:      limitError.ExecutionLineageID,
+				NextResumeAttemptNumber: limitError.NextResumeAttemptNumber,
+				ConfiguredLimit:         limitError.ConfiguredLimit,
+				QueuedAt:                limitError.QueuedAt,
+				FailedAt:                now.Format(time.RFC3339Nano),
+			},
+		)
+		if terminalError != nil {
+			return persistence.ClaimedWorkRecord{}, false, fmt.Errorf("terminalize resume attempt limit: %w", terminalError)
+		}
+		resumeLimitFailure = &result
+		return persistence.ClaimedWorkRecord{}, false, nil
 	}()
 	if err != nil {
 		if errors.Is(err, persistence.ErrWorkerSessionNotActive) {
@@ -3766,6 +4024,21 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "claim work", http.StatusInternalServerError)
 		return
 	}
+	if resumeLimitFailure != nil {
+		if err := c.failAssetMaterializeDependents(r.Context(), resumeLimitFailure.WorkItem, resumeLimitFailure.Failed.Error); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := c.recordWorkItemDependencyFailure(r.Context(), resumeLimitFailure.WorkItem.ID, resumeLimitFailure.Failed.Error); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if resumeLimitFailure.Terminalized {
+			c.signalCareTaker("resume_attempt_limit_exhausted")
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if !found {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -3777,6 +4050,16 @@ func (c *Controller) nextPersistedWorkHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	item.AttemptID = claim.AttemptID
+	if claim.ResumeArtifact != nil {
+		item.Resume = &model.WorkItemResumeAssignment{
+			Schema:               model.WorkItemResumeAssignmentSchemaV1,
+			ResumedFromAttemptID: claim.ResumedFromAttemptID,
+			ExecutionLineageID:   claim.ExecutionLineageID,
+			ResumeAttemptNumber:  claim.ResumeAttemptNumber,
+			ManifestJSON:         claim.ResumeArtifact.ManifestJSON,
+			Reference:            claim.ResumeArtifact.Reference,
+		}
+	}
 	item.ReuseCandidates, err = c.persistedReuseCandidates(r.Context(), claim)
 	if err != nil {
 		http.Error(w, "load reuse candidates", http.StatusInternalServerError)

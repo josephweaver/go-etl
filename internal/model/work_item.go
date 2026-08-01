@@ -19,25 +19,26 @@ const (
 )
 
 type WorkItem struct {
-	ID                   string               `json:"id"`
-	AttemptID            string               `json:"attempt_id,omitempty"`
-	Type                 WorkItemType         `json:"type"`
-	Source               *WorkItemSource      `json:"source,omitempty"`
-	OutputFilename       string               `json:"output_filename"`
-	Parameters           Parameters           `json:"parameters,omitempty"`
-	ExecutionEnvelope    *ExecutionEnvelope   `json:"execution_envelope,omitempty"`
-	DependsOn            []string             `json:"depends_on,omitempty"`
-	ReuseCandidates      []WorkReuseCandidate `json:"reuse_candidates,omitempty"`
-	WorkflowDefinitionID string               `json:"workflow_definition_id,omitempty"`
-	WorkflowFingerprint  string               `json:"workflow_fingerprint,omitempty"`
-	WorkflowInstanceID   string               `json:"workflow_instance_id,omitempty"`
-	StepDefinitionID     string               `json:"step_definition_id,omitempty"`
-	StepFingerprint      string               `json:"step_fingerprint,omitempty"`
-	StepInstanceID       string               `json:"step_instance_id,omitempty"`
-	WorkItemFingerprint  string               `json:"work_item_fingerprint,omitempty"`
-	InputFingerprint     string               `json:"input_fingerprint,omitempty"`
-	OutputFingerprint    string               `json:"output_fingerprint,omitempty"`
-	CodeVersion          string               `json:"code_version,omitempty"`
+	ID                   string                    `json:"id"`
+	AttemptID            string                    `json:"attempt_id,omitempty"`
+	Resume               *WorkItemResumeAssignment `json:"resume,omitempty"`
+	Type                 WorkItemType              `json:"type"`
+	Source               *WorkItemSource           `json:"source,omitempty"`
+	OutputFilename       string                    `json:"output_filename"`
+	Parameters           Parameters                `json:"parameters,omitempty"`
+	ExecutionEnvelope    *ExecutionEnvelope        `json:"execution_envelope,omitempty"`
+	DependsOn            []string                  `json:"depends_on,omitempty"`
+	ReuseCandidates      []WorkReuseCandidate      `json:"reuse_candidates,omitempty"`
+	WorkflowDefinitionID string                    `json:"workflow_definition_id,omitempty"`
+	WorkflowFingerprint  string                    `json:"workflow_fingerprint,omitempty"`
+	WorkflowInstanceID   string                    `json:"workflow_instance_id,omitempty"`
+	StepDefinitionID     string                    `json:"step_definition_id,omitempty"`
+	StepFingerprint      string                    `json:"step_fingerprint,omitempty"`
+	StepInstanceID       string                    `json:"step_instance_id,omitempty"`
+	WorkItemFingerprint  string                    `json:"work_item_fingerprint,omitempty"`
+	InputFingerprint     string                    `json:"input_fingerprint,omitempty"`
+	OutputFingerprint    string                    `json:"output_fingerprint,omitempty"`
+	CodeVersion          string                    `json:"code_version,omitempty"`
 }
 
 type WorkItemResourceConstraintOperator string
@@ -312,6 +313,17 @@ func (item WorkItem) validate(allowMissingPythonSource bool) error {
 
 	if item.Type == "" {
 		return fmt.Errorf("work item type is required")
+	}
+	if item.Resume != nil {
+		if item.AttemptID == "" {
+			return fmt.Errorf("attempt_id is required for resume assignment")
+		}
+		if item.AttemptID == item.Resume.ResumedFromAttemptID {
+			return fmt.Errorf("resume assignment must use a new attempt_id")
+		}
+		if err := item.Resume.Validate(item.ID, item.Type); err != nil {
+			return fmt.Errorf("resume assignment: %w", err)
+		}
 	}
 
 	if item.OutputFilename == "" {

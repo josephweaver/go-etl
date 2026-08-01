@@ -12,6 +12,7 @@
     {"name": {"namespace": "controller_config", "key": "controller_artifact_cache_path"}, "type": "path", "expression": "${controller_root_dir}/artifacts"},
     {"name": {"namespace": "controller_config", "key": "caretaker_interval_schedule_milliseconds"}, "type": "int", "expression": 60000},
     {"name": {"namespace": "controller_config", "key": "caretaker_missed_interval_limit"}, "type": "int", "expression": 1},
+    {"name": {"namespace": "controller_config", "key": "resume_attempt_limit"}, "type": "int", "expression": 3},
     {"name": {"namespace": "controller_config", "key": "resolver_max_depth"}, "type": "int", "expression": 10},
     {"name": {"namespace": "controller_config", "key": "controller_log_root_path"}, "type": "path", "expression": "${controller_root_dir}/logs"},
     {"name": {"namespace": "controller_config", "key": "controller_filesystem_logging_enabled"}, "type": "bool", "expression": true},

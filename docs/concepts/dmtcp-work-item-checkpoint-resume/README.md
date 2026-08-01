@@ -1092,8 +1092,9 @@ GOET keeps its existing distinction:
 - resume-launch/restart failures may retry the same accepted artifact only up
   to `resume_attempt_limit`.
 
-The initial default for `resume_attempt_limit` is `3`, configurable
-per submitted worker job. Each new attempt that consumes the same artifact
+The initial controller enforcement ceiling for `resume_attempt_limit` is `3`.
+A later submitted-worker-job override may choose a lower limit but cannot raise
+that controller ceiling. Each new attempt that consumes the same artifact
 counts toward the limit. At exhaustion, the logical work fails with
 `resume_attempt_limit_exhausted`; it does not silently start from the beginning.
 
@@ -1510,6 +1511,17 @@ planning candidates until they receive an approved Operational Slice charter.
      one-production-file prompts; HTTP transport remains a later slice.
 
 7. **Controller checkpoint-confirmation and resume-assignment transport**
+   - Operational Slice charter:
+     `007-controller-checkpoint-confirmation-and-resume-assignment-transport.md`.
+   - Status: implemented; shared transport model and
+     optional work-item resume assignment implemented; persistence now exposes one-time suspend evidence
+     and idempotent resume-limit terminalization; positive resume-limit policy
+     resolution and its checked-in default implemented; controller transport
+     authorization and owner-fenced checkpoint handlers implemented, with
+     exact resume-claim mapping and limit-exhaustion propagation implemented;
+     the callable worker checkpoint client is implemented. The full controller
+     suite retains the unrelated startup-timestamp precision failure recorded
+     in the slice and test-status documents.
    - Add owner-fenced checkpoint confirmation for continue and suspend
      dispositions, plus suspension from the latest accepted generation.
    - Return an acknowledgement naming the exact accepted artifact/generation;

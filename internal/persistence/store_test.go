@@ -1722,7 +1722,7 @@ func TestStoreConfirmPeriodicCheckpointContinuesAndAdvancesGeneration(t *testing
 	if err != nil {
 		t.Fatalf("ConfirmCheckpoint(first) error = %v", err)
 	}
-	if result.Suspended != nil || result.Artifact.ResumeGeneration != 1 {
+	if result.Suspended != nil || result.Transitioned || result.Artifact.ResumeGeneration != 1 {
 		t.Fatalf("ConfirmCheckpoint(first) result = %+v, want generation 1 continuing", result)
 	}
 	assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
@@ -1746,6 +1746,9 @@ func TestStoreConfirmPeriodicCheckpointContinuesAndAdvancesGeneration(t *testing
 	}
 	if replayed.Artifact.AcceptedAt != first.AcceptedAt {
 		t.Fatalf("replayed accepted_at = %q, want original %q", replayed.Artifact.AcceptedAt, first.AcceptedAt)
+	}
+	if replayed.Transitioned {
+		t.Fatalf("ConfirmCheckpoint(replay) transitioned = true, want false")
 	}
 
 	second := testConfirmCheckpointRequest(
@@ -1950,6 +1953,9 @@ func TestStoreConfirmCheckpointSuspendsQuantumAndShutdown(t *testing.T) {
 			if result.Suspended == nil || result.Suspended.SuspendReason != tt.suspendReason {
 				t.Fatalf("suspended result = %+v, want reason %s", result.Suspended, tt.suspendReason)
 			}
+			if !result.Transitioned {
+				t.Fatalf("ConfirmCheckpoint() transitioned = false, want true")
+			}
 			assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 0)
 			assertQueuedResumeArtifact(t, ctx, store, work.ID, request.SuspendedAt, "artifact-001")
 
@@ -1969,6 +1975,9 @@ func TestStoreConfirmCheckpointSuspendsQuantumAndShutdown(t *testing.T) {
 			}
 			if replayed.Artifact.AcceptedAt != request.AcceptedAt {
 				t.Fatalf("replayed accepted_at = %q, want %q", replayed.Artifact.AcceptedAt, request.AcceptedAt)
+			}
+			if replayed.Transitioned {
+				t.Fatalf("ConfirmCheckpoint(replay) transitioned = true, want false")
 			}
 
 			complete := testCompleteAttemptRequest(claim.AttemptID)
@@ -2054,7 +2063,7 @@ func TestStoreSuspendFromLatestCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SuspendFromLatestCheckpoint() error = %v", err)
 		}
-		if !result.Found || result.Artifact.ID != "artifact-001" {
+		if !result.Found || !result.Transitioned || result.Artifact.ID != "artifact-001" {
 			t.Fatalf("SuspendFromLatestCheckpoint() result = %+v", result)
 		}
 		assertQueuedResumeArtifact(t, ctx, store, work.ID, request.SuspendedAt, "artifact-001")
@@ -2062,6 +2071,9 @@ func TestStoreSuspendFromLatestCheckpoint(t *testing.T) {
 		replayed, err := store.SuspendFromLatestCheckpoint(ctx, request)
 		if err != nil || !replayed.Found || replayed.Artifact.ID != "artifact-001" {
 			t.Fatalf("SuspendFromLatestCheckpoint(replay) result=%+v error=%v", replayed, err)
+		}
+		if replayed.Transitioned {
+			t.Fatalf("SuspendFromLatestCheckpoint(replay) transitioned = true, want false")
 		}
 	})
 
@@ -2081,7 +2093,7 @@ func TestStoreSuspendFromLatestCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SuspendFromLatestCheckpoint() error = %v", err)
 		}
-		if result.Found {
+		if result.Found || result.Transitioned {
 			t.Fatalf("SuspendFromLatestCheckpoint() result = %+v, want no checkpoint", result)
 		}
 		assertRunningAttemptCount(t, ctx, store, claim.AttemptID, 1)
@@ -2165,8 +2177,21 @@ func TestStoreResumeClaimUsesLatestCheckpointAndPerArtifactLimit(t *testing.T) {
 	insertWorkerSessionForTest(t, ctx, store, "worker-004", "session-004")
 	limited := testWorkerClaimWorkRequest("attempt-004", "worker-004", "session-004")
 	limited.ResumeAttemptLimit = 1
-	if _, found, err := store.ClaimNextWork(ctx, limited); !errors.Is(err, ErrResumeAttemptLimitExceeded) || found {
+	_, found, err = store.ClaimNextWork(ctx, limited)
+	if !errors.Is(err, ErrResumeAttemptLimitExceeded) || found {
 		t.Fatalf("ClaimNextWork(limit) found=%v error=%v", found, err)
+	}
+	var limitError *ResumeAttemptLimitExceededError
+	if !errors.As(err, &limitError) {
+		t.Fatalf("ClaimNextWork(limit) error type = %T, want *ResumeAttemptLimitExceededError", err)
+	}
+	if limitError.WorkItemID != work.ID ||
+		limitError.ResumeArtifactID != "artifact-002" ||
+		limitError.ExecutionLineageID != "lineage-001" ||
+		limitError.NextResumeAttemptNumber != 2 ||
+		limitError.ConfiguredLimit != 1 ||
+		limitError.QueuedAt != "2026-07-03T00:50:00Z" {
+		t.Fatalf("ClaimNextWork(limit) typed error = %+v", limitError)
 	}
 	assertAttemptMissing(t, ctx, store, limited.AttemptID)
 	assertQueuedResumeArtifact(t, ctx, store, work.ID, "2026-07-03T00:50:00Z", "artifact-002")
@@ -2185,6 +2210,123 @@ func TestStoreResumeClaimUsesLatestCheckpointAndPerArtifactLimit(t *testing.T) {
 		t.Fatalf("FailAttempt(resumed) found=%v error=%v", found, err)
 	}
 	assertQueuedWorkCount(t, ctx, store, work.ID, 0)
+}
+
+func TestStoreFailPendingResumeAttemptLimitIsFailClosedAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "store.sqlite"))
+	defer store.Close()
+	work, initial := setupCheckpointRunningAttempt(t, ctx, store, "work-001", "attempt-001", "worker-001", "session-001")
+
+	checkpoint := testConfirmCheckpointRequest(
+		work.ID,
+		initial.AttemptID,
+		initial.WorkerID,
+		initial.WorkerSessionID,
+		"lineage-001",
+		"artifact-001",
+		1,
+		CheckpointCaptureKindQuantum,
+		CheckpointDispositionSuspend,
+	)
+	checkpoint.SuspendedAt = "2026-07-03T00:30:00Z"
+	if _, err := store.ConfirmCheckpoint(ctx, checkpoint); err != nil {
+		t.Fatalf("ConfirmCheckpoint() error = %v", err)
+	}
+
+	insertWorkerSessionForTest(t, ctx, store, "worker-002", "session-002")
+	resumeRequest := testWorkerClaimWorkRequest("attempt-002", "worker-002", "session-002")
+	resumeRequest.ResumeAttemptLimit = 1
+	resumed, found, err := store.ClaimNextWork(ctx, resumeRequest)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(first resume) found=%v error=%v", found, err)
+	}
+	if _, err := store.StopWorkerSessionAndRecoverWork(ctx, StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  resumed.WorkerID,
+		SessionID: resumed.WorkerSessionID,
+		StoppedAt: "2026-07-03T00:40:00Z",
+		Reason:    "test_stop",
+	}); err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() error = %v", err)
+	}
+
+	insertWorkerSessionForTest(t, ctx, store, "worker-003", "session-003")
+	limited := testWorkerClaimWorkRequest("attempt-003", "worker-003", "session-003")
+	limited.ResumeAttemptLimit = 1
+	_, found, err = store.ClaimNextWork(ctx, limited)
+	if !errors.Is(err, ErrResumeAttemptLimitExceeded) || found {
+		t.Fatalf("ClaimNextWork(limit) found=%v error=%v", found, err)
+	}
+	var limitError *ResumeAttemptLimitExceededError
+	if !errors.As(err, &limitError) {
+		t.Fatalf("ClaimNextWork(limit) error type = %T, want *ResumeAttemptLimitExceededError", err)
+	}
+
+	request := FailPendingResumeAttemptLimitRequest{
+		AttemptID:               "attempt-limit-001",
+		WorkItemID:              limitError.WorkItemID,
+		ResumeArtifactID:        limitError.ResumeArtifactID,
+		ExecutionLineageID:      limitError.ExecutionLineageID,
+		NextResumeAttemptNumber: limitError.NextResumeAttemptNumber,
+		ConfiguredLimit:         limitError.ConfiguredLimit,
+		QueuedAt:                limitError.QueuedAt,
+		FailedAt:                "2026-07-03T00:50:00Z",
+	}
+	mismatched := request
+	mismatched.ResumeArtifactID = "artifact-other"
+	if _, err := store.FailPendingResumeAttemptLimit(ctx, mismatched); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("FailPendingResumeAttemptLimit(mismatch) error = %v, want changed pending work", err)
+	}
+	assertAttemptMissing(t, ctx, store, request.AttemptID)
+	assertQueuedResumeArtifact(t, ctx, store, work.ID, request.QueuedAt, request.ResumeArtifactID)
+	assertFailedWorkMissingForAttempt(t, ctx, store, request.AttemptID)
+
+	result, err := store.FailPendingResumeAttemptLimit(ctx, request)
+	if err != nil {
+		t.Fatalf("FailPendingResumeAttemptLimit() error = %v", err)
+	}
+	wantFailed := FailedWorkRecord{
+		AttemptID:  request.AttemptID,
+		WorkItemID: work.ID,
+		Error:      "resume_attempt_limit_exhausted",
+		QueuedAt:   request.QueuedAt,
+		StartedAt:  request.FailedAt,
+		FailedAt:   request.FailedAt,
+	}
+	if !result.Terminalized || result.WorkItem != work || result.Failed != wantFailed {
+		t.Fatalf("FailPendingResumeAttemptLimit() result = %+v", result)
+	}
+	assertQueuedWorkCount(t, ctx, store, work.ID, 0)
+	assertFailedWork(t, ctx, store, wantFailed)
+	assertAttempt(t, ctx, store, request.AttemptID, work.ID, "", ExecutorTypeController, request.FailedAt)
+	assertResumeAttemptRow(
+		t,
+		ctx,
+		store,
+		ClaimedWorkRecord{AttemptID: request.AttemptID},
+		initial.AttemptID,
+		request.ExecutionLineageID,
+		request.ResumeArtifactID,
+		request.NextResumeAttemptNumber,
+	)
+	terminals, err := store.ListTerminalAttemptsForRun(ctx, work.RunID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminals) != 1 ||
+		terminals[0].AttemptID != request.AttemptID ||
+		terminals[0].TerminalState != "failed" ||
+		terminals[0].Error != "resume_attempt_limit_exhausted" {
+		t.Fatalf("terminal attempts = %+v", terminals)
+	}
+
+	replayed, err := store.FailPendingResumeAttemptLimit(ctx, request)
+	if err != nil {
+		t.Fatalf("FailPendingResumeAttemptLimit(replay) error = %v", err)
+	}
+	if replayed.Terminalized || replayed.WorkItem != work || replayed.Failed != wantFailed {
+		t.Fatalf("FailPendingResumeAttemptLimit(replay) result = %+v", replayed)
+	}
 }
 
 func TestClaimWorkRequestValidate(t *testing.T) {

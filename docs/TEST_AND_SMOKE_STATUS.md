@@ -540,6 +540,195 @@ This is persistence-boundary evidence only. No controller HTTP transport,
 worker timer/adapter, filesystem checkpoint bundle creation and byte
 verification, or runtime resume path exists yet.
 
+## Checkpoint Transport Model
+
+OS-007 shared-model verification recorded on 2026-08-01:
+
+```powershell
+go test ./internal/model -count=1
+```
+
+Result:
+
+```text
+ok  goetl/internal/model
+```
+
+The focused tests cover periodic/continue, quantum/suspend, final/suspend,
+suspend-latest acknowledgements, exact manifest JSON round trips and digest
+matching, invalid capture/disposition combinations, timestamp validation, and
+resume-assignment work-item/type/predecessor/lineage fencing. Work-item tests
+also prove a resumed assignment requires a distinct new attempt ID, preserves
+the exact manifest string, and leaves fresh JSON without a `resume` field.
+
+This is model-level evidence only. No controller endpoint or worker checkpoint
+client exists.
+
+## Checkpoint Transport Persistence Extension
+
+OS-007 persistence verification recorded on 2026-08-01:
+
+```powershell
+go test ./internal/persistence -count=1
+```
+
+Result:
+
+```text
+ok  goetl/internal/persistence
+```
+
+The store tests prove that only the first committed running-to-suspended
+transition reports new transition evidence; periodic confirmation,
+confirmation replay, suspend-latest replay, and no-checkpoint fallback do not.
+They also prove that resume-limit claim errors retain sentinel matching while
+carrying exact terminal-decision facts. Terminalization rechecks the pending
+artifact and attempt count, rolls back on changed facts, records a
+controller-owned `resume_attempt_limit_exhausted` failure, removes the exact
+pending row, appears in terminal-attempt queries, and replays idempotently.
+
+This remains persistence-boundary evidence. The policy resolver is verified
+separately below; authorization, handlers, and the worker checkpoint client are
+pending.
+
+## Resume-attempt Controller Policy Resolver
+
+OS-007 focused controller-configuration verification recorded on 2026-08-01:
+
+```powershell
+go test ./cmd/controller -run 'TestResumeAttemptLimitConfig' -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/controller
+```
+
+The tests prove that an omitted value resolves to the initial controller
+ceiling of `3`, a configured positive integer is accepted, and zero, negative,
+or non-integer values are rejected.
+
+Checked-in-default verification:
+
+```powershell
+go test ./cmd/controller -run 'TestLoadDefaultsDocument' -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/controller
+```
+
+The checked-in document now requires and resolves
+`controller_config.resume_attempt_limit` as integer `3`. Controller claim
+wiring is still pending.
+
+## Checkpoint Route Authorization
+
+OS-007 authorization verification recorded on 2026-08-01:
+
+```powershell
+go test ./internal/controllerauth -count=1
+```
+
+Result:
+
+```text
+ok  goetl/internal/controllerauth
+```
+
+The route-policy matrix proves both checkpoint paths are protected POST routes,
+permits `worker` and `admin`, denies `client` and unauthenticated roles, and
+returns method-not-allowed for other HTTP methods. Handler registration and
+endpoint behavior are verified separately below.
+
+## Controller Checkpoint Endpoints
+
+OS-007 focused controller endpoint verification recorded on 2026-08-01:
+
+```powershell
+go test ./cmd/controller -run 'Test(Checkpoint|SuspendLatest|RegisterControllerRoutesIncludesCheckpoint)' -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/controller
+```
+
+The focused tests exercise periodic confirmation and replay without a wake,
+quantum suspension and replay with exactly one wake, final suspension,
+suspend-latest fallback and replay, the no-accepted-checkpoint conflict,
+request size enforcement, unknown-field rejection, sanitized manifest
+validation, owner fencing, artifact-identity conflicts, acknowledgement
+validation, and route registration against the real SQLite store.
+
+The broader command was also attempted:
+
+```powershell
+go test ./cmd/controller -count=1
+```
+
+It reached one unrelated existing failure in `TestNewStartupRuntimeScope`: the
+unchanged startup implementation returns `controller_started_at` at second
+precision while the test expects the supplied nanoseconds. No checkpoint test
+failed. That timestamp mismatch is outside OS-007 and remains unresolved.
+
+## Resume Assignment and Limit Terminalization
+
+OS-007 focused claim-transport verification recorded on 2026-08-01:
+
+```powershell
+go test ./cmd/controller -run 'TestCheckpoint(ResumeClaim|FreshClaim|ResumeAttemptLimit)' -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/controller
+```
+
+The tests prove a resumed assignment uses a distinct new attempt ID and carries
+the exact stored manifest JSON, reference, predecessor, lineage, and
+per-artifact attempt number. Fresh assignment JSON omits `resume`. With a
+configured ceiling of one, the next resume decision creates a controller-owned
+`resume_attempt_limit_exhausted` terminal attempt, propagates the failure,
+removes pending demand, emits one matching CareTaker wake, and returns `204`.
+
+## Worker Checkpoint Client
+
+OS-007 worker-client verification recorded on 2026-08-01:
+
+```powershell
+go test ./cmd/worker -run 'TestWorkerControllerClientCheckpoint' -count=1
+go test ./cmd/worker -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/worker
+ok  goetl/cmd/worker
+```
+
+The focused tests prove checkpoint confirmation and suspend-latest preserve the
+shared request, attach worker/session headers, validate the returned operation
+and identity, reject invalid requests before network I/O, reject mismatched
+acknowledgements, and keep manifest content out of controller HTTP errors.
+
+The exact OS-007 package command was attempted:
+
+```powershell
+go test ./internal/model ./internal/persistence ./internal/controllerauth ./cmd/controller ./cmd/worker -count=1
+```
+
+Model, persistence, authorization, and worker packages passed. The command as
+a whole remains red because `cmd/controller` reaches the same unrelated
+`TestNewStartupRuntimeScope` precision mismatch recorded above. All OS-007
+focused controller and worker tests pass.
+
 ## Direct Worker Development Execution Evidence
 
 Recorded on 2026-07-11 on branch

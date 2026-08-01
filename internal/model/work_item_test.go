@@ -231,6 +231,125 @@ func TestWorkItemValidateForWorkflowCompile(t *testing.T) {
 	}
 }
 
+func TestWorkItemResumeAssignmentValidationAndJSON(t *testing.T) {
+	manifestJSON, reference := testCheckpointTransportArtifact(t)
+	resume := &WorkItemResumeAssignment{
+		Schema:               WorkItemResumeAssignmentSchemaV1,
+		ResumedFromAttemptID: "attempt-001",
+		ExecutionLineageID:   "lineage-001",
+		ResumeAttemptNumber:  1,
+		ManifestJSON:         manifestJSON,
+		Reference:            reference,
+	}
+	resumed := WorkItem{
+		ID:             "work-001",
+		AttemptID:      "attempt-002",
+		Resume:         resume,
+		Type:           WorkItemTypePythonScript,
+		OutputFilename: "output.json",
+		Source: &WorkItemSource{
+			RunID:        "run-001",
+			ManifestPath: "sources/workflow.manifest.json",
+		},
+	}
+	if err := resumed.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	data, err := json.Marshal(resumed)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"resume":{"schema":"goet/work-item-resume-assignment/v1"`) {
+		t.Fatalf("resumed JSON missing resume assignment: %s", data)
+	}
+
+	var decoded WorkItem
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if decoded.Resume == nil {
+		t.Fatal("decoded resume = nil")
+	}
+	if decoded.Resume.ManifestJSON != manifestJSON {
+		t.Fatal("work-item JSON round trip changed exact manifest_json")
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("decoded Validate() error = %v", err)
+	}
+
+	fresh := resumed
+	fresh.AttemptID = "attempt-fresh"
+	fresh.Resume = nil
+	freshJSON, err := json.Marshal(fresh)
+	if err != nil {
+		t.Fatalf("Marshal(fresh) error = %v", err)
+	}
+	if strings.Contains(string(freshJSON), `"resume"`) {
+		t.Fatalf("fresh work-item JSON contains resume field: %s", freshJSON)
+	}
+}
+
+func TestWorkItemRejectsInvalidResumeAssignment(t *testing.T) {
+	manifestJSON, reference := testCheckpointTransportArtifact(t)
+	valid := WorkItem{
+		ID:             "work-001",
+		AttemptID:      "attempt-002",
+		Type:           WorkItemTypePythonScript,
+		OutputFilename: "output.json",
+		Source: &WorkItemSource{
+			RunID:        "run-001",
+			ManifestPath: "sources/workflow.manifest.json",
+		},
+		Resume: &WorkItemResumeAssignment{
+			Schema:               WorkItemResumeAssignmentSchemaV1,
+			ResumedFromAttemptID: "attempt-001",
+			ExecutionLineageID:   "lineage-001",
+			ResumeAttemptNumber:  1,
+			ManifestJSON:         manifestJSON,
+			Reference:            reference,
+		},
+	}
+
+	for _, test := range []struct {
+		name    string
+		mutate  func(*WorkItem)
+		wantErr string
+	}{
+		{
+			name:    "missing new attempt",
+			mutate:  func(item *WorkItem) { item.AttemptID = "" },
+			wantErr: "attempt_id is required for resume assignment",
+		},
+		{
+			name:    "reuses predecessor attempt",
+			mutate:  func(item *WorkItem) { item.AttemptID = item.Resume.ResumedFromAttemptID },
+			wantErr: "must use a new attempt_id",
+		},
+		{
+			name:    "nested work item mismatch",
+			mutate:  func(item *WorkItem) { item.ID = "work-002" },
+			wantErr: "resume assignment: manifest work_item_id must match",
+		},
+		{
+			name:    "nested type mismatch",
+			mutate:  func(item *WorkItem) { item.Type = WorkItemTypeAssetMaterialize },
+			wantErr: "resume assignment: manifest work_item_type must match",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := valid
+			assignment := *valid.Resume
+			candidate.Resume = &assignment
+			test.mutate(&candidate)
+			err := candidate.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestWorkItemSourceValidate(t *testing.T) {
 	tests := []struct {
 		name    string

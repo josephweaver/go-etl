@@ -208,8 +208,9 @@ type ConfirmCheckpointRequest struct {
 }
 
 type ConfirmCheckpointResult struct {
-	Artifact  ResumeArtifactRecord
-	Suspended *SuspendedWorkRecord
+	Artifact     ResumeArtifactRecord
+	Suspended    *SuspendedWorkRecord
+	Transitioned bool
 }
 
 type SuspendFromLatestCheckpointRequest struct {
@@ -222,9 +223,51 @@ type SuspendFromLatestCheckpointRequest struct {
 }
 
 type SuspendFromLatestCheckpointResult struct {
-	Artifact  ResumeArtifactRecord
-	Suspended SuspendedWorkRecord
-	Found     bool
+	Artifact     ResumeArtifactRecord
+	Suspended    SuspendedWorkRecord
+	Found        bool
+	Transitioned bool
+}
+
+type ResumeAttemptLimitExceededError struct {
+	WorkItemID              string
+	ResumeArtifactID        string
+	ExecutionLineageID      string
+	NextResumeAttemptNumber int
+	ConfiguredLimit         int
+	QueuedAt                string
+}
+
+func (err *ResumeAttemptLimitExceededError) Error() string {
+	return fmt.Sprintf(
+		"%s for work item %s artifact %s: next attempt %d exceeds limit %d",
+		ErrResumeAttemptLimitExceeded,
+		err.WorkItemID,
+		err.ResumeArtifactID,
+		err.NextResumeAttemptNumber,
+		err.ConfiguredLimit,
+	)
+}
+
+func (err *ResumeAttemptLimitExceededError) Unwrap() error {
+	return ErrResumeAttemptLimitExceeded
+}
+
+type FailPendingResumeAttemptLimitRequest struct {
+	AttemptID               string
+	WorkItemID              string
+	ResumeArtifactID        string
+	ExecutionLineageID      string
+	NextResumeAttemptNumber int
+	ConfiguredLimit         int
+	QueuedAt                string
+	FailedAt                string
+}
+
+type FailPendingResumeAttemptLimitResult struct {
+	WorkItem     WorkItemRecord
+	Failed       FailedWorkRecord
+	Terminalized bool
 }
 
 type QueueWorkItemsRequest struct {
@@ -1967,6 +2010,7 @@ func (s *Store) ConfirmCheckpoint(ctx context.Context, request ConfirmCheckpoint
 			return ConfirmCheckpointResult{}, err
 		}
 		result.Suspended = &suspended
+		result.Transitioned = true
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2012,9 +2056,10 @@ func (s *Store) SuspendFromLatestCheckpoint(ctx context.Context, request Suspend
 			return SuspendFromLatestCheckpointResult{}, fmt.Errorf("suspended attempt %s references missing artifact", request.AttemptID)
 		}
 		return SuspendFromLatestCheckpointResult{
-			Artifact:  artifact,
-			Suspended: existing,
-			Found:     true,
+			Artifact:     artifact,
+			Suspended:    existing,
+			Found:        true,
+			Transitioned: false,
 		}, nil
 	}
 	if err := validateRunningAssignmentOwner(ctx, tx, running, request.WorkerID, request.WorkerSessionID, request.LiveSessionCutoff); err != nil {
@@ -2047,9 +2092,117 @@ func (s *Store) SuspendFromLatestCheckpoint(ctx context.Context, request Suspend
 		return SuspendFromLatestCheckpointResult{}, fmt.Errorf("commit suspend from latest checkpoint: %w", err)
 	}
 	return SuspendFromLatestCheckpointResult{
-		Artifact:  artifact,
-		Suspended: suspended,
-		Found:     true,
+		Artifact:     artifact,
+		Suspended:    suspended,
+		Found:        true,
+		Transitioned: true,
+	}, nil
+}
+
+func (s *Store) FailPendingResumeAttemptLimit(ctx context.Context, request FailPendingResumeAttemptLimitRequest) (FailPendingResumeAttemptLimitResult, error) {
+	if err := s.requireOpen(); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if err := request.validate(); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("begin fail pending resume attempt limit: %w", err)
+	}
+	defer tx.Rollback()
+
+	if existing, found, err := getFailedWork(ctx, tx, request.AttemptID); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("get retry-limit failed work %s: %w", request.AttemptID, err)
+	} else if found {
+		return replayPendingResumeAttemptLimitFailure(ctx, tx, request, existing)
+	}
+
+	queued, found, err := getQueuedResumeWork(ctx, tx, request.WorkItemID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if !found {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume work %s no longer exists", request.WorkItemID)
+	}
+	if queued.ResumeArtifactID != request.ResumeArtifactID || queued.QueuedAt != request.QueuedAt {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume work %s changed before limit terminalization", request.WorkItemID)
+	}
+
+	artifact, found, err := getResumeArtifact(ctx, tx, request.ResumeArtifactID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if !found {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume artifact %s no longer exists", request.ResumeArtifactID)
+	}
+	if artifact.WorkItemID != request.WorkItemID || artifact.ExecutionLineageID != request.ExecutionLineageID {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume artifact %s changed before limit terminalization", request.ResumeArtifactID)
+	}
+	nextAttemptNumber, err := nextResumeAttemptNumber(ctx, tx, artifact.ID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if nextAttemptNumber != request.NextResumeAttemptNumber || nextAttemptNumber <= request.ConfiguredLimit {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume work %s is not over the configured attempt limit", request.WorkItemID)
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO work_item_attempts (
+		attempt_id,
+		work_item_id,
+		executor_type,
+		started_at,
+		resumed_from_attempt_id,
+		resume_artifact_id,
+		execution_lineage_id,
+		resume_attempt_number
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		request.AttemptID,
+		request.WorkItemID,
+		ExecutorTypeController,
+		request.FailedAt,
+		artifact.ProducingAttemptID,
+		artifact.ID,
+		artifact.ExecutionLineageID,
+		nextAttemptNumber,
+	); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("insert retry-limit attempt %s: %w", request.AttemptID, err)
+	}
+
+	failed := FailedWorkRecord{
+		AttemptID:  request.AttemptID,
+		WorkItemID: request.WorkItemID,
+		Error:      "resume_attempt_limit_exhausted",
+		QueuedAt:   request.QueuedAt,
+		StartedAt:  request.FailedAt,
+		FailedAt:   request.FailedAt,
+	}
+	if err := insertFailedWork(ctx, tx, failed); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_work
+		WHERE work_item_id = ?
+			AND resume_artifact_id = ?
+			AND queued_at = ?`, request.WorkItemID, request.ResumeArtifactID, request.QueuedAt)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("delete retry-exhausted pending work %s: %w", request.WorkItemID, err)
+	}
+	deleted, err := rowsAffected(result)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("delete retry-exhausted pending work %s: %w", request.WorkItemID, err)
+	}
+	if !deleted {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("pending resume work %s changed before limit terminalization", request.WorkItemID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("commit fail pending resume attempt limit: %w", err)
+	}
+	return FailPendingResumeAttemptLimitResult{
+		WorkItem:     queued.WorkItemRecord,
+		Failed:       failed,
+		Terminalized: true,
 	}, nil
 }
 
@@ -2179,7 +2332,14 @@ func claimQueuedWork(ctx context.Context, tx *sql.Tx, request ClaimWorkRequest, 
 			return ClaimedWorkRecord{}, false, err
 		}
 		if resumeAttemptNumber > request.ResumeAttemptLimit {
-			return ClaimedWorkRecord{}, false, ErrResumeAttemptLimitExceeded
+			return ClaimedWorkRecord{}, false, &ResumeAttemptLimitExceededError{
+				WorkItemID:              queued.ID,
+				ResumeArtifactID:        artifact.ID,
+				ExecutionLineageID:      artifact.ExecutionLineageID,
+				NextResumeAttemptNumber: resumeAttemptNumber,
+				ConfiguredLimit:         request.ResumeAttemptLimit,
+				QueuedAt:                queued.QueuedAt,
+			}
 		}
 		resumedFromAttemptID = artifact.ProducingAttemptID
 		executionLineageID = artifact.ExecutionLineageID
@@ -2655,6 +2815,171 @@ func replayCheckpointConfirmation(
 		return ConfirmCheckpointResult{}, fmt.Errorf("checkpoint suspension %s conflicts with existing state", request.AttemptID)
 	}
 	return ConfirmCheckpointResult{Artifact: artifact, Suspended: &suspended}, nil
+}
+
+func (request FailPendingResumeAttemptLimitRequest) validate() error {
+	if request.AttemptID == "" {
+		return fmt.Errorf("retry-limit attempt id is required")
+	}
+	if request.WorkItemID == "" {
+		return fmt.Errorf("retry-limit work item id is required")
+	}
+	if request.ResumeArtifactID == "" {
+		return fmt.Errorf("retry-limit resume artifact id is required")
+	}
+	if request.ExecutionLineageID == "" {
+		return fmt.Errorf("retry-limit execution lineage id is required")
+	}
+	if request.ConfiguredLimit <= 0 {
+		return fmt.Errorf("retry-limit configured limit must be positive")
+	}
+	if request.NextResumeAttemptNumber <= request.ConfiguredLimit {
+		return fmt.Errorf("retry-limit next resume attempt number must exceed configured limit")
+	}
+	if err := validateTimestamp("retry-limit queued at", request.QueuedAt); err != nil {
+		return err
+	}
+	if err := validateTimestamp("retry-limit failed at", request.FailedAt); err != nil {
+		return err
+	}
+	return nil
+}
+
+type resumeTerminalDecisionState struct {
+	workItemID           string
+	workerID             string
+	workerSessionID      string
+	executorType         string
+	startedAt            string
+	resumedFromAttemptID string
+	resumeArtifactID     string
+	executionLineageID   string
+	resumeAttemptNumber  int
+}
+
+func replayPendingResumeAttemptLimitFailure(
+	ctx context.Context,
+	tx *sql.Tx,
+	request FailPendingResumeAttemptLimitRequest,
+	failed FailedWorkRecord,
+) (FailPendingResumeAttemptLimitResult, error) {
+	state, found, err := getResumeTerminalDecisionState(ctx, tx, request.AttemptID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if !found ||
+		state.workItemID != request.WorkItemID ||
+		state.workerID != "" ||
+		state.workerSessionID != "" ||
+		state.executorType != ExecutorTypeController ||
+		state.startedAt != request.FailedAt ||
+		state.resumeArtifactID != request.ResumeArtifactID ||
+		state.executionLineageID != request.ExecutionLineageID ||
+		state.resumeAttemptNumber != request.NextResumeAttemptNumber ||
+		failed.WorkItemID != request.WorkItemID ||
+		failed.Error != "resume_attempt_limit_exhausted" ||
+		failed.QueuedAt != request.QueuedAt ||
+		failed.StartedAt != request.FailedAt ||
+		failed.FailedAt != request.FailedAt {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("retry-limit attempt %s conflicts with existing terminal state", request.AttemptID)
+	}
+
+	artifact, found, err := getResumeArtifact(ctx, tx, request.ResumeArtifactID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if !found || artifact.ProducingAttemptID != state.resumedFromAttemptID {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("retry-limit attempt %s references conflicting resume state", request.AttemptID)
+	}
+	workItem, found, err := getWorkItem(ctx, tx, request.WorkItemID)
+	if err != nil {
+		return FailPendingResumeAttemptLimitResult{}, err
+	}
+	if !found {
+		return FailPendingResumeAttemptLimitResult{}, fmt.Errorf("retry-limit work item %s no longer exists", request.WorkItemID)
+	}
+	return FailPendingResumeAttemptLimitResult{
+		WorkItem:     workItem,
+		Failed:       failed,
+		Terminalized: false,
+	}, nil
+}
+
+func getResumeTerminalDecisionState(ctx context.Context, q queryer, attemptID string) (resumeTerminalDecisionState, bool, error) {
+	var state resumeTerminalDecisionState
+	err := q.QueryRowContext(ctx, `SELECT
+		work_item_id,
+		COALESCE(worker_id, ''),
+		COALESCE(worker_session_id, ''),
+		executor_type,
+		started_at,
+		COALESCE(resumed_from_attempt_id, ''),
+		COALESCE(resume_artifact_id, ''),
+		COALESCE(execution_lineage_id, ''),
+		COALESCE(resume_attempt_number, 0)
+	FROM work_item_attempts
+	WHERE attempt_id = ?`, attemptID).Scan(
+		&state.workItemID,
+		&state.workerID,
+		&state.workerSessionID,
+		&state.executorType,
+		&state.startedAt,
+		&state.resumedFromAttemptID,
+		&state.resumeArtifactID,
+		&state.executionLineageID,
+		&state.resumeAttemptNumber,
+	)
+	if err == sql.ErrNoRows {
+		return resumeTerminalDecisionState{}, false, nil
+	}
+	if err != nil {
+		return resumeTerminalDecisionState{}, false, fmt.Errorf("get retry-limit attempt %s: %w", attemptID, err)
+	}
+	return state, true, nil
+}
+
+func getQueuedResumeWork(ctx context.Context, q queryer, workItemID string) (QueuedWorkRecord, bool, error) {
+	record, err := scanQueuedWork(q.QueryRowContext(ctx, `SELECT
+		work_items.work_item_id,
+		work_items.run_id,
+		work_items.stage_index,
+		work_items.work_item_index,
+		work_items.worker_payload_json,
+		work_items.resolved_inputs_sha256,
+		work_items.created_at,
+		queued_work.queued_at,
+		COALESCE(queued_work.resume_artifact_id, '')
+	FROM queued_work
+	JOIN work_items ON work_items.work_item_id = queued_work.work_item_id
+	WHERE queued_work.work_item_id = ?`, workItemID))
+	if err == sql.ErrNoRows {
+		return QueuedWorkRecord{}, false, nil
+	}
+	if err != nil {
+		return QueuedWorkRecord{}, false, fmt.Errorf("get pending resume work %s: %w", workItemID, err)
+	}
+	return record, true, nil
+}
+
+func insertFailedWork(ctx context.Context, tx *sql.Tx, failed FailedWorkRecord) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO failed_work (
+		attempt_id,
+		work_item_id,
+		error,
+		queued_at,
+		started_at,
+		failed_at
+	) VALUES (?, ?, ?, ?, ?, ?)`,
+		failed.AttemptID,
+		failed.WorkItemID,
+		failed.Error,
+		failed.QueuedAt,
+		failed.StartedAt,
+		failed.FailedAt,
+	); err != nil {
+		return fmt.Errorf("insert failed work %s: %w", failed.AttemptID, err)
+	}
+	return nil
 }
 
 func validateNextCheckpointGeneration(

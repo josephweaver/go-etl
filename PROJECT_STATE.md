@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-07-30
+Last updated: 2026-08-01
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
 
@@ -12,9 +12,45 @@ periodic confirm-and-continue, atomic quantum/final confirm-and-suspend,
 fallback suspension, resume-aware claims with per-artifact attempt limits, and
 latest-accepted-checkpoint recovery after worker stop or expiry. This
 supersedes the earlier partial-implementation wording in the detailed
-work-item-pause and Controller CareTaker pointers below. Controller HTTP
-transport, worker timers/adapters, checkpoint bundle creation, and runtime
-restore are not implemented.
+work-item-pause and Controller CareTaker pointers below. OS-007 now implements
+controller HTTP transport and callable worker checkpoint requests. Worker
+timers/adapters, checkpoint bundle creation, and runtime restore are not
+implemented.
+
+2026-08-01 checkpoint transport update: OS-007 is implemented.
+`internal/model/checkpoint_transport.go` defines validated
+checkpoint confirmation, suspend-latest, acknowledgement, and resume-assignment
+contracts. The model preserves exact manifest JSON for digest verification,
+distinguishes confirmation from fallback suspension acknowledgements, and
+fences resume assignments to work-item identity/type, predecessor, lineage,
+and a positive per-artifact attempt number. `model.WorkItem` now carries the
+optional assignment, requires a distinct new attempt ID, omits resume metadata
+from fresh JSON, and preserves exact manifest JSON across resumed assignment
+round trips. Checkpoint store results now distinguish a newly committed suspend
+transition from an idempotent replay. Resume-limit claim errors carry the exact
+pending artifact decision facts, and an idempotent fail-closed store transaction
+records `resume_attempt_limit_exhausted` as a controller-owned terminal attempt
+before removing that exact pending row. Controller configuration now has a
+focused `resume_attempt_limit` resolver with an in-code default of `3` and
+positive-integer validation, and `cmd/controller/defaults.json` declares the
+same integer default. The controller authorization policy reserves both
+checkpoint POST paths for `worker` and `admin` roles, and the HTTP mux now
+registers owner-fenced handlers. Those handlers strictly decode bounded bodies,
+commit periodic/quantum/final confirmation or suspend-latest fallback through
+the checkpoint store, return validated acknowledgements, sanitize failures,
+and wake the CareTaker only for a newly committed suspension. Resume assignment
+claim mapping now returns the new attempt ID with exact predecessor, lineage,
+per-artifact attempt number, manifest JSON, and reference. Claims above the
+configured ceiling atomically create the controller-owned
+`resume_attempt_limit_exhausted` failure, propagate existing dependency-failure
+semantics, remove pending demand, wake the CareTaker once, and return no work.
+`WorkerControllerClient` now exposes checkpoint-confirmation and suspend-latest
+methods that preserve the shared request, attach required session headers,
+validate acknowledgement identity and operation, and do not include manifest
+content in HTTP error wrapping. Slice-wide verification passes for model,
+persistence, authorization, worker, and focused controller behavior; the full
+controller package retains the unrelated `TestNewStartupRuntimeScope`
+second-versus-nanosecond precision failure.
 
 ## Current Pointers
 

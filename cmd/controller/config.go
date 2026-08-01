@@ -15,6 +15,8 @@ const (
 	controllerKind       = "Controller"
 	defaultsKind         = "Defaults"
 	defaultsFilename     = "defaults.json"
+
+	defaultResumeAttemptLimit = 3
 )
 
 type ControllerConfig struct {
@@ -200,6 +202,27 @@ func validateWorkerHeartbeatPolicy(policy WorkerHeartbeatPolicy) error {
 		return fmt.Errorf("worker_dead_after must be at least twice worker_heartbeat_interval")
 	}
 	return nil
+}
+
+func resumeAttemptLimitConfig(resolver variable.Resolver) (int, error) {
+	value, found, err := resolver.Optional("controller_config.resume_attempt_limit")
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return defaultResumeAttemptLimit, nil
+	}
+	if value.Type != variable.TypeInt {
+		return 0, fmt.Errorf("resume_attempt_limit has type %s, want int", value.Type)
+	}
+	limit, ok := value.Value.(int)
+	if !ok {
+		return 0, fmt.Errorf("resume_attempt_limit must be an int")
+	}
+	if limit <= 0 {
+		return 0, fmt.Errorf("resume_attempt_limit must be greater than zero")
+	}
+	return limit, nil
 }
 
 func loadControllerStartupSources(controllerPath string) (controllerStartupSources, error) {

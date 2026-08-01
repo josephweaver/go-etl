@@ -51,6 +51,8 @@ func ControllerPolicy() Policy {
 		roleExact(http.MethodGet, "/work/next", RoleWorker, RoleAdmin),
 		roleExact(http.MethodPost, "/work/complete", RoleWorker, RoleAdmin),
 		roleExact(http.MethodPost, "/work/fail", RoleWorker, RoleAdmin),
+		roleExact(http.MethodPost, "/work/checkpoint/confirm", RoleWorker, RoleAdmin),
+		roleExact(http.MethodPost, "/work/checkpoint/suspend-latest", RoleWorker, RoleAdmin),
 		roleExact(http.MethodPost, "/workers/register", RoleWorker, RoleAdmin),
 		roleExact(http.MethodPost, "/workers/heartbeat", RoleWorker, RoleAdmin),
 		roleExact(http.MethodPost, "/workers/stop", RoleWorker, RoleAdmin),

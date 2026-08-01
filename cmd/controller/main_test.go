@@ -3264,6 +3264,573 @@ func submitAndClaimPersistedWork(t *testing.T, controller *Controller) model.Wor
 	return item
 }
 
+func TestCheckpointConfirmationHandlerContinuesThenSuspendsOnce(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	wakes := 0
+	controller.workerStateChanged = func(reason string) {
+		if reason != "checkpoint_suspended" {
+			t.Fatalf("worker state change reason = %q", reason)
+		}
+		wakes++
+	}
+
+	periodic := testCheckpointConfirmation(t, claim, "artifact-001", 1, model.CheckpointCaptureKindPeriodic, model.CheckpointDispositionContinue)
+	periodicResponse := postCheckpointConfirmation(t, controller, claim, periodic)
+	if periodicResponse.Code != http.StatusOK {
+		t.Fatalf("periodic status = %d, want 200: %s", periodicResponse.Code, periodicResponse.Body.String())
+	}
+	periodicAck := decodeCheckpointAcknowledgement(t, periodicResponse)
+	if err := periodicAck.Validate(); err != nil {
+		t.Fatalf("periodic acknowledgement validation: %v", err)
+	}
+	if periodicAck.Operation != model.CheckpointOperationConfirmation ||
+		periodicAck.ResumeArtifactID != "artifact-001" ||
+		periodicAck.ResumeGeneration != 1 ||
+		periodicAck.Suspended ||
+		periodicAck.AcceptedAt == "" {
+		t.Fatalf("periodic acknowledgement = %+v", periodicAck)
+	}
+	if wakes != 0 {
+		t.Fatalf("periodic wakes = %d, want 0", wakes)
+	}
+
+	periodicReplay := postCheckpointConfirmation(t, controller, claim, periodic)
+	if periodicReplay.Code != http.StatusOK {
+		t.Fatalf("periodic replay status = %d, want 200: %s", periodicReplay.Code, periodicReplay.Body.String())
+	}
+	if replayed := decodeCheckpointAcknowledgement(t, periodicReplay); replayed.AcceptedAt != periodicAck.AcceptedAt {
+		t.Fatalf("periodic replay accepted_at = %q, want %q", replayed.AcceptedAt, periodicAck.AcceptedAt)
+	}
+	if wakes != 0 {
+		t.Fatalf("periodic replay wakes = %d, want 0", wakes)
+	}
+
+	quantum := testCheckpointConfirmation(t, claim, "artifact-002", 2, model.CheckpointCaptureKindQuantum, model.CheckpointDispositionSuspend)
+	quantum.SuspendedAt = "2026-08-01T00:10:00Z"
+	quantumResponse := postCheckpointConfirmation(t, controller, claim, quantum)
+	if quantumResponse.Code != http.StatusOK {
+		t.Fatalf("quantum status = %d, want 200: %s", quantumResponse.Code, quantumResponse.Body.String())
+	}
+	quantumAck := decodeCheckpointAcknowledgement(t, quantumResponse)
+	if err := quantumAck.Validate(); err != nil {
+		t.Fatalf("quantum acknowledgement validation: %v", err)
+	}
+	if !quantumAck.Suspended ||
+		quantumAck.Disposition != model.CheckpointDispositionSuspend ||
+		quantumAck.SuspendedAt != quantum.SuspendedAt {
+		t.Fatalf("quantum acknowledgement = %+v", quantumAck)
+	}
+	if wakes != 1 {
+		t.Fatalf("quantum wakes = %d, want 1", wakes)
+	}
+
+	quantumReplay := postCheckpointConfirmation(t, controller, claim, quantum)
+	if quantumReplay.Code != http.StatusOK {
+		t.Fatalf("quantum replay status = %d, want 200: %s", quantumReplay.Code, quantumReplay.Body.String())
+	}
+	if wakes != 1 {
+		t.Fatalf("quantum replay wakes = %d, want 1", wakes)
+	}
+	if _, found, err := store.GetRunningWork(context.Background(), claim.AttemptID); err != nil || found {
+		t.Fatalf("GetRunningWork(suspended) found=%v error=%v", found, err)
+	}
+}
+
+func TestCheckpointConfirmationHandlerAcceptsFinalSuspension(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	wakes := 0
+	controller.workerStateChanged = func(reason string) { wakes++ }
+	final := testCheckpointConfirmation(t, claim, "artifact-final", 1, model.CheckpointCaptureKindFinal, model.CheckpointDispositionSuspend)
+	final.SuspendedAt = "2026-08-01T00:15:00Z"
+
+	response := postCheckpointConfirmation(t, controller, claim, final)
+	if response.Code != http.StatusOK {
+		t.Fatalf("final status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	acknowledgement := decodeCheckpointAcknowledgement(t, response)
+	if err := acknowledgement.Validate(); err != nil {
+		t.Fatalf("final acknowledgement validation: %v", err)
+	}
+	if acknowledgement.CaptureKind != model.CheckpointCaptureKindFinal ||
+		!acknowledgement.Suspended ||
+		acknowledgement.SuspendedAt != final.SuspendedAt ||
+		wakes != 1 {
+		t.Fatalf("final acknowledgement=%+v wakes=%d", acknowledgement, wakes)
+	}
+}
+
+func TestSuspendLatestCheckpointHandlerUsesAcceptedGenerationAndReplaysOnce(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	wakes := 0
+	controller.workerStateChanged = func(reason string) { wakes++ }
+
+	periodic := testCheckpointConfirmation(t, claim, "artifact-001", 1, model.CheckpointCaptureKindPeriodic, model.CheckpointDispositionContinue)
+	if response := postCheckpointConfirmation(t, controller, claim, periodic); response.Code != http.StatusOK {
+		t.Fatalf("periodic status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	request := model.WorkCheckpointSuspendLatest{
+		AttemptID:     claim.AttemptID,
+		SuspendedAt:   "2026-08-01T00:20:00Z",
+		SuspendReason: model.CheckpointSuspendReasonShutdown,
+	}
+
+	response := postSuspendLatestCheckpoint(t, controller, claim, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("suspend-latest status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	acknowledgement := decodeCheckpointAcknowledgement(t, response)
+	if err := acknowledgement.Validate(); err != nil {
+		t.Fatalf("suspend-latest acknowledgement validation: %v", err)
+	}
+	if acknowledgement.Operation != model.CheckpointOperationSuspendLatest ||
+		acknowledgement.ResumeArtifactID != "artifact-001" ||
+		acknowledgement.SuspendedAt != request.SuspendedAt {
+		t.Fatalf("suspend-latest acknowledgement = %+v", acknowledgement)
+	}
+	if wakes != 1 {
+		t.Fatalf("suspend-latest wakes = %d, want 1", wakes)
+	}
+
+	replay := postSuspendLatestCheckpoint(t, controller, claim, request)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("suspend-latest replay status = %d, want 200: %s", replay.Code, replay.Body.String())
+	}
+	if wakes != 1 {
+		t.Fatalf("suspend-latest replay wakes = %d, want 1", wakes)
+	}
+}
+
+func TestSuspendLatestCheckpointHandlerRejectsMissingAcceptedGeneration(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	request := model.WorkCheckpointSuspendLatest{
+		AttemptID:     claim.AttemptID,
+		SuspendedAt:   "2026-08-01T00:20:00Z",
+		SuspendReason: model.CheckpointSuspendReasonShutdown,
+	}
+
+	response := postSuspendLatestCheckpoint(t, controller, claim, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "no_accepted_checkpoint") {
+		t.Fatalf("status = %d body=%q, want 409 no_accepted_checkpoint", response.Code, response.Body.String())
+	}
+	if _, found, err := store.GetRunningWork(context.Background(), claim.AttemptID); err != nil || !found {
+		t.Fatalf("GetRunningWork(no checkpoint) found=%v error=%v", found, err)
+	}
+}
+
+func TestCheckpointHandlersBoundAndSanitizeRequests(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	confirmation := testCheckpointConfirmation(t, claim, "artifact-001", 1, model.CheckpointCaptureKindPeriodic, model.CheckpointDispositionContinue)
+
+	t.Run("missing identity headers", func(t *testing.T) {
+		body, err := json.Marshal(confirmation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		controller.confirmCheckpointHandler(response, httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", bytes.NewReader(body)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", response.Code)
+		}
+	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", strings.NewReader(`{"attempt_id":"attempt-001","unexpected":true}`))
+		setTestWorkerSessionHeaders(request, claim.WorkerID, claim.WorkerSessionID)
+		response := httptest.NewRecorder()
+		controller.confirmCheckpointHandler(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", response.Code)
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		controller.maxRequestBytes = 8
+		request := httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", strings.NewReader(`{"attempt_id":"too-large"}`))
+		setTestWorkerSessionHeaders(request, claim.WorkerID, claim.WorkerSessionID)
+		response := httptest.NewRecorder()
+		controller.confirmCheckpointHandler(response, request)
+		if response.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", response.Code)
+		}
+		controller.maxRequestBytes = 0
+	})
+
+	t.Run("validation does not echo manifest", func(t *testing.T) {
+		secret := "checkpoint-secret-sentinel"
+		invalid := confirmation
+		invalid.ManifestJSON = secret
+		body, err := json.Marshal(invalid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", bytes.NewReader(body))
+		setTestWorkerSessionHeaders(request, claim.WorkerID, claim.WorkerSessionID)
+		response := httptest.NewRecorder()
+		controller.confirmCheckpointHandler(response, request)
+		if response.Code != http.StatusBadRequest || strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("status = %d body=%q, want sanitized 400", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestCheckpointConfirmationHandlerFencesOwnerAndArtifactIdentity(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	claim := setupCheckpointHandlerAttempt(t, controller)
+	confirmation := testCheckpointConfirmation(t, claim, "artifact-001", 1, model.CheckpointCaptureKindPeriodic, model.CheckpointDispositionContinue)
+
+	wrongOwnerBody, err := json.Marshal(confirmation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongOwner := httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", bytes.NewReader(wrongOwnerBody))
+	setTestWorkerSessionHeaders(wrongOwner, "worker-other", "session-other")
+	wrongOwnerResponse := httptest.NewRecorder()
+	controller.confirmCheckpointHandler(wrongOwnerResponse, wrongOwner)
+	if wrongOwnerResponse.Code != http.StatusConflict || !strings.Contains(wrongOwnerResponse.Body.String(), "assignment_no_longer_owned") {
+		t.Fatalf("wrong owner status=%d body=%q", wrongOwnerResponse.Code, wrongOwnerResponse.Body.String())
+	}
+
+	conflict := confirmation
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(conflict.ManifestJSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.WorkItemID = "work-other"
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict.ManifestJSON = string(manifestJSON)
+	conflict.Reference.ManifestSHA256 = sha256HexString(conflict.ManifestJSON)
+	conflictResponse := postCheckpointConfirmation(t, controller, claim, conflict)
+	if conflictResponse.Code != http.StatusConflict || !strings.Contains(conflictResponse.Body.String(), "checkpoint_conflict") {
+		t.Fatalf("artifact conflict status=%d body=%q", conflictResponse.Code, conflictResponse.Body.String())
+	}
+}
+
+func TestRegisterControllerRoutesIncludesCheckpointHandlers(t *testing.T) {
+	controller := newController()
+	mux := http.NewServeMux()
+	registerControllerRoutes(mux, controller)
+	for _, path := range []string{"/work/checkpoint/confirm", "/work/checkpoint/suspend-latest"} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("POST %s status = %d, want registered handler 503", path, response.Code)
+		}
+	}
+}
+
+func TestCheckpointResumeClaimReturnsExactAssignment(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	initial := setupCheckpointHandlerAttempt(t, controller)
+	checkpoint := testCheckpointConfirmation(t, initial, "artifact-001", 1, model.CheckpointCaptureKindQuantum, model.CheckpointDispositionSuspend)
+	checkpoint.SuspendedAt = "2026-08-01T00:30:00Z"
+	if response := postCheckpointConfirmation(t, controller, initial, checkpoint); response.Code != http.StatusOK {
+		t.Fatalf("checkpoint status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
+	response := httptest.NewRecorder()
+	controller.nextWorkHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resume claim status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var item model.WorkItem
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatalf("decode resumed work item: %v", err)
+	}
+	if item.AttemptID == "" || item.AttemptID == initial.AttemptID {
+		t.Fatalf("resumed attempt_id = %q, want distinct new id", item.AttemptID)
+	}
+	if item.Resume == nil ||
+		item.Resume.Schema != model.WorkItemResumeAssignmentSchemaV1 ||
+		item.Resume.ResumedFromAttemptID != initial.AttemptID ||
+		item.Resume.ExecutionLineageID != "lineage-001" ||
+		item.Resume.ResumeAttemptNumber != 1 ||
+		item.Resume.ManifestJSON != checkpoint.ManifestJSON ||
+		item.Resume.Reference != checkpoint.Reference {
+		t.Fatalf("resume assignment = %+v", item.Resume)
+	}
+	if err := item.Validate(); err != nil {
+		t.Fatalf("resumed work item validation: %v", err)
+	}
+}
+
+func TestCheckpointFreshClaimOmitsResumeAssignment(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	submit := httptest.NewRequest(http.MethodPost, "/work", strings.NewReader(`{
+		"id":"fresh-work-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResponse := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResponse, submit)
+	if submitResponse.Code != http.StatusNoContent {
+		t.Fatalf("submit status = %d: %s", submitResponse.Code, submitResponse.Body.String())
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	withTestWorkerSessionHeaders(t, controller, request)
+	response := httptest.NewRecorder()
+	controller.nextWorkHandler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("fresh claim status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), `"resume"`) {
+		t.Fatalf("fresh claim unexpectedly contains resume: %s", response.Body.String())
+	}
+}
+
+func TestCheckpointResumeAttemptLimitTerminalizesAndPropagates(t *testing.T) {
+	store := openTestWorkflowExecutionStore(t)
+	defer store.Close()
+	controller := newController()
+	controller.workflowStore = store
+	controller.launchResolver = variable.NewResolver(variable.NewSet(testStartupScope(t,
+		testStartupVariable(variable.NamespaceControllerConfig, "resume_attempt_limit", variable.TypeInt, 1),
+	)), variable.ResolverConfig{})
+	initial := setupCheckpointHandlerAttempt(t, controller)
+	checkpoint := testCheckpointConfirmation(t, initial, "artifact-001", 1, model.CheckpointCaptureKindQuantum, model.CheckpointDispositionSuspend)
+	checkpoint.SuspendedAt = "2026-08-01T00:30:00Z"
+	if response := postCheckpointConfirmation(t, controller, initial, checkpoint); response.Code != http.StatusOK {
+		t.Fatalf("checkpoint status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+
+	registerCheckpointTestWorker(t, store, "resume-worker-001", "resume-session-001")
+	firstResumeRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	setTestWorkerSessionHeaders(firstResumeRequest, "resume-worker-001", "resume-session-001")
+	firstResumeResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(firstResumeResponse, firstResumeRequest)
+	if firstResumeResponse.Code != http.StatusOK {
+		t.Fatalf("first resume status = %d, want 200: %s", firstResumeResponse.Code, firstResumeResponse.Body.String())
+	}
+	var firstResume model.WorkItem
+	if err := json.NewDecoder(firstResumeResponse.Body).Decode(&firstResume); err != nil {
+		t.Fatalf("decode first resume: %v", err)
+	}
+	if firstResume.Resume == nil || firstResume.Resume.ResumeAttemptNumber != 1 {
+		t.Fatalf("first resume assignment = %+v", firstResume.Resume)
+	}
+	if _, err := store.StopWorkerSessionAndRecoverWork(context.Background(), persistence.StopWorkerSessionAndRecoverWorkRequest{
+		WorkerID:  "resume-worker-001",
+		SessionID: "resume-session-001",
+		StoppedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:    "test_resume_interruption",
+	}); err != nil {
+		t.Fatalf("StopWorkerSessionAndRecoverWork() error = %v", err)
+	}
+
+	wakeReasons := []string{}
+	controller.workerStateChanged = func(reason string) { wakeReasons = append(wakeReasons, reason) }
+	registerCheckpointTestWorker(t, store, "resume-worker-002", "resume-session-002")
+	limitRequest := httptest.NewRequest(http.MethodGet, "/work/next", nil)
+	setTestWorkerSessionHeaders(limitRequest, "resume-worker-002", "resume-session-002")
+	limitResponse := httptest.NewRecorder()
+	controller.nextWorkHandler(limitResponse, limitRequest)
+	if limitResponse.Code != http.StatusNoContent {
+		t.Fatalf("limit status = %d, want 204: %s", limitResponse.Code, limitResponse.Body.String())
+	}
+	if len(wakeReasons) != 1 || wakeReasons[0] != "resume_attempt_limit_exhausted" {
+		t.Fatalf("wake reasons = %v", wakeReasons)
+	}
+
+	queued, err := store.ListQueuedWorkItems(context.Background())
+	if err != nil {
+		t.Fatalf("ListQueuedWorkItems() error = %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued work after limit = %+v, want empty", queued)
+	}
+	terminals, err := store.ListTerminalAttemptsForRun(context.Background(), rawPersistenceRunID)
+	if err != nil {
+		t.Fatalf("ListTerminalAttemptsForRun() error = %v", err)
+	}
+	if len(terminals) != 1 ||
+		terminals[0].WorkItem.ID != initial.WorkItem.ID ||
+		terminals[0].TerminalState != "failed" ||
+		terminals[0].ExecutorType != persistence.ExecutorTypeController ||
+		terminals[0].Error != "resume_attempt_limit_exhausted" {
+		t.Fatalf("terminal attempts = %+v", terminals)
+	}
+}
+
+func registerCheckpointTestWorker(t *testing.T, store *persistence.Store, workerID string, sessionID string) {
+	t.Helper()
+	if _, err := store.RegisterWorkerSession(context.Background(), persistence.RegisterWorkerSessionRequest{
+		WorkerID:     workerID,
+		SessionID:    sessionID,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("RegisterWorkerSession(%s) error = %v", sessionID, err)
+	}
+}
+
+func setupCheckpointHandlerAttempt(t *testing.T, controller *Controller) persistence.ClaimedWorkRecord {
+	t.Helper()
+	submit := httptest.NewRequest(http.MethodPost, "/work", strings.NewReader(`{
+		"id":"checkpoint-work-001",
+		"type":"write_demo_output",
+		"output_filename":"result.txt"
+	}`))
+	submitResponse := httptest.NewRecorder()
+	controller.submitWorkHandler(submitResponse, submit)
+	if submitResponse.Code != http.StatusNoContent {
+		t.Fatalf("submit checkpoint work status = %d: %s", submitResponse.Code, submitResponse.Body.String())
+	}
+
+	claimRequest := testWorkerClaimRequest(t, controller.workflowStore, "checkpoint-attempt-001", "2026-08-01T00:00:00Z")
+	claimRequest.ResumeAttemptLimit = defaultResumeAttemptLimit
+	claim, found, err := controller.workflowStore.ClaimNextWork(context.Background(), claimRequest)
+	if err != nil || !found {
+		t.Fatalf("ClaimNextWork(checkpoint setup) found=%v error=%v", found, err)
+	}
+	return claim
+}
+
+func testCheckpointConfirmation(
+	t *testing.T,
+	claim persistence.ClaimedWorkRecord,
+	artifactID string,
+	generation int,
+	captureKind model.CheckpointCaptureKind,
+	disposition model.CheckpointDisposition,
+) model.WorkCheckpointConfirmation {
+	t.Helper()
+	storagePath := "goetl/resume/" + artifactID
+	statePath := "state/checkpoint.json"
+	manifest := model.ResumeArtifactManifest{
+		Schema:              model.ResumeArtifactSchemaV1,
+		ResumeArtifactID:    artifactID,
+		ResumeGeneration:    generation,
+		PauseStrategy:       model.PauseStrategyManual,
+		WorkItemID:          claim.WorkItem.ID,
+		WorkItemType:        model.WorkItemTypeWriteDemoOutput,
+		ProducingAttemptID:  claim.AttemptID,
+		ExecutionLineageID:  "lineage-001",
+		InputFingerprint:    "input-v1",
+		SourceVersion:       "source-v1",
+		CodeVersion:         "code-v1",
+		CreatedAt:           "2026-08-01T00:01:00Z",
+		StorageScope:        model.ResumeArtifactStorageScopeSharedTmp,
+		StorageRelativePath: storagePath,
+		RetentionPolicy:     model.ResumeArtifactRetentionWhileReferenced,
+		Compatibility: model.ResumeArtifactCompatibility{
+			AdapterID:                      "manual-test",
+			AdapterVersion:                 "1",
+			WorkerExecutionContractVersion: "1",
+			WorkerVersion:                  "test",
+			ContainerImageIdentity:         "sha256:test",
+			OperatingSystem:                "linux",
+			Architecture:                   "amd64",
+			ContainerRuntime:               "test",
+		},
+		Files: []model.ResumeArtifactFile{{
+			Path:      statePath,
+			SizeBytes: 10,
+			SHA256:    strings.Repeat("a", 64),
+		}},
+		Manual: &model.ManualResumePayload{
+			HandlerID:      "write-demo-output",
+			HandlerVersion: "1",
+			StateSchema:    "test/v1",
+			StateFilePath:  statePath,
+		},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.WorkCheckpointConfirmation{
+		AttemptID:    claim.AttemptID,
+		ManifestJSON: string(manifestJSON),
+		Reference: model.ResumeArtifactReference{
+			Schema:               model.ResumeArtifactSchemaV1,
+			ResumeArtifactID:     artifactID,
+			StorageScope:         model.ResumeArtifactStorageScopeSharedTmp,
+			ManifestRelativePath: storagePath + "/manifest.json",
+			ManifestSHA256:       sha256HexString(string(manifestJSON)),
+		},
+		CaptureKind: captureKind,
+		Disposition: disposition,
+	}
+}
+
+func postCheckpointConfirmation(
+	t *testing.T,
+	controller *Controller,
+	claim persistence.ClaimedWorkRecord,
+	confirmation model.WorkCheckpointConfirmation,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(confirmation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/work/checkpoint/confirm", bytes.NewReader(body))
+	setTestWorkerSessionHeaders(request, claim.WorkerID, claim.WorkerSessionID)
+	response := httptest.NewRecorder()
+	controller.confirmCheckpointHandler(response, request)
+	return response
+}
+
+func postSuspendLatestCheckpoint(
+	t *testing.T,
+	controller *Controller,
+	claim persistence.ClaimedWorkRecord,
+	suspension model.WorkCheckpointSuspendLatest,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(suspension)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/work/checkpoint/suspend-latest", bytes.NewReader(body))
+	setTestWorkerSessionHeaders(request, claim.WorkerID, claim.WorkerSessionID)
+	response := httptest.NewRecorder()
+	controller.suspendLatestCheckpointHandler(response, request)
+	return response
+}
+
+func decodeCheckpointAcknowledgement(t *testing.T, response *httptest.ResponseRecorder) model.WorkCheckpointAcknowledgement {
+	t.Helper()
+	var acknowledgement model.WorkCheckpointAcknowledgement
+	if err := json.NewDecoder(response.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode checkpoint acknowledgement: %v", err)
+	}
+	return acknowledgement
+}
+
 func TestNextWorkHandlerReturnsNoContentForEmptyPersistedQueue(t *testing.T) {
 	store := openTestWorkflowExecutionStore(t)
 	defer store.Close()

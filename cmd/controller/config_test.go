@@ -279,6 +279,7 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		"controller_artifact_cache_path",
 		"caretaker_interval_schedule_milliseconds",
 		"caretaker_missed_interval_limit",
+		"resume_attempt_limit",
 		"resolver_max_depth",
 		"controller_log_root_path",
 		"controller_filesystem_logging_enabled",
@@ -327,6 +328,13 @@ func TestLoadDefaultsDocument(t *testing.T) {
 		t.Fatalf("build checked-in defaults scope: %v", err)
 	}
 	resolver := variable.NewResolver(variable.NewSet(defaultScope), variable.ResolverConfig{})
+	resumeAttemptLimit, err := resumeAttemptLimitConfig(resolver)
+	if err != nil {
+		t.Fatalf("resolve resume_attempt_limit default: %v", err)
+	}
+	if resumeAttemptLimit != 3 {
+		t.Fatalf("resume_attempt_limit = %d, want 3", resumeAttemptLimit)
+	}
 
 	authValue, err := resolver.Resolve(variable.Reference{Name: variable.Name{Key: "authentication"}})
 	if err != nil {
@@ -474,6 +482,61 @@ func TestWorkerHeartbeatPolicyConfig(t *testing.T) {
 	}
 	if policy.DeadAfter != 2*time.Minute {
 		t.Fatalf("dead after = %s, want 2m", policy.DeadAfter)
+	}
+}
+
+func TestResumeAttemptLimitConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		variables []variable.Variable
+		want      int
+	}{
+		{name: "omitted uses controller default", want: defaultResumeAttemptLimit},
+		{
+			name: "configured positive integer",
+			variables: []variable.Variable{
+				testStartupVariable(variable.NamespaceControllerConfig, "resume_attempt_limit", variable.TypeInt, 5),
+			},
+			want: 5,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t, test.variables...)), variable.ResolverConfig{})
+			got, err := resumeAttemptLimitConfig(resolver)
+			if err != nil {
+				t.Fatalf("resumeAttemptLimitConfig() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("resumeAttemptLimitConfig() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResumeAttemptLimitConfigRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		valueType  variable.Type
+		expression any
+		want       string
+	}{
+		{name: "zero", valueType: variable.TypeInt, expression: 0, want: "greater than zero"},
+		{name: "negative", valueType: variable.TypeInt, expression: -1, want: "greater than zero"},
+		{name: "non integer", valueType: variable.TypeString, expression: "3", want: "want int"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := variable.NewResolver(variable.NewSet(testStartupScope(t,
+				testStartupVariable(variable.NamespaceControllerConfig, "resume_attempt_limit", test.valueType, test.expression),
+			)), variable.ResolverConfig{})
+			_, err := resumeAttemptLimitConfig(resolver)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("resumeAttemptLimitConfig() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
