@@ -262,6 +262,154 @@ Questions:
 
 ## 5. Lifecycle of a Worker
 
+claimed work item
+→ worker reads work-item type
+→ chooses a handler
+→ handler performs the operation
+→ handler returns success, failure, and evidence
+
+### Question
+
+After the worker receives a work item, how does it decide which code executes it?
+
+### Initial model
+
+The work item contains a type or operation name. The worker dispatches it to
+the corresponding implementation.
+
+Examples might include:
+
+- `python_script`
+- `asset.materialize`
+- `commit_data`
+- geospatial operations
+
+## Worker Execution and Dispatch
+
+### 1. What field identifies the work-item type?
+
+The work-item type is identified by the `WorkItem.Type` field.
+
+This field determines which operation the worker will execute.
+
+---
+
+### 2. What function first receives the claimed work item?
+
+The worker lifecycle (`runWorkerLoop`) receives the claimed work item from the controller and calls:
+
+```go
+Worker.Run(item)
+```
+
+`Worker.Run` is the generic entry point for executing all work items.
+
+---
+
+### 3. How is dispatch implemented?
+
+Dispatch is currently implemented using **switch statements**.
+
+The execution flow is:
+
+```text
+runWorkerLoop
+    ↓
+Worker.Run
+    ↓
+Worker.runWorkItem
+    ↓
+switch (item.Type)
+    ↓
+specific operation handler
+```
+
+For trusted Go operations, the worker first builds an `OperationContext` and then performs a second switch to call the appropriate operation.
+
+---
+
+### 4. What function executes a Python script?
+
+Python work items are executed by:
+
+```text
+Worker.runPythonScript()
+```
+
+implemented in:
+
+```text
+cmd/worker/work_python.go
+```
+
+---
+
+### 5. What common result type do handlers return?
+
+All handlers return:
+
+```go
+(WorkEvidence, error)
+```
+
+- `WorkEvidence` describes the successful outputs produced by the operation.
+- `error` indicates whether execution failed.
+
+---
+
+### 6. Which layer converts the handler result into `/work/complete` or `/work/fail`?
+
+This responsibility belongs to `runWorkerLoop()`.
+
+The control flow is:
+
+```text
+Worker.Run(item)
+        │
+        ├── success
+        │       ↓
+        │ ReportWorkComplete(...)
+        │
+        └── failure
+                ↓
+          ReportWorkFailed(...)
+                ↓
+          StopWorker(...)
+```
+
+The operation handlers never communicate directly with the controller.
+
+Instead:
+
+- **Operation handlers** perform the work.
+- **Worker.Run** dispatches to the correct handler.
+- **runWorkerLoop** manages the worker lifecycle and reports outcomes back to the controller.
+
+---
+
+## Architectural Boundary
+
+```text
+runWorkerLoop
+    owns:
+        • worker lifecycle
+        • registration
+        • heartbeat
+        • fetching work
+        • reporting completion/failure
+        • graceful shutdown
+
+Worker.Run / runWorkItem
+    owns:
+        • generic execution
+        • dispatching work items
+
+Individual handlers
+    (runPythonScript, AssetMaterialize, commitData, ...)
+    own:
+        • operation-specific behavior
+```
+ 
 ## 6. Execution Environments
 
 ## 7. Persistance
