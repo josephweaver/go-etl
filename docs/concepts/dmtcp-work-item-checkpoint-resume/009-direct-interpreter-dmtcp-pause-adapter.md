@@ -304,3 +304,24 @@ and protected-value log redaction.
 
 Explicit configuration/registration and the container-level
 adapter/supervisor smoke remain to be implemented.
+
+The fifth implementation increment completed on 2026-08-12. Worker config now
+accepts the explicit `pause_adapter_profile` value
+`direct_python_dmtcp_4_2` only with an enabled checkpoint policy and a complete
+`dmtcp_profile`. The profile records launch, command, restart, and direct-Python
+executables; shared temporary root; checkpoint signal; exact expected client
+count; DMTCP build; adapter and worker-contract versions; worker and container
+image identities; OS/architecture; and container runtime. Relative executable
+paths and the shared root resolve against the worker-config directory.
+
+Supplying DMTCP fields without the selector, selecting the profile without an
+enabled checkpoint mode, omitting the profile, using an unsupported selector
+or signal, or declaring fewer than one expected client fails config validation.
+The config converts to the adapter's launch profile and passes its stricter
+post-resolution validation. Omitted selector/profile values retain the existing
+disabled default. Production construction/registration is intentionally left
+for the next one-file increment, so this configuration cannot activate the
+adapter yet.
+
+Adapter construction/registration and the container-level adapter/supervisor
+smoke remain to be implemented.

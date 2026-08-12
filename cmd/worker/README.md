@@ -18,7 +18,9 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
   supervisor-outcome-to-worker-stop mapping.
 - `config.go` owns loading and validating worker runtime configuration,
   including the disabled, shutdown, periodic, and yield checkpoint-policy
-  shapes. No production pause adapter is enabled yet.
+  shapes. It also validates the explicit `direct_python_dmtcp_4_2` selector
+  and its complete pinned runtime/compatibility profile. Configuration alone
+  does not register the adapter yet, and omission preserves ordinary Python.
 - `direct.go` owns direct command parsing, work-item loading, attempt identity,
   one-shot execution, and local result writing.
 - `source_bundle_provider.go` owns controller-backed and local-file source ZIP
@@ -46,6 +48,11 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
   accepted-generation tracking, fallback selection, and bounded termination.
   The worker loop calls it for enabled checkpoint modes and resume assignments;
   no production pause adapter is registered yet.
+- `dmtcp_adapter.go` owns the direct-interpreter DMTCP implementation for the
+  scoped `python_script` shape. It validates fresh/resume launch, isolated
+  coordinator ownership, checkpoint generations, manifest-last publication,
+  restart image integrity, result finalization, and bounded cleanup. Production
+  registration remains a separate explicit wiring step.
 - `work_demo.go` owns the demo output-producing operation.
 - `work_summary.go` owns the input-file summary operation.
 - `demo-config.json` is the local demo worker configuration.

@@ -33,6 +33,25 @@ func TestLoadConfig(t *testing.T) {
 		"checkpoint_capture_timeout_seconds": 120,
 		"checkpoint_report_timeout_seconds": 60,
 		"execution_termination_grace_seconds": 30,
+		"pause_adapter_profile": "direct_python_dmtcp_4_2",
+		"dmtcp_profile": {
+			"launch_executable": "tools/dmtcp_launch",
+			"command_executable": "tools/dmtcp_command",
+			"restart_executable": "tools/dmtcp_restart",
+			"python_executable": "tools/python3",
+			"shared_tmp_root": "shared-checkpoints",
+			"checkpoint_signal": "12",
+			"expected_clients": 2,
+			"build_identity": "dmtcp-4.2.0-f8009ce7-python-3.11",
+			"adapter_id": "direct-interpreter-dmtcp",
+			"adapter_version": "1",
+			"worker_execution_contract_version": "goet/worker-execution/v1",
+			"worker_version": "worker-build-001",
+			"container_image_identity": "sha256:image-001",
+			"operating_system": "linux",
+			"architecture": "amd64",
+			"container_runtime": "singularity-ce-4.1.2"
+		},
 		"data_location_roots": {
 			"fixture": "fixtures"
 		}
@@ -133,6 +152,23 @@ func TestLoadConfig(t *testing.T) {
 
 	if config.ExecutionTerminationGraceSeconds != 30 {
 		t.Fatalf("unexpected execution termination grace seconds: %d", config.ExecutionTerminationGraceSeconds)
+	}
+
+	if config.PauseAdapterProfile != PauseAdapterProfileDirectPythonDMTCP42 || config.DMTCPProfile == nil {
+		t.Fatalf("unexpected pause adapter profile: %q %+v", config.PauseAdapterProfile, config.DMTCPProfile)
+	}
+	if config.DMTCPProfile.LaunchExecutable != filepath.Join(root, "tools", "dmtcp_launch") ||
+		config.DMTCPProfile.CommandExecutable != filepath.Join(root, "tools", "dmtcp_command") ||
+		config.DMTCPProfile.RestartExecutable != filepath.Join(root, "tools", "dmtcp_restart") ||
+		config.DMTCPProfile.PythonExecutable != filepath.Join(root, "tools", "python3") ||
+		config.DMTCPProfile.SharedTmpRoot != filepath.Join(root, "shared-checkpoints") {
+		t.Fatalf("unexpected resolved DMTCP profile: %+v", config.DMTCPProfile)
+	}
+	if config.DMTCPProfile.ExpectedClients != 2 || config.DMTCPProfile.BuildIdentity != "dmtcp-4.2.0-f8009ce7-python-3.11" {
+		t.Fatalf("unexpected DMTCP profile identity: %+v", config.DMTCPProfile)
+	}
+	if err := config.DMTCPProfile.launchProfile().validate(); err != nil {
+		t.Fatalf("resolved DMTCP launch profile is invalid: %v", err)
 	}
 
 	if config.DataLocationRoots["fixture"] != filepath.Join(root, "fixtures") {
@@ -390,6 +426,86 @@ func TestConfigValidateCheckpointPolicy(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("Validate() error = %v, want text %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestConfigValidatePauseAdapterProfile(t *testing.T) {
+	profile := DMTCPProfileConfig{
+		LaunchExecutable:               "dmtcp_launch",
+		CommandExecutable:              "dmtcp_command",
+		RestartExecutable:              "dmtcp_restart",
+		PythonExecutable:               "python3",
+		SharedTmpRoot:                  "shared-checkpoints",
+		CheckpointSignal:               "12",
+		ExpectedClients:                2,
+		BuildIdentity:                  "dmtcp-4.2.0-f8009ce7-python-3.11",
+		AdapterID:                      "direct-interpreter-dmtcp",
+		AdapterVersion:                 "1",
+		WorkerExecutionContractVersion: "goet/worker-execution/v1",
+		WorkerVersion:                  "worker-build-001",
+		ContainerImageIdentity:         "sha256:image-001",
+		OperatingSystem:                "linux",
+		Architecture:                   "amd64",
+		ContainerRuntime:               "singularity-ce-4.1.2",
+	}
+	periodic := Config{
+		LogDir: "logs", TmpDir: "tmp", DataDir: "data",
+		CheckpointMode: CheckpointModePeriodic, CheckpointIntervalSeconds: 300,
+		DrainPauseDelaySeconds: 300, CheckpointCaptureTimeoutSeconds: 120,
+		CheckpointReportTimeoutSeconds: 60, ExecutionTerminationGraceSeconds: 30,
+	}
+	selected := periodic
+	selected.PauseAdapterProfile = PauseAdapterProfileDirectPythonDMTCP42
+	selected.DMTCPProfile = &profile
+
+	tests := []struct {
+		name    string
+		config  Config
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{name: "omitted", config: periodic},
+		{name: "selected", config: selected},
+		{name: "profile without selector", config: periodic, mutate: func(config *Config) { config.DMTCPProfile = &profile }, wantErr: "requires pause_adapter_profile"},
+		{name: "selector without profile", config: periodic, mutate: func(config *Config) { config.PauseAdapterProfile = PauseAdapterProfileDirectPythonDMTCP42 }, wantErr: "requires dmtcp_profile"},
+		{name: "selector without checkpoint mode", config: Config{LogDir: "logs", TmpDir: "tmp", DataDir: "data"}, mutate: func(config *Config) {
+			config.PauseAdapterProfile = PauseAdapterProfileDirectPythonDMTCP42
+			config.DMTCPProfile = &profile
+		}, wantErr: "requires checkpoint_mode"},
+		{name: "unsupported selector", config: periodic, mutate: func(config *Config) { config.PauseAdapterProfile = "future" }, wantErr: "unsupported pause_adapter_profile"},
+		{name: "missing executable", config: selected, mutate: func(config *Config) {
+			copy := *config.DMTCPProfile
+			copy.RestartExecutable = ""
+			config.DMTCPProfile = &copy
+		}, wantErr: "dmtcp_profile.restart_executable is required"},
+		{name: "invalid client count", config: selected, mutate: func(config *Config) {
+			copy := *config.DMTCPProfile
+			copy.ExpectedClients = 0
+			config.DMTCPProfile = &copy
+		}, wantErr: "expected_clients must be at least 1"},
+		{name: "unsupported signal", config: selected, mutate: func(config *Config) {
+			copy := *config.DMTCPProfile
+			copy.CheckpointSignal = "10"
+			config.DMTCPProfile = &copy
+		}, wantErr: "checkpoint_signal must be 12"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := test.config
+			if test.mutate != nil {
+				test.mutate(&config)
+			}
+			err := config.ValidateRuntime()
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateRuntime() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("ValidateRuntime() error = %v, want %q", err, test.wantErr)
 			}
 		})
 	}

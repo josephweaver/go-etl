@@ -15,37 +15,116 @@ const defaultWorkerIdlePollInterval = 30 * time.Second
 
 type CheckpointMode string
 
+type PauseAdapterProfile string
+
 const (
 	CheckpointModeDisabled CheckpointMode = ""
 	CheckpointModeShutdown CheckpointMode = "shutdown"
 	CheckpointModePeriodic CheckpointMode = "periodic"
 	CheckpointModeYield    CheckpointMode = "yield"
+
+	PauseAdapterProfileDirectPythonDMTCP42 PauseAdapterProfile = "direct_python_dmtcp_4_2"
 )
 
+type DMTCPProfileConfig struct {
+	LaunchExecutable               string `json:"launch_executable"`
+	CommandExecutable              string `json:"command_executable"`
+	RestartExecutable              string `json:"restart_executable"`
+	PythonExecutable               string `json:"python_executable"`
+	SharedTmpRoot                  string `json:"shared_tmp_root"`
+	CheckpointSignal               string `json:"checkpoint_signal,omitempty"`
+	ExpectedClients                int    `json:"expected_clients"`
+	BuildIdentity                  string `json:"build_identity"`
+	AdapterID                      string `json:"adapter_id"`
+	AdapterVersion                 string `json:"adapter_version"`
+	WorkerExecutionContractVersion string `json:"worker_execution_contract_version"`
+	WorkerVersion                  string `json:"worker_version"`
+	ContainerImageIdentity         string `json:"container_image_identity"`
+	OperatingSystem                string `json:"operating_system"`
+	Architecture                   string `json:"architecture"`
+	ContainerRuntime               string `json:"container_runtime"`
+}
+
+func (profile DMTCPProfileConfig) validate() error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "launch_executable", value: profile.LaunchExecutable},
+		{name: "command_executable", value: profile.CommandExecutable},
+		{name: "restart_executable", value: profile.RestartExecutable},
+		{name: "python_executable", value: profile.PythonExecutable},
+		{name: "shared_tmp_root", value: profile.SharedTmpRoot},
+		{name: "build_identity", value: profile.BuildIdentity},
+		{name: "adapter_id", value: profile.AdapterID},
+		{name: "adapter_version", value: profile.AdapterVersion},
+		{name: "worker_execution_contract_version", value: profile.WorkerExecutionContractVersion},
+		{name: "worker_version", value: profile.WorkerVersion},
+		{name: "container_image_identity", value: profile.ContainerImageIdentity},
+		{name: "operating_system", value: profile.OperatingSystem},
+		{name: "architecture", value: profile.Architecture},
+		{name: "container_runtime", value: profile.ContainerRuntime},
+	} {
+		if err := validateAdapterContractValue("dmtcp_profile."+field.name, field.value); err != nil {
+			return err
+		}
+	}
+	if profile.CheckpointSignal != "" && profile.CheckpointSignal != "12" {
+		return fmt.Errorf("dmtcp_profile.checkpoint_signal must be 12 when set")
+	}
+	if profile.ExpectedClients < 1 {
+		return fmt.Errorf("dmtcp_profile.expected_clients must be at least 1")
+	}
+	return nil
+}
+
+func (profile DMTCPProfileConfig) launchProfile() DMTCPLaunchProfile {
+	return DMTCPLaunchProfile{
+		LaunchExecutable:               profile.LaunchExecutable,
+		CommandExecutable:              profile.CommandExecutable,
+		RestartExecutable:              profile.RestartExecutable,
+		PythonExecutable:               profile.PythonExecutable,
+		SharedTmpRoot:                  profile.SharedTmpRoot,
+		CheckpointSignal:               profile.CheckpointSignal,
+		ExpectedClients:                profile.ExpectedClients,
+		BuildIdentity:                  profile.BuildIdentity,
+		AdapterID:                      profile.AdapterID,
+		AdapterVersion:                 profile.AdapterVersion,
+		WorkerExecutionContractVersion: profile.WorkerExecutionContractVersion,
+		WorkerVersion:                  profile.WorkerVersion,
+		ContainerImageIdentity:         profile.ContainerImageIdentity,
+		OperatingSystem:                profile.OperatingSystem,
+		Architecture:                   profile.Architecture,
+		ContainerRuntime:               profile.ContainerRuntime,
+	}
+}
+
 type Config struct {
-	LogDir                                string            `json:"log_dir"`
-	TmpDir                                string            `json:"tmp_dir"`
-	DataDir                               string            `json:"data_dir"`
-	ControllerURL                         string            `json:"controller_url"`
-	ControllerTokenFile                   string            `json:"controller_token_file,omitempty"`
-	ControllerInsecureExternalHTTPAllowed bool              `json:"controller_insecure_external_http_allowed,omitempty"`
-	PythonExecutable                      string            `json:"python_executable,omitempty"`
-	SevenZipExecutable                    string            `json:"seven_zip_executable,omitempty"`
-	RcloneExecutable                      string            `json:"rclone_executable,omitempty"`
-	RcloneConfigPath                      string            `json:"rclone_config_path,omitempty"`
-	EnableGDriveRcloneProvider            bool              `json:"enable_gdrive_rclone_provider,omitempty"`
-	AssetCacheDir                         string            `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes                         int64             `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
-	IdlePollIntervalSeconds               int               `json:"idle_poll_interval_seconds,omitempty"`
-	IdleTimeoutSeconds                    int               `json:"idle_timeout_seconds,omitempty"`
-	CheckpointMode                        CheckpointMode    `json:"checkpoint_mode,omitempty"`
-	CheckpointIntervalSeconds             int               `json:"checkpoint_interval_seconds,omitempty"`
-	WorkItemExecutionQuantumSeconds       int               `json:"work_item_execution_quantum_seconds,omitempty"`
-	DrainPauseDelaySeconds                int               `json:"drain_pause_delay_seconds,omitempty"`
-	CheckpointCaptureTimeoutSeconds       int               `json:"checkpoint_capture_timeout_seconds,omitempty"`
-	CheckpointReportTimeoutSeconds        int               `json:"checkpoint_report_timeout_seconds,omitempty"`
-	ExecutionTerminationGraceSeconds      int               `json:"execution_termination_grace_seconds,omitempty"`
+	LogDir                                string              `json:"log_dir"`
+	TmpDir                                string              `json:"tmp_dir"`
+	DataDir                               string              `json:"data_dir"`
+	ControllerURL                         string              `json:"controller_url"`
+	ControllerTokenFile                   string              `json:"controller_token_file,omitempty"`
+	ControllerInsecureExternalHTTPAllowed bool                `json:"controller_insecure_external_http_allowed,omitempty"`
+	PythonExecutable                      string              `json:"python_executable,omitempty"`
+	SevenZipExecutable                    string              `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable                      string              `json:"rclone_executable,omitempty"`
+	RcloneConfigPath                      string              `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider            bool                `json:"enable_gdrive_rclone_provider,omitempty"`
+	AssetCacheDir                         string              `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes                         int64               `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots                     map[string]string   `json:"data_location_roots,omitempty"`
+	IdlePollIntervalSeconds               int                 `json:"idle_poll_interval_seconds,omitempty"`
+	IdleTimeoutSeconds                    int                 `json:"idle_timeout_seconds,omitempty"`
+	CheckpointMode                        CheckpointMode      `json:"checkpoint_mode,omitempty"`
+	CheckpointIntervalSeconds             int                 `json:"checkpoint_interval_seconds,omitempty"`
+	WorkItemExecutionQuantumSeconds       int                 `json:"work_item_execution_quantum_seconds,omitempty"`
+	DrainPauseDelaySeconds                int                 `json:"drain_pause_delay_seconds,omitempty"`
+	CheckpointCaptureTimeoutSeconds       int                 `json:"checkpoint_capture_timeout_seconds,omitempty"`
+	CheckpointReportTimeoutSeconds        int                 `json:"checkpoint_report_timeout_seconds,omitempty"`
+	ExecutionTerminationGraceSeconds      int                 `json:"execution_termination_grace_seconds,omitempty"`
+	PauseAdapterProfile                   PauseAdapterProfile `json:"pause_adapter_profile,omitempty"`
+	DMTCPProfile                          *DMTCPProfileConfig `json:"dmtcp_profile,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -93,6 +172,21 @@ func (c *Config) resolveRelativePaths(root string) {
 	}
 	if c.RcloneConfigPath != "" {
 		c.RcloneConfigPath = resolveRelativePath(root, c.RcloneConfigPath)
+	}
+	if c.DMTCPProfile != nil {
+		if pathLooksRelative(c.DMTCPProfile.LaunchExecutable) {
+			c.DMTCPProfile.LaunchExecutable = resolveRelativePath(root, c.DMTCPProfile.LaunchExecutable)
+		}
+		if pathLooksRelative(c.DMTCPProfile.CommandExecutable) {
+			c.DMTCPProfile.CommandExecutable = resolveRelativePath(root, c.DMTCPProfile.CommandExecutable)
+		}
+		if pathLooksRelative(c.DMTCPProfile.RestartExecutable) {
+			c.DMTCPProfile.RestartExecutable = resolveRelativePath(root, c.DMTCPProfile.RestartExecutable)
+		}
+		if pathLooksRelative(c.DMTCPProfile.PythonExecutable) {
+			c.DMTCPProfile.PythonExecutable = resolveRelativePath(root, c.DMTCPProfile.PythonExecutable)
+		}
+		c.DMTCPProfile.SharedTmpRoot = resolveRelativePath(root, c.DMTCPProfile.SharedTmpRoot)
 	}
 	for name, dataRoot := range c.DataLocationRoots {
 		c.DataLocationRoots[name] = resolveRelativePath(root, dataRoot)
@@ -146,8 +240,34 @@ func (c Config) ValidateRuntime() error {
 	if err := c.validateCheckpointPolicy(); err != nil {
 		return err
 	}
+	if err := c.validatePauseAdapterProfile(); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (c Config) validatePauseAdapterProfile() error {
+	switch c.PauseAdapterProfile {
+	case "":
+		if c.DMTCPProfile != nil {
+			return fmt.Errorf("dmtcp_profile requires pause_adapter_profile")
+		}
+		return nil
+	case PauseAdapterProfileDirectPythonDMTCP42:
+		if c.CheckpointMode == CheckpointModeDisabled {
+			return fmt.Errorf("pause_adapter_profile %q requires checkpoint_mode", c.PauseAdapterProfile)
+		}
+		if c.DMTCPProfile == nil {
+			return fmt.Errorf("pause_adapter_profile %q requires dmtcp_profile", c.PauseAdapterProfile)
+		}
+		if err := c.DMTCPProfile.validate(); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported pause_adapter_profile %q", c.PauseAdapterProfile)
+	}
 }
 
 func (c Config) validateCheckpointPolicy() error {
