@@ -21,10 +21,15 @@ boundaries. Resume launch now validates the assignment and exact stored
 manifest, DMTCP strategy/build identity, adapter/runtime compatibility, input,
 source, code, canonical storage paths, non-symlink regular image files, and
 declared sizes/digests before constructing an explicit `dmtcp_restart`
-argument vector with a new isolated coordinator. Normal result finalization,
-configuration/registration, and the container smoke remain unimplemented;
-therefore no production adapter is registered and ordinary Python behavior is
-unchanged.
+argument vector with a new isolated coordinator. Fresh launch now also
+materializes data-argument bindings and protected values through the existing
+Python boundaries. Fresh and resumed successful exits close and scrub logs,
+require a valid output document, reuse canonical output/artifact promotion and
+state/evidence hashing, publish the deterministic output, and return ordinary
+`WorkEvidence`; bounded termination waits for the launcher and cleanup
+boundary. Configuration/registration and the container smoke remain
+unimplemented; therefore no production adapter is registered and ordinary
+Python behavior is unchanged.
 
 2026-08-11 worker checkpoint-policy update: OS-008 is implemented through its
 12-pass prompt sequence. `cmd/worker.Config` accepts disabled, shutdown-only,

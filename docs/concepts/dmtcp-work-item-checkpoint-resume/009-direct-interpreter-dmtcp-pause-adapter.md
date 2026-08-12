@@ -283,3 +283,24 @@ tampering, noncanonical manifest references, and symlinked images.
 
 Normal Python result finalization, explicit configuration/registration, and
 the container-level adapter/supervisor smoke remain to be implemented.
+
+The fourth implementation increment completed on 2026-08-12. Fresh supervised
+launch now uses the existing Python environment-path, data-asset
+materialization, argument-binding, protected-reference materialization, and
+redaction boundaries. Both fresh and resumed execution retain the exact
+staging, entrypoint, environment, argument, output, and log identities needed
+to finalize a successful process. Completion closes and scrubs logs first,
+requires `GOET_OUTPUT_JSON`, rejects materialized sensitive values, reuses
+canonical output decoding and artifact promotion, atomically publishes the
+logical output, calculates pre/post/log/input/output evidence, and returns the
+same `WorkEvidence` shape as ordinary Python execution.
+
+Process failure and successful exit without an output remain failures. Bounded
+termination now waits for the adapter-owned launcher `Wait` boundary or context
+cancellation, so log closure, redaction, and protected-value cleanup finish
+before local termination is reported. Focused tests prove fresh and resumed
+completion evidence, deterministic output publication, missing-output failure,
+and protected-value log redaction.
+
+Explicit configuration/registration and the container-level
+adapter/supervisor smoke remain to be implemented.

@@ -162,7 +162,19 @@ func (adapter DMTCPAdapter) StartFresh(ctx context.Context, item model.WorkItem)
 	if err != nil {
 		return nil, err
 	}
+	environmentPath, hasEnvironment, err := optionalSourcePathParameter(item, staging.SourceDir, "python_environment")
+	if err != nil {
+		return nil, err
+	}
 	pythonArgs, err := pythonArgsParameter(item)
+	if err != nil {
+		return nil, err
+	}
+	dataAssetsPath, hasDataAssets, err := adapter.Worker.materializeDataAssets(item, staging.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	pythonArgs, err = resolvePythonArgvBindings(pythonArgs, dataAssetsPath, staging.ArtifactDir)
 	if err != nil {
 		return nil, err
 	}
@@ -180,13 +192,19 @@ func (adapter DMTCPAdapter) StartFresh(ctx context.Context, item model.WorkItem)
 	if err != nil {
 		return nil, err
 	}
+	secretEnv, redactor, cleanupSecrets, err := adapter.Worker.materializePythonProtectedRefs(ctx, item, staging.WorkDir)
+	if err != nil {
+		return nil, err
+	}
 	stdout, err := os.OpenFile(filepath.Join(staging.LogDir, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
+		cleanupSecrets()
 		return nil, fmt.Errorf("open DMTCP stdout log: %w", err)
 	}
 	stderr, err := os.OpenFile(filepath.Join(staging.LogDir, "stderr.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		_ = stdout.Close()
+		cleanupSecrets()
 		return nil, fmt.Errorf("open DMTCP stderr log: %w", err)
 	}
 
@@ -227,6 +245,13 @@ func (adapter DMTCPAdapter) StartFresh(ctx context.Context, item model.WorkItem)
 		Stdout: stdout,
 		Stderr: stderr,
 	}
+	if hasEnvironment {
+		spec.Env = append(spec.Env, "GOET_PYTHON_ENVIRONMENT_JSON="+environmentPath)
+	}
+	if hasDataAssets {
+		spec.Env = append(spec.Env, "GOET_DATA_ASSETS_JSON="+dataAssetsPath)
+	}
+	spec.Env = append(spec.Env, secretEnv...)
 	runner := adapter.Runner
 	if runner == nil {
 		runner = execDMTCPCommandRunner{}
@@ -235,17 +260,33 @@ func (adapter DMTCPAdapter) StartFresh(ctx context.Context, item model.WorkItem)
 	if err != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
+		cleanupSecrets()
 		return nil, fmt.Errorf("launch DMTCP direct interpreter: %w", err)
 	}
 
 	execution := &dmtcpExecution{
 		process:   process,
 		result:    make(chan ExecutionResult, 1),
+		done:      make(chan struct{}),
 		runner:    runner,
 		profile:   adapter.Profile,
 		workspace: workspace,
 		item:      item,
 		now:       adapter.Now,
+		completion: &dmtcpPythonCompletion{
+			worker:          adapter.Worker,
+			item:            item,
+			staging:         staging,
+			entrypointPath:  entrypointPath,
+			environmentPath: environmentPath,
+			pythonArgs:      pythonArgs,
+			inputDocument:   pythonInputDocument{WorkItem: item},
+			outputPath:      outputPath,
+			stdoutPath:      filepath.Join(staging.LogDir, "stdout.log"),
+			stderrPath:      filepath.Join(staging.LogDir, "stderr.log"),
+			redactor:        redactor,
+			cleanup:         cleanupSecrets,
+		},
 	}
 	if execution.now == nil {
 		execution.now = time.Now
@@ -278,8 +319,15 @@ func (adapter DMTCPAdapter) StartResume(ctx context.Context, item model.WorkItem
 	if err != nil {
 		return nil, err
 	}
+	completion, stdout, stderr, err := adapter.prepareResumeCompletion(ctx, item, assignment)
+	if err != nil {
+		return nil, err
+	}
 	workspace, err := createDMTCPAttemptWorkspace(adapter.Profile.SharedTmpRoot, item.AttemptID)
 	if err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		completion.cleanup()
 		return nil, err
 	}
 	args := []string{
@@ -298,26 +346,107 @@ func (adapter DMTCPAdapter) StartResume(ctx context.Context, item model.WorkItem
 		Args:       args,
 		Dir:        filepath.Join(adapter.Profile.SharedTmpRoot, filepath.FromSlash(manifest.StorageRelativePath)),
 		Env:        os.Environ(),
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
+		Stdout:     stdout,
+		Stderr:     stderr,
 	})
 	if err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		completion.cleanup()
 		return nil, fmt.Errorf("launch DMTCP restart: %w", err)
 	}
 	execution := &dmtcpExecution{
-		process:   process,
-		result:    make(chan ExecutionResult, 1),
-		runner:    runner,
-		profile:   adapter.Profile,
-		workspace: workspace,
-		item:      item,
-		now:       adapter.Now,
+		process:    process,
+		result:     make(chan ExecutionResult, 1),
+		done:       make(chan struct{}),
+		runner:     runner,
+		profile:    adapter.Profile,
+		workspace:  workspace,
+		item:       item,
+		now:        adapter.Now,
+		completion: completion,
 	}
 	if execution.now == nil {
 		execution.now = time.Now
 	}
-	go execution.wait(io.NopCloser(strings.NewReader("")), io.NopCloser(strings.NewReader("")))
+	go execution.wait(stdout, stderr)
 	return execution, nil
+}
+
+func (adapter DMTCPAdapter) prepareResumeCompletion(ctx context.Context, item model.WorkItem, assignment model.WorkItemResumeAssignment) (*dmtcpPythonCompletion, *os.File, *os.File, error) {
+	staging := dmtcpStagingForAttempt(adapter.Worker.Config.TmpDir, assignment.ResumedFromAttemptID)
+	for _, directory := range []string{staging.SourceDir, staging.WorkDir, staging.ArtifactDir, staging.LogDir} {
+		info, err := os.Stat(directory)
+		if err != nil || !info.IsDir() {
+			return nil, nil, nil, fmt.Errorf("DMTCP resume staging directory is unavailable: %s", directory)
+		}
+	}
+	entrypointValue, err := stringParameter(item, "python_entrypoint")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve python_entrypoint: %w", err)
+	}
+	entrypointPath, err := resolveSourcePathWithinRoot(staging.SourceDir, entrypointValue, "python_entrypoint")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	environmentPath, _, err := optionalSourcePathParameter(item, staging.SourceDir, "python_environment")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	pythonArgs, err := pythonArgsParameter(item)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dataAssetsPath := filepath.Join(staging.WorkDir, "data-assets.json")
+	if _, err := os.Stat(dataAssetsPath); os.IsNotExist(err) {
+		dataAssetsPath = ""
+	} else if err != nil {
+		return nil, nil, nil, fmt.Errorf("check resumed data assets manifest: %w", err)
+	}
+	pythonArgs, err = resolvePythonArgvBindings(pythonArgs, dataAssetsPath, staging.ArtifactDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	_, redactor, cleanupSecrets, err := adapter.Worker.materializePythonProtectedRefs(ctx, item, staging.WorkDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stdoutPath := filepath.Join(staging.LogDir, "stdout.log")
+	stderrPath := filepath.Join(staging.LogDir, "stderr.log")
+	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		cleanupSecrets()
+		return nil, nil, nil, fmt.Errorf("open resumed DMTCP stdout log: %w", err)
+	}
+	stderr, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		_ = stdout.Close()
+		cleanupSecrets()
+		return nil, nil, nil, fmt.Errorf("open resumed DMTCP stderr log: %w", err)
+	}
+	return &dmtcpPythonCompletion{
+		worker:          adapter.Worker,
+		item:            item,
+		staging:         staging,
+		entrypointPath:  entrypointPath,
+		environmentPath: environmentPath,
+		pythonArgs:      pythonArgs,
+		inputDocument:   pythonInputDocument{WorkItem: item},
+		outputPath:      filepath.Join(staging.WorkDir, "output.json"),
+		stdoutPath:      stdoutPath,
+		stderrPath:      stderrPath,
+		redactor:        redactor,
+		cleanup:         cleanupSecrets,
+	}, stdout, stderr, nil
+}
+
+func dmtcpStagingForAttempt(tmpRoot string, attemptID string) WorkStaging {
+	staging := WorkStaging{AttemptDir: filepath.Join(tmpRoot, "attempts", attemptID)}
+	staging.SourceDir = filepath.Join(staging.AttemptDir, "source")
+	staging.WorkDir = filepath.Join(staging.AttemptDir, "work")
+	staging.ArtifactDir = filepath.Join(staging.AttemptDir, "artifacts")
+	staging.LogDir = filepath.Join(staging.AttemptDir, "logs")
+	return staging
 }
 
 func (adapter DMTCPAdapter) validateResumeArtifact(item model.WorkItem, assignment model.WorkItemResumeAssignment) (model.ResumeArtifactManifest, []string, error) {
@@ -541,18 +670,142 @@ func validateDMTCPArgument(argument string) error {
 	return nil
 }
 
+type dmtcpPythonCompletion struct {
+	worker          Worker
+	item            model.WorkItem
+	staging         WorkStaging
+	entrypointPath  string
+	environmentPath string
+	pythonArgs      []string
+	inputDocument   pythonInputDocument
+	outputPath      string
+	stdoutPath      string
+	stderrPath      string
+	redactor        *Redactor
+	cleanup         func()
+}
+
+func (completion *dmtcpPythonCompletion) finish(processErr error) ExecutionResult {
+	if completion.cleanup != nil {
+		defer completion.cleanup()
+	}
+	if err := scrubPythonSubprocessLogs(completion.stdoutPath, completion.stderrPath, completion.redactor); err != nil {
+		return ExecutionResult{Err: err}
+	}
+	if processErr != nil {
+		return ExecutionResult{Err: fmt.Errorf("DMTCP Python process exited with error: %w", processErr)}
+	}
+	_ = completion.worker.emitPythonSubprocessLogLines(completion.item, completion.stdoutPath, completion.stderrPath, completion.staging.LogDir)
+
+	outputJSON, err := os.ReadFile(completion.outputPath)
+	if os.IsNotExist(err) {
+		return ExecutionResult{Err: fmt.Errorf("missing GOET_OUTPUT_JSON after successful DMTCP Python process exit: %s", completion.outputPath)}
+	}
+	if err != nil {
+		return ExecutionResult{Err: fmt.Errorf("read DMTCP Python output JSON %s: %w", completion.outputPath, err)}
+	}
+	if completion.redactor != nil && completion.redactor.RedactString(string(outputJSON)) != string(outputJSON) {
+		return ExecutionResult{Err: fmt.Errorf("GOET_OUTPUT_JSON contains a materialized sensitive value")}
+	}
+	logicalOutput, outputSHA256, err := completion.worker.pythonLogicalOutput(completion.item, outputJSON, completion.staging.ArtifactDir)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+
+	dataPath := filepath.Join(completion.worker.Config.DataDir, completion.item.OutputFilename)
+	preState, err := outputFileState(dataPath)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	if err := atomicWriteFile(dataPath, logicalOutput, 0644); err != nil {
+		return ExecutionResult{Err: fmt.Errorf("write completed DMTCP Python output %s: %w", dataPath, err)}
+	}
+	postState, err := outputFileState(dataPath)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+
+	stdoutSHA256, hasStdout, err := logFileSHA256(completion.stdoutPath)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	stderrSHA256, hasStderr, err := logFileSHA256(completion.stderrPath)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	if !hasStdout {
+		stdoutSHA256 = ""
+	}
+	if !hasStderr {
+		stderrSHA256 = ""
+	}
+	inputSHA256, err := pythonInputObservationSHA256(
+		completion.item,
+		completion.entrypointPath,
+		completion.environmentPath,
+		completion.pythonArgs,
+		completion.inputDocument,
+	)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	preStateSHA256, err := canonicalObservationSHA256(preState)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	postStateSHA256, err := canonicalObservationSHA256(postState)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	outputJSONText, err := pythonOutputEvidenceJSONText(
+		completion.item,
+		completion.entrypointPath,
+		completion.environmentPath,
+		0,
+		logicalOutput,
+		inputSHA256,
+		outputSHA256,
+		preStateSHA256,
+		postStateSHA256,
+		stdoutSHA256,
+		stderrSHA256,
+	)
+	if err != nil {
+		return ExecutionResult{Err: err}
+	}
+	preStateJSON, err := json.Marshal(preState)
+	if err != nil {
+		return ExecutionResult{Err: fmt.Errorf("encode pre-state evidence: %w", err)}
+	}
+	postStateJSON, err := json.Marshal(postState)
+	if err != nil {
+		return ExecutionResult{Err: fmt.Errorf("encode post-state evidence: %w", err)}
+	}
+	return ExecutionResult{Evidence: WorkEvidence{
+		InputSHA256:     inputSHA256,
+		OutputSHA256:    outputSHA256,
+		PreStateSHA256:  preStateSHA256,
+		PostStateSHA256: postStateSHA256,
+		OutputJSON:      outputJSONText,
+		PreStateJSON:    string(preStateJSON),
+		PostStateJSON:   string(postStateJSON),
+	}}
+}
+
 type dmtcpExecution struct {
-	process   DMTCPProcess
-	result    chan ExecutionResult
-	runner    DMTCPCommandRunner
-	profile   DMTCPLaunchProfile
-	workspace dmtcpAttemptWorkspace
-	item      model.WorkItem
-	now       func() time.Time
+	process    DMTCPProcess
+	result     chan ExecutionResult
+	done       chan struct{}
+	runner     DMTCPCommandRunner
+	profile    DMTCPLaunchProfile
+	workspace  dmtcpAttemptWorkspace
+	item       model.WorkItem
+	now        func() time.Time
+	completion *dmtcpPythonCompletion
 
 	mu              sync.Mutex
 	processDone     bool
-	processErr      error
+	terminal        ExecutionResult
 	suspendCapture  bool
 	terminating     bool
 	resultPublished bool
@@ -561,12 +814,17 @@ type dmtcpExecution struct {
 }
 
 func (execution *dmtcpExecution) wait(stdout io.Closer, stderr io.Closer) {
+	defer close(execution.done)
 	err := execution.process.Wait()
 	_ = stdout.Close()
 	_ = stderr.Close()
+	terminal := ExecutionResult{Err: err}
+	if execution.completion != nil {
+		terminal = execution.completion.finish(err)
+	}
 	execution.mu.Lock()
 	execution.processDone = true
-	execution.processErr = err
+	execution.terminal = terminal
 	if !execution.suspendCapture || execution.terminating {
 		execution.publishResultLocked()
 	}
@@ -596,7 +854,7 @@ func (*dmtcpExecution) Continue(context.Context) error {
 	return fmt.Errorf("DMTCP continuation is not implemented")
 }
 
-func (execution *dmtcpExecution) Terminate(context.Context) error {
+func (execution *dmtcpExecution) Terminate(ctx context.Context) error {
 	execution.kill.Do(func() {
 		execution.mu.Lock()
 		execution.terminating = true
@@ -614,7 +872,15 @@ func (execution *dmtcpExecution) Terminate(context.Context) error {
 		}
 		execution.mu.Unlock()
 	})
-	return execution.killErr
+	if execution.killErr != nil {
+		return execution.killErr
+	}
+	select {
+	case <-execution.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (execution *dmtcpExecution) capture(ctx context.Context, request CheckpointCaptureRequest, suspend bool) (PreparedCheckpoint, error) {
@@ -859,6 +1125,6 @@ func (execution *dmtcpExecution) publishResultLocked() {
 		return
 	}
 	execution.resultPublished = true
-	execution.result <- ExecutionResult{Err: execution.processErr}
+	execution.result <- execution.terminal
 	close(execution.result)
 }

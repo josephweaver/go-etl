@@ -53,9 +53,17 @@ func TestDMTCPAdapterStartFreshUsesIsolatedDirectInterpreterLaunch(t *testing.T)
 		}
 	}
 
+	writeDMTCPTestOutput(t, adapter.Worker.Config.TmpDir, item.AttemptID)
 	process.finish(nil)
-	if result := <-execution.Result(); result.Err != nil {
+	result := <-execution.Result()
+	if result.Err != nil {
 		t.Fatalf("Result().Err = %v", result.Err)
+	}
+	if result.Evidence.InputSHA256 == "" || result.Evidence.OutputSHA256 == "" || result.Evidence.PostStateSHA256 == "" {
+		t.Fatalf("completion evidence is incomplete: %+v", result.Evidence)
+	}
+	if _, err := os.Stat(filepath.Join(adapter.Worker.Config.DataDir, item.OutputFilename)); err != nil {
+		t.Fatalf("completed output was not published: %v", err)
 	}
 }
 
@@ -242,8 +250,54 @@ func TestDMTCPAdapterStartResumeUsesValidatedImageArguments(t *testing.T) {
 	if containsDMTCPArg(runner.spec.Args, "dmtcp_restart_script.sh") || containsDMTCPArg(runner.spec.Args, "-c") {
 		t.Fatalf("restart uses an unvalidated shell path: %q", runner.spec.Args)
 	}
+	writeDMTCPTestOutput(t, adapter.Worker.Config.TmpDir, assignment.ResumedFromAttemptID)
 	resumeProcess.finish(nil)
-	if result := <-execution.Result(); result.Err != nil {
+	result := <-execution.Result()
+	if result.Err != nil {
+		t.Fatalf("Result().Err = %v", result.Err)
+	}
+	if !strings.Contains(result.Evidence.OutputJSON, `"work_item_id":"work-001"`) {
+		t.Fatalf("resumed completion evidence = %s", result.Evidence.OutputJSON)
+	}
+}
+
+func TestDMTCPExecutionRedactsProtectedValuesBeforePublishingResult(t *testing.T) {
+	const secret = "dmtcp-secret-do-not-persist"
+	t.Setenv("GOET_TEST_DMTCP_SECRET", secret)
+	adapter, runner, process, item := newDMTCPLaunchTest(t)
+	item.Parameters["checkpoint_secret"] = secretProtectedParameter("GOET_TEST_DMTCP_SECRET", "env", "CHECKPOINT_SECRET")
+	execution, err := adapter.StartFresh(context.Background(), item)
+	if err != nil {
+		t.Fatalf("StartFresh() error = %v", err)
+	}
+	_, _ = fmt.Fprintln(runner.spec.Stdout, "stdout "+secret)
+	_, _ = fmt.Fprintln(runner.spec.Stderr, "stderr "+secret)
+	writeDMTCPTestOutput(t, adapter.Worker.Config.TmpDir, item.AttemptID)
+	process.finish(nil)
+	result := <-execution.Result()
+	if result.Err != nil {
+		t.Fatalf("Result().Err = %v", result.Err)
+	}
+	for _, name := range []string{"stdout.log", "stderr.log"} {
+		data, err := os.ReadFile(filepath.Join(adapter.Worker.Config.TmpDir, "attempts", item.AttemptID, "logs", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), secret) || !strings.Contains(string(data), "${worker_env.GOET_TEST_DMTCP_SECRET}") {
+			t.Fatalf("%s was not safely redacted: %q", name, data)
+		}
+	}
+}
+
+func TestDMTCPExecutionRejectsSuccessfulProcessWithoutOutput(t *testing.T) {
+	adapter, _, process, item := newDMTCPLaunchTest(t)
+	execution, err := adapter.StartFresh(context.Background(), item)
+	if err != nil {
+		t.Fatalf("StartFresh() error = %v", err)
+	}
+	process.finish(nil)
+	result := <-execution.Result()
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "missing GOET_OUTPUT_JSON") {
 		t.Fatalf("Result().Err = %v", result.Err)
 	}
 }
@@ -381,6 +435,14 @@ func createDMTCPResumeArtifact(t *testing.T) (DMTCPAdapter, model.WorkItem, mode
 	item.AttemptID = "attempt-002"
 	item.Resume = &assignment
 	return adapter, item, assignment
+}
+
+func writeDMTCPTestOutput(t *testing.T, tmpRoot string, attemptID string) {
+	t.Helper()
+	path := filepath.Join(tmpRoot, "attempts", attemptID, "work", "output.json")
+	if err := os.WriteFile(path, []byte(`{"result":"completed","artifacts":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func dmtcpCaptureRequest(kind model.CheckpointCaptureKind) CheckpointCaptureRequest {
@@ -536,9 +598,10 @@ func (runner *recordingDMTCPRunner) Start(_ context.Context, spec DMTCPCommandSp
 }
 
 type fakeDMTCPProcess struct {
-	wait  chan error
-	mu    sync.Mutex
-	kills int
+	wait       chan error
+	mu         sync.Mutex
+	kills      int
+	finishOnce sync.Once
 }
 
 func (process *fakeDMTCPProcess) Wait() error {
@@ -547,13 +610,16 @@ func (process *fakeDMTCPProcess) Wait() error {
 
 func (process *fakeDMTCPProcess) Kill() error {
 	process.mu.Lock()
-	defer process.mu.Unlock()
 	process.kills++
+	process.mu.Unlock()
+	process.finish(errors.New("process killed"))
 	return nil
 }
 
 func (process *fakeDMTCPProcess) finish(err error) {
-	process.wait <- err
+	process.finishOnce.Do(func() {
+		process.wait <- err
+	})
 }
 
 func containsDMTCPArg(args []string, want string) bool {
