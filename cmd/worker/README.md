@@ -12,14 +12,40 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
 
 ## Files
 
-- `main.go` owns the worker process entry point and pull-execute-report loop.
-- `config.go` owns loading and validating worker runtime configuration.
+- `main.go` owns the worker process entry point, platform drain-source
+  lifecycle, pull-execute-report loop, ordinary/supervised execution choice,
+  background heartbeat fencing, final pre-terminal ownership heartbeat, and
+  supervisor-outcome-to-worker-stop mapping.
+- `config.go` owns loading and validating worker runtime configuration,
+  including the disabled, shutdown, periodic, and yield checkpoint-policy
+  shapes. No production pause adapter is enabled yet.
 - `direct.go` owns direct command parsing, work-item loading, attempt identity,
   one-shot execution, and local result writing.
 - `source_bundle_provider.go` owns controller-backed and local-file source ZIP
   acquisition.
-- `worker.go` owns worker environment validation and dispatch to supported work operations.
+- `worker.go` owns worker environment validation, ordinary work dispatch, the
+  explicit pause-adapter registry dependency, and construction of supervised
+  fresh/resume execution. Ordinary `Run` rejects resume assignments.
 - `state.go` owns HTTP communication with the controller for fetching work and reporting outcomes.
+- `lifecycle.go` owns worker registration, heartbeat, stop requests, and the
+  injectable ticker/timer clock used by lifecycle state machines.
+- `checkpoint_adapter.go` owns the adapter registry, capability declarations,
+  supervised-execution contract, and validation of prepared checkpoint
+  identity. OS-008 intentionally registers no production adapter; later
+  adapter slices must provide and prove those registrations before enabling a
+  checkpoint mode.
+- `drain.go` owns the injectable, concurrency-safe drain request latch and the
+  shared Slurm-signal and future administrative request reasons.
+- `drain_signal_linux.go` subscribes Linux workers to `SIGUSR1` and translates
+  delivery into the shared drain request consumed by the controller-mode
+  worker loop.
+- `drain_signal_other.go` preserves that constructor and injectable drain
+  contract on non-Linux builds without subscribing to a platform signal.
+- `execution_supervisor.go` owns one checkpoint-enabled attempt's event
+  ordering, periodic and suspending capture, exact confirmation replay,
+  accepted-generation tracking, fallback selection, and bounded termination.
+  The worker loop calls it for enabled checkpoint modes and resume assignments;
+  no production pause adapter is registered yet.
 - `work_demo.go` owns the demo output-producing operation.
 - `work_summary.go` owns the input-file summary operation.
 - `demo-config.json` is the local demo worker configuration.

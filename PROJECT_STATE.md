@@ -1,8 +1,53 @@
 # Project State
 
-Last updated: 2026-08-01
+Last updated: 2026-08-11
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
+
+2026-08-11 worker checkpoint-policy update: OS-008 is implemented through its
+12-pass prompt sequence. `cmd/worker.Config` accepts disabled, shutdown-only,
+periodic, and yield checkpoint policies with explicit interval/quantum,
+drain-to-pause, capture, report, and termination settings. Runtime validation
+requires positive mode-specific values, rejects irrelevant fields, and keeps
+the combined capture/report/termination reserve strictly below the
+drain-to-pause delay. `cmd/controller.WorkerRuntime` and its serialized
+`WorkerConfig` now carry the same fields; zero values remain omitted, so
+checkpoint mode is not enabled by default. Execution-environment settings now
+validate the same mode-specific shapes before runtime preparation, defaulting
+an omitted drain-to-pause delay and omitted periodic interval to 300 seconds
+while rejecting explicit zero. The worker lifecycle clock now supplies a
+resettable one-shot timer alongside its unchanged heartbeat ticker.
+`cmd/worker/checkpoint_adapter.go` defines an explicit work-item-keyed registry,
+mode capabilities, distinct fresh/resume starts, supervised execution, capture
+requests, and exact prepared-checkpoint validation. The injectable worker drain
+source now validates shared Slurm-signal and future administrative reasons,
+latches the first valid request under concurrent callers, and publishes exactly
+one buffered event. `cmd/worker/execution_supervisor.go` now owns the
+adapter-neutral single-attempt state machine: it selects fresh versus resume
+start, serializes execution completion against periodic, quantum, and final
+capture, retries exact ambiguous confirmations, advances generations only
+after acknowledgement, falls back to the latest accepted generation, and
+requires bounded termination before reporting a suspended local outcome.
+The Linux-only platform source now subscribes to `SIGUSR1`, converts it into
+the shared drain request without performing checkpoint/controller work, and
+provides an idempotent stop boundary that waits for its goroutine. The
+non-Linux platform source now preserves the same injectable drain and stop
+contract without naming `SIGUSR1`. Focused WSL/Ubuntu testing sends real
+`SIGUSR1` to the Go test process and observes the expected drain request.
+`Worker` now owns the explicit adapter registry, rejects enabled checkpoint
+policies without capable registrations, refuses to run resumed assignments
+through the ordinary fresh path, and checks resume strategy/adapter identity
+before supervised launch. The controller-mode worker loop now owns the platform
+drain source, stops before a later claim after drain, chooses ordinary versus
+supervised execution, finishes an item already claimed while a drain arrives,
+preserves heartbeat self-fencing with a final ownership heartbeat before
+terminal reporting, and maps completion, failure, suspension, abandonment, and
+launch rejection to their distinct controller-report and worker-stop
+transitions. Focused worker-loop tests pass on Windows and WSL/Linux. No
+production pause adapter is registered or enabled. The exact combined worker
+and controller package command retains the unrelated, previously recorded
+controller startup-timestamp precision failure; OS-008-focused worker and
+controller tests pass.
 
 2026-07-30 checkpoint persistence update: OS-006 is implemented. SQLite
 schema version 7 and its version 6 migration preserve existing lifecycle rows

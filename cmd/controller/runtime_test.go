@@ -118,6 +118,12 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 		MaxAssetBytes:                         20000000000,
 		IdlePollIntervalSeconds:               30,
 		IdleTimeoutSeconds:                    600,
+		CheckpointMode:                        "periodic",
+		CheckpointIntervalSeconds:             300,
+		DrainPauseDelaySeconds:                300,
+		CheckpointCaptureTimeoutSeconds:       120,
+		CheckpointReportTimeoutSeconds:        60,
+		ExecutionTerminationGraceSeconds:      30,
 		DataLocationRoots: map[string]string{
 			"fixture_data":   "/data/goetl-test/fixtures",
 			"published_data": "/data/goetl-test/published",
@@ -178,6 +184,27 @@ func TestWorkerRuntimePrepareWritesWorkerConfig(t *testing.T) {
 	if cfg.IdleTimeoutSeconds != 600 {
 		t.Fatalf("idle timeout seconds = %d, want 600", cfg.IdleTimeoutSeconds)
 	}
+	if cfg.CheckpointMode != "periodic" {
+		t.Fatalf("checkpoint mode = %q, want periodic", cfg.CheckpointMode)
+	}
+	if cfg.CheckpointIntervalSeconds != 300 {
+		t.Fatalf("checkpoint interval seconds = %d, want 300", cfg.CheckpointIntervalSeconds)
+	}
+	if cfg.WorkItemExecutionQuantumSeconds != 0 {
+		t.Fatalf("work-item execution quantum seconds = %d, want 0", cfg.WorkItemExecutionQuantumSeconds)
+	}
+	if cfg.DrainPauseDelaySeconds != 300 {
+		t.Fatalf("drain pause delay seconds = %d, want 300", cfg.DrainPauseDelaySeconds)
+	}
+	if cfg.CheckpointCaptureTimeoutSeconds != 120 {
+		t.Fatalf("checkpoint capture timeout seconds = %d, want 120", cfg.CheckpointCaptureTimeoutSeconds)
+	}
+	if cfg.CheckpointReportTimeoutSeconds != 60 {
+		t.Fatalf("checkpoint report timeout seconds = %d, want 60", cfg.CheckpointReportTimeoutSeconds)
+	}
+	if cfg.ExecutionTerminationGraceSeconds != 30 {
+		t.Fatalf("execution termination grace seconds = %d, want 30", cfg.ExecutionTerminationGraceSeconds)
+	}
 	if cfg.DataLocationRoots["fixture_data"] != "/data/goetl-test/fixtures" ||
 		cfg.DataLocationRoots["published_data"] != "/data/goetl-test/published" {
 		t.Fatalf("data location roots = %#v", cfg.DataLocationRoots)
@@ -224,6 +251,19 @@ func TestWorkerRuntimePrepareWritesWorkerConfigWithoutTokenMaterial(t *testing.T
 	}
 	if strings.Contains(string(data), sentinel) {
 		t.Fatalf("worker config contains token sentinel")
+	}
+	for _, key := range []string{
+		"checkpoint_mode",
+		"checkpoint_interval_seconds",
+		"work_item_execution_quantum_seconds",
+		"drain_pause_delay_seconds",
+		"checkpoint_capture_timeout_seconds",
+		"checkpoint_report_timeout_seconds",
+		"execution_termination_grace_seconds",
+	} {
+		if strings.Contains(string(data), `"`+key+`"`) {
+			t.Fatalf("default worker config unexpectedly contains %s", key)
+		}
 	}
 
 	var cfg WorkerConfig

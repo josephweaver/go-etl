@@ -1,10 +1,31 @@
 # Runtime Runbook
 
-Last updated: 2026-07-11
+Last updated: 2026-08-11
 
 This file preserves the moved runtime command and expected-output section from the pre-split root state file.
 
 ## How To Run
+
+## Controller-mode drain and checkpoint boundary
+
+The controller-mode worker now subscribes to `SIGUSR1` on Linux. The first
+signal latches one drain request: an idle worker stops without another claim,
+while a worker that already owns an item finishes ordinary execution or lets
+its configured checkpoint supervisor settle before stopping. The signal
+handler itself performs no checkpoint or controller I/O.
+
+Checked-in worker configurations must continue to omit `checkpoint_mode`.
+OS-008 provides the adapter-neutral lifecycle but intentionally registers no
+production pause adapter, so `shutdown`, `periodic`, or `yield` mode fails
+worker validation before registration until a later adapter slice supplies a
+compatible registration. Do not enable these modes operationally yet.
+
+This runbook does not configure Slurm to forward a warning signal, provide an
+authenticated administrative-drain command, or prove checkpoint restore across
+allocations. Those remain later scheduler/control, adapter, and operations
+slices. Sending `SIGUSR1` manually verifies only the local drain boundary; with
+checkpoint mode omitted, an active ordinary work item completes rather than
+creating a resume artifact.
 
 ## Direct one-shot worker execution
 

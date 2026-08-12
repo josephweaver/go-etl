@@ -253,6 +253,49 @@ func TestRunHeartbeatTransportFailureAfterDeadAfterSelfFences(t *testing.T) {
 	}
 }
 
+func TestRealWorkerLifecycleTimerCanResetAfterStop(t *testing.T) {
+	timer := (realWorkerLifecycleClock{}).NewTimer(time.Hour)
+	if !timer.Stop() {
+		t.Fatal("initial timer Stop() = false, want true")
+	}
+	if timer.Reset(time.Hour) {
+		t.Fatal("stopped timer Reset() = true, want false")
+	}
+	if !timer.Stop() {
+		t.Fatal("reset timer Stop() = false, want true")
+	}
+}
+
+func TestFakeWorkerLifecycleTimerTracksResetAndFire(t *testing.T) {
+	clock := newFakeWorkerLifecycleClock()
+	timer := clock.NewTimer(5 * time.Minute).(*fakeWorkerLifecycleTimer)
+	if timer.duration != 5*time.Minute || !timer.active {
+		t.Fatalf("new timer duration/active = %s/%v, want 5m/true", timer.duration, timer.active)
+	}
+	if !timer.Reset(2 * time.Minute) {
+		t.Fatal("active timer Reset() = false, want true")
+	}
+	clock.advance(2 * time.Minute)
+	timer.fire(clock.Now())
+	select {
+	case firedAt := <-timer.C():
+		if !firedAt.Equal(clock.Now()) {
+			t.Fatalf("timer fired at %s, want %s", firedAt, clock.Now())
+		}
+	default:
+		t.Fatal("timer did not fire")
+	}
+	if timer.Stop() {
+		t.Fatal("fired timer Stop() = true, want false")
+	}
+	if timer.Reset(time.Minute) {
+		t.Fatal("fired timer Reset() = true, want false")
+	}
+	if timer.duration != time.Minute || !timer.active {
+		t.Fatalf("reset timer duration/active = %s/%v, want 1m/true", timer.duration, timer.active)
+	}
+}
+
 func testWorkerSession() WorkerSession {
 	return WorkerSession{
 		WorkerID:          "worker-001",
@@ -301,6 +344,7 @@ func receiveHeartbeatResult(t *testing.T, result <-chan error) error {
 type fakeWorkerLifecycleClock struct {
 	now          time.Time
 	ticker       *fakeWorkerLifecycleTicker
+	timers       []*fakeWorkerLifecycleTimer
 	tickerReady  chan struct{}
 	tickerOpened bool
 }
@@ -308,6 +352,12 @@ type fakeWorkerLifecycleClock struct {
 type fakeWorkerLifecycleTicker struct {
 	ch      chan time.Time
 	stopped bool
+}
+
+type fakeWorkerLifecycleTimer struct {
+	ch       chan time.Time
+	duration time.Duration
+	active   bool
 }
 
 func newFakeWorkerLifecycleClock() *fakeWorkerLifecycleClock {
@@ -330,6 +380,16 @@ func (c *fakeWorkerLifecycleClock) NewTicker(time.Duration) WorkerLifecycleTicke
 	return c.ticker
 }
 
+func (c *fakeWorkerLifecycleClock) NewTimer(duration time.Duration) WorkerLifecycleTimer {
+	timer := &fakeWorkerLifecycleTimer{
+		ch:       make(chan time.Time, 1),
+		duration: duration,
+		active:   true,
+	}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (c *fakeWorkerLifecycleClock) advance(duration time.Duration) {
 	c.now = c.now.Add(duration)
 }
@@ -348,4 +408,29 @@ func (t *fakeWorkerLifecycleTicker) C() <-chan time.Time {
 
 func (t *fakeWorkerLifecycleTicker) Stop() {
 	t.stopped = true
+}
+
+func (t *fakeWorkerLifecycleTimer) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *fakeWorkerLifecycleTimer) Stop() bool {
+	wasActive := t.active
+	t.active = false
+	return wasActive
+}
+
+func (t *fakeWorkerLifecycleTimer) Reset(duration time.Duration) bool {
+	wasActive := t.active
+	t.duration = duration
+	t.active = true
+	return wasActive
+}
+
+func (t *fakeWorkerLifecycleTimer) fire(at time.Time) {
+	if !t.active {
+		return
+	}
+	t.active = false
+	t.ch <- at
 }

@@ -506,6 +506,10 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 	if err != nil {
 		return WorkerRuntime{}, err
 	}
+	checkpointPolicy, err := workerCheckpointPolicyFromSettings(settings)
+	if err != nil {
+		return WorkerRuntime{}, err
+	}
 	roots, err := settings.StringMap("data_location_roots")
 	if err != nil {
 		return WorkerRuntime{}, err
@@ -527,7 +531,124 @@ func workerRuntimeFromSettings(settings ExecutionComponentSettings) (WorkerRunti
 		DataLocationRoots:                     roots,
 		IdlePollIntervalSeconds:               idlePollIntervalSeconds,
 		IdleTimeoutSeconds:                    idleTimeoutSeconds,
+		CheckpointMode:                        checkpointPolicy.mode,
+		CheckpointIntervalSeconds:             checkpointPolicy.intervalSeconds,
+		WorkItemExecutionQuantumSeconds:       checkpointPolicy.quantumSeconds,
+		DrainPauseDelaySeconds:                checkpointPolicy.drainPauseDelaySeconds,
+		CheckpointCaptureTimeoutSeconds:       checkpointPolicy.captureTimeoutSeconds,
+		CheckpointReportTimeoutSeconds:        checkpointPolicy.reportTimeoutSeconds,
+		ExecutionTerminationGraceSeconds:      checkpointPolicy.terminationGraceSeconds,
 	}, nil
+}
+
+type workerCheckpointPolicySettings struct {
+	mode                    string
+	intervalSeconds         int
+	quantumSeconds          int
+	drainPauseDelaySeconds  int
+	captureTimeoutSeconds   int
+	reportTimeoutSeconds    int
+	terminationGraceSeconds int
+}
+
+func workerCheckpointPolicyFromSettings(settings ExecutionComponentSettings) (workerCheckpointPolicySettings, error) {
+	mode, err := settings.String("checkpoint_mode")
+	if err != nil {
+		return workerCheckpointPolicySettings{}, err
+	}
+	policy := workerCheckpointPolicySettings{mode: mode}
+	values := []struct {
+		name   string
+		target *int
+	}{
+		{name: "checkpoint_interval_seconds", target: &policy.intervalSeconds},
+		{name: "work_item_execution_quantum_seconds", target: &policy.quantumSeconds},
+		{name: "drain_pause_delay_seconds", target: &policy.drainPauseDelaySeconds},
+		{name: "checkpoint_capture_timeout_seconds", target: &policy.captureTimeoutSeconds},
+		{name: "checkpoint_report_timeout_seconds", target: &policy.reportTimeoutSeconds},
+		{name: "execution_termination_grace_seconds", target: &policy.terminationGraceSeconds},
+	}
+	for _, field := range values {
+		value, err := nonNegativeIntSetting(settings, field.name)
+		if err != nil {
+			return workerCheckpointPolicySettings{}, err
+		}
+		*field.target = value
+	}
+
+	if mode == "" {
+		for _, field := range values {
+			if *field.target != 0 {
+				return workerCheckpointPolicySettings{}, fmt.Errorf("setting %s requires checkpoint_mode", field.name)
+			}
+		}
+		return policy, nil
+	}
+	if mode != "shutdown" && mode != "periodic" && mode != "yield" {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("unsupported checkpoint_mode %q", mode)
+	}
+
+	drainPauseDelayValue, drainPauseDelayConfigured := settings["drain_pause_delay_seconds"]
+	drainPauseDelayConfigured = drainPauseDelayConfigured && drainPauseDelayValue != nil
+	if policy.drainPauseDelaySeconds == 0 && drainPauseDelayConfigured {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("setting drain_pause_delay_seconds must be greater than zero when checkpoint_mode is %q", mode)
+	}
+	if policy.drainPauseDelaySeconds == 0 {
+		policy.drainPauseDelaySeconds = 300
+	}
+	if policy.captureTimeoutSeconds == 0 {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("setting checkpoint_capture_timeout_seconds must be greater than zero when checkpoint_mode is %q", mode)
+	}
+	if policy.reportTimeoutSeconds == 0 {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("setting checkpoint_report_timeout_seconds must be greater than zero when checkpoint_mode is %q", mode)
+	}
+	if policy.terminationGraceSeconds == 0 {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("setting execution_termination_grace_seconds must be greater than zero when checkpoint_mode is %q", mode)
+	}
+
+	switch mode {
+	case "shutdown":
+		if policy.intervalSeconds != 0 {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting checkpoint_interval_seconds must be zero when checkpoint_mode is %q", mode)
+		}
+		if policy.quantumSeconds != 0 {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting work_item_execution_quantum_seconds must be zero when checkpoint_mode is %q", mode)
+		}
+	case "periodic":
+		intervalValue, intervalConfigured := settings["checkpoint_interval_seconds"]
+		intervalConfigured = intervalConfigured && intervalValue != nil
+		if policy.intervalSeconds == 0 && intervalConfigured {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting checkpoint_interval_seconds must be greater than zero when checkpoint_mode is %q", mode)
+		}
+		if policy.intervalSeconds == 0 {
+			policy.intervalSeconds = 300
+		}
+		if policy.quantumSeconds != 0 {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting work_item_execution_quantum_seconds must be zero when checkpoint_mode is %q", mode)
+		}
+	case "yield":
+		if policy.intervalSeconds != 0 {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting checkpoint_interval_seconds must be zero when checkpoint_mode is %q", mode)
+		}
+		if policy.quantumSeconds == 0 {
+			return workerCheckpointPolicySettings{}, fmt.Errorf("setting work_item_execution_quantum_seconds must be greater than zero when checkpoint_mode is %q", mode)
+		}
+	}
+
+	remaining := policy.drainPauseDelaySeconds
+	if policy.captureTimeoutSeconds >= remaining {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("checkpoint capture, report, and termination budget must be less than setting drain_pause_delay_seconds")
+	}
+	remaining -= policy.captureTimeoutSeconds
+	if policy.reportTimeoutSeconds >= remaining {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("checkpoint capture, report, and termination budget must be less than setting drain_pause_delay_seconds")
+	}
+	remaining -= policy.reportTimeoutSeconds
+	if policy.terminationGraceSeconds >= remaining {
+		return workerCheckpointPolicySettings{}, fmt.Errorf("checkpoint capture, report, and termination budget must be less than setting drain_pause_delay_seconds")
+	}
+
+	return policy, nil
 }
 
 func nonNegativeIntSetting(settings ExecutionComponentSettings, name string) (int, error) {

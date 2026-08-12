@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +15,14 @@ type Worker struct {
 	Controller     WorkerControllerClient
 	LifecycleClock WorkerLifecycleClock
 	SourceBundles  SourceBundleProvider
+	PauseAdapters  PauseAdapterRegistry
 	LocalOnly      bool
 }
 
 func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {
+	if item.Resume != nil {
+		return WorkEvidence{}, fmt.Errorf("resume assignment requires supervised execution")
+	}
 	fmt.Println("worker starting")
 	fmt.Println("log dir:", w.Config.LogDir)
 
@@ -29,6 +34,13 @@ func (w Worker) Run(item model.WorkItem) (WorkEvidence, error) {
 }
 
 func (w Worker) Validate() error {
+	if err := w.Config.validateCheckpointPolicy(); err != nil {
+		return err
+	}
+	if err := w.validatePauseAdapters(); err != nil {
+		return err
+	}
+
 	if err := requireDir(w.Config.LogDir); err != nil {
 		return err
 	}
@@ -41,6 +53,93 @@ func (w Worker) Validate() error {
 		return err
 	}
 
+	return nil
+}
+
+func (w Worker) validatePauseAdapters() error {
+	if w.Config.CheckpointMode == CheckpointModeDisabled {
+		return nil
+	}
+	if w.PauseAdapters.Len() == 0 {
+		return fmt.Errorf("checkpoint mode %q requires at least one pause adapter", w.Config.CheckpointMode)
+	}
+	for workItemType, registration := range w.PauseAdapters.byWorkItemType {
+		if err := registration.Validate(); err != nil {
+			return fmt.Errorf("pause adapter for work item type %q: %w", workItemType, err)
+		}
+		if registration.WorkItemType != workItemType {
+			return fmt.Errorf("pause adapter registry key %q does not match registration work item type %q", workItemType, registration.WorkItemType)
+		}
+		if !registration.Capabilities.Supports(w.Config.CheckpointMode) {
+			return fmt.Errorf("pause adapter for work item type %q does not support checkpoint mode %q", workItemType, w.Config.CheckpointMode)
+		}
+	}
+	return nil
+}
+
+func (w Worker) RunSupervised(
+	ctx context.Context,
+	item model.WorkItem,
+	session WorkerSession,
+	checkpoints ExecutionSupervisorCheckpointClient,
+	drain WorkerDrainSource,
+) (ExecutionSupervisorOutcome, error) {
+	supervisor, err := w.executionSupervisor(item, session, checkpoints, drain)
+	if err != nil {
+		return ExecutionSupervisorOutcome{}, err
+	}
+	return supervisor.Run(ctx)
+}
+
+func (w Worker) executionSupervisor(
+	item model.WorkItem,
+	session WorkerSession,
+	checkpoints ExecutionSupervisorCheckpointClient,
+	drain WorkerDrainSource,
+) (ExecutionSupervisor, error) {
+	if err := item.Validate(); err != nil {
+		return ExecutionSupervisor{}, fmt.Errorf("supervised work item: %w", err)
+	}
+	if w.Config.CheckpointMode == CheckpointModeDisabled {
+		return ExecutionSupervisor{}, fmt.Errorf("supervised execution requires an enabled checkpoint mode")
+	}
+	if err := w.validatePauseAdapters(); err != nil {
+		return ExecutionSupervisor{}, err
+	}
+	registration, found := w.PauseAdapters.AdapterFor(item.Type)
+	if !found {
+		return ExecutionSupervisor{}, fmt.Errorf("no pause adapter is registered for work item type %q", item.Type)
+	}
+	if item.Resume != nil {
+		if err := validateResumeAdapter(item, registration); err != nil {
+			return ExecutionSupervisor{}, err
+		}
+	}
+	return ExecutionSupervisor{
+		Config:       w.Config,
+		Item:         item,
+		Registration: registration,
+		Session:      session,
+		Checkpoints:  checkpoints,
+		Drain:        drain,
+		Clock:        w.LifecycleClock,
+	}, nil
+}
+
+func validateResumeAdapter(item model.WorkItem, registration PauseAdapterRegistration) error {
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(item.Resume.ManifestJSON), &manifest); err != nil {
+		return fmt.Errorf("decode resume manifest for adapter selection: %w", err)
+	}
+	if manifest.PauseStrategy != registration.Strategy {
+		return fmt.Errorf("resume pause strategy %q does not match registered adapter strategy %q", manifest.PauseStrategy, registration.Strategy)
+	}
+	if manifest.Compatibility.AdapterID != registration.AdapterID {
+		return fmt.Errorf("resume adapter id does not match registered adapter")
+	}
+	if manifest.Compatibility.AdapterVersion != registration.AdapterVersion {
+		return fmt.Errorf("resume adapter version does not match registered adapter")
+	}
 	return nil
 }
 

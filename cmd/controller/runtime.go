@@ -41,6 +41,13 @@ type WorkerRuntime struct {
 	DataLocationRoots                     map[string]string
 	IdlePollIntervalSeconds               int
 	IdleTimeoutSeconds                    int
+	CheckpointMode                        string
+	CheckpointIntervalSeconds             int
+	WorkItemExecutionQuantumSeconds       int
+	DrainPauseDelaySeconds                int
+	CheckpointCaptureTimeoutSeconds       int
+	CheckpointReportTimeoutSeconds        int
+	ExecutionTerminationGraceSeconds      int
 }
 
 func (r WorkerRuntime) Prepare(ctx context.Context, transport Transport, dialect ShellDialect) error {
@@ -150,6 +157,13 @@ type WorkerConfig struct {
 	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 	IdlePollIntervalSeconds               int               `json:"idle_poll_interval_seconds,omitempty"`
 	IdleTimeoutSeconds                    int               `json:"idle_timeout_seconds,omitempty"`
+	CheckpointMode                        string            `json:"checkpoint_mode,omitempty"`
+	CheckpointIntervalSeconds             int               `json:"checkpoint_interval_seconds,omitempty"`
+	WorkItemExecutionQuantumSeconds       int               `json:"work_item_execution_quantum_seconds,omitempty"`
+	DrainPauseDelaySeconds                int               `json:"drain_pause_delay_seconds,omitempty"`
+	CheckpointCaptureTimeoutSeconds       int               `json:"checkpoint_capture_timeout_seconds,omitempty"`
+	CheckpointReportTimeoutSeconds        int               `json:"checkpoint_report_timeout_seconds,omitempty"`
+	ExecutionTerminationGraceSeconds      int               `json:"execution_termination_grace_seconds,omitempty"`
 }
 
 func (r WorkerRuntime) paths() (WorkerRuntimePaths, error) {
@@ -217,6 +231,13 @@ func (r WorkerRuntime) writeWorkerConfig(ctx context.Context, transport Transpor
 		DataLocationRoots:                     r.DataLocationRoots,
 		IdlePollIntervalSeconds:               r.IdlePollIntervalSeconds,
 		IdleTimeoutSeconds:                    r.IdleTimeoutSeconds,
+		CheckpointMode:                        r.CheckpointMode,
+		CheckpointIntervalSeconds:             r.CheckpointIntervalSeconds,
+		WorkItemExecutionQuantumSeconds:       r.WorkItemExecutionQuantumSeconds,
+		DrainPauseDelaySeconds:                r.DrainPauseDelaySeconds,
+		CheckpointCaptureTimeoutSeconds:       r.CheckpointCaptureTimeoutSeconds,
+		CheckpointReportTimeoutSeconds:        r.CheckpointReportTimeoutSeconds,
+		ExecutionTerminationGraceSeconds:      r.ExecutionTerminationGraceSeconds,
 	}
 	if _, ok := transport.(LocalTransport); ok {
 		var err error

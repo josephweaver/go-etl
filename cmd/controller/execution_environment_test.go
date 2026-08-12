@@ -146,15 +146,19 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 		Dialect:    ExecutionComponentConfig{Type: "bash"},
 		Scheduler:  ExecutionComponentConfig{Type: "direct_process"},
 		Runtime: ExecutionComponentConfig{Type: "worker", Settings: ExecutionComponentSettings{
-			"root":                          "/tmp/goetl",
-			"python_executable":             "python3",
-			"seven_zip_executable":          "/usr/bin/7z",
-			"rclone_executable":             "/tmp/goetl/bin/rclone",
-			"rclone_config_path":            "/tmp/goetl/secrets/rclone.conf",
-			"enable_gdrive_rclone_provider": true,
-			"max_asset_bytes":               float64(20000000000),
-			"idle_poll_interval_seconds":    float64(30),
-			"idle_timeout_seconds":          float64(600),
+			"root":                                "/tmp/goetl",
+			"python_executable":                   "python3",
+			"seven_zip_executable":                "/usr/bin/7z",
+			"rclone_executable":                   "/tmp/goetl/bin/rclone",
+			"rclone_config_path":                  "/tmp/goetl/secrets/rclone.conf",
+			"enable_gdrive_rclone_provider":       true,
+			"max_asset_bytes":                     float64(20000000000),
+			"idle_poll_interval_seconds":          float64(30),
+			"idle_timeout_seconds":                float64(600),
+			"checkpoint_mode":                     "periodic",
+			"checkpoint_capture_timeout_seconds":  float64(120),
+			"checkpoint_report_timeout_seconds":   float64(60),
+			"execution_termination_grace_seconds": float64(30),
 		}},
 	})
 	if err != nil {
@@ -194,6 +198,126 @@ func TestNewExecutionEnvironmentSupportsLocalDirectProcess(t *testing.T) {
 	}
 	if runtime.IdleTimeoutSeconds != 600 {
 		t.Fatalf("idle timeout seconds = %d, want 600", runtime.IdleTimeoutSeconds)
+	}
+	if runtime.CheckpointMode != "periodic" {
+		t.Fatalf("checkpoint mode = %q, want periodic", runtime.CheckpointMode)
+	}
+	if runtime.CheckpointIntervalSeconds != 300 {
+		t.Fatalf("checkpoint interval seconds = %d, want default 300", runtime.CheckpointIntervalSeconds)
+	}
+	if runtime.DrainPauseDelaySeconds != 300 {
+		t.Fatalf("drain pause delay seconds = %d, want default 300", runtime.DrainPauseDelaySeconds)
+	}
+	if runtime.CheckpointCaptureTimeoutSeconds != 120 || runtime.CheckpointReportTimeoutSeconds != 60 || runtime.ExecutionTerminationGraceSeconds != 30 {
+		t.Fatalf("checkpoint deadline settings = %d/%d/%d, want 120/60/30", runtime.CheckpointCaptureTimeoutSeconds, runtime.CheckpointReportTimeoutSeconds, runtime.ExecutionTerminationGraceSeconds)
+	}
+}
+
+func TestWorkerRuntimeFromSettingsCheckpointPolicy(t *testing.T) {
+	enabled := func(mode string) ExecutionComponentSettings {
+		return ExecutionComponentSettings{
+			"checkpoint_mode":                     mode,
+			"checkpoint_capture_timeout_seconds":  float64(120),
+			"checkpoint_report_timeout_seconds":   float64(60),
+			"execution_termination_grace_seconds": float64(30),
+		}
+	}
+
+	tests := []struct {
+		name           string
+		settings       ExecutionComponentSettings
+		wantMode       string
+		wantInterval   int
+		wantQuantum    int
+		wantDrainDelay int
+		wantErr        string
+	}{
+		{name: "disabled", settings: nil},
+		{name: "shutdown defaults drain delay", settings: enabled("shutdown"), wantMode: "shutdown", wantDrainDelay: 300},
+		{name: "periodic defaults interval and drain delay", settings: enabled("periodic"), wantMode: "periodic", wantInterval: 300, wantDrainDelay: 300},
+		{name: "yield requires explicit quantum", settings: func() ExecutionComponentSettings {
+			settings := enabled("yield")
+			settings["work_item_execution_quantum_seconds"] = float64(1800)
+			return settings
+		}(), wantMode: "yield", wantQuantum: 1800, wantDrainDelay: 300},
+		{name: "explicit timing", settings: func() ExecutionComponentSettings {
+			settings := enabled("periodic")
+			settings["checkpoint_interval_seconds"] = float64(600)
+			settings["drain_pause_delay_seconds"] = float64(420)
+			return settings
+		}(), wantMode: "periodic", wantInterval: 600, wantDrainDelay: 420},
+		{name: "unsupported mode", settings: enabled("future"), wantErr: "unsupported checkpoint_mode"},
+		{name: "disabled with interval", settings: ExecutionComponentSettings{"checkpoint_interval_seconds": float64(1)}, wantErr: "requires checkpoint_mode"},
+		{name: "negative interval", settings: ExecutionComponentSettings{"checkpoint_interval_seconds": float64(-1)}, wantErr: "must be non-negative"},
+		{name: "non-integer interval", settings: ExecutionComponentSettings{"checkpoint_interval_seconds": 1.5}, wantErr: "must be an integer"},
+		{name: "missing capture timeout", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			delete(settings, "checkpoint_capture_timeout_seconds")
+			return settings
+		}(), wantErr: "checkpoint_capture_timeout_seconds must be greater than zero"},
+		{name: "missing report timeout", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			delete(settings, "checkpoint_report_timeout_seconds")
+			return settings
+		}(), wantErr: "checkpoint_report_timeout_seconds must be greater than zero"},
+		{name: "missing termination grace", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			delete(settings, "execution_termination_grace_seconds")
+			return settings
+		}(), wantErr: "execution_termination_grace_seconds must be greater than zero"},
+		{name: "shutdown rejects interval", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			settings["checkpoint_interval_seconds"] = float64(1)
+			return settings
+		}(), wantErr: "checkpoint_interval_seconds must be zero"},
+		{name: "periodic rejects quantum", settings: func() ExecutionComponentSettings {
+			settings := enabled("periodic")
+			settings["work_item_execution_quantum_seconds"] = float64(1)
+			return settings
+		}(), wantErr: "work_item_execution_quantum_seconds must be zero"},
+		{name: "periodic rejects explicit zero interval", settings: func() ExecutionComponentSettings {
+			settings := enabled("periodic")
+			settings["checkpoint_interval_seconds"] = float64(0)
+			return settings
+		}(), wantErr: "checkpoint_interval_seconds must be greater than zero"},
+		{name: "yield requires quantum", settings: enabled("yield"), wantErr: "work_item_execution_quantum_seconds must be greater than zero"},
+		{name: "yield rejects interval", settings: func() ExecutionComponentSettings {
+			settings := enabled("yield")
+			settings["checkpoint_interval_seconds"] = float64(1)
+			settings["work_item_execution_quantum_seconds"] = float64(1800)
+			return settings
+		}(), wantErr: "checkpoint_interval_seconds must be zero"},
+		{name: "budget equals drain delay", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			settings["drain_pause_delay_seconds"] = float64(210)
+			return settings
+		}(), wantErr: "budget must be less than setting drain_pause_delay_seconds"},
+		{name: "enabled mode rejects explicit zero drain delay", settings: func() ExecutionComponentSettings {
+			settings := enabled("shutdown")
+			settings["drain_pause_delay_seconds"] = float64(0)
+			return settings
+		}(), wantErr: "drain_pause_delay_seconds must be greater than zero"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, err := workerRuntimeFromSettings(test.settings)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("workerRuntimeFromSettings() error = %v, want text %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("workerRuntimeFromSettings() error = %v", err)
+			}
+			if runtime.CheckpointMode != test.wantMode ||
+				runtime.CheckpointIntervalSeconds != test.wantInterval ||
+				runtime.WorkItemExecutionQuantumSeconds != test.wantQuantum ||
+				runtime.DrainPauseDelaySeconds != test.wantDrainDelay {
+				t.Fatalf("checkpoint policy = mode %q interval %d quantum %d drain %d", runtime.CheckpointMode, runtime.CheckpointIntervalSeconds, runtime.WorkItemExecutionQuantumSeconds, runtime.DrainPauseDelaySeconds)
+			}
+		})
 	}
 }
 

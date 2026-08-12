@@ -13,6 +13,15 @@ import (
 
 const defaultWorkerIdlePollInterval = 30 * time.Second
 
+type CheckpointMode string
+
+const (
+	CheckpointModeDisabled CheckpointMode = ""
+	CheckpointModeShutdown CheckpointMode = "shutdown"
+	CheckpointModePeriodic CheckpointMode = "periodic"
+	CheckpointModeYield    CheckpointMode = "yield"
+)
+
 type Config struct {
 	LogDir                                string            `json:"log_dir"`
 	TmpDir                                string            `json:"tmp_dir"`
@@ -30,6 +39,13 @@ type Config struct {
 	DataLocationRoots                     map[string]string `json:"data_location_roots,omitempty"`
 	IdlePollIntervalSeconds               int               `json:"idle_poll_interval_seconds,omitempty"`
 	IdleTimeoutSeconds                    int               `json:"idle_timeout_seconds,omitempty"`
+	CheckpointMode                        CheckpointMode    `json:"checkpoint_mode,omitempty"`
+	CheckpointIntervalSeconds             int               `json:"checkpoint_interval_seconds,omitempty"`
+	WorkItemExecutionQuantumSeconds       int               `json:"work_item_execution_quantum_seconds,omitempty"`
+	DrainPauseDelaySeconds                int               `json:"drain_pause_delay_seconds,omitempty"`
+	CheckpointCaptureTimeoutSeconds       int               `json:"checkpoint_capture_timeout_seconds,omitempty"`
+	CheckpointReportTimeoutSeconds        int               `json:"checkpoint_report_timeout_seconds,omitempty"`
+	ExecutionTerminationGraceSeconds      int               `json:"execution_termination_grace_seconds,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -125,6 +141,96 @@ func (c Config) ValidateRuntime() error {
 
 	if c.IdleTimeoutSeconds < 0 {
 		return fmt.Errorf("idle timeout seconds must be non-negative")
+	}
+
+	if err := c.validateCheckpointPolicy(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c Config) validateCheckpointPolicy() error {
+	values := []struct {
+		name  string
+		value int
+	}{
+		{name: "checkpoint_interval_seconds", value: c.CheckpointIntervalSeconds},
+		{name: "work_item_execution_quantum_seconds", value: c.WorkItemExecutionQuantumSeconds},
+		{name: "drain_pause_delay_seconds", value: c.DrainPauseDelaySeconds},
+		{name: "checkpoint_capture_timeout_seconds", value: c.CheckpointCaptureTimeoutSeconds},
+		{name: "checkpoint_report_timeout_seconds", value: c.CheckpointReportTimeoutSeconds},
+		{name: "execution_termination_grace_seconds", value: c.ExecutionTerminationGraceSeconds},
+	}
+	for _, field := range values {
+		if field.value < 0 {
+			return fmt.Errorf("%s must be non-negative", field.name)
+		}
+	}
+
+	switch c.CheckpointMode {
+	case CheckpointModeDisabled:
+		for _, field := range values {
+			if field.value != 0 {
+				return fmt.Errorf("%s requires checkpoint_mode", field.name)
+			}
+		}
+		return nil
+	case CheckpointModeShutdown, CheckpointModePeriodic, CheckpointModeYield:
+	default:
+		return fmt.Errorf("unsupported checkpoint_mode %q", c.CheckpointMode)
+	}
+
+	required := []struct {
+		name  string
+		value int
+	}{
+		{name: "drain_pause_delay_seconds", value: c.DrainPauseDelaySeconds},
+		{name: "checkpoint_capture_timeout_seconds", value: c.CheckpointCaptureTimeoutSeconds},
+		{name: "checkpoint_report_timeout_seconds", value: c.CheckpointReportTimeoutSeconds},
+		{name: "execution_termination_grace_seconds", value: c.ExecutionTerminationGraceSeconds},
+	}
+	for _, field := range required {
+		if field.value == 0 {
+			return fmt.Errorf("%s must be greater than zero when checkpoint_mode is %q", field.name, c.CheckpointMode)
+		}
+	}
+
+	switch c.CheckpointMode {
+	case CheckpointModeShutdown:
+		if c.CheckpointIntervalSeconds != 0 {
+			return fmt.Errorf("checkpoint_interval_seconds must be zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+		if c.WorkItemExecutionQuantumSeconds != 0 {
+			return fmt.Errorf("work_item_execution_quantum_seconds must be zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+	case CheckpointModePeriodic:
+		if c.CheckpointIntervalSeconds == 0 {
+			return fmt.Errorf("checkpoint_interval_seconds must be greater than zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+		if c.WorkItemExecutionQuantumSeconds != 0 {
+			return fmt.Errorf("work_item_execution_quantum_seconds must be zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+	case CheckpointModeYield:
+		if c.CheckpointIntervalSeconds != 0 {
+			return fmt.Errorf("checkpoint_interval_seconds must be zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+		if c.WorkItemExecutionQuantumSeconds == 0 {
+			return fmt.Errorf("work_item_execution_quantum_seconds must be greater than zero when checkpoint_mode is %q", c.CheckpointMode)
+		}
+	}
+
+	remaining := c.DrainPauseDelaySeconds
+	if c.CheckpointCaptureTimeoutSeconds >= remaining {
+		return fmt.Errorf("checkpoint capture, report, and termination budget must be less than drain_pause_delay_seconds")
+	}
+	remaining -= c.CheckpointCaptureTimeoutSeconds
+	if c.CheckpointReportTimeoutSeconds >= remaining {
+		return fmt.Errorf("checkpoint capture, report, and termination budget must be less than drain_pause_delay_seconds")
+	}
+	remaining -= c.CheckpointReportTimeoutSeconds
+	if c.ExecutionTerminationGraceSeconds >= remaining {
+		return fmt.Errorf("checkpoint capture, report, and termination budget must be less than drain_pause_delay_seconds")
 	}
 
 	return nil

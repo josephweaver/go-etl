@@ -729,6 +729,234 @@ a whole remains red because `cmd/controller` reaches the same unrelated
 `TestNewStartupRuntimeScope` precision mismatch recorded above. All OS-007
 focused controller and worker tests pass.
 
+## Worker Checkpoint Policy
+
+OS-008 pass 1 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/worker -run 'TestLoadConfig|TestConfigValidate' -count=1
+go test ./cmd/worker -count=1
+```
+
+Result:
+
+```text
+ok  goetl/cmd/worker
+ok  goetl/cmd/worker
+```
+
+The focused cases cover disabled, shutdown, periodic, and yield modes; JSON
+loading; required common deadlines; mutually exclusive interval/quantum
+fields; negative and irrelevant values; and strict reservation of time for
+capture, controller reporting, and execution termination before the
+drain-to-pause delay expires. This pass does not render the policy into
+controller-generated worker JSON or enable a production pause adapter.
+
+OS-008 pass 2 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/controller -run 'TestWorkerRuntimePrepareWritesWorkerConfig' -count=1
+go test ./cmd/controller -count=1
+go test ./cmd/controller -run 'TestGeneratedSlurmWorkerScriptRunsThroughFakeSbatch' -count=1 -v
+```
+
+The focused worker-config rendering command passed. It proves all seven
+configured checkpoint-policy values survive generated JSON and all seven keys
+are omitted from the zero-value default.
+
+The complete controller command remains red at the previously recorded
+`TestNewStartupRuntimeScope` timestamp-precision mismatch and at
+`TestGeneratedSlurmWorkerScriptRunsThroughFakeSbatch`, which returns exit 126
+on the current Windows environment after printing `Submitted batch job 1000`.
+The isolated fake-`sbatch` rerun reproduces that failure. Neither failing test
+exercises `WorkerRuntime` checkpoint fields or worker-config JSON rendering.
+
+OS-008 pass 3 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/controller -run 'TestNewExecutionEnvironmentSupportsLocalDirectProcess|TestWorkerRuntimeFromSettingsCheckpointPolicy|TestWorkerRuntimePrepareWritesWorkerConfig' -count=1
+go test ./cmd/controller -run 'TestNewExecutionEnvironment|TestWorkerRuntime' -count=1
+```
+
+Both commands pass. The tests prove environment settings preserve disabled
+mode, accept shutdown/periodic/yield shapes, default only omitted periodic
+interval and drain-delay keys to 300 seconds, reject explicit zero and invalid
+mode-specific fields, and reject unsafe capture/report/termination budgets.
+The complete controller package was not rerun in this pass because its two
+unrelated failures are recorded directly above.
+
+OS-008 pass 4 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/worker -run 'TestRunHeartbeat|TestRealWorkerLifecycleTimer|TestFakeWorkerLifecycleTimer' -count=1
+go test ./cmd/worker -count=1
+```
+
+Both commands pass. The focused tests prove the real one-shot timer can stop,
+reset, and stop again; the deterministic fake tracks duration, active state,
+reset, firing, and stop results; and all existing heartbeat cancellation,
+refresh, rejection, and self-fencing behavior remains green. No supervisor or
+drain behavior uses the timer in this pass.
+
+OS-008 pass 5 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/worker -run 'TestPauseAdapter|TestCheckpointCaptureRequest|TestPreparedCheckpoint|TestFakeSupervisedExecution' -count=1
+go test ./cmd/worker -count=1
+```
+
+Both commands pass. Focused tests cover capability/mode matching, duplicate and
+invalid registrations, typed-nil adapters, work-item selection, distinct fresh
+and resume calls, capture-request identity/path validation, exact manifest
+digest and reference checks, generation/lineage/strategy/adapter matching, and
+the fake supervised execution lifecycle. No production adapter is registered
+and no production execution calls these interfaces yet.
+
+OS-008 pass 6 verification recorded on 2026-08-04:
+
+```powershell
+go test ./cmd/worker -run 'TestWorkerDrain' -count=1
+go test ./cmd/worker -count=1
+```
+
+Both commands pass. Focused tests cover supported and rejected drain requests,
+UTC timestamp normalization, first-request event/current-state agreement,
+invalid-request recovery, zero-value use, ignored later requests, and exactly
+one accepted event under concurrent callers. This pass does not subscribe to
+process signals or connect the drain source to the worker loop.
+
+OS-008 pass 7 verification recorded on 2026-08-11:
+
+```powershell
+go test ./cmd/worker -run '^TestExecutionSupervisor' -count=1
+go test ./cmd/worker -count=1
+```
+
+Both commands pass. The supervisor tests cover ordinary completion and causal
+failure; periodic capture and exact ambiguous-confirmation replay; unchanged
+generation after capture failure; resumed lineage/generation continuation;
+quantum suspension; drain completion before escalation; final-capture fallback
+to the latest accepted periodic generation; abandonment without a fallback;
+periodic ownership-conflict abandonment; ambiguous suspend reporting; bounded
+termination failure; and cancellation without a competing terminal report.
+This is fake adapter/client/clock evidence. The supervisor is not connected to
+the production worker loop, and no production pause adapter is registered.
+
+OS-008 pass 8 verification recorded on 2026-08-11:
+
+```powershell
+$env:GOOS='linux'
+$env:GOARCH='amd64'
+go test -c -o '.tmp-goetl-worker-linux.test' ./cmd/worker
+```
+
+The Linux worker test binary compiles successfully; the exact temporary binary
+was removed afterward. This proves the build-tagged source compiles with
+`syscall.SIGUSR1`, `os/signal`, the shared lifecycle clock, and the drain latch.
+It is compile-level evidence only: pass 8 does not connect the source to
+`runWorkerLoop`, and no live Linux process-signal test was run.
+
+OS-008 pass 9 verification recorded on 2026-08-11:
+
+```powershell
+go test ./cmd/worker -run 'TestWorkerDrain|TestPlatformWorkerDrainSource' -count=1
+go test ./cmd/worker -count=1
+$env:GOOS='linux'
+$env:GOARCH='amd64'
+go test -c -o '.tmp-goetl-worker-linux.test' ./cmd/worker
+```
+
+All commands pass, and the temporary Linux test binary was removed. The shared
+platform-source test runs on Windows and proves injection through the returned
+drain latch plus repeated stop calls. WSL Ubuntu 24.04 already provides Go
+1.26.2; the focused Linux run sends real `SIGUSR1` to the Go test process and
+passes both platform-source tests:
+
+```powershell
+wsl.exe -d Ubuntu-24.04 --cd "C:\Joe Local Only\College\Research\go-etl" -- `
+  go test ./cmd/worker -run TestPlatformWorkerDrainSource -count=1 -v
+```
+
+The pass-9 complete WSL worker-package run was red in four tests outside the
+drain source: `TestRunWorkerLoopStopsClaimingAfterHeartbeatRejected`,
+`TestWorkerRunWorkItemRejectsMissingDataBindingBeforePythonStarts`,
+`TestWorkerRunWorkItemEmitsPythonSubprocessLogs`, and
+`TestWorkerRunWorkItemFallsBackToFallbackLogOnLogDeliveryFailure`. The focused
+Linux platform-source tests and complete Windows worker package pass.
+
+OS-008 pass 10 verification recorded on 2026-08-11:
+
+```powershell
+go test ./cmd/worker -run 'TestWorkerValidateRequiresAdapters|TestWorkerRunRejectsResume|TestWorkerRunSupervised' -count=1
+go test ./cmd/worker -count=1
+```
+
+Both commands pass. Focused tests prove disabled mode accepts an empty registry;
+enabled modes reject an empty registry or registrations without the configured
+capability; ordinary `Worker.Run` rejects resume assignments; supervised fresh
+and resume assignments call only `StartFresh` and `StartResume`, respectively;
+and missing or version-mismatched resume adapters start neither path. The same
+focused ownership tests pass under WSL/Linux. No production adapter is
+registered, and `runWorkerLoop` does not call `RunSupervised` yet.
+
+OS-008 pass 11 verification recorded on 2026-08-11:
+
+```powershell
+go test ./cmd/worker -run '^TestRunWorkerLoop' -count=1
+go test ./cmd/worker -count=1
+go test -race ./cmd/worker -run '^TestRunWorkerLoop' -count=1
+go vet ./cmd/worker
+git diff --check
+wsl.exe -d Ubuntu-24.04 --cd "C:\Joe Local Only\College\Research\go-etl" -- `
+  go test ./cmd/worker -run TestRunWorkerLoop -count=1 -v
+wsl.exe -d Ubuntu-24.04 --cd "C:\Joe Local Only\College\Research\go-etl" -- `
+  go vet ./cmd/worker
+wsl.exe -d Ubuntu-24.04 --cd "C:\Joe Local Only\College\Research\go-etl" -- `
+  go test ./cmd/worker -count=1
+```
+
+All Windows commands, focused WSL worker-loop tests, and WSL vet pass. Focused
+tests cover idle drain before claim, drain during an in-flight claim followed
+by completion and stop, active drain after execution starts, resume launch
+rejection without a causal work failure, suspended and abandoned supervisor
+outcomes without duplicate terminal reports, and heartbeat rejection
+cancelling and terminating supervised execution. Existing worker-loop behavior
+remains green. A final synchronous ownership heartbeat before completion or
+failure reporting closes the race between fast ordinary execution and a
+concurrently rejected background heartbeat; the Linux heartbeat-rejection test
+therefore remains green in both focused and complete-suite runs.
+
+The complete WSL worker package now reaches exactly three unrelated failures:
+`TestWorkerRunWorkItemRejectsMissingDataBindingBeforePythonStarts`,
+`TestWorkerRunWorkItemEmitsPythonSubprocessLogs`, and
+`TestWorkerRunWorkItemFallsBackToFallbackLogOnLogDeliveryFailure`. Thus pass 11
+removes the earlier heartbeat failure but does not claim to fix the existing
+data-binding/Python-log portability failures. No production pause adapter is
+registered or enabled.
+
+OS-008 pass 12 closure verification recorded on 2026-08-11:
+
+```powershell
+go test ./cmd/worker -run 'TestConfigValidate|TestPauseAdapter|TestCheckpointCaptureRequest|TestPreparedCheckpoint|TestWorkerDrain|TestPlatformWorkerDrainSource|TestExecutionSupervisor|TestWorkerValidateRequiresAdapters|TestWorkerRunRejectsResume|TestWorkerRunSupervised|TestRunWorkerLoop' -count=1
+go test ./cmd/controller -run 'TestWorkerRuntimePrepareWritesWorkerConfig|TestWorkerRuntimeFromSettingsCheckpointPolicy|TestNewExecutionEnvironmentSupportsLocalDirectProcess' -count=1
+go test ./cmd/worker ./cmd/controller -count=1
+go test ./cmd/worker -run '^TestPromoteArtifactsPromotesDirectoryArtifact$' -count=1
+go test ./cmd/controller -run '^TestNewStartupRuntimeScope$' -count=1
+```
+
+Both OS-008-focused commands pass. The exact combined charter command is red:
+the worker package encountered a transient Windows directory lock in
+`TestPromoteArtifactsPromotesDirectoryArtifact`, and the controller package
+retained the previously recorded `TestNewStartupRuntimeScope` timestamp
+precision mismatch. The artifact-promotion test passes in isolation; the
+timestamp test fails identically in isolation. Neither test exercises OS-008,
+and this record does not claim that the combined command passes.
+
+OS-008 is implemented with no production adapter enabled. Remaining work is
+owned by later adapter slices, Slurm warning-signal forwarding, authenticated
+administrative drain delivery, and cross-worker security/retention/operations
+evidence.
+
 ## Direct Worker Development Execution Evidence
 
 Recorded on 2026-07-11 on branch

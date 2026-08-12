@@ -27,6 +27,7 @@ type WorkerHeartbeatFunc func(context.Context, WorkerSession) error
 type WorkerLifecycleClock interface {
 	Now() time.Time
 	NewTicker(time.Duration) WorkerLifecycleTicker
+	NewTimer(time.Duration) WorkerLifecycleTimer
 }
 
 type WorkerLifecycleTicker interface {
@@ -34,10 +35,20 @@ type WorkerLifecycleTicker interface {
 	Stop()
 }
 
+type WorkerLifecycleTimer interface {
+	C() <-chan time.Time
+	Stop() bool
+	Reset(time.Duration) bool
+}
+
 type realWorkerLifecycleClock struct{}
 
 type realWorkerLifecycleTicker struct {
 	ticker *time.Ticker
+}
+
+type realWorkerLifecycleTimer struct {
+	timer *time.Timer
 }
 
 func (realWorkerLifecycleClock) Now() time.Time {
@@ -48,12 +59,28 @@ func (realWorkerLifecycleClock) NewTicker(interval time.Duration) WorkerLifecycl
 	return realWorkerLifecycleTicker{ticker: time.NewTicker(interval)}
 }
 
+func (realWorkerLifecycleClock) NewTimer(duration time.Duration) WorkerLifecycleTimer {
+	return realWorkerLifecycleTimer{timer: time.NewTimer(duration)}
+}
+
 func (t realWorkerLifecycleTicker) C() <-chan time.Time {
 	return t.ticker.C
 }
 
 func (t realWorkerLifecycleTicker) Stop() {
 	t.ticker.Stop()
+}
+
+func (t realWorkerLifecycleTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t realWorkerLifecycleTimer) Stop() bool {
+	return t.timer.Stop()
+}
+
+func (t realWorkerLifecycleTimer) Reset(duration time.Duration) bool {
+	return t.timer.Reset(duration)
 }
 
 func RunHeartbeat(ctx context.Context, session WorkerSession, heartbeat WorkerHeartbeatFunc, clock WorkerLifecycleClock) error {

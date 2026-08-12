@@ -1533,13 +1533,45 @@ planning candidates until they receive an approved Operational Slice charter.
      controller state rather than returning a generic worker error.
 
 8. **Worker drain state and adapter supervisor**
+   - Operational Slice charter:
+     `008-worker-drain-state-and-adapter-neutral-execution-supervisor.md`.
+   - Status: implemented. Pass 1 implements worker checkpoint
+     policy parsing and fail-closed validation. Pass 2 carries the same fields
+     through controller-side worker JSON rendering while omitting them by
+     default. Pass 3 resolves and validates environment settings, applying the
+     approved 300-second defaults only when the relevant keys are omitted.
+     Pass 4 adds the injectable resettable timer required by the future
+     execution supervisor without changing heartbeat cadence. Pass 5 adds the
+     validated adapter registry and execution/capture contracts, with fake
+     adapters only. Pass 6 adds the monotonic injectable drain latch and shared
+     Slurm-signal/future-administrative request reasons without subscribing to
+     process signals yet. Pass 7 adds the adapter-neutral single-attempt
+     supervisor with fake clock, adapter, and controller-client tests; it is
+     not connected to `Worker` or `runWorkerLoop` yet. Pass 8 adds the
+     Linux-only `SIGUSR1` subscription and bounded stop function; shared worker
+     code does not call it yet. Pass 9 adds the matching non-Linux injectable
+     source without naming `SIGUSR1`; focused WSL testing proves real Linux
+     signal delivery reaches the shared drain request. Pass 10 attaches the
+     explicit registry to `Worker`, validates configured capabilities, rejects
+     resume assignments on ordinary `Run`, and exposes supervised fresh/resume
+     execution. Implementation is explicitly split across prompt-sized passes
+     that each change at most one production file, plus its focused test and
+     documentation. Pass 11 connects the platform drain source and supervised
+     execution to the controller-mode worker loop, preserves heartbeat
+     self-fencing, prevents claims after drain, and maps supervisor outcomes to
+     distinct report/stop transitions. Pass 12 records final evidence and the
+     deferred adapter, Slurm-forwarding, administrative-control, and operations
+     gaps. No production adapter is enabled.
    - Add the worker-owned periodic checkpoint timer, serialized
      capture/confirmation, latest-accepted tracking, `SIGUSR1` drain handling,
      the configurable execution quantum and yield transition, the five-minute
-     final-pause timer, completion/pause mutual exclusion, bounded reporting,
-     and administrative drain control.
+     final-pause timer, completion/pause mutual exclusion, and bounded
+     reporting.
    - Keep the worker outside DMTCP and dispatch pause/resume through the selected
      work-item adapter.
+   - Define and fake-test the adapter boundary, but leave all production
+     adapters disabled. Authenticated administrative-drain delivery remains a
+     later transport slice and will feed the same injected drain boundary.
 
 9. **R and Python DMTCP adapter**
    - Launch supported interpreters under isolated DMTCP coordinators and restore
@@ -1655,9 +1687,27 @@ single-chain, single-core RStan and CmdStanR shapes. OS-004 is implemented and
 approves the tested direct CPython 3.11, NumPy 2.4.6, one-native-thread,
 one-descendant shape. OS-005 is implemented and defines the shared immutable
 resume-artifact manifest/reference model with typed DMTCP, native, and manual
-payloads. No pause adapter is wired into the production worker yet. The next
-candidate is the controller checkpoint-generation and pending-resume
-lifecycle; it requires a separately reviewed charter before implementation.
+payloads. OS-006 implements checkpoint-generation and pending-resume
+persistence. OS-007 implements authenticated checkpoint confirmation,
+suspend-latest transport, resume-assignment claim transport, and the callable
+worker checkpoint client. OS-008 is implemented: pass 1 adds and
+validates disabled, shutdown, periodic, and yield worker policies; pass 2
+carries the same fields through generated worker JSON while preserving empty
+mode by default; pass 3 resolves and validates those settings into
+`WorkerRuntime`; pass 4 adds the resettable lifecycle timer; pass 5 adds the
+validated adapter registry and execution/capture contracts; pass 6 adds the
+monotonic injectable drain latch and common drain reasons; pass 7 adds the
+serialized execution supervisor, exact ambiguous-confirmation replay,
+accepted-generation tracking, final fallback, and bounded termination; pass 8
+adds the Linux `SIGUSR1` drain source; pass 9 adds its non-Linux counterpart.
+Pass 10 adds registry ownership, fail-closed startup capability checks, and the
+supervised worker entry point. Pass 11 connects the platform drain source and
+supervised execution to the worker loop, prevents later claims after drain,
+preserves heartbeat self-fencing, and maps supervisor outcomes to the agreed
+controller-report and worker-stop transitions. No production pause adapter is
+wired into the worker. Pass 12 closes the slice with scoped Windows/WSL and
+focused controller evidence while retaining the unrelated known controller
+startup-timestamp precision failure in the exact combined package command.
 
 The selected implementation HCI specification is:
 
