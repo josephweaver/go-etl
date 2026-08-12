@@ -37,6 +37,9 @@ func (w Worker) Validate() error {
 	if err := w.Config.validateCheckpointPolicy(); err != nil {
 		return err
 	}
+	if err := w.Config.validatePauseAdapterProfile(); err != nil {
+		return err
+	}
 	if err := w.validatePauseAdapters(); err != nil {
 		return err
 	}
@@ -60,10 +63,14 @@ func (w Worker) validatePauseAdapters() error {
 	if w.Config.CheckpointMode == CheckpointModeDisabled {
 		return nil
 	}
-	if w.PauseAdapters.Len() == 0 {
+	registry, err := w.pauseAdapterRegistry()
+	if err != nil {
+		return err
+	}
+	if registry.Len() == 0 {
 		return fmt.Errorf("checkpoint mode %q requires at least one pause adapter", w.Config.CheckpointMode)
 	}
-	for workItemType, registration := range w.PauseAdapters.byWorkItemType {
+	for workItemType, registration := range registry.byWorkItemType {
 		if err := registration.Validate(); err != nil {
 			return fmt.Errorf("pause adapter for work item type %q: %w", workItemType, err)
 		}
@@ -75,6 +82,38 @@ func (w Worker) validatePauseAdapters() error {
 		}
 	}
 	return nil
+}
+
+func (w Worker) pauseAdapterRegistry() (PauseAdapterRegistry, error) {
+	if w.PauseAdapters.byWorkItemType != nil {
+		return w.PauseAdapters, nil
+	}
+	if w.Config.PauseAdapterProfile == "" {
+		return NewPauseAdapterRegistry()
+	}
+	if w.Config.PauseAdapterProfile != PauseAdapterProfileDirectPythonDMTCP42 {
+		return PauseAdapterRegistry{}, fmt.Errorf("unsupported pause adapter profile %q", w.Config.PauseAdapterProfile)
+	}
+	if w.Config.DMTCPProfile == nil {
+		return PauseAdapterRegistry{}, fmt.Errorf("pause adapter profile %q requires dmtcp_profile", w.Config.PauseAdapterProfile)
+	}
+	profile := w.Config.DMTCPProfile.launchProfile()
+	if err := profile.validate(); err != nil {
+		return PauseAdapterRegistry{}, fmt.Errorf("DMTCP pause adapter profile: %w", err)
+	}
+	adapter := &DMTCPAdapter{Worker: w, Profile: profile}
+	return NewPauseAdapterRegistry(PauseAdapterRegistration{
+		WorkItemType:   model.WorkItemTypePythonScript,
+		Strategy:       model.PauseStrategyDMTCP,
+		AdapterID:      profile.AdapterID,
+		AdapterVersion: profile.AdapterVersion,
+		Capabilities: PauseAdapterCapabilities{
+			Shutdown: true,
+			Periodic: true,
+			Yield:    true,
+		},
+		Adapter: adapter,
+	})
 }
 
 func (w Worker) RunSupervised(
@@ -106,7 +145,11 @@ func (w Worker) executionSupervisor(
 	if err := w.validatePauseAdapters(); err != nil {
 		return ExecutionSupervisor{}, err
 	}
-	registration, found := w.PauseAdapters.AdapterFor(item.Type)
+	registry, err := w.pauseAdapterRegistry()
+	if err != nil {
+		return ExecutionSupervisor{}, err
+	}
+	registration, found := registry.AdapterFor(item.Type)
 	if !found {
 		return ExecutionSupervisor{}, fmt.Errorf("no pause adapter is registered for work item type %q", item.Type)
 	}

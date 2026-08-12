@@ -325,3 +325,22 @@ adapter yet.
 
 Adapter construction/registration and the container-level adapter/supervisor
 smoke remain to be implemented.
+
+The sixth implementation increment completed on 2026-08-12. When no explicit
+registry was injected, `Worker` now derives its registry from validated config.
+An omitted `pause_adapter_profile` produces an empty registry, preserving the
+ordinary `python_script` path and the existing error for an enabled checkpoint
+mode without adapters. Selecting `direct_python_dmtcp_4_2` constructs one
+`DMTCPAdapter` from the resolved profile and registers it only for
+`model.WorkItemTypePythonScript` with DMTCP strategy plus shutdown, periodic,
+and yield capabilities.
+
+Explicitly injected registries remain authoritative for focused supervisor
+tests and future composition. Worker validation and supervisor construction use
+the same derived registry path, so startup validation and execution cannot
+disagree about the selected adapter. Focused tests prove omitted-profile,
+selected-profile, and injected-registry behavior. Checked-in configurations
+still omit checkpoint/profile activation.
+
+The container-level adapter/supervisor smoke remains to be implemented before
+the selected profile is operationally supported.

@@ -19,15 +19,17 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
 - `config.go` owns loading and validating worker runtime configuration,
   including the disabled, shutdown, periodic, and yield checkpoint-policy
   shapes. It also validates the explicit `direct_python_dmtcp_4_2` selector
-  and its complete pinned runtime/compatibility profile. Configuration alone
-  does not register the adapter yet, and omission preserves ordinary Python.
+  and its complete pinned runtime/compatibility profile. Omission preserves
+  ordinary Python.
 - `direct.go` owns direct command parsing, work-item loading, attempt identity,
   one-shot execution, and local result writing.
 - `source_bundle_provider.go` owns controller-backed and local-file source ZIP
   acquisition.
 - `worker.go` owns worker environment validation, ordinary work dispatch, the
   explicit pause-adapter registry dependency, and construction of supervised
-  fresh/resume execution. Ordinary `Run` rejects resume assignments.
+  fresh/resume execution. It derives the production DMTCP `python_script`
+  registration only when the explicit profile is selected; injected
+  registries remain authoritative. Ordinary `Run` rejects resume assignments.
 - `state.go` owns HTTP communication with the controller for fetching work and reporting outcomes.
 - `lifecycle.go` owns worker registration, heartbeat, stop requests, and the
   injectable ticker/timer clock used by lifecycle state machines.
@@ -47,12 +49,11 @@ It is not the workflow compiler, scheduler, queue owner, ledger writer, client b
   ordering, periodic and suspending capture, exact confirmation replay,
   accepted-generation tracking, fallback selection, and bounded termination.
   The worker loop calls it for enabled checkpoint modes and resume assignments;
-  no production pause adapter is registered yet.
+  the selected DMTCP profile supplies the first production registration.
 - `dmtcp_adapter.go` owns the direct-interpreter DMTCP implementation for the
   scoped `python_script` shape. It validates fresh/resume launch, isolated
   coordinator ownership, checkpoint generations, manifest-last publication,
-  restart image integrity, result finalization, and bounded cleanup. Production
-  registration remains a separate explicit wiring step.
+  restart image integrity, result finalization, and bounded cleanup.
 - `work_demo.go` owns the demo output-producing operation.
 - `work_summary.go` owns the input-file summary operation.
 - `demo-config.json` is the local demo worker configuration.

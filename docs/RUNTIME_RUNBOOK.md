@@ -1,6 +1,6 @@
 # Runtime Runbook
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 This file preserves the moved runtime command and expected-output section from the pre-split root state file.
 
@@ -15,10 +15,11 @@ its configured checkpoint supervisor settle before stopping. The signal
 handler itself performs no checkpoint or controller I/O.
 
 Checked-in worker configurations must continue to omit `checkpoint_mode`.
-OS-008 provides the adapter-neutral lifecycle but intentionally registers no
-production pause adapter, so `shutdown`, `periodic`, or `yield` mode fails
-worker validation before registration until a later adapter slice supplies a
-compatible registration. Do not enable these modes operationally yet.
+OS-009 now conditionally registers the direct-Python DMTCP adapter only when
+`pause_adapter_profile` is `direct_python_dmtcp_4_2` and the complete
+`dmtcp_profile` is present. Omission still fails enabled checkpoint-mode worker
+validation because no adapter is registered. Do not enable the DMTCP profile
+operationally until the OS-009 container-level adapter/supervisor smoke passes.
 
 This runbook does not configure Slurm to forward a warning signal, provide an
 authenticated administrative-drain command, or prove checkpoint restore across

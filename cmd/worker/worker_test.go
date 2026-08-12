@@ -213,6 +213,95 @@ func TestWorkerValidateRequiresAdaptersForEnabledCheckpointMode(t *testing.T) {
 	}
 }
 
+func TestWorkerDerivesDMTCPPythonAdapterOnlyFromExplicitProfile(t *testing.T) {
+	t.Run("omitted profile", func(t *testing.T) {
+		worker := newTestWorker(t)
+		registry, err := worker.pauseAdapterRegistry()
+		if err != nil {
+			t.Fatalf("pauseAdapterRegistry() error = %v", err)
+		}
+		if registry.Len() != 0 {
+			t.Fatalf("default registry length = %d, want 0", registry.Len())
+		}
+		if _, found := registry.AdapterFor(model.WorkItemTypePythonScript); found {
+			t.Fatal("ordinary worker unexpectedly registered a Python pause adapter")
+		}
+	})
+
+	t.Run("selected profile", func(t *testing.T) {
+		worker := newTestWorker(t)
+		configureWorkerCheckpointMode(&worker.Config, CheckpointModePeriodic)
+		worker.Config.PauseAdapterProfile = PauseAdapterProfileDirectPythonDMTCP42
+		worker.Config.DMTCPProfile = validWorkerDMTCPProfile(filepath.Join(worker.Config.TmpDir, "shared"))
+		if err := worker.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		registry, err := worker.pauseAdapterRegistry()
+		if err != nil {
+			t.Fatalf("pauseAdapterRegistry() error = %v", err)
+		}
+		registration, found := registry.AdapterFor(model.WorkItemTypePythonScript)
+		if !found {
+			t.Fatal("selected profile did not register python_script")
+		}
+		if registration.Strategy != model.PauseStrategyDMTCP ||
+			registration.AdapterID != worker.Config.DMTCPProfile.AdapterID ||
+			registration.AdapterVersion != worker.Config.DMTCPProfile.AdapterVersion ||
+			!registration.Capabilities.Supports(CheckpointModePeriodic) ||
+			!registration.Capabilities.Supports(CheckpointModeYield) {
+			t.Fatalf("unexpected DMTCP registration: %+v", registration)
+		}
+		adapter, ok := registration.Adapter.(*DMTCPAdapter)
+		if !ok || adapter.Profile.BuildIdentity != worker.Config.DMTCPProfile.BuildIdentity {
+			t.Fatalf("unexpected concrete adapter: %#v", registration.Adapter)
+		}
+	})
+
+	t.Run("injected registry remains authoritative", func(t *testing.T) {
+		worker := newTestWorker(t)
+		configureWorkerCheckpointMode(&worker.Config, CheckpointModePeriodic)
+		worker.Config.PauseAdapterProfile = PauseAdapterProfileDirectPythonDMTCP42
+		worker.Config.DMTCPProfile = validWorkerDMTCPProfile(filepath.Join(worker.Config.TmpDir, "shared"))
+		manual := validPauseAdapterRegistration(&fakePauseAdapter{execution: newFakeSupervisedExecution()})
+		registry, err := NewPauseAdapterRegistry(manual)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker.PauseAdapters = registry
+		got, err := worker.pauseAdapterRegistry()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found := got.AdapterFor(model.WorkItemTypePythonScript); found {
+			t.Fatal("configured adapter replaced explicitly injected registry")
+		}
+		if selected, found := got.AdapterFor(model.WorkItemTypeWriteDemoOutput); !found || selected.AdapterID != manual.AdapterID {
+			t.Fatalf("injected registration was not preserved: %+v found=%v", selected, found)
+		}
+	})
+}
+
+func validWorkerDMTCPProfile(sharedRoot string) *DMTCPProfileConfig {
+	return &DMTCPProfileConfig{
+		LaunchExecutable:               "dmtcp_launch",
+		CommandExecutable:              "dmtcp_command",
+		RestartExecutable:              "dmtcp_restart",
+		PythonExecutable:               "python3",
+		SharedTmpRoot:                  sharedRoot,
+		CheckpointSignal:               "12",
+		ExpectedClients:                1,
+		BuildIdentity:                  "dmtcp-4.2.0-f8009ce7-python-3.11",
+		AdapterID:                      "direct-interpreter-dmtcp",
+		AdapterVersion:                 "1",
+		WorkerExecutionContractVersion: "goet/worker-execution/v1",
+		WorkerVersion:                  "test-worker",
+		ContainerImageIdentity:         "sha256:test-image",
+		OperatingSystem:                "linux",
+		Architecture:                   "amd64",
+		ContainerRuntime:               "singularity-ce-4.1.2",
+	}
+}
+
 func TestWorkerRunSupervisedSelectsFreshAndResumeStart(t *testing.T) {
 	for _, resume := range []bool{false, true} {
 		name := "fresh"

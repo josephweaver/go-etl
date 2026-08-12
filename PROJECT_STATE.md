@@ -33,9 +33,12 @@ executable/interpreter, shared-root, client-count, build, adapter,
 worker-contract, image, OS/architecture, and container-runtime profile.
 Profile fields without the selector, a selector without enabled checkpoint
 policy, and incomplete or unsupported profiles are rejected; omission
-preserves the default. Adapter construction/registration and the container
-smoke remain unimplemented, so no production adapter is registered and
-ordinary Python behavior is unchanged.
+preserves the default. `Worker` now derives one production DMTCP registration
+for `python_script` only from that selected profile, advertises shutdown,
+periodic, and yield capture, and retains explicit injected registries for
+tests. An omitted profile derives an empty registry and ordinary Python remains
+unchanged. The container-level adapter/supervisor smoke remains unimplemented,
+so the checked-in configurations remain disabled.
 
 2026-08-11 worker checkpoint-policy update: OS-008 is implemented through its
 12-pass prompt sequence. `cmd/worker.Config` accepts disabled, shutdown-only,
