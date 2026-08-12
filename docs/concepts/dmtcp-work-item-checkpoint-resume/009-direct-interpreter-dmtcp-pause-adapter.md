@@ -261,3 +261,25 @@ confirmation or fallback handling.
 Resume launch, normal Python result finalization, explicit
 configuration/registration, and the container-level adapter/supervisor smoke
 remain to be implemented.
+
+The third implementation increment completed on 2026-08-12. `StartResume`
+now validates the controller assignment before creating a replacement-attempt
+workspace. Adapter-specific validation requires the DMTCP strategy and build,
+every adapter/worker/image/OS/architecture/runtime compatibility field, and the
+assigned input/source/code identities to match the selected launch profile and
+work item. It reads the canonical stored `manifest.json` and requires its exact
+bytes to match the controller assignment. Each declared checkpoint image must
+be a canonical `dmtcp/ckpt_*.dmtcp` path beneath the immutable artifact,
+contain no symlink component, be a regular file, and match its declared size
+and SHA-256.
+
+Only after all checks pass does the adapter create the new attempt workspace
+and invoke the configured `dmtcp_restart` executable with
+`--new-coordinator`, new port/checkpoint/temporary paths, and the validated
+absolute checkpoint-image arguments. It never executes the generated DMTCP
+restart shell script. Focused tests prove the successful argument vector and
+pre-launch rejection for runtime identity changes, stored manifest/image
+tampering, noncanonical manifest references, and symlinked images.
+
+Normal Python result finalization, explicit configuration/registration, and
+the container-level adapter/supervisor smoke remain to be implemented.

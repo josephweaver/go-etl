@@ -17,7 +17,11 @@ temporary/incomplete image sets, copies non-empty images into a new immutable
 artifact directory, and syncs a validated exact-byte manifest last. Suspending
 capture uses DMTCP checkpoint-and-kill and suppresses that expected process
 exit until bounded supervisor cleanup. Focused and race tests prove these
-boundaries. Resume launch, normal result finalization,
+boundaries. Resume launch now validates the assignment and exact stored
+manifest, DMTCP strategy/build identity, adapter/runtime compatibility, input,
+source, code, canonical storage paths, non-symlink regular image files, and
+declared sizes/digests before constructing an explicit `dmtcp_restart`
+argument vector with a new isolated coordinator. Normal result finalization,
 configuration/registration, and the container smoke remain unimplemented;
 therefore no production adapter is registered and ordinary Python behavior is
 unchanged.

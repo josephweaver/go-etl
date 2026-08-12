@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -213,6 +215,174 @@ func TestDMTCPExecutionRejectsIncompleteOrTemporaryImageSets(t *testing.T) {
 	}
 }
 
+func TestDMTCPAdapterStartResumeUsesValidatedImageArguments(t *testing.T) {
+	adapter, item, assignment := createDMTCPResumeArtifact(t)
+	resumeProcess := &fakeDMTCPProcess{wait: make(chan error, 1)}
+	runner := &recordingDMTCPRunner{process: resumeProcess}
+	adapter.Runner = runner
+
+	execution, err := adapter.StartResume(context.Background(), item, assignment)
+	if err != nil {
+		t.Fatalf("StartResume() error = %v", err)
+	}
+	if runner.starts != 1 || runner.spec.Executable != adapter.Profile.RestartExecutable {
+		t.Fatalf("restart calls = %d executable = %q", runner.starts, runner.spec.Executable)
+	}
+	if !containsDMTCPArg(runner.spec.Args, "--new-coordinator") {
+		t.Fatalf("restart is not coordinator-isolated: %q", runner.spec.Args)
+	}
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(assignment.ManifestJSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	wantImage := filepath.Join(adapter.Profile.SharedTmpRoot, filepath.FromSlash(manifest.StorageRelativePath), filepath.FromSlash(manifest.DMTCP.CheckpointPaths[0]))
+	if runner.spec.Args[len(runner.spec.Args)-1] != wantImage {
+		t.Fatalf("restart image = %q, want %q", runner.spec.Args[len(runner.spec.Args)-1], wantImage)
+	}
+	if containsDMTCPArg(runner.spec.Args, "dmtcp_restart_script.sh") || containsDMTCPArg(runner.spec.Args, "-c") {
+		t.Fatalf("restart uses an unvalidated shell path: %q", runner.spec.Args)
+	}
+	resumeProcess.finish(nil)
+	if result := <-execution.Result(); result.Err != nil {
+		t.Fatalf("Result().Err = %v", result.Err)
+	}
+}
+
+func TestDMTCPAdapterStartResumeRejectsRuntimeMismatchBeforeLaunch(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DMTCPLaunchProfile)
+		want   string
+	}{
+		{name: "build", mutate: func(profile *DMTCPLaunchProfile) { profile.BuildIdentity = "different-build" }, want: "build identity"},
+		{name: "adapter", mutate: func(profile *DMTCPLaunchProfile) { profile.AdapterID = "different-adapter" }, want: "adapter id"},
+		{name: "adapter version", mutate: func(profile *DMTCPLaunchProfile) { profile.AdapterVersion = "2" }, want: "adapter version"},
+		{name: "image", mutate: func(profile *DMTCPLaunchProfile) { profile.ContainerImageIdentity = "sha256:different" }, want: "container image identity"},
+		{name: "runtime", mutate: func(profile *DMTCPLaunchProfile) { profile.ContainerRuntime = "different-runtime" }, want: "container runtime"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, item, assignment := createDMTCPResumeArtifact(t)
+			runner := &recordingDMTCPRunner{process: &fakeDMTCPProcess{wait: make(chan error, 1)}}
+			adapter.Runner = runner
+			test.mutate(&adapter.Profile)
+			if _, err := adapter.StartResume(context.Background(), item, assignment); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("StartResume() error = %v, want %q", err, test.want)
+			}
+			if runner.starts != 0 {
+				t.Fatalf("runner starts = %d, want 0", runner.starts)
+			}
+		})
+	}
+}
+
+func TestDMTCPAdapterStartResumeRejectsStoredManifestOrImageTampering(t *testing.T) {
+	for _, target := range []string{"manifest", "image"} {
+		t.Run(target, func(t *testing.T) {
+			adapter, item, assignment := createDMTCPResumeArtifact(t)
+			runner := &recordingDMTCPRunner{process: &fakeDMTCPProcess{wait: make(chan error, 1)}}
+			adapter.Runner = runner
+			var manifest model.ResumeArtifactManifest
+			if err := json.Unmarshal([]byte(assignment.ManifestJSON), &manifest); err != nil {
+				t.Fatal(err)
+			}
+			artifactRoot := filepath.Join(adapter.Profile.SharedTmpRoot, filepath.FromSlash(manifest.StorageRelativePath))
+			if target == "manifest" {
+				if err := os.WriteFile(filepath.Join(artifactRoot, "manifest.json"), []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				image := filepath.Join(artifactRoot, filepath.FromSlash(manifest.DMTCP.CheckpointPaths[0]))
+				if err := os.WriteFile(image, []byte("tampered-image"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := adapter.StartResume(context.Background(), item, assignment); err == nil || !strings.Contains(err.Error(), target) {
+				t.Fatalf("StartResume() error = %v, want %q", err, target)
+			}
+			if runner.starts != 0 {
+				t.Fatalf("runner starts = %d, want 0", runner.starts)
+			}
+		})
+	}
+}
+
+func TestDMTCPAdapterStartResumeRejectsNonCanonicalManifestPath(t *testing.T) {
+	adapter, item, assignment := createDMTCPResumeArtifact(t)
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(assignment.ManifestJSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	assignment.Reference.ManifestRelativePath = manifest.StorageRelativePath + "/metadata/manifest.json"
+	assignment.Reference.ManifestSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(assignment.ManifestJSON)))
+	item.Resume = &assignment
+	runner := &recordingDMTCPRunner{process: &fakeDMTCPProcess{wait: make(chan error, 1)}}
+	adapter.Runner = runner
+	if _, err := adapter.StartResume(context.Background(), item, assignment); err == nil || !strings.Contains(err.Error(), "canonical manifest path") {
+		t.Fatalf("StartResume() error = %v", err)
+	}
+	if runner.starts != 0 {
+		t.Fatalf("runner starts = %d, want 0", runner.starts)
+	}
+}
+
+func TestDMTCPAdapterStartResumeRejectsSymlinkedCheckpointImage(t *testing.T) {
+	adapter, item, assignment := createDMTCPResumeArtifact(t)
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(assignment.ManifestJSON), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(adapter.Profile.SharedTmpRoot, filepath.FromSlash(manifest.StorageRelativePath), filepath.FromSlash(manifest.DMTCP.CheckpointPaths[0]))
+	outside := filepath.Join(t.TempDir(), "outside.dmtcp")
+	if err := os.WriteFile(outside, []byte("checkpoint-image"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, image); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	runner := &recordingDMTCPRunner{process: &fakeDMTCPProcess{wait: make(chan error, 1)}}
+	adapter.Runner = runner
+	if _, err := adapter.StartResume(context.Background(), item, assignment); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("StartResume() error = %v", err)
+	}
+	if runner.starts != 0 {
+		t.Fatalf("runner starts = %d, want 0", runner.starts)
+	}
+}
+
+func createDMTCPResumeArtifact(t *testing.T) (DMTCPAdapter, model.WorkItem, model.WorkItemResumeAssignment) {
+	t.Helper()
+	adapter, _, process, producingItem := newDMTCPCheckpointTest(t, false)
+	execution, err := adapter.StartFresh(context.Background(), producingItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := execution.CapturePeriodic(context.Background(), dmtcpCaptureRequest(model.CheckpointCaptureKindPeriodic))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.Terminate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	process.finish(errors.New("terminated test producer"))
+	<-execution.Result()
+	assignment := model.WorkItemResumeAssignment{
+		Schema:               model.WorkItemResumeAssignmentSchemaV1,
+		ResumedFromAttemptID: producingItem.AttemptID,
+		ExecutionLineageID:   "lineage-001",
+		ResumeAttemptNumber:  1,
+		ManifestJSON:         checkpoint.ManifestJSON,
+		Reference:            checkpoint.Reference,
+	}
+	item := producingItem
+	item.AttemptID = "attempt-002"
+	item.Resume = &assignment
+	return adapter, item, assignment
+}
+
 func dmtcpCaptureRequest(kind model.CheckpointCaptureKind) CheckpointCaptureRequest {
 	return CheckpointCaptureRequest{
 		WorkItemID:                  "work-001",
@@ -334,6 +504,7 @@ func newDMTCPLaunchTest(t *testing.T) (DMTCPAdapter, *recordingDMTCPRunner, *fak
 		Profile: DMTCPLaunchProfile{
 			LaunchExecutable:               "/opt/dmtcp/bin/dmtcp_launch",
 			CommandExecutable:              "/opt/dmtcp/bin/dmtcp_command",
+			RestartExecutable:              "/opt/dmtcp/bin/dmtcp_restart",
 			PythonExecutable:               "/usr/local/bin/python3",
 			SharedTmpRoot:                  filepath.Join(tmpRoot, "shared"),
 			ExpectedClients:                1,

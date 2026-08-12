@@ -27,6 +27,7 @@ import (
 type DMTCPLaunchProfile struct {
 	LaunchExecutable               string
 	CommandExecutable              string
+	RestartExecutable              string
 	PythonExecutable               string
 	SharedTmpRoot                  string
 	CheckpointSignal               string
@@ -49,6 +50,7 @@ func (profile DMTCPLaunchProfile) validate() error {
 	}{
 		{name: "DMTCP launch executable", value: profile.LaunchExecutable},
 		{name: "DMTCP command executable", value: profile.CommandExecutable},
+		{name: "DMTCP restart executable", value: profile.RestartExecutable},
 		{name: "Python executable", value: profile.PythonExecutable},
 		{name: "shared temporary root", value: profile.SharedTmpRoot},
 		{name: "DMTCP build identity", value: profile.BuildIdentity},
@@ -252,8 +254,244 @@ func (adapter DMTCPAdapter) StartFresh(ctx context.Context, item model.WorkItem)
 	return execution, nil
 }
 
-func (DMTCPAdapter) StartResume(context.Context, model.WorkItem, model.WorkItemResumeAssignment) (SupervisedExecution, error) {
-	return nil, fmt.Errorf("DMTCP resume launch is not implemented")
+func (adapter DMTCPAdapter) StartResume(ctx context.Context, item model.WorkItem, assignment model.WorkItemResumeAssignment) (SupervisedExecution, error) {
+	if err := adapter.Profile.validate(); err != nil {
+		return nil, fmt.Errorf("DMTCP launch profile: %w", err)
+	}
+	if item.Type != model.WorkItemTypePythonScript {
+		return nil, fmt.Errorf("DMTCP direct-interpreter adapter does not support work item type %q", item.Type)
+	}
+	if item.Resume == nil {
+		return nil, fmt.Errorf("DMTCP resume launch requires a work-item resume assignment")
+	}
+	if *item.Resume != assignment {
+		return nil, fmt.Errorf("DMTCP resume assignment does not match work item")
+	}
+	if err := item.Validate(); err != nil {
+		return nil, fmt.Errorf("validate DMTCP resume work item: %w", err)
+	}
+	if err := validateAdapterArtifactID(item.AttemptID); err != nil {
+		return nil, fmt.Errorf("attempt id: %w", err)
+	}
+
+	manifest, checkpointPaths, err := adapter.validateResumeArtifact(item, assignment)
+	if err != nil {
+		return nil, err
+	}
+	workspace, err := createDMTCPAttemptWorkspace(adapter.Profile.SharedTmpRoot, item.AttemptID)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		"--new-coordinator",
+		"--port-file", workspace.PortFile,
+		"--ckptdir", workspace.CheckpointDir,
+		"--tmpdir", workspace.TempDir,
+	}
+	args = append(args, checkpointPaths...)
+	runner := adapter.Runner
+	if runner == nil {
+		runner = execDMTCPCommandRunner{}
+	}
+	process, err := runner.Start(ctx, DMTCPCommandSpec{
+		Executable: adapter.Profile.RestartExecutable,
+		Args:       args,
+		Dir:        filepath.Join(adapter.Profile.SharedTmpRoot, filepath.FromSlash(manifest.StorageRelativePath)),
+		Env:        os.Environ(),
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("launch DMTCP restart: %w", err)
+	}
+	execution := &dmtcpExecution{
+		process:   process,
+		result:    make(chan ExecutionResult, 1),
+		runner:    runner,
+		profile:   adapter.Profile,
+		workspace: workspace,
+		item:      item,
+		now:       adapter.Now,
+	}
+	if execution.now == nil {
+		execution.now = time.Now
+	}
+	go execution.wait(io.NopCloser(strings.NewReader("")), io.NopCloser(strings.NewReader("")))
+	return execution, nil
+}
+
+func (adapter DMTCPAdapter) validateResumeArtifact(item model.WorkItem, assignment model.WorkItemResumeAssignment) (model.ResumeArtifactManifest, []string, error) {
+	var manifest model.ResumeArtifactManifest
+	if err := json.Unmarshal([]byte(assignment.ManifestJSON), &manifest); err != nil {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("decode DMTCP resume manifest: %w", err)
+	}
+	if manifest.PauseStrategy != model.PauseStrategyDMTCP || manifest.DMTCP == nil {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("resume artifact is not a DMTCP generation")
+	}
+	if manifest.DMTCP.BuildIdentity != adapter.Profile.BuildIdentity {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP build identity does not match launch profile")
+	}
+	for _, match := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "adapter id", got: manifest.Compatibility.AdapterID, want: adapter.Profile.AdapterID},
+		{name: "adapter version", got: manifest.Compatibility.AdapterVersion, want: adapter.Profile.AdapterVersion},
+		{name: "worker execution contract version", got: manifest.Compatibility.WorkerExecutionContractVersion, want: adapter.Profile.WorkerExecutionContractVersion},
+		{name: "worker version", got: manifest.Compatibility.WorkerVersion, want: adapter.Profile.WorkerVersion},
+		{name: "container image identity", got: manifest.Compatibility.ContainerImageIdentity, want: adapter.Profile.ContainerImageIdentity},
+		{name: "operating system", got: manifest.Compatibility.OperatingSystem, want: adapter.Profile.OperatingSystem},
+		{name: "architecture", got: manifest.Compatibility.Architecture, want: adapter.Profile.Architecture},
+		{name: "container runtime", got: manifest.Compatibility.ContainerRuntime, want: adapter.Profile.ContainerRuntime},
+	} {
+		if match.got != match.want {
+			return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP resume %s does not match launch profile", match.name)
+		}
+	}
+	if manifest.InputFingerprint != item.InputFingerprint || manifest.CodeVersion != item.CodeVersion || item.Source == nil || manifest.SourceVersion != item.Source.ManifestPath {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP resume input, source, or code identity does not match assigned work item")
+	}
+
+	artifactRoot, err := resolveDMTCPArtifactPath(adapter.Profile.SharedTmpRoot, manifest.StorageRelativePath)
+	if err != nil {
+		return model.ResumeArtifactManifest{}, nil, err
+	}
+	manifestPath, err := resolveDMTCPArtifactPath(adapter.Profile.SharedTmpRoot, assignment.Reference.ManifestRelativePath)
+	if err != nil {
+		return model.ResumeArtifactManifest{}, nil, err
+	}
+	if manifestPath != filepath.Join(artifactRoot, "manifest.json") {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP manifest path is not the artifact's canonical manifest path")
+	}
+	if err := validateDMTCPPathComponents(adapter.Profile.SharedTmpRoot, manifestPath, false); err != nil {
+		return model.ResumeArtifactManifest{}, nil, err
+	}
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("read DMTCP resume manifest: %w", err)
+	}
+	if string(manifestBytes) != assignment.ManifestJSON {
+		return model.ResumeArtifactManifest{}, nil, fmt.Errorf("stored DMTCP manifest bytes do not match resume assignment")
+	}
+
+	files := make(map[string]model.ResumeArtifactFile, len(manifest.Files))
+	for _, file := range manifest.Files {
+		files[file.Path] = file
+	}
+	checkpointPaths := make([]string, 0, len(manifest.DMTCP.CheckpointPaths))
+	for _, relativePath := range manifest.DMTCP.CheckpointPaths {
+		if path.Dir(relativePath) != "dmtcp" || !strings.HasPrefix(path.Base(relativePath), "ckpt_") || !strings.HasSuffix(relativePath, ".dmtcp") {
+			return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP checkpoint path %q is not a canonical checkpoint image path", relativePath)
+		}
+		declared, found := files[relativePath]
+		if !found {
+			return model.ResumeArtifactManifest{}, nil, fmt.Errorf("DMTCP checkpoint path %q is not declared in manifest files", relativePath)
+		}
+		absolutePath, err := resolveDMTCPPathInside(artifactRoot, relativePath)
+		if err != nil {
+			return model.ResumeArtifactManifest{}, nil, err
+		}
+		if err := validateDMTCPPathComponents(adapter.Profile.SharedTmpRoot, absolutePath, false); err != nil {
+			return model.ResumeArtifactManifest{}, nil, err
+		}
+		if err := validateDMTCPResumeFile(absolutePath, declared); err != nil {
+			return model.ResumeArtifactManifest{}, nil, err
+		}
+		checkpointPaths = append(checkpointPaths, absolutePath)
+	}
+	return manifest, checkpointPaths, nil
+}
+
+func resolveDMTCPArtifactPath(sharedRoot string, relativePath string) (string, error) {
+	if _, err := model.ValidateArtifactRelativePath(relativePath); err != nil {
+		return "", fmt.Errorf("DMTCP artifact path: %w", err)
+	}
+	return resolveDMTCPPathInside(sharedRoot, relativePath)
+}
+
+func resolveDMTCPPathInside(root string, relativePath string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve DMTCP storage root: %w", err)
+	}
+	candidate := filepath.Join(rootAbs, filepath.FromSlash(relativePath))
+	rel, err := filepath.Rel(rootAbs, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("DMTCP resume path escapes its artifact directory")
+	}
+	return candidate, nil
+}
+
+func validateDMTCPPathComponents(root string, target string, allowMissingLeaf bool) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve DMTCP storage root: %w", err)
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("resolve DMTCP target path: %w", err)
+	}
+	relative, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("DMTCP path escapes shared temporary root")
+	}
+	rootInfo, err := os.Lstat(rootAbs)
+	if err != nil {
+		return fmt.Errorf("check DMTCP storage root: %w", err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return fmt.Errorf("DMTCP storage root must be a non-symlink directory")
+	}
+	current := rootAbs
+	parts := strings.Split(relative, string(filepath.Separator))
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if allowMissingLeaf && i == len(parts)-1 && os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("check DMTCP path component %q: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("DMTCP path component %q must not be a symbolic link", current)
+		}
+		if i < len(parts)-1 && !info.IsDir() {
+			return fmt.Errorf("DMTCP path component %q is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func validateDMTCPResumeFile(absolutePath string, declared model.ResumeArtifactFile) error {
+	info, err := os.Lstat(absolutePath)
+	if err != nil {
+		return fmt.Errorf("check DMTCP resume image %q: %w", declared.Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("DMTCP resume image %q is not a regular file", declared.Path)
+	}
+	if info.Size() != declared.SizeBytes {
+		return fmt.Errorf("DMTCP resume image %q size does not match manifest", declared.Path)
+	}
+	file, err := os.Open(absolutePath)
+	if err != nil {
+		return fmt.Errorf("open DMTCP resume image %q: %w", declared.Path, err)
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return fmt.Errorf("hash DMTCP resume image %q: %w", declared.Path, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close DMTCP resume image %q: %w", declared.Path, closeErr)
+	}
+	if fmt.Sprintf("%x", hash.Sum(nil)) != declared.SHA256 {
+		return fmt.Errorf("DMTCP resume image %q digest does not match manifest", declared.Path)
+	}
+	return nil
 }
 
 type dmtcpAttemptWorkspace struct {
