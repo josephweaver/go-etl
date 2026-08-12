@@ -59,9 +59,9 @@ Add `cmd/worker/dmtcp_adapter.go` with a concrete adapter implementation that:
   all expected clients are accounted for before returning a checkpoint;
 - writes the GOET resume manifest last and returns exact manifest JSON plus a
   matching `ResumeArtifactReference`;
-- resumes periodic captures before returning from `CapturePeriodic`, while
-  leaving a suspending capture quiesced until the supervisor decides whether
-  to continue or terminate;
+- resumes periodic captures before returning from `CapturePeriodic`, while a
+  suspending capture uses DMTCP's checkpoint-and-kill command and suppresses
+  the expected payload exit until the supervisor completes bounded cleanup;
 - constructs an explicit `dmtcp_restart` argument vector from validated
   manifest payload paths for `StartResume`; and
 - terminates only the adapter-owned payload and coordinator during bounded
@@ -184,8 +184,9 @@ dependency.
 - Periodic capture does not return until all expected DMTCP images and the
   immutable manifest/reference are complete; the payload resumes before the
   supervisor confirms the generation.
-- Quantum and final capture leave the payload quiesced until the supervisor
-  chooses continuation or bounded termination.
+- Quantum and final capture use checkpoint-and-kill, preserve the validated
+  generation, and do not expose the expected payload exit as an ordinary
+  terminal result before bounded supervisor cleanup.
 - A capture directory without finalized images, with temporary images, with an
   incomplete client set, or with a manifest/reference mismatch is rejected.
 - Every generated manifest records the exact DMTCP build identity, direct
@@ -233,8 +234,30 @@ configured Python interpreter. An injected command/process boundary lets
 metacharacter rejection before launch, workspace creation, and idempotent
 termination without requiring DMTCP on the test host.
 
-This is a partial implementation. Resume argument construction, checkpoint
+At the end of that first increment, resume argument construction, checkpoint
 capture and image-set validation, manifest-last publication, normal result
 finalization, explicit configuration/registration, and the container-level
-adapter/supervisor smoke remain to be implemented. The adapter is not yet
-registered, so checked-in worker behavior remains unchanged.
+adapter/supervisor smoke remained unimplemented. The adapter was not
+registered, so checked-in worker behavior remained unchanged.
+
+The second implementation increment completed on 2026-08-12. Periodic capture
+now lists the isolated coordinator's running clients, requires the exact
+profile client count, issues `dmtcp_command --bcheckpoint`, rejects temporary,
+empty, or incomplete image sets, copies finalized images into a new immutable
+generation directory, and writes/syncs the validated manifest last. Exact
+manifest bytes produce the returned reference digest. Quantum/final capture
+uses DMTCP's `--kcheckpoint` operation and suppresses the expected killed
+payload result until bounded termination, avoiding a race with controller
+confirmation.
+
+The checkpoint-and-kill choice corrects the earlier proposed quiescence
+wording. In pinned DMTCP 4.2.0, `--bcheckpoint` blocks the command caller only
+until checkpoint completion; it resumes the clients. `--kcheckpoint` is the
+available coordinator operation that checkpoints and then kills every enrolled
+client. The current OS-008 supervisor does not invoke adapter continuation
+after a suspending capture; it always performs bounded termination after
+confirmation or fallback handling.
+
+Resume launch, normal Python result finalization, explicit
+configuration/registration, and the container-level adapter/supervisor smoke
+remain to be implemented.

@@ -11,12 +11,16 @@ profile and work item, stages the source bundle, rejects unsafe attempt,
 entrypoint, and argument values, creates an owner-only attempt workspace, and
 starts a direct Python argument vector through `dmtcp_launch
 --new-coordinator` with attempt-specific port, checkpoint, and temporary
-paths. The command/process boundary is injectable, and focused tests prove
-coordinator isolation, direct-interpreter arguments, pre-launch rejection, and
-idempotent process termination. Resume launch, checkpoint capture, manifest
-creation, result finalization, configuration/registration, and the container
-smoke remain unimplemented; therefore no production adapter is registered and
-ordinary Python behavior is unchanged.
+paths. The command/process boundary is injectable. Periodic capture now checks
+the exact running-client count, requests a blocking checkpoint, rejects
+temporary/incomplete image sets, copies non-empty images into a new immutable
+artifact directory, and syncs a validated exact-byte manifest last. Suspending
+capture uses DMTCP checkpoint-and-kill and suppresses that expected process
+exit until bounded supervisor cleanup. Focused and race tests prove these
+boundaries. Resume launch, normal result finalization,
+configuration/registration, and the container smoke remain unimplemented;
+therefore no production adapter is registered and ordinary Python behavior is
+unchanged.
 
 2026-08-11 worker checkpoint-policy update: OS-008 is implemented through its
 12-pass prompt sequence. `cmd/worker.Config` accepts disabled, shutdown-only,
