@@ -4,6 +4,26 @@ Last updated: 2026-08-13
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
 
+2026-08-13 rclone resume feasibility update: OS-010 is implemented with a
+passing full-restart strategy and no partial-prefix continuation.
+`containers/rclone-continuation-feasibility` builds an exact
+rclone 1.71.2 Linux-amd64 environment from the official archive with SHA-256
+`ab9fa5877cee91c64fdfd61a27028a458cf618b39259e5c371dc2ec34a12e415`.
+The fail-closed smoke requires an external read-only rclone config, remote and
+immutable fixture identity, expected size/hash, and empty owner-only evidence
+directory. It interrupts the existing single-file Google Drive `copyto` shape
+with `SIGKILL`, inventories surviving partial state, relaunches the same
+command, verifies final integrity, sanitizes retained logs, and permits a pass
+only when second-process transferred-byte evidence proves less than a full
+retransfer. The pinned image/version and missing-input guards pass. A real
+Google Drive test retained one 5,468,160-byte `.partial` file after `SIGKILL`,
+but the replacement `copyto` transferred all 33,554,432 source bytes before
+producing the correct final size and SHA-256. The surviving partial was not
+continued. The replacement nevertheless reproduced the exact immutable output,
+so terminate-and-full-restart is an idempotent, valid resume strategy for this
+shape, albeit with no bandwidth/time savings. No adapter is implemented or
+registered yet; OS-011 may add one with restart-only capabilities.
+
 2026-08-13 direct-interpreter DMTCP adapter update: OS-009 is implemented.
 `cmd/worker/dmtcp_adapter.go` now defines the first production
 adapter increment for fresh `python_script` execution: it validates the launch

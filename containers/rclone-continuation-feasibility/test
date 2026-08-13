@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+image="${GOETL_RCLONE_IMAGE:-goetl/rclone-continuation:v1.71.2}"
+
+docker build \
+  --platform linux/amd64 \
+  --tag "${image}" \
+  --file "${script_dir}/Dockerfile" \
+  "${script_dir}"
+
+version="$(docker run --rm "${image}" version | sed -n '1p')"
+test "${version}" = "rclone v1.71.2"
+printf 'Pinned rclone image passed: %s\n' "${version}"
+
+if [[ "${GOETL_RCLONE_RUN_SMOKE:-0}" == "1" ]]; then
+  GOETL_RCLONE_IMAGE="${image}" "${script_dir}/rclone-copyto-smoke"
+fi

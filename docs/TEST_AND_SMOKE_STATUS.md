@@ -1420,3 +1420,42 @@ after the workflow had already completed and the controller had shut down. Slurm
 still marked that job `COMPLETED` because the current worker main logs errors
 and returns without a non-zero process exit. Track that as a worker process exit
 semantics follow-up; it did not prevent the workflow from completing.
+
+## Rclone Native-Continuation Feasibility Gate
+
+OS-010 ran on 2026-08-13 in WSL/Docker with rclone 1.71.2. The pinned Linux
+amd64 archive SHA-256 was
+`ab9fa5877cee91c64fdfd61a27028a458cf618b39259e5c371dc2ec34a12e415`;
+the built image ID was
+`sha256:902ee0bf8f98fdb7614a1d65ab4bd24035174cb2e15a35f2612d56c7100c76e4`.
+
+The test used an ordinary immutable 33,554,432-byte Google Drive fixture with
+expected SHA-256
+`83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302`.
+It launched the same Google Drive-to-local `copyto` shape used by the worker,
+limited it to 1 MiB/s, and sent `SIGKILL` after local partial state exceeded 2
+MiB.
+
+Observed evidence:
+
+```text
+surviving partial files: 1
+surviving partial bytes: 5,468,160
+replacement transferred bytes: 33,554,432
+expected source bytes: 33,554,432
+final size/SHA-256: match
+classification after requirement decision: pass_restart
+```
+
+The replacement process retransferred the complete source despite the
+surviving partial file and reproduced the exact output. Evidence at
+`/tmp/goetl-os010-gdrive-restart-20260813` uses schema
+`goetl/rclone-copyto-continuation-feasibility/v1`; retained logs redact the
+remote source and config paths.
+
+Result: the tested rclone 1.71.2 Google Drive single-file `copyto` contract
+passes restart-on-resume through idempotent full retransmission but does not
+provide partial-prefix continuation. An adapter may proceed only with explicit
+restart-only semantics and their bandwidth/time cost. This result does not evaluate uploads,
+multi-file between-object boundaries, VFS cache behavior, other commands, or
+other backends.

@@ -109,7 +109,7 @@ The selected adapter depends on the operation:
 | --- | --- | --- | --- |
 | Direct R interpreter and enrolled Stan descendants | DMTCP | Validate the DMTCP generation, terminate it, then use `dmtcp_restart` from the compatible image and stable mounts | RStan and CmdStanR single-chain/single-core passed OS-003 |
 | Direct Python interpreter with NumPy native work and one Python descendant | DMTCP | Same external-supervisor boundary as R | scoped CPython 3.11/NumPy shape passed OS-004 |
-| `rclone` transfer launched by a Go handler | native continuation | Stop `rclone` after preserving its durable partial-transfer workspace, then relaunch through the operation adapter using compatible rclone continuation behavior | selected design; exact command/backend semantics still require proof |
+| Google Drive single-file `rclone copyto` launched by a Go handler | restart-on-resume | Stop owned `rclone`, then relaunch the exact immutable transfer and verify final integrity; do not claim partial-prefix reuse | OS-010 passed full restart for rclone 1.71.2; partial continuation unavailable |
 | In-process Go operation | manual continuation | The handler writes explicit operation progress at a safe boundary, returns a paused result, and a later handler invocation resumes from that state | selected design; each handler requires its own state contract and tests |
 | Other external or mixed operations | explicitly selected per type | DMTCP, native continuation, or manual continuation only after compatibility evidence | undecided until the work-item type is reviewed |
 
@@ -1585,6 +1585,11 @@ planning candidates until they receive an approved Operational Slice charter.
      workspace, and relaunch it through the exact continuation contract proven
      for each enabled command/backend.
    - Preserve provider idempotency and final verified promotion.
+   - OS-010 tested rclone 1.71.2 Google Drive single-file `copyto`: a
+     5,468,160-byte partial survived termination, but the replacement process
+     transferred the complete 33,554,432-byte object and reproduced exact
+     output. This passes restart-on-resume while blocking any claim of partial
+     continuation.
 
 11. **Manual Go continuation contract and work-item adoption**
     - Add cooperative pause points and versioned manual state for in-process Go

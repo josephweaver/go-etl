@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${GOETL_RCLONE_IMAGE:-goetl/rclone-continuation:v1.71.2}"
+config="${GOETL_RCLONE_CONFIG:-}"
+remote="${GOETL_RCLONE_REMOTE:-}"
+source_path="${GOETL_RCLONE_SOURCE_PATH:-}"
+expected_size="${GOETL_RCLONE_EXPECTED_SIZE:-}"
+expected_sha256="${GOETL_RCLONE_EXPECTED_SHA256:-}"
+evidence="${GOETL_RCLONE_EVIDENCE_DIR:-}"
+bwlimit="${GOETL_RCLONE_BWLIMIT:-1M}"
+interrupt_bytes="${GOETL_RCLONE_INTERRUPT_BYTES:-1048576}"
+container_config="/run/secrets/rclone.conf"
+container_destination="/work/destination"
+container_user="$(id -u):$(id -g)"
+
+die() {
+  printf 'OS-010 rclone feasibility input error: %s\n' "$*" >&2
+  exit 2
+}
+
+[[ -n "${config}" && -f "${config}" ]] || die "GOETL_RCLONE_CONFIG must name a file"
+[[ "${remote}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "GOETL_RCLONE_REMOTE is invalid"
+[[ -n "${source_path}" && "${source_path}" != *$'\n'* && "${source_path}" != *$'\r'* ]] \
+  || die "GOETL_RCLONE_SOURCE_PATH is required and must be one line"
+[[ "${expected_size}" =~ ^[1-9][0-9]*$ ]] || die "GOETL_RCLONE_EXPECTED_SIZE must be positive"
+[[ "${expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || die "GOETL_RCLONE_EXPECTED_SHA256 must be lowercase SHA-256"
+[[ -n "${evidence}" ]] || die "GOETL_RCLONE_EVIDENCE_DIR is required"
+[[ "${interrupt_bytes}" =~ ^[1-9][0-9]*$ ]] || die "GOETL_RCLONE_INTERRUPT_BYTES must be positive"
+(( interrupt_bytes < expected_size )) || die "interrupt threshold must be below expected size"
+
+mkdir -p "${evidence}"
+[[ -z "$(find "${evidence}" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+  || die "evidence directory must be empty"
+chmod 0700 "${evidence}"
+mkdir -m 0700 "${evidence}/work"
+
+first_name="goetl-os010-rclone-first-$$"
+second_name="goetl-os010-rclone-second-$$"
+private_root="$(mktemp -d "${TMPDIR:-/tmp}/goetl-os010-private.XXXXXX")"
+chmod 0700 "${private_root}"
+first_raw="${private_root}/first.jsonl"
+second_raw="${private_root}/second.jsonl"
+result="smoke_error"
+phase="initializing"
+detail=""
+partial_count=0
+partial_bytes=0
+second_transferred_bytes=0
+final_integrity=false
+
+cleanup() {
+  docker rm --force "${first_name}" "${second_name}" >/dev/null 2>&1 || true
+  rm -rf "${private_root}"
+}
+trap cleanup EXIT
+
+sanitize_log() {
+  local input="$1"
+  local output="$2"
+  python3 - "${input}" "${output}" "${remote}:${source_path}" <<'PY'
+import sys
+
+source, destination, remote_path = sys.argv[1:]
+with open(source, "r", encoding="utf-8", errors="replace") as handle:
+    text = handle.read()
+text = text.replace(remote_path, "[redacted-rclone-source]")
+text = text.replace("/run/secrets/rclone.conf", "[redacted-rclone-config]")
+with open(destination, "w", encoding="utf-8") as handle:
+    handle.write(text)
+PY
+}
+
+write_summary() {
+  python3 - \
+    "${evidence}/summary.json" "${result}" "${phase}" "${detail}" \
+    "${partial_count}" "${partial_bytes}" "${second_transferred_bytes}" \
+    "${expected_size}" "${expected_sha256}" "${final_integrity}" \
+    "${evidence}" "${bwlimit}" <<'PY'
+import json
+import sys
+
+(path, result, phase, detail, partial_count, partial_bytes,
+ second_bytes, expected_size, expected_sha, integrity, evidence, bwlimit) = sys.argv[1:]
+payload = {
+    "schema": "goetl/rclone-copyto-continuation-feasibility/v1",
+    "result": result,
+    "phase": phase,
+    "detail": detail,
+    "rclone_version": "1.71.2",
+    "backend": "google-drive",
+    "command_shape": "rclone --config [redacted] copyto [redacted-source] /work/destination --bwlimit VALUE",
+    "termination_method": "SIGKILL",
+    "partial_state": {
+        "file_count": int(partial_count),
+        "total_bytes": int(partial_bytes),
+    },
+    "relaunch_transferred_bytes": int(second_bytes),
+    "expected_size_bytes": int(expected_size),
+    "expected_sha256": expected_sha,
+    "final_integrity": integrity == "true",
+    "bandwidth_limit": bwlimit,
+    "config_reference": "[redacted-rclone-config]",
+    "evidence_dir": evidence,
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+}
+
+rclone_args=(
+  --config "${container_config}"
+  copyto "${remote}:${source_path}" "${container_destination}"
+  --bwlimit "${bwlimit}"
+  --use-json-log
+  --stats 1s
+  --stats-one-line
+  --stats-log-level NOTICE
+  --log-level NOTICE
+)
+docker_options=(
+  --mount "type=bind,src=$(realpath "${config}"),dst=${container_config},readonly"
+  --mount "type=bind,src=$(realpath "${evidence}/work"),dst=/work"
+  --user "${container_user}"
+)
+
+phase="first_transfer"
+docker run --detach --name "${first_name}" \
+  "${docker_options[@]}" "${image}" "${rclone_args[@]}" >/dev/null
+deadline=$((SECONDS + 300))
+while true; do
+  current_bytes="$(find "${evidence}/work" -maxdepth 1 -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}')"
+  if (( current_bytes >= interrupt_bytes )); then
+    break
+  fi
+  running="$(docker inspect --format '{{.State.Running}}' "${first_name}")"
+  [[ "${running}" == "true" ]] \
+    || { detail="first transfer completed before interruption threshold"; write_summary; exit 1; }
+  (( SECONDS < deadline )) \
+    || { detail="timed out waiting for incomplete transfer state"; write_summary; exit 1; }
+  sleep 0.2
+done
+
+phase="first_termination"
+docker kill --signal KILL "${first_name}" >/dev/null
+docker wait "${first_name}" >/dev/null || true
+docker logs "${first_name}" >"${first_raw}" 2>&1 || true
+sanitize_log "${first_raw}" "${evidence}/first-transfer.log"
+docker rm "${first_name}" >/dev/null
+
+find "${evidence}/work" -maxdepth 1 -type f ! -name destination \
+  -printf '%f\t%s\n' | sort >"${evidence}/partial-files.tsv"
+partial_count="$(wc -l <"${evidence}/partial-files.tsv" | tr -d '[:space:]')"
+partial_bytes="$(awk -F '\t' '{n += $2} END {print n + 0}' "${evidence}/partial-files.tsv")"
+if [[ -f "${evidence}/work/destination" ]]; then
+  destination_size="$(stat -c '%s' "${evidence}/work/destination")"
+  partial_count=$((partial_count + 1))
+  partial_bytes=$((partial_bytes + destination_size))
+  printf '[destination]\t%s\n' "${destination_size}" >>"${evidence}/partial-files.tsv"
+fi
+
+phase="second_transfer"
+docker run --name "${second_name}" \
+  "${docker_options[@]}" "${image}" "${rclone_args[@]}" \
+  >"${second_raw}" 2>&1 || {
+    sanitize_log "${second_raw}" "${evidence}/second-transfer.log"
+    detail="replacement copyto failed"
+    write_summary
+    exit 1
+  }
+sanitize_log "${second_raw}" "${evidence}/second-transfer.log"
+docker rm "${second_name}" >/dev/null
+
+second_transferred_bytes="$(python3 - "${second_raw}" <<'PY'
+import json
+import sys
+
+maximum = 0
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stats = value.get("stats") or {}
+        if isinstance(stats.get("bytes"), int):
+            maximum = max(maximum, stats["bytes"])
+print(maximum)
+PY
+)"
+
+phase="final_integrity"
+actual_size="$(stat -c '%s' "${evidence}/work/destination" 2>/dev/null || printf 0)"
+actual_sha256="$(sha256sum "${evidence}/work/destination" 2>/dev/null | awk '{print $1}')"
+if [[ "${actual_size}" == "${expected_size}" && "${actual_sha256}" == "${expected_sha256}" ]]; then
+  final_integrity=true
+fi
+
+phase="classification"
+if [[ "${final_integrity}" == "true" && ${partial_bytes} -gt 0 && ${second_transferred_bytes} -gt 0 && ${second_transferred_bytes} -lt ${expected_size} ]]; then
+  result="pass_native_continuation"
+  detail="replacement copyto completed with final integrity while transferring fewer than the full source bytes"
+elif [[ "${final_integrity}" == "true" && ${second_transferred_bytes} -eq ${expected_size} ]]; then
+  result="pass_restart"
+  detail="replacement copyto safely retransferred the full immutable source and reproduced final integrity"
+else
+  result="failed_resume"
+  detail="replacement copyto did not reproduce the declared final output"
+fi
+write_summary
+printf 'OS-010 rclone feasibility result: %s; evidence: %s\n' "${result}" "${evidence}"
+[[ "${result}" == pass_* ]]

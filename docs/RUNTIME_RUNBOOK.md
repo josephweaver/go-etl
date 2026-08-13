@@ -37,6 +37,35 @@ binary and executes `TestDMTCPAdapterSupervisorContainerSmoke` in the image.
 Success writes `summary.json` with `result: pass` and retains adapter build and
 supervisor logs below the selected evidence directory.
 
+## Rclone single-file pause boundary
+
+OS-010 proves that rclone 1.71.2 `copyto` from Google Drive resumes through
+idempotent full restart rather than partial-prefix continuation. After
+`SIGKILL`, a non-empty `.partial` file survived, but an identical replacement
+command transferred the full source size and reproduced exact final integrity.
+
+A future adapter may use this restart-only strategy, but must discard or ignore
+untrusted partial state, retain the immutable source identity and expected
+integrity, and report that resume consumes the same bandwidth as a fresh
+transfer. It must not publish the partial file as completed output or claim
+offset continuation.
+
+The feasibility harness is retained for future rclone/backend versions:
+
+```bash
+GOETL_RCLONE_CONFIG=/path/to/rclone.conf \
+GOETL_RCLONE_REMOTE=remote-name \
+GOETL_RCLONE_SOURCE_PATH=path/to/immutable-fixture.bin \
+GOETL_RCLONE_EXPECTED_SIZE=33554432 \
+GOETL_RCLONE_EXPECTED_SHA256=<lowercase-sha256> \
+GOETL_RCLONE_EVIDENCE_DIR=/tmp/goetl-rclone-evidence \
+  containers/rclone-continuation-feasibility/rclone-copyto-smoke
+```
+
+The config must be owner-only and is mounted read-only. The harness
+distinguishes `pass_native_continuation`, `pass_restart`, and `failed_resume`
+so automation cannot confuse full restart with offset reuse.
+
 This runbook does not configure Slurm to forward a warning signal, provide an
 authenticated administrative-drain command, or prove checkpoint restore across
 allocations. Those remain later scheduler/control, adapter, and operations
