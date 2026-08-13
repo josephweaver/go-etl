@@ -1,6 +1,6 @@
 # Runtime Runbook
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
 
 This file preserves the moved runtime command and expected-output section from the pre-split root state file.
 
@@ -18,8 +18,24 @@ Checked-in worker configurations must continue to omit `checkpoint_mode`.
 OS-009 now conditionally registers the direct-Python DMTCP adapter only when
 `pause_adapter_profile` is `direct_python_dmtcp_4_2` and the complete
 `dmtcp_profile` is present. Omission still fails enabled checkpoint-mode worker
-validation because no adapter is registered. Do not enable the DMTCP profile
-operationally until the OS-009 container-level adapter/supervisor smoke passes.
+validation because no adapter is registered. The OS-009 container-level smoke
+now passes for the pinned direct CPython shape; enabling the profile still
+requires that exact compatible runtime identity, stable shared paths, and the
+declared client count. Checked-in configurations remain disabled by default.
+
+From WSL/Linux, rerun the complete pinned smoke from the repository root:
+
+```bash
+GOETL_PYTHON_EVIDENCE_DIR=/tmp/goetl-os009-adapter \
+  containers/dmtcp-python-feasibility/dmtcp-smoke
+```
+
+The host needs Go and Docker, and the pinned
+`goetl/dmtcp-python:os004` image must exist. The script first reruns the OS-004
+Python/NumPy parent-and-descendant checks, then cross-compiles the worker test
+binary and executes `TestDMTCPAdapterSupervisorContainerSmoke` in the image.
+Success writes `summary.json` with `result: pass` and retains adapter build and
+supervisor logs below the selected evidence directory.
 
 This runbook does not configure Slurm to forward a warning signal, provide an
 authenticated administrative-drain command, or prove checkpoint restore across

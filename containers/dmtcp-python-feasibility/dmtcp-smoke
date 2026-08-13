@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
 image="${GOETL_PYTHON_IMAGE:-goetl/dmtcp-python:os004}"
 runtime="${GOETL_PYTHON_RUNTIME:-docker}"
 singularity_image="${GOETL_PYTHON_SIF:-}"
@@ -62,7 +64,10 @@ for root_name in control python; do
     "${test_root}/${root_name}/output" \
     "${test_root}/${root_name}/state"
 done
-mkdir -p "${test_root}/environment"
+mkdir -p \
+  "${test_root}/adapter/home" \
+  "${test_root}/adapter/run" \
+  "${test_root}/environment"
 
 write_summary() {
   python3 - \
@@ -239,6 +244,37 @@ runtime_python() {
       --env "GOETL_PYTHON_TEST_ROOT=${root}" \
       "${singularity_image}" \
       /usr/local/bin/python "${fixture}" "$@"
+  fi
+}
+
+run_adapter_supervisor() {
+  local binary="${container_root}/adapter/goetl-worker.test"
+  local adapter_root="${container_root}/adapter/run"
+  local adapter_fixture="${container_root}/adapter/main.py"
+  local test_args=(
+    -test.run '^TestDMTCPAdapterSupervisorContainerSmoke$'
+    -test.v
+  )
+  if [[ "${runtime}" == "docker" ]]; then
+    docker run --rm \
+      "${docker_options[@]}" \
+      --env "HOME=${container_root}/adapter/home" \
+      --env "GOET_DMTCP_ADAPTER_SMOKE_ROOT=${adapter_root}" \
+      --env "GOET_DMTCP_ADAPTER_FIXTURE=${adapter_fixture}" \
+      --env "GOET_DMTCP_ADAPTER_RUNTIME=docker" \
+      --entrypoint "${binary}" \
+      "${image}" \
+      "${test_args[@]}"
+  else
+    singularity exec \
+      --bind "${test_root}:${container_root}" \
+      --env "HOME=${container_root}/adapter/home" \
+      --env "GOET_DMTCP_ADAPTER_SMOKE_ROOT=${adapter_root}" \
+      --env "GOET_DMTCP_ADAPTER_FIXTURE=${adapter_fixture}" \
+      --env "GOET_DMTCP_ADAPTER_RUNTIME=singularity-ce-4.1.2" \
+      "${singularity_image}" \
+      "${binary}" \
+      "${test_args[@]}"
   fi
 }
 
@@ -597,8 +633,32 @@ for marker in parent-native-start child-ready parent-complete child-complete; do
       "expected exactly one resumed.${marker} marker"
 done
 
+phase="adapter_build"
+command -v go >/dev/null 2>&1 \
+  || fail "blocked_adapter_build" "${phase}" \
+    "the host Go toolchain is required to compile the Linux worker test binary"
+cp \
+  "${repo_root}/cmd/worker/testdata/dmtcp-checkpoint/source/main.py" \
+  "${test_root}/adapter/main.py"
+(
+  cd "${repo_root}"
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c \
+      -o "${test_root}/adapter/goetl-worker.test" \
+      ./cmd/worker
+) >"${test_root}/adapter/build.log" 2>&1 \
+  || fail "blocked_adapter_build" "${phase}" \
+    "could not compile the Linux worker test binary"
+chmod 0555 "${test_root}/adapter/goetl-worker.test"
+
+phase="adapter_supervisor"
+run_adapter_supervisor \
+  >"${test_root}/adapter/supervisor.log" 2>&1 \
+  || fail "blocked_adapter_supervisor" "${phase}" \
+    "the DMTCP adapter/supervisor checkpoint-resume integration test failed"
+
 result="pass"
 phase="complete"
-detail="direct Python, NumPy native work, descendant checkpoint, fresh-invocation restore, and baseline comparison passed"
+detail="direct Python, NumPy native work, descendant checkpoint, fresh-invocation restore, baseline comparison, and adapter/supervisor integration passed"
 write_summary
 printf 'OS-004 Python smoke passed; evidence: %s\n' "${test_root}"

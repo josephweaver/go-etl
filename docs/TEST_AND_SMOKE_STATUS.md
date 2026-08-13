@@ -1,6 +1,6 @@
 # Test And Smoke Status
 
-Last updated: 2026-07-30
+Last updated: 2026-08-13
 
 This file preserves the moved test coverage and smoke-test status section from the pre-split root state file.
 
@@ -478,6 +478,45 @@ the common external R/Python DMTCP supervisor while the Go worker remains
 outside the checkpoint. It does not approve arbitrary Python environments,
 native extensions, descendants, parallel numerical execution, or universal
 work-item checkpointing.
+
+## Direct-Python DMTCP Adapter/Supervisor Gate
+
+OS-009's complete WSL Docker smoke passed on 2026-08-13 on branch
+`concept/dmtcp-work-item-checkpoint-resume`:
+
+```bash
+GOETL_PYTHON_EVIDENCE_DIR=/tmp/goetl-os009-final-20260813 \
+  containers/dmtcp-python-feasibility/dmtcp-smoke
+```
+
+The script reran the OS-004 direct Python, NumPy native-work, descendant,
+fresh-invocation restore, and baseline-comparison checks. It then
+cross-compiled `./cmd/worker` tests with `CGO_ENABLED=0 GOOS=linux
+GOARCH=amd64` and ran the gated real adapter test inside the pinned
+`goetl/dmtcp-python:os004` image.
+
+The adapter test proved an uninterrupted supervised baseline; a one-second
+yield quantum; DMTCP checkpoint-and-kill; accepted controller suspension;
+validated manifest/reference transport; replacement-attempt restart with a
+fresh coordinator; byte-identical logical output; and exactly-once
+pre-checkpoint/post-resume markers. Its result was:
+
+```text
+=== RUN   TestDMTCPAdapterSupervisorContainerSmoke
+--- PASS: TestDMTCPAdapterSupervisorContainerSmoke (3.17s)
+PASS
+```
+
+The composed summary recorded `result: pass`, `phase: complete`, and the
+detail `direct Python, NumPy native work, descendant checkpoint,
+fresh-invocation restore, baseline comparison, and adapter/supervisor
+integration passed`. Evidence is retained in
+`/tmp/goetl-os009-final-20260813` in the mounted WSL environment.
+
+Result: OS-009 passes for the explicitly configured direct CPython adapter
+shape. This does not activate DMTCP in checked-in defaults, register R, or
+claim arbitrary package, native-thread, descendant, GPU, MPI, or cross-worker
+compatibility.
 
 ## Resume-Artifact Contract Model
 

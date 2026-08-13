@@ -1,6 +1,6 @@
 # 009 Direct-Interpreter DMTCP Pause Adapter
 
-Status: implementation in progress
+Status: implemented
 
 ## Objective
 
@@ -344,3 +344,26 @@ still omit checkpoint/profile activation.
 
 The container-level adapter/supervisor smoke remains to be implemented before
 the selected profile is operationally supported.
+
+The seventh implementation increment completed on 2026-08-13. The pinned
+direct-Python smoke now cross-compiles the real worker test binary for Linux
+and runs it inside the DMTCP 4.2.0/Python 3.11.15 container. The gated test
+runs an uninterrupted supervised baseline, yields a second attempt through
+the OS-008 supervisor, captures and kills it, records an accepted suspension,
+starts a replacement attempt with a fresh coordinator, and requires exact
+logical-output equality plus exactly one pre-checkpoint and post-resume marker.
+
+The container run exposed two DMTCP 4.2.0 command semantics now handled by the
+adapter. A successful `--kcheckpoint` prints `Computation was checkpointed and
+killed.` and exits with status 2; that exact command/status/output combination
+is accepted while every other command failure remains an error. The command
+can also return just before the finalized image is visible, so suspending
+capture polls for the exact expected finalized image set within the existing
+capture context before publishing the immutable manifest.
+
+The complete WSL Docker smoke passed on 2026-08-13 with evidence at
+`/tmp/goetl-os009-final-20260813`. It includes the prior direct Python/NumPy
+parent-and-descendant feasibility checks and the new adapter/supervisor test.
+OS-009 therefore supports only the explicitly selected, registered direct
+CPython shape. OS-003's direct-R result remains feasibility evidence; this
+slice does not add an R work-item type or production R registration.

@@ -11,9 +11,250 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"goetl/internal/model"
 )
+
+func TestDMTCPAdapterSupervisorContainerSmoke(t *testing.T) {
+	root := os.Getenv("GOET_DMTCP_ADAPTER_SMOKE_ROOT")
+	if root == "" {
+		t.Skip("set GOET_DMTCP_ADAPTER_SMOKE_ROOT inside the pinned DMTCP container")
+	}
+	fixturePath := os.Getenv("GOET_DMTCP_ADAPTER_FIXTURE")
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read adapter fixture: %v", err)
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	bundle := mustPythonSourceBundle(t, map[string]string{"main.py": string(fixture)})
+	sharedRoot := filepath.Join(root, "shared")
+	profile := DMTCPLaunchProfile{
+		LaunchExecutable:               "/opt/dmtcp/bin/dmtcp_launch",
+		CommandExecutable:              "/opt/dmtcp/bin/dmtcp_command",
+		RestartExecutable:              "/opt/dmtcp/bin/dmtcp_restart",
+		PythonExecutable:               "/usr/local/bin/python",
+		SharedTmpRoot:                  sharedRoot,
+		CheckpointSignal:               "12",
+		ExpectedClients:                1,
+		BuildIdentity:                  "dmtcp-4.2.0-f8009ce7-python-3.11.15",
+		AdapterID:                      "direct-interpreter-dmtcp",
+		AdapterVersion:                 "1",
+		WorkerExecutionContractVersion: "goet/worker-execution/v1",
+		WorkerVersion:                  "os009-container-smoke",
+		ContainerImageIdentity:         "goetl/dmtcp-python:os004",
+		OperatingSystem:                "debian-bookworm",
+		Architecture:                   "amd64",
+		ContainerRuntime:               os.Getenv("GOET_DMTCP_ADAPTER_RUNTIME"),
+	}
+	if profile.ContainerRuntime == "" {
+		profile.ContainerRuntime = "docker"
+	}
+
+	baselineRoot := filepath.Join(root, "baseline")
+	baselineWorker := dmtcpSmokeWorker(t, baselineRoot, bundle)
+	baselineControl := filepath.Join(baselineRoot, "control", "continue")
+	baselineItem := dmtcpSmokeItem("attempt-baseline", baselineControl, baselineRoot)
+	if err := os.MkdirAll(filepath.Dir(baselineControl), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(baselineControl, []byte("continue\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	baselineOutcome := runDMTCPContainerSupervisor(
+		t,
+		baselineWorker,
+		profile,
+		baselineItem,
+		dmtcpSmokeSupervisorConfig(CheckpointModeShutdown),
+		&supervisorTestCheckpointClient{},
+		[]string{"lineage-baseline"},
+	)
+	if baselineOutcome.Kind != ExecutionSupervisorCompleted {
+		t.Fatalf("baseline outcome = %+v", baselineOutcome)
+	}
+
+	resumedRoot := filepath.Join(root, "resumed")
+	resumedWorker := dmtcpSmokeWorker(t, resumedRoot, bundle)
+	continuation := filepath.Join(resumedRoot, "control", "continue")
+	producingItem := dmtcpSmokeItem("attempt-producing", continuation, resumedRoot)
+	confirmation := make(chan model.WorkCheckpointConfirmation, 1)
+	checkpointClient := &supervisorTestCheckpointClient{confirm: func(_ context.Context, _ WorkerSession, request model.WorkCheckpointConfirmation) (model.WorkCheckpointAcknowledgement, error) {
+		confirmation <- request
+		return supervisorAcknowledgement(t, request), nil
+	}}
+	suspended := runDMTCPContainerSupervisor(
+		t,
+		resumedWorker,
+		profile,
+		producingItem,
+		dmtcpSmokeSupervisorConfig(CheckpointModeYield),
+		checkpointClient,
+		[]string{"lineage-resumed", "artifact-resumed-001"},
+	)
+	if suspended.Kind != ExecutionSupervisorSuspended {
+		t.Fatalf("suspending outcome = %+v", suspended)
+	}
+	checkpoint := <-confirmation
+	if checkpoint.CaptureKind != model.CheckpointCaptureKindQuantum || checkpoint.Disposition != model.CheckpointDispositionSuspend {
+		t.Fatalf("checkpoint confirmation = %+v", checkpoint)
+	}
+	if _, err := os.Stat(filepath.Join(resumedRoot, "markers", "post-resume.log")); !os.IsNotExist(err) {
+		t.Fatalf("original process reached post-resume marker before restore: %v", err)
+	}
+
+	assignment := model.WorkItemResumeAssignment{
+		Schema:               model.WorkItemResumeAssignmentSchemaV1,
+		ResumedFromAttemptID: producingItem.AttemptID,
+		ExecutionLineageID:   suspended.Acknowledgement.ExecutionLineageID,
+		ResumeAttemptNumber:  1,
+		ManifestJSON:         checkpoint.ManifestJSON,
+		Reference:            checkpoint.Reference,
+	}
+	resumedItem := producingItem
+	resumedItem.AttemptID = "attempt-restored"
+	resumedItem.Resume = &assignment
+	if err := os.WriteFile(continuation, []byte("continue\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	completed := runDMTCPContainerSupervisor(
+		t,
+		resumedWorker,
+		profile,
+		resumedItem,
+		dmtcpSmokeSupervisorConfig(CheckpointModeShutdown),
+		&supervisorTestCheckpointClient{},
+		nil,
+	)
+	if completed.Kind != ExecutionSupervisorCompleted {
+		t.Fatalf("resumed outcome = %+v", completed)
+	}
+
+	baselineOutput, err := os.ReadFile(filepath.Join(baselineWorker.Config.DataDir, baselineItem.OutputFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedOutput, err := os.ReadFile(filepath.Join(resumedWorker.Config.DataDir, resumedItem.OutputFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(baselineOutput) != string(resumedOutput) {
+		t.Fatalf("resumed output differs from baseline\nbaseline=%s\nresumed=%s", baselineOutput, resumedOutput)
+	}
+	for _, marker := range []string{
+		filepath.Join(resumedRoot, "markers", "pre-checkpoint.log"),
+		filepath.Join(resumedRoot, "markers", "post-resume.log"),
+	} {
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(strings.Fields(string(data))) != 1 {
+			t.Fatalf("marker %s was not written exactly once: %q", marker, data)
+		}
+	}
+}
+
+func dmtcpSmokeWorker(t *testing.T, root string, bundle []byte) Worker {
+	t.Helper()
+	config := Config{
+		LogDir:  filepath.Join(root, "worker-logs"),
+		TmpDir:  filepath.Join(root, "worker-tmp"),
+		DataDir: filepath.Join(root, "worker-data"),
+	}
+	for _, directory := range []string{config.LogDir, config.TmpDir, config.DataDir, filepath.Join(root, "markers"), filepath.Join(root, "control")} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return Worker{Config: config, SourceBundles: &recordingSourceBundleProvider{body: bundle}, LocalOnly: true}
+}
+
+func dmtcpSmokeItem(attemptID string, continuation string, root string) model.WorkItem {
+	return model.WorkItem{
+		ID:               "os009-python-checkpoint",
+		AttemptID:        attemptID,
+		Type:             model.WorkItemTypePythonScript,
+		OutputFilename:   "result.json",
+		InputFingerprint: "os009-input-v1",
+		CodeVersion:      "os009-code-v1",
+		Source:           &model.WorkItemSource{RunID: "os009-run", ManifestPath: "os009-source-v1"},
+		Parameters: model.Parameters{
+			"python_entrypoint": {Type: "path", Value: "main.py"},
+			"python_args": {Type: "list", Value: []string{
+				continuation,
+				filepath.Join(root, "markers", "pre-checkpoint.log"),
+				filepath.Join(root, "markers", "post-resume.log"),
+			}},
+		},
+	}
+}
+
+func dmtcpSmokeSupervisorConfig(mode CheckpointMode) Config {
+	config := Config{
+		CheckpointMode:                   mode,
+		DrainPauseDelaySeconds:           180,
+		CheckpointCaptureTimeoutSeconds:  120,
+		CheckpointReportTimeoutSeconds:   30,
+		ExecutionTerminationGraceSeconds: 20,
+	}
+	if mode == CheckpointModeYield {
+		config.WorkItemExecutionQuantumSeconds = 1
+	}
+	return config
+}
+
+func runDMTCPContainerSupervisor(
+	t *testing.T,
+	worker Worker,
+	profile DMTCPLaunchProfile,
+	item model.WorkItem,
+	config Config,
+	checkpoints ExecutionSupervisorCheckpointClient,
+	ids []string,
+) ExecutionSupervisorOutcome {
+	t.Helper()
+	adapter := &DMTCPAdapter{Worker: worker, Profile: profile}
+	registration := PauseAdapterRegistration{
+		WorkItemType:   model.WorkItemTypePythonScript,
+		Strategy:       model.PauseStrategyDMTCP,
+		AdapterID:      profile.AdapterID,
+		AdapterVersion: profile.AdapterVersion,
+		Capabilities:   PauseAdapterCapabilities{Shutdown: true, Periodic: true, Yield: true},
+		Adapter:        adapter,
+	}
+	var idMu sync.Mutex
+	supervisor := ExecutionSupervisor{
+		Config:       config,
+		Item:         item,
+		Registration: registration,
+		Session:      WorkerSession{WorkerID: "os009-worker", WorkerSessionID: "os009-session"},
+		Checkpoints:  checkpoints,
+		NewID: func(kind string) (string, error) {
+			idMu.Lock()
+			defer idMu.Unlock()
+			if len(ids) == 0 {
+				return "", fmt.Errorf("unexpected %s id request", kind)
+			}
+			id := ids[0]
+			ids = ids[1:]
+			return id, nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	outcome, err := supervisor.Run(ctx)
+	if err != nil {
+		t.Fatalf("ExecutionSupervisor.Run() error = %v", err)
+	}
+	return outcome
+}
 
 func TestDMTCPAdapterStartFreshUsesIsolatedDirectInterpreterLaunch(t *testing.T) {
 	adapter, runner, process, item := newDMTCPLaunchTest(t)
@@ -169,6 +410,8 @@ func TestDMTCPExecutionPeriodicCapturePublishesManifestLast(t *testing.T) {
 
 func TestDMTCPExecutionSuspendCaptureCheckpointsAndKillsWithoutTerminalRace(t *testing.T) {
 	adapter, runner, _, item := newDMTCPCheckpointTest(t, true)
+	runner.checkpointOutput = "Computation was checkpointed and killed.\n"
+	runner.checkpointWaitErr = dmtcpTestExitError(2)
 	execution, err := adapter.StartFresh(context.Background(), item)
 	if err != nil {
 		t.Fatalf("StartFresh() error = %v", err)
@@ -192,6 +435,25 @@ func TestDMTCPExecutionSuspendCaptureCheckpointsAndKillsWithoutTerminalRace(t *t
 	if err := execution.Terminate(context.Background()); err != nil {
 		t.Fatalf("Terminate() error = %v", err)
 	}
+}
+
+func TestDMTCPExecutionSuspendCaptureRejectsUnexpectedStatusTwoOutput(t *testing.T) {
+	adapter, runner, process, item := newDMTCPCheckpointTest(t, false)
+	runner.checkpointOutput = "unexpected checkpoint response\n"
+	runner.checkpointWaitErr = dmtcpTestExitError(2)
+	execution, err := adapter.StartFresh(context.Background(), item)
+	if err != nil {
+		t.Fatalf("StartFresh() error = %v", err)
+	}
+	_, err = execution.CaptureForSuspend(context.Background(), dmtcpCaptureRequest(model.CheckpointCaptureKindFinal))
+	if err == nil || !strings.Contains(err.Error(), "unexpected checkpoint response") {
+		t.Fatalf("CaptureForSuspend() error = %v", err)
+	}
+	if err := execution.Terminate(context.Background()); err != nil {
+		t.Fatalf("Terminate() error = %v", err)
+	}
+	process.finish(errors.New("killed"))
+	<-execution.Result()
 }
 
 func TestDMTCPExecutionRejectsIncompleteOrTemporaryImageSets(t *testing.T) {
@@ -480,6 +742,8 @@ type checkpointDMTCPRunner struct {
 	omitFinalImage            bool
 	writeTemporaryImage       bool
 	observedManifestAbsent    bool
+	checkpointOutput          string
+	checkpointWaitErr         error
 }
 
 func (runner *checkpointDMTCPRunner) Start(_ context.Context, spec DMTCPCommandSpec) (DMTCPProcess, error) {
@@ -497,6 +761,7 @@ func (runner *checkpointDMTCPRunner) Start(_ context.Context, spec DMTCPCommandS
 		case "--list":
 			_, _ = fmt.Fprintln(spec.Stdout, "WorkerState::RUNNING pid=100")
 		case "--bcheckpoint", "--kcheckpoint":
+			_, _ = fmt.Fprint(spec.Stdout, runner.checkpointOutput)
 			manifestPath := filepath.Join(runner.profile.SharedTmpRoot, "goetl", "resume", "artifact-001", "manifest.json")
 			_, err := os.Stat(manifestPath)
 			runner.observedManifestAbsent = os.IsNotExist(err)
@@ -514,6 +779,7 @@ func (runner *checkpointDMTCPRunner) Start(_ context.Context, spec DMTCPCommandS
 			if command == "--kcheckpoint" && runner.finishPayloadOnCheckpoint {
 				runner.payload.finish(errors.New("DMTCP computation checkpointed and killed"))
 			}
+			return runner.checkpointWaitErr
 		default:
 			return fmt.Errorf("unexpected control command %q", command)
 		}
@@ -537,6 +803,11 @@ type callbackDMTCPProcess struct {
 
 func (process callbackDMTCPProcess) Wait() error { return process.wait() }
 func (callbackDMTCPProcess) Kill() error         { return nil }
+
+type dmtcpTestExitError int
+
+func (err dmtcpTestExitError) Error() string { return fmt.Sprintf("exit status %d", err) }
+func (err dmtcpTestExitError) ExitCode() int { return int(err) }
 
 func newDMTCPLaunchTest(t *testing.T) (DMTCPAdapter, *recordingDMTCPRunner, *fakeDMTCPProcess, model.WorkItem) {
 	t.Helper()

@@ -912,11 +912,45 @@ func (execution *dmtcpExecution) capture(ctx context.Context, request Checkpoint
 	if _, err := execution.runControlCommand(ctx, port, command); err != nil {
 		return PreparedCheckpoint{}, fmt.Errorf("request DMTCP checkpoint: %w", err)
 	}
+	if suspend {
+		if err := waitForDMTCPCheckpointImages(ctx, execution.workspace.CheckpointDir, execution.profile.ExpectedClients); err != nil {
+			return PreparedCheckpoint{}, err
+		}
+	}
 	files, checkpointPaths, err := execution.copyCheckpointImages(request)
 	if err != nil {
 		return PreparedCheckpoint{}, err
 	}
 	return execution.writeManifestLast(request, files, checkpointPaths)
+}
+
+func waitForDMTCPCheckpointImages(ctx context.Context, directory string, expected int) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return fmt.Errorf("read DMTCP checkpoint directory: %w", err)
+		}
+		finalized := 0
+		temporary := 0
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "ckpt_") && strings.HasSuffix(entry.Name(), ".dmtcp") {
+				finalized++
+			}
+			if strings.HasPrefix(entry.Name(), "ckpt_") && strings.HasSuffix(entry.Name(), ".dmtcp.temp") {
+				temporary++
+			}
+		}
+		if finalized == expected && temporary == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for DMTCP checkpoint images: found %d finalized and %d temporary, want %d finalized: %w", finalized, temporary, expected, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (execution *dmtcpExecution) runControlCommand(ctx context.Context, port string, command string) (string, error) {
@@ -931,6 +965,12 @@ func (execution *dmtcpExecution) runControlCommand(ctx context.Context, port str
 		return "", err
 	}
 	if err := process.Wait(); err != nil {
+		var exitCoder interface{ ExitCode() int }
+		if command == "--kcheckpoint" &&
+			errors.As(err, &exitCoder) && exitCoder.ExitCode() == 2 &&
+			strings.TrimSpace(output.String()) == "Computation was checkpointed and killed." {
+			return output.String(), nil
+		}
 		return "", fmt.Errorf("%s: %w", strings.TrimSpace(output.String()), err)
 	}
 	return output.String(), nil
