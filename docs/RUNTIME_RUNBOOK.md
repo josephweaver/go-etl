@@ -44,11 +44,11 @@ idempotent full restart rather than partial-prefix continuation. After
 `SIGKILL`, a non-empty `.partial` file survived, but an identical replacement
 command transferred the full source size and reproduced exact final integrity.
 
-A future adapter may use this restart-only strategy, but must discard or ignore
-untrusted partial state, retain the immutable source identity and expected
-integrity, and report that resume consumes the same bandwidth as a fresh
-transfer. It must not publish the partial file as completed output or claim
-offset continuation.
+OS-011 implements this restart-only strategy behind the explicit
+`gdrive_rclone_restart_1_71_2` profile. It discards untrusted partial state,
+retains the immutable source identity and expected integrity, and consumes the
+same bandwidth as a fresh transfer. It does not publish partial files as
+completed output or claim offset continuation.
 
 The feasibility harness is retained for future rclone/backend versions:
 
@@ -65,6 +65,24 @@ GOETL_RCLONE_EVIDENCE_DIR=/tmp/goetl-rclone-evidence \
 The config must be owner-only and is mounted read-only. The harness
 distinguishes `pass_native_continuation`, `pass_restart`, and `failed_resume`
 so automation cannot confuse full restart with offset reuse.
+
+From the repository root in WSL, run the real supervisor smoke with an existing
+immutable object under the authorized test prefix:
+
+```bash
+GOETL_RCLONE_RESTART_SMOKE=1 \
+GOETL_RCLONE_EXECUTABLE="$HOME/.local/bin/rclone" \
+GOETL_RCLONE_CONFIG="$HOME/.config/rclone/rclone.conf" \
+GOETL_RCLONE_REMOTE=gdrive \
+GOETL_RCLONE_SOURCE_PATH=Data/ETL/Test/goetl-os010-rclone-v1.bin \
+  go test ./cmd/worker -run '^TestRcloneRestartSupervisorSmoke$' -count=1 -v
+```
+
+The gated test rejects any remote other than `gdrive` and any source outside
+`Data/ETL/Test/`. It reads the existing fixture, writes only local temporary,
+cache, destination, and resume-artifact files, and performs no remote mutation.
+Success requires supervisor outcomes `suspended -> completed`, exact final
+size/SHA-256, and ordinary `asset.materialize` evidence.
 
 This runbook does not configure Slurm to forward a warning signal, provide an
 authenticated administrative-drain command, or prove checkpoint restore across

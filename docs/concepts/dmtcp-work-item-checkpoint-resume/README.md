@@ -1574,6 +1574,10 @@ planning candidates until they receive an approved Operational Slice charter.
      later transport slice and will feed the same injected drain boundary.
 
 9. **R and Python DMTCP adapter**
+   - Direct-Python Operational Slice charter:
+     `009-direct-python-dmtcp-pause-adapter.md`.
+   - Status: direct-Python implemented and real-supervisor smoke-tested for the
+     approved CPython shape; a production direct-R adapter remains future work.
    - Launch supported interpreters under isolated DMTCP coordinators and restore
      validated generations from compatible images and stable mounts.
    - Prove the quiesce barrier, registered-output copy/index protocol, and
@@ -1581,6 +1585,12 @@ planning candidates until they receive an approved Operational Slice charter.
    - Enable only interpreter/package/process shapes with passing evidence.
 
 10. **Rclone native-continuation adapter**
+   - Feasibility charter:
+     `010-gdrive-rclone-copyto-native-continuation-feasibility.md`.
+   - Adapter charter:
+     `011-gdrive-rclone-restart-pause-adapter.md`.
+   - Status: implemented and real-supervisor smoke-tested for shutdown-only
+     rclone 1.71.2 Google Drive single-file full restart.
    - Terminate the owned rclone process at pause, validate its durable partial
      workspace, and relaunch it through the exact continuation contract proven
      for each enabled command/backend.

@@ -406,6 +406,145 @@ func TestRcloneRestartProfileOmissionLeavesAdapterRegistryEmpty(t *testing.T) {
 	}
 }
 
+func TestRcloneRestartSupervisorSmoke(t *testing.T) {
+	if os.Getenv("GOETL_RCLONE_RESTART_SMOKE") != "1" {
+		t.Skip("set GOETL_RCLONE_RESTART_SMOKE=1 to run the real Google Drive supervisor smoke")
+	}
+	configPath := os.Getenv("GOETL_RCLONE_CONFIG")
+	executable := os.Getenv("GOETL_RCLONE_EXECUTABLE")
+	remote := os.Getenv("GOETL_RCLONE_REMOTE")
+	sourcePath := os.Getenv("GOETL_RCLONE_SOURCE_PATH")
+	if executable == "" || configPath == "" {
+		t.Fatal("GOETL_RCLONE_EXECUTABLE and GOETL_RCLONE_CONFIG are required")
+	}
+	if remote != "gdrive" || !strings.HasPrefix(sourcePath, "Data/ETL/Test/") || strings.Contains(sourcePath, "..") {
+		t.Fatalf("smoke source must remain under gdrive:Data/ETL/Test, got %q:%q", remote, sourcePath)
+	}
+	expectedSize := int64(33554432)
+	expectedSHA256 := "83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302"
+	root := t.TempDir()
+	asset := gdriveRcloneAsset(sourcePath, "gdrive/os011-smoke/source.bin", &expectedSHA256, &expectedSize)
+	asset.Location.Remote = remote
+	asset.TransferPolicy.ProviderArgs = map[string]string{"rclone_bwlimit": "1M"}
+	payload := assetMaterializePayloadForTest(asset)
+	payload.MaterializationDomainID = "os011-smoke-domain"
+	payload.DestinationRelativePath = "materialized/os011-smoke/final.bin"
+	payload.MaterializationKey = "sha256:" + sha256Text(payload.DestinationRelativePath)
+	item := AssetMaterializeTestItem(payload, asset)
+	item.AttemptID = "os011-smoke-producing"
+	item.InputFingerprint = "os011-smoke-input-v1"
+	item.CodeVersion = "os011-smoke-code-v1"
+
+	config := Config{
+		TmpDir: filepath.Join(root, "tmp"), DataDir: filepath.Join(root, "data"),
+		AssetCacheDir: filepath.Join(root, "cache"), MaxAssetBytes: expectedSize + 1,
+		EnableGDriveRcloneProvider: true, RcloneExecutable: executable, RcloneConfigPath: configPath,
+		CheckpointMode: CheckpointModeShutdown, DrainPauseDelaySeconds: 10,
+		CheckpointCaptureTimeoutSeconds: 3, CheckpointReportTimeoutSeconds: 3,
+		ExecutionTerminationGraceSeconds: 3,
+	}
+	worker := Worker{Config: config}
+	profile := RcloneRestartProfile{
+		SharedTmpRoot: filepath.Join(root, "shared"), AdapterID: "gdrive-rclone-restart",
+		AdapterVersion: "1", WorkerExecutionContractVersion: "goet/worker-execution/v1",
+		WorkerVersion: "os011-smoke", ContainerImageIdentity: "wsl-host",
+		OperatingSystem: "linux", Architecture: "amd64", ContainerRuntime: "wsl",
+		BackendIdentity: "rclone-1.71.2:gdrive:copyto-full-restart-v1",
+	}
+	adapter := &RcloneRestartAdapter{Worker: worker, Profile: profile}
+	registration := PauseAdapterRegistration{
+		WorkItemType: model.WorkItemTypeAssetMaterialize, Strategy: model.PauseStrategyNative,
+		AdapterID: profile.AdapterID, AdapterVersion: profile.AdapterVersion,
+		Capabilities: PauseAdapterCapabilities{Shutdown: true}, Adapter: adapter,
+	}
+	session := WorkerSession{WorkerID: "os011-smoke-worker", WorkerSessionID: "os011-smoke-session"}
+	confirmation := make(chan model.WorkCheckpointConfirmation, 1)
+	client := &supervisorTestCheckpointClient{confirm: func(_ context.Context, _ WorkerSession, request model.WorkCheckpointConfirmation) (model.WorkCheckpointAcknowledgement, error) {
+		var manifest model.ResumeArtifactManifest
+		if err := json.Unmarshal([]byte(request.ManifestJSON), &manifest); err != nil {
+			return model.WorkCheckpointAcknowledgement{}, err
+		}
+		confirmation <- request
+		return model.WorkCheckpointAcknowledgement{
+			Operation: model.CheckpointOperationConfirmation, ResumeArtifactID: manifest.ResumeArtifactID,
+			ExecutionLineageID: manifest.ExecutionLineageID, ResumeGeneration: manifest.ResumeGeneration,
+			Reference: request.Reference, CaptureKind: request.CaptureKind,
+			AcceptedAt: time.Now().UTC().Format(time.RFC3339), Disposition: request.Disposition,
+			Suspended: true, SuspendedAt: request.SuspendedAt,
+		}, nil
+	}}
+	drain := NewWorkerDrainRequests()
+	supervisor := ExecutionSupervisor{
+		Config: config, Item: item, Registration: registration, Session: session,
+		Checkpoints: client, Drain: drain,
+		NewID: func(kind string) (string, error) { return "os011-smoke-" + kind, nil },
+	}
+	firstResult := runSupervisorAsync(supervisor)
+	waitForRcloneRestartPartial(t, filepath.Join(config.TmpDir, "rclone-restart", item.AttemptID), 1024*1024)
+	if accepted, err := drain.Request(WorkerDrainRequest{Reason: WorkerDrainReasonAdministrative, RequestedAt: time.Now().Add(-10 * time.Second)}); err != nil || !accepted {
+		t.Fatalf("request drain = %v, %v", accepted, err)
+	}
+	first := receiveRcloneRestartSupervisorOutcome(t, firstResult, 30*time.Second)
+	if first.err != nil || first.outcome.Kind != ExecutionSupervisorSuspended {
+		t.Fatalf("first supervisor = %+v, %v", first.outcome, first.err)
+	}
+	checkpoint := <-confirmation
+	if strings.Contains(checkpoint.ManifestJSON, sourcePath) || strings.Contains(checkpoint.ManifestJSON, configPath) {
+		t.Fatal("checkpoint exposed remote or config path")
+	}
+	assignment := model.WorkItemResumeAssignment{
+		Schema: model.WorkItemResumeAssignmentSchemaV1, ResumedFromAttemptID: item.AttemptID,
+		ExecutionLineageID: first.outcome.Acknowledgement.ExecutionLineageID, ResumeAttemptNumber: 1,
+		ManifestJSON: checkpoint.ManifestJSON, Reference: checkpoint.Reference,
+	}
+	resumed := item
+	resumed.AttemptID = "os011-smoke-replacement"
+	resumed.Resume = &assignment
+	supervisor.Item = resumed
+	supervisor.Drain = nil
+	second := receiveRcloneRestartSupervisorOutcome(t, runSupervisorAsync(supervisor), 90*time.Second)
+	if second.err != nil || second.outcome.Kind != ExecutionSupervisorCompleted || second.outcome.Err != nil {
+		t.Fatalf("replacement supervisor = %+v, %v", second.outcome, second.err)
+	}
+	manifest := decodeAssetMaterializeOutput(t, second.outcome.Evidence.OutputJSON)
+	if len(manifest.Assets) != 1 || manifest.Assets[0].SourceSHA256 != expectedSHA256 || manifest.Assets[0].SourceSizeBytes == nil || *manifest.Assets[0].SourceSizeBytes != expectedSize {
+		t.Fatalf("replacement output = %+v", manifest)
+	}
+}
+
+func waitForRcloneRestartPartial(t *testing.T, workspace string, minimumBytes int64) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir(workspace)
+		var bytes int64
+		for _, entry := range entries {
+			if entry.Name() == "stdout.log" || entry.Name() == "stderr.log" {
+				continue
+			}
+			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
+				bytes += info.Size()
+			}
+		}
+		if bytes >= minimumBytes {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for an incomplete rclone transfer")
+}
+
+func receiveRcloneRestartSupervisorOutcome(t *testing.T, result <-chan supervisorRunResult, timeout time.Duration) supervisorRunResult {
+	t.Helper()
+	select {
+	case outcome := <-result:
+		return outcome
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for rclone restart supervisor")
+		return supervisorRunResult{}
+	}
+}
+
 func validRcloneRestartWorkerConfig(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()

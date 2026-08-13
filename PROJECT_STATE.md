@@ -4,8 +4,8 @@ Last updated: 2026-08-13
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
 
-2026-08-13 rclone restart adapter update: OS-011 implementation is in
-progress. `cmd/worker/rclone_restart_adapter.go` now defines the first
+2026-08-13 rclone restart adapter update: OS-011 is implemented.
+`cmd/worker/rclone_restart_adapter.go` defines the
 fresh-launch increment for immutable single-file Google Drive
 `asset.materialize` work. It validates the work item and attempt identity,
 requires enabled `gdrive_rclone`, an immutable worker cache, exact expected
@@ -33,8 +33,14 @@ after the child is reaped. Configuration now accepts the singular explicit
 profile and constructs exactly one native `asset.materialize` adapter. It
 advertises shutdown capture only; periodic and yield modes reject the profile,
 while profile omission leaves the ordinary synchronous path unchanged.
-Fake-process normal and race tests pass. The real supervisor smoke remains
-unimplemented.
+Fake-process normal and race tests pass. A gated real WSL supervisor smoke
+using rclone 1.71.2 and the immutable 33,554,432-byte fixture at the authorized
+`gdrive:Data/ETL/Test` path interrupted a throttled producing attempt after
+partial bytes appeared, acknowledged its native suspension artifact, launched
+a distinct replacement attempt, reproduced SHA-256
+`83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302`, and
+returned ordinary `asset.materialize` evidence. The run created or modified no
+remote object.
 
 2026-08-13 rclone resume feasibility update: OS-010 is implemented with a
 passing full-restart strategy and no partial-prefix continuation.

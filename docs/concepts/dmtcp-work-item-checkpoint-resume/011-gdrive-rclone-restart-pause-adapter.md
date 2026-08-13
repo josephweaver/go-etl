@@ -1,6 +1,6 @@
 # 011 Google Drive Rclone Restart Pause Adapter
 
-Status: proposed
+Status: implemented
 
 ## Objective
 
@@ -332,3 +332,19 @@ selector still constructs an empty pause-adapter registry and preserves the
 ordinary synchronous execution path. Focused tests prove profile validation,
 registration identity, shutdown-only capability, mode rejection, and omission
 behavior. The gated real supervisor smoke remains for the final increment.
+
+The final implementation increment completed on 2026-08-13. The opt-in
+`TestRcloneRestartSupervisorSmoke` runs the production adapter through the real
+`ExecutionSupervisor` with rclone 1.71.2 in WSL. It requires the remote name to
+be `gdrive` and the source to remain below `Data/ETL/Test/`. The test waits for
+partial local transfer bytes, requests administrative drain, confirms the
+exact native suspension artifact, creates a replacement assignment and attempt,
+and requires ordinary completion evidence with exact final size and SHA-256.
+
+The real run used the existing immutable 33,554,432-byte
+`goetl-os010-rclone-v1.bin` fixture. The producing attempt was interrupted,
+the replacement completed by full restart, and the final SHA-256 was
+`83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302`.
+Checkpoint JSON contained neither the remote source path nor config path. The
+run passed in 39.51 seconds and created or modified no remote object. OS-011 is
+implemented; partial-prefix continuation remains unsupported.

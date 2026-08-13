@@ -1459,3 +1459,34 @@ provide partial-prefix continuation. An adapter may proceed only with explicit
 restart-only semantics and their bandwidth/time cost. This result does not evaluate uploads,
 multi-file between-object boundaries, VFS cache behavior, other commands, or
 other backends.
+
+## Rclone Restart Adapter Supervisor Smoke
+
+OS-011 ran on 2026-08-13 in the mounted WSL environment with the installed
+rclone 1.71.2 and the existing immutable Google Drive fixture under the
+authorized `gdrive:Data/ETL/Test` path. The gated Go test exercised the
+production `RcloneRestartAdapter` through the real `ExecutionSupervisor`.
+
+The producing attempt used a 1 MiB/s limit. After local partial bytes appeared,
+the test requested administrative drain. The supervisor stopped and reaped the
+owned rclone child, validated and confirmed a final native resume artifact, and
+returned a suspended outcome. The artifact contained the immutable operation
+identity and expected integrity but neither the Google Drive source path nor
+the rclone config path.
+
+A distinct replacement attempt consumed that assignment, discarded its own
+stale transfer state, launched a new full `copyto`, and completed with ordinary
+`asset.materialize` evidence:
+
+```text
+expected/final size: 33,554,432 bytes
+expected/final SHA-256: 83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302
+supervisor outcomes: suspended -> completed
+test duration: 39.51 seconds
+remote mutations: none
+```
+
+Result: pass. This proves supervisor-managed shutdown and replacement full
+restart for the exact rclone 1.71.2 Google Drive single-file shape. It does not
+claim partial-prefix continuation, reduced transfer bandwidth, upload safety,
+multi-file behavior, other commands, or other backends.
