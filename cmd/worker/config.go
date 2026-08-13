@@ -23,7 +23,8 @@ const (
 	CheckpointModePeriodic CheckpointMode = "periodic"
 	CheckpointModeYield    CheckpointMode = "yield"
 
-	PauseAdapterProfileDirectPythonDMTCP42 PauseAdapterProfile = "direct_python_dmtcp_4_2"
+	PauseAdapterProfileDirectPythonDMTCP42     PauseAdapterProfile = "direct_python_dmtcp_4_2"
+	PauseAdapterProfileGDriveRcloneRestart1712 PauseAdapterProfile = "gdrive_rclone_restart_1_71_2"
 )
 
 type DMTCPProfileConfig struct {
@@ -99,32 +100,76 @@ func (profile DMTCPProfileConfig) launchProfile() DMTCPLaunchProfile {
 	}
 }
 
+type RcloneRestartProfileConfig struct {
+	SharedTmpRoot                  string `json:"shared_tmp_root"`
+	AdapterID                      string `json:"adapter_id"`
+	AdapterVersion                 string `json:"adapter_version"`
+	WorkerExecutionContractVersion string `json:"worker_execution_contract_version"`
+	WorkerVersion                  string `json:"worker_version"`
+	ContainerImageIdentity         string `json:"container_image_identity"`
+	OperatingSystem                string `json:"operating_system"`
+	Architecture                   string `json:"architecture"`
+	ContainerRuntime               string `json:"container_runtime"`
+	BackendIdentity                string `json:"backend_identity"`
+}
+
+func (profile RcloneRestartProfileConfig) validate() error {
+	for _, field := range []struct{ name, value string }{
+		{"shared_tmp_root", profile.SharedTmpRoot},
+		{"adapter_id", profile.AdapterID},
+		{"adapter_version", profile.AdapterVersion},
+		{"worker_execution_contract_version", profile.WorkerExecutionContractVersion},
+		{"worker_version", profile.WorkerVersion},
+		{"container_image_identity", profile.ContainerImageIdentity},
+		{"operating_system", profile.OperatingSystem},
+		{"architecture", profile.Architecture},
+		{"container_runtime", profile.ContainerRuntime},
+		{"backend_identity", profile.BackendIdentity},
+	} {
+		if err := validateAdapterContractValue("rclone_restart_profile."+field.name, field.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (profile RcloneRestartProfileConfig) launchProfile() RcloneRestartProfile {
+	return RcloneRestartProfile{
+		SharedTmpRoot: profile.SharedTmpRoot, AdapterID: profile.AdapterID,
+		AdapterVersion: profile.AdapterVersion, WorkerExecutionContractVersion: profile.WorkerExecutionContractVersion,
+		WorkerVersion: profile.WorkerVersion, ContainerImageIdentity: profile.ContainerImageIdentity,
+		OperatingSystem: profile.OperatingSystem, Architecture: profile.Architecture,
+		ContainerRuntime: profile.ContainerRuntime, BackendIdentity: profile.BackendIdentity,
+	}
+}
+
 type Config struct {
-	LogDir                                string              `json:"log_dir"`
-	TmpDir                                string              `json:"tmp_dir"`
-	DataDir                               string              `json:"data_dir"`
-	ControllerURL                         string              `json:"controller_url"`
-	ControllerTokenFile                   string              `json:"controller_token_file,omitempty"`
-	ControllerInsecureExternalHTTPAllowed bool                `json:"controller_insecure_external_http_allowed,omitempty"`
-	PythonExecutable                      string              `json:"python_executable,omitempty"`
-	SevenZipExecutable                    string              `json:"seven_zip_executable,omitempty"`
-	RcloneExecutable                      string              `json:"rclone_executable,omitempty"`
-	RcloneConfigPath                      string              `json:"rclone_config_path,omitempty"`
-	EnableGDriveRcloneProvider            bool                `json:"enable_gdrive_rclone_provider,omitempty"`
-	AssetCacheDir                         string              `json:"asset_cache_dir,omitempty"`
-	MaxAssetBytes                         int64               `json:"max_asset_bytes,omitempty"`
-	DataLocationRoots                     map[string]string   `json:"data_location_roots,omitempty"`
-	IdlePollIntervalSeconds               int                 `json:"idle_poll_interval_seconds,omitempty"`
-	IdleTimeoutSeconds                    int                 `json:"idle_timeout_seconds,omitempty"`
-	CheckpointMode                        CheckpointMode      `json:"checkpoint_mode,omitempty"`
-	CheckpointIntervalSeconds             int                 `json:"checkpoint_interval_seconds,omitempty"`
-	WorkItemExecutionQuantumSeconds       int                 `json:"work_item_execution_quantum_seconds,omitempty"`
-	DrainPauseDelaySeconds                int                 `json:"drain_pause_delay_seconds,omitempty"`
-	CheckpointCaptureTimeoutSeconds       int                 `json:"checkpoint_capture_timeout_seconds,omitempty"`
-	CheckpointReportTimeoutSeconds        int                 `json:"checkpoint_report_timeout_seconds,omitempty"`
-	ExecutionTerminationGraceSeconds      int                 `json:"execution_termination_grace_seconds,omitempty"`
-	PauseAdapterProfile                   PauseAdapterProfile `json:"pause_adapter_profile,omitempty"`
-	DMTCPProfile                          *DMTCPProfileConfig `json:"dmtcp_profile,omitempty"`
+	LogDir                                string                      `json:"log_dir"`
+	TmpDir                                string                      `json:"tmp_dir"`
+	DataDir                               string                      `json:"data_dir"`
+	ControllerURL                         string                      `json:"controller_url"`
+	ControllerTokenFile                   string                      `json:"controller_token_file,omitempty"`
+	ControllerInsecureExternalHTTPAllowed bool                        `json:"controller_insecure_external_http_allowed,omitempty"`
+	PythonExecutable                      string                      `json:"python_executable,omitempty"`
+	SevenZipExecutable                    string                      `json:"seven_zip_executable,omitempty"`
+	RcloneExecutable                      string                      `json:"rclone_executable,omitempty"`
+	RcloneConfigPath                      string                      `json:"rclone_config_path,omitempty"`
+	EnableGDriveRcloneProvider            bool                        `json:"enable_gdrive_rclone_provider,omitempty"`
+	AssetCacheDir                         string                      `json:"asset_cache_dir,omitempty"`
+	MaxAssetBytes                         int64                       `json:"max_asset_bytes,omitempty"`
+	DataLocationRoots                     map[string]string           `json:"data_location_roots,omitempty"`
+	IdlePollIntervalSeconds               int                         `json:"idle_poll_interval_seconds,omitempty"`
+	IdleTimeoutSeconds                    int                         `json:"idle_timeout_seconds,omitempty"`
+	CheckpointMode                        CheckpointMode              `json:"checkpoint_mode,omitempty"`
+	CheckpointIntervalSeconds             int                         `json:"checkpoint_interval_seconds,omitempty"`
+	WorkItemExecutionQuantumSeconds       int                         `json:"work_item_execution_quantum_seconds,omitempty"`
+	DrainPauseDelaySeconds                int                         `json:"drain_pause_delay_seconds,omitempty"`
+	CheckpointCaptureTimeoutSeconds       int                         `json:"checkpoint_capture_timeout_seconds,omitempty"`
+	CheckpointReportTimeoutSeconds        int                         `json:"checkpoint_report_timeout_seconds,omitempty"`
+	ExecutionTerminationGraceSeconds      int                         `json:"execution_termination_grace_seconds,omitempty"`
+	PauseAdapterProfile                   PauseAdapterProfile         `json:"pause_adapter_profile,omitempty"`
+	DMTCPProfile                          *DMTCPProfileConfig         `json:"dmtcp_profile,omitempty"`
+	RcloneRestartProfile                  *RcloneRestartProfileConfig `json:"rclone_restart_profile,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -187,6 +232,9 @@ func (c *Config) resolveRelativePaths(root string) {
 			c.DMTCPProfile.PythonExecutable = resolveRelativePath(root, c.DMTCPProfile.PythonExecutable)
 		}
 		c.DMTCPProfile.SharedTmpRoot = resolveRelativePath(root, c.DMTCPProfile.SharedTmpRoot)
+	}
+	if c.RcloneRestartProfile != nil {
+		c.RcloneRestartProfile.SharedTmpRoot = resolveRelativePath(root, c.RcloneRestartProfile.SharedTmpRoot)
 	}
 	for name, dataRoot := range c.DataLocationRoots {
 		c.DataLocationRoots[name] = resolveRelativePath(root, dataRoot)
@@ -253,6 +301,9 @@ func (c Config) validatePauseAdapterProfile() error {
 		if c.DMTCPProfile != nil {
 			return fmt.Errorf("dmtcp_profile requires pause_adapter_profile")
 		}
+		if c.RcloneRestartProfile != nil {
+			return fmt.Errorf("rclone_restart_profile requires pause_adapter_profile")
+		}
 		return nil
 	case PauseAdapterProfileDirectPythonDMTCP42:
 		if c.CheckpointMode == CheckpointModeDisabled {
@@ -261,10 +312,30 @@ func (c Config) validatePauseAdapterProfile() error {
 		if c.DMTCPProfile == nil {
 			return fmt.Errorf("pause_adapter_profile %q requires dmtcp_profile", c.PauseAdapterProfile)
 		}
+		if c.RcloneRestartProfile != nil {
+			return fmt.Errorf("pause_adapter_profile %q does not accept rclone_restart_profile", c.PauseAdapterProfile)
+		}
 		if err := c.DMTCPProfile.validate(); err != nil {
 			return err
 		}
 		return nil
+	case PauseAdapterProfileGDriveRcloneRestart1712:
+		if c.CheckpointMode != CheckpointModeShutdown {
+			return fmt.Errorf("pause_adapter_profile %q requires checkpoint_mode %q", c.PauseAdapterProfile, CheckpointModeShutdown)
+		}
+		if c.DMTCPProfile != nil {
+			return fmt.Errorf("pause_adapter_profile %q does not accept dmtcp_profile", c.PauseAdapterProfile)
+		}
+		if c.RcloneRestartProfile == nil {
+			return fmt.Errorf("pause_adapter_profile %q requires rclone_restart_profile", c.PauseAdapterProfile)
+		}
+		if !c.EnableGDriveRcloneProvider {
+			return fmt.Errorf("pause_adapter_profile %q requires enabled gdrive_rclone provider", c.PauseAdapterProfile)
+		}
+		if strings.TrimSpace(c.RcloneExecutable) == "" || strings.TrimSpace(c.RcloneConfigPath) == "" {
+			return fmt.Errorf("pause_adapter_profile %q requires rclone_executable and rclone_config_path", c.PauseAdapterProfile)
+		}
+		return c.RcloneRestartProfile.validate()
 	default:
 		return fmt.Errorf("unsupported pause_adapter_profile %q", c.PauseAdapterProfile)
 	}

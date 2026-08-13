@@ -4,6 +4,38 @@ Last updated: 2026-08-13
 
 This is the concise current-state index for GOET. The pre-split root state file is preserved at [`docs/history/PROJECT_STATE_2026-07-07_pre-split.md`](docs/history/PROJECT_STATE_2026-07-07_pre-split.md).
 
+2026-08-13 rclone restart adapter update: OS-011 implementation is in
+progress. `cmd/worker/rclone_restart_adapter.go` now defines the first
+fresh-launch increment for immutable single-file Google Drive
+`asset.materialize` work. It validates the work item and attempt identity,
+requires enabled `gdrive_rclone`, an immutable worker cache, exact expected
+size/SHA-256, matching payload/asset identities, and no archive or file-ID
+shape before creating an owner-only attempt workspace and starting one
+structured `rclone copyto` child through an injected process boundary.
+Termination is bounded by the caller context, idempotent, and waits for the
+owned child. Shutdown capture now validates a final capture request, kills and
+reaps rclone while withholding its expected terminal result, excludes partial
+bytes and remote/config paths, writes one canonical restart-state JSON file,
+and writes/syncs the immutable native manifest and exact reference last under
+the shared resume root. Resume now fail-closes on assignment, exact stored
+manifest bytes, native operation/backend and complete compatibility identity,
+canonical state-file path/size/hash/JSON, work/input/source/code identity, and
+immutable asset/output identity before launch. It removes only stale transfer
+output or `.partial` files in the replacement attempt workspace and constructs
+a new full `copyto` exclusively from the validated current work item. A clean
+child exit now requires the downloaded regular file to match the declared size
+and SHA-256, installs it with the existing immutable worker-cache manifest,
+promotes it through the deterministic materialized-destination boundary, and
+returns ordinary `asset.materialize` evidence. Missing or mismatched output is
+an execution failure, and attempt-local transfer output/partials are removed
+after the child is reaped. Configuration now accepts the singular explicit
+`gdrive_rclone_restart_1_71_2` selector with a complete restart compatibility
+profile and constructs exactly one native `asset.materialize` adapter. It
+advertises shutdown capture only; periodic and yield modes reject the profile,
+while profile omission leaves the ordinary synchronous path unchanged.
+Fake-process normal and race tests pass. The real supervisor smoke remains
+unimplemented.
+
 2026-08-13 rclone resume feasibility update: OS-010 is implemented with a
 passing full-restart strategy and no partial-prefix continuation.
 `containers/rclone-continuation-feasibility` builds an exact

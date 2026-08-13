@@ -91,29 +91,38 @@ func (w Worker) pauseAdapterRegistry() (PauseAdapterRegistry, error) {
 	if w.Config.PauseAdapterProfile == "" {
 		return NewPauseAdapterRegistry()
 	}
-	if w.Config.PauseAdapterProfile != PauseAdapterProfileDirectPythonDMTCP42 {
+	switch w.Config.PauseAdapterProfile {
+	case PauseAdapterProfileDirectPythonDMTCP42:
+		if w.Config.DMTCPProfile == nil {
+			return PauseAdapterRegistry{}, fmt.Errorf("pause adapter profile %q requires dmtcp_profile", w.Config.PauseAdapterProfile)
+		}
+		profile := w.Config.DMTCPProfile.launchProfile()
+		if err := profile.validate(); err != nil {
+			return PauseAdapterRegistry{}, fmt.Errorf("DMTCP pause adapter profile: %w", err)
+		}
+		adapter := &DMTCPAdapter{Worker: w, Profile: profile}
+		return NewPauseAdapterRegistry(PauseAdapterRegistration{
+			WorkItemType: model.WorkItemTypePythonScript, Strategy: model.PauseStrategyDMTCP,
+			AdapterID: profile.AdapterID, AdapterVersion: profile.AdapterVersion,
+			Capabilities: PauseAdapterCapabilities{Shutdown: true, Periodic: true, Yield: true}, Adapter: adapter,
+		})
+	case PauseAdapterProfileGDriveRcloneRestart1712:
+		if w.Config.RcloneRestartProfile == nil {
+			return PauseAdapterRegistry{}, fmt.Errorf("pause adapter profile %q requires rclone_restart_profile", w.Config.PauseAdapterProfile)
+		}
+		profile := w.Config.RcloneRestartProfile.launchProfile()
+		if err := profile.validate(); err != nil {
+			return PauseAdapterRegistry{}, fmt.Errorf("rclone restart pause adapter profile: %w", err)
+		}
+		adapter := &RcloneRestartAdapter{Worker: w, Profile: profile}
+		return NewPauseAdapterRegistry(PauseAdapterRegistration{
+			WorkItemType: model.WorkItemTypeAssetMaterialize, Strategy: model.PauseStrategyNative,
+			AdapterID: profile.AdapterID, AdapterVersion: profile.AdapterVersion,
+			Capabilities: PauseAdapterCapabilities{Shutdown: true}, Adapter: adapter,
+		})
+	default:
 		return PauseAdapterRegistry{}, fmt.Errorf("unsupported pause adapter profile %q", w.Config.PauseAdapterProfile)
 	}
-	if w.Config.DMTCPProfile == nil {
-		return PauseAdapterRegistry{}, fmt.Errorf("pause adapter profile %q requires dmtcp_profile", w.Config.PauseAdapterProfile)
-	}
-	profile := w.Config.DMTCPProfile.launchProfile()
-	if err := profile.validate(); err != nil {
-		return PauseAdapterRegistry{}, fmt.Errorf("DMTCP pause adapter profile: %w", err)
-	}
-	adapter := &DMTCPAdapter{Worker: w, Profile: profile}
-	return NewPauseAdapterRegistry(PauseAdapterRegistration{
-		WorkItemType:   model.WorkItemTypePythonScript,
-		Strategy:       model.PauseStrategyDMTCP,
-		AdapterID:      profile.AdapterID,
-		AdapterVersion: profile.AdapterVersion,
-		Capabilities: PauseAdapterCapabilities{
-			Shutdown: true,
-			Periodic: true,
-			Yield:    true,
-		},
-		Adapter: adapter,
-	})
 }
 
 func (w Worker) RunSupervised(
